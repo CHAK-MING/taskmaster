@@ -1,0 +1,76 @@
+# System Monitoring & Alerting Example
+# Periodic health checks with alerting
+#
+scheduler:
+  log_level: info
+
+tasks:
+  # Check disk usage every 5 minutes
+  - id: check_disk
+    name: Check Disk Usage
+    command: |
+      USAGE=$(df -h / | awk 'NR==2 {print $5}' | tr -d '%')
+      if [ "$USAGE" -gt 85 ]; then
+        echo "WARN: Disk usage at ${USAGE}%"
+        exit 1
+      fi
+      echo "OK: Disk usage at ${USAGE}%"
+    cron: "*/5 * * * *"
+    timeout: 30
+    max_retries: 1
+
+  # Check service health
+  - id: check_api
+    name: Check API Health
+    command: |
+      STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/health)
+      if [ "$STATUS" != "200" ]; then
+        echo "ERROR: API returned status $STATUS"
+        exit 1
+      fi
+      echo "OK: API is healthy"
+    cron: "* * * * *"  # Every minute
+    timeout: 30
+    max_retries: 2
+
+  - id: check_database
+    name: Check Database Connection
+    command: |
+      pg_isready -h localhost -p 5432 -U postgres
+      if [ $? -ne 0 ]; then
+        echo "ERROR: Database is not responding"
+        exit 1
+      fi
+      echo "OK: Database is ready"
+    cron: "* * * * *"
+    timeout: 30
+
+  # Collect metrics every minute
+  - id: collect_metrics
+    name: Collect System Metrics
+    command: |
+      cat << EOF >> /var/log/metrics/system_$(date +%Y%m%d).json
+      {"ts":"$(date -Iseconds)","cpu":$(top -bn1 | grep "Cpu(s)" | awk '{print $2}'),"mem":$(free | awk '/Mem:/ {printf "%.1f", $3/$2*100}')}
+      EOF
+    cron: "* * * * *"
+    timeout: 30
+
+  # Daily log rotation
+  - id: rotate_logs
+    name: Rotate Application Logs
+    command: |
+      logrotate -f /etc/logrotate.d/app
+      echo "Logs rotated at $(date)"
+    cron: "0 0 * * *"  # Daily at midnight
+    timeout: 300
+
+  # Weekly report generation
+  - id: weekly_report
+    name: Generate Weekly Report
+    command: |
+      python3 /opt/scripts/generate_report.py \
+        --start "$(date -d 'last monday' +%Y-%m-%d)" \
+        --end "$(date +%Y-%m-%d)" \
+        --output /reports/weekly_$(date +%Y%W).html
+    cron: "0 9 * * 1"  # Monday at 9:00 AM
+    timeout: 600
