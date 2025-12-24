@@ -8,6 +8,7 @@
 #include <thread>
 
 #include "taskmaster/application.hpp"
+#include "taskmaster/config.hpp"
 #include "taskmaster/log.hpp"
 
 namespace fs = std::filesystem;
@@ -85,7 +86,7 @@ struct Options {
   std::string db_file = "taskmaster.db";
   std::string trigger_dag;
   std::string host = "127.0.0.1";
-  uint16_t port = 8080;
+  std::uint16_t port = 8080;
   bool server_mode = false;
   bool daemon = false;
   bool list_tasks = false;

@@ -57,7 +57,9 @@ auto DAGManager::create_dag(std::string_view name, std::string_view description)
                .updated_at = now,
                .tasks = {},
                .task_index = {},
-               .from_config = false};
+               .reverse_adj_cache = {},
+               .from_config = false,
+               .reverse_adj_dirty = true};
 
   if (persistence_) {
     if (auto r = persistence_->save_dag(info); !r) {
@@ -194,6 +196,7 @@ auto DAGManager::add_task(std::string_view dag_id, const TaskConfig &task)
   dag->tasks.push_back(task);
   dag->task_index[task.id] = dag->tasks.size() - 1;
   dag->updated_at = std::chrono::system_clock::now();
+  dag->invalidate_cache();  // Invalidate reverse adjacency cache
 
   log::info("Added task {} to DAG {}", task.id, dag_id);
   return ok();
@@ -224,6 +227,7 @@ auto DAGManager::update_task(std::string_view dag_id, std::string_view task_id,
   *existing = task;
   existing->id = std::string(task_id);
   dag->updated_at = std::chrono::system_clock::now();
+  dag->invalidate_cache();  // Invalidate reverse adjacency cache
 
   if (persistence_) {
     if (auto r = persistence_->save_task(dag_id, *existing); !r) {
@@ -273,7 +277,7 @@ auto DAGManager::delete_task(std::string_view dag_id, std::string_view task_id)
 
   std::size_t idx = idx_it->second;
   dag->tasks.erase(dag->tasks.begin() + static_cast<std::ptrdiff_t>(idx));
-  dag->rebuild_task_index();
+  dag->rebuild_task_index();  // This also invalidates the cache
   dag->updated_at = std::chrono::system_clock::now();
 
   log::info("Deleted task {} from DAG {}", task_id, dag_id);
@@ -303,7 +307,7 @@ auto DAGManager::validate_dag(std::string_view dag_id) const -> Result<void> {
   if (!dag_result) {
     return fail(dag_result.error());
   }
-  return dag_result->validate();
+  return dag_result->is_valid();
 }
 
 auto DAGManager::would_create_cycle_internal(
@@ -312,12 +316,9 @@ auto DAGManager::would_create_cycle_internal(
   if (deps.empty())
     return false;
 
-  std::unordered_map<std::string, std::vector<std::string>> reverse_adj;
-  for (const auto &task : dag.tasks) {
-    for (const auto &dep : task.deps) {
-      reverse_adj[dep].push_back(task.id);
-    }
-  }
+  // Use cached reverse adjacency list (const_cast is safe here as we're only
+  // reading/rebuilding the cache, not modifying the logical state)
+  const auto &reverse_adj = const_cast<DAGInfo&>(dag).get_reverse_adj();
 
   std::unordered_set<std::string> deps_set(deps.begin(), deps.end());
   std::unordered_set<std::string> visited;
@@ -402,7 +403,9 @@ auto DAGManager::load_from_config(const Config &config) -> Result<void> {
                .updated_at = now,
                .tasks = config.tasks,
                .task_index = {},
-               .from_config = true};
+               .reverse_adj_cache = {},
+               .from_config = true,
+               .reverse_adj_dirty = true};
   info.rebuild_task_index();
 
   dags_[dag_id] = std::move(info);

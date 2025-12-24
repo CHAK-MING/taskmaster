@@ -40,7 +40,10 @@ public:
   virtual auto cancel(std::string_view instance_id) -> void = 0;
 };
 
-[[nodiscard]] auto create_shell_executor() -> std::unique_ptr<IExecutor>;
+class Runtime; // Forward declaration
+
+[[nodiscard]] auto create_shell_executor(Runtime &rt)
+    -> std::unique_ptr<IExecutor>;
 
 class ExecutorAwaiter {
 public:

@@ -67,11 +67,11 @@ private:
   union storage {
     storage() noexcept {}
 
-    ~storage() noexcept(std::is_nothrow_destructible_v<T>)
-      requires std::is_trivially_destructible_v<T>
-    = default;
-
-    ~storage() noexcept(std::is_nothrow_destructible_v<T>) { value.~T(); }
+    ~storage() noexcept(std::is_nothrow_destructible_v<T>) {
+      if constexpr (!std::is_trivially_destructible_v<T>) {
+        value.~T();
+      }
+    }
 
     T value;
   } storage_;
@@ -111,6 +111,10 @@ public:
   }
 
   [[noreturn]] auto unhandled_exception() const noexcept -> void {
+    // Log before terminating to aid debugging
+    // Note: Cannot use log::error here as it may allocate
+    std::fputs("[FATAL] Unhandled exception in task coroutine\n", stderr);
+    std::fflush(stderr);
     std::terminate();
   }
 
@@ -435,15 +439,51 @@ class spawn_task_promise;
 class spawn_task {
 public:
   using promise_type = spawn_task_promise;
+
+  spawn_task() = default;
+  spawn_task(std::coroutine_handle<> coro) : coro_(coro) {}
+
+  ~spawn_task() {
+    // Only destroy if we own the handle (not scheduled on Runtime)
+    if (coro_ && coro_.done()) {
+      coro_.destroy();
+    }
+  }
+
+  spawn_task(spawn_task &&other) noexcept : coro_(std::exchange(other.coro_, {})) {}
+
+  spawn_task &operator=(spawn_task &&other) noexcept {
+    if (this != &other) {
+      // Destroy our handle if we own it
+      if (coro_ && coro_.done()) {
+        coro_.destroy();
+      }
+      coro_ = std::exchange(other.coro_, {});
+    }
+    return *this;
+  }
+
+  spawn_task(const spawn_task &) = delete;
+  spawn_task &operator=(const spawn_task &) = delete;
+
+  [[nodiscard]] auto handle() const noexcept -> std::coroutine_handle<> { return coro_; }
+
+  // Release ownership - the Runtime will handle destruction
+  [[nodiscard]] auto release() noexcept -> std::coroutine_handle<> {
+    return std::exchange(coro_, {});
+  }
+
+private:
+  std::coroutine_handle<> coro_;
 };
 
 class spawn_task_promise {
 public:
-  [[nodiscard]] auto get_return_object() const noexcept -> spawn_task {
-    return spawn_task{};
+  [[nodiscard]] auto get_return_object() noexcept -> spawn_task {
+    return spawn_task{std::coroutine_handle<spawn_task_promise>::from_promise(*this)};
   }
 
-  [[nodiscard]] auto initial_suspend() const noexcept -> std::suspend_never {
+  [[nodiscard]] auto initial_suspend() const noexcept -> std::suspend_always {
     return {};
   }
 
@@ -452,6 +492,9 @@ public:
   }
 
   [[noreturn]] auto unhandled_exception() const noexcept -> void {
+    // Log before terminating to aid debugging
+    std::fputs("[FATAL] Unhandled exception in spawn_task coroutine\n", stderr);
+    std::fflush(stderr);
     std::terminate();
   }
 

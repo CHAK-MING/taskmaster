@@ -1,7 +1,7 @@
 #include "taskmaster/engine.hpp"
-#include "taskmaster/runtime.hpp"
 #include "taskmaster/util.hpp"
 
+#include <cerrno>
 #include <cstring>
 #include <poll.h>
 #include <sys/eventfd.h>
@@ -24,24 +24,29 @@ auto Engine::start() -> void {
   if (running_.exchange(true))
     return;
 
-  Runtime::instance().start();
-  run_loop();
+  event_loop_thread_ = std::thread([this] { run_loop(); });
   log::info("Engine started");
 }
 
 auto Engine::stop() -> void {
   if (!running_.exchange(false))
     return;
-  events_.push(ShutdownEvent{});
+  // Use blocking push for shutdown - this must succeed
+  events_.push_blocking(ShutdownEvent{});
   notify();
+  if (event_loop_thread_.joinable()) {
+    event_loop_thread_.join();
+  }
   log::info("Engine stopped");
 }
 
-auto Engine::run_loop() -> spawn_task {
-  while (running_.load()) {
+auto Engine::run_loop() -> void {
+  pollfd pfd{event_fd_, POLLIN, 0};
+
+  while (running_.load(std::memory_order_relaxed)) {
     process_events();
 
-    if (!running_.load())
+    if (!running_.load(std::memory_order_relaxed))
       break;
 
     tick();
@@ -49,20 +54,22 @@ auto Engine::run_loop() -> spawn_task {
     auto next_time = get_next_run_time();
     auto now = std::chrono::system_clock::now();
 
-    if (next_time == TimePoint::max()) {
-      (void)co_await async_poll_timeout(event_fd_, POLLIN,
-                                        std::chrono::seconds(60));
-    } else {
+    int timeout_ms = 60000; // Default 60s
+    if (next_time != TimePoint::max()) {
       auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(
           next_time - now);
-      if (delay.count() > 0) {
-        (void)co_await async_poll_timeout(event_fd_, POLLIN, delay);
-      }
+      timeout_ms = std::max(0, static_cast<int>(delay.count()));
     }
 
+    int ret = ::poll(&pfd, 1, timeout_ms);
+    if (ret < 0 && errno != EINTR) {
+      log::error("poll failed: {}", strerror(errno));
+      break;
+    }
+
+    // Drain eventfd
     std::uint64_t val;
-    while (read(event_fd_, &val, sizeof(val)) > 0) {
-      // drain event_fd
+    while (::read(event_fd_, &val, sizeof(val)) > 0) {
     }
   }
 }
@@ -117,8 +124,8 @@ auto Engine::get_next_run_time() const -> TimePoint {
 auto Engine::schedule_task(const std::string &task_id, TimePoint next_time)
     -> void {
   unschedule_task(task_id);
-  schedule_.emplace(next_time, task_id);
-  task_schedule_[task_id] = next_time;
+  auto it = schedule_.emplace(next_time, task_id);
+  task_schedule_[task_id] = it;
 }
 
 auto Engine::unschedule_task(const std::string &task_id) -> void {
@@ -126,12 +133,8 @@ auto Engine::unschedule_task(const std::string &task_id) -> void {
   if (it == task_schedule_.end())
     return;
 
-  auto range = schedule_.equal_range(it->second);
-  for (auto sit = range.first; sit != range.second; ++sit) {
-    if (sit->second == task_id) {
-      schedule_.erase(sit);
-      break;
-    }
+  if (it->second != schedule_.end()) {
+    schedule_.erase(it->second);
   }
   task_schedule_.erase(it);
 }
@@ -143,40 +146,57 @@ auto Engine::notify() -> void {
   }
 }
 
-auto Engine::add_task(TaskDefinition def) -> void {
-  events_.push(AddTaskEvent{std::move(def)});
+auto Engine::add_task(TaskDefinition def) -> bool {
+  if (!events_.push(AddTaskEvent{std::move(def)})) {
+    log::warn("Event queue full when adding task");
+    return false;
+  }
   notify();
+  return true;
 }
 
-auto Engine::remove_task(std::string_view task_id) -> void {
-  events_.push(RemoveTaskEvent{std::string(task_id)});
+auto Engine::remove_task(std::string_view task_id) -> bool {
+  if (!events_.push(RemoveTaskEvent{std::string(task_id)})) {
+    log::warn("Event queue full when removing task {}", task_id);
+    return false;
+  }
   notify();
+  return true;
 }
 
-auto Engine::enable_task(std::string_view task_id, bool enabled) -> void {
-  events_.push(EnableTaskEvent{std::string(task_id), enabled});
+auto Engine::enable_task(std::string_view task_id, bool enabled) -> bool {
+  if (!events_.push(EnableTaskEvent{std::string(task_id), enabled})) {
+    return false;
+  }
   notify();
+  return true;
 }
 
-auto Engine::trigger(std::string_view task_id) -> void {
-  events_.push(TriggerTaskEvent{std::string(task_id)});
+auto Engine::trigger(std::string_view task_id) -> bool {
+  if (!events_.push(TriggerTaskEvent{std::string(task_id)})) {
+    log::warn("Event queue full when triggering task {}", task_id);
+    return false;
+  }
   notify();
+  return true;
 }
 
 auto Engine::task_started(std::string_view instance_id) -> void {
-  events_.push(TaskStartedEvent{std::string(instance_id)});
+  events_.push_blocking(TaskStartedEvent{std::string(instance_id)});
   notify();
 }
 
 auto Engine::task_completed(std::string_view instance_id, int exit_code)
     -> void {
-  events_.push(TaskCompletedEvent{std::string(instance_id), exit_code});
+  events_.push_blocking(
+      TaskCompletedEvent{std::string(instance_id), exit_code});
   notify();
 }
 
 auto Engine::task_failed(std::string_view instance_id, std::string_view error)
     -> void {
-  events_.push(TaskFailedEvent{std::string(instance_id), std::string(error)});
+  events_.push_blocking(
+      TaskFailedEvent{std::string(instance_id), std::string(error)});
   notify();
 }
 

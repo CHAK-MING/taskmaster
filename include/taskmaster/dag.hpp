@@ -23,14 +23,13 @@ public:
   [[nodiscard]] auto add_edge(NodeIndex from, NodeIndex to) -> Result<void>;
 
   [[nodiscard]] auto has_node(std::string_view key) const -> bool;
-  [[nodiscard]] auto validate() const -> Result<void>;
+  [[nodiscard]] auto is_valid() const -> Result<void>;
 
-  [[nodiscard]] auto topological_sort() const -> std::vector<std::string>;
+  [[nodiscard]] auto get_topological_order() const -> std::vector<std::string>;
   [[nodiscard]] auto get_deps(NodeIndex idx) const -> std::vector<NodeIndex>;
   [[nodiscard]] auto get_dependents(NodeIndex idx) const
       -> std::vector<NodeIndex>;
 
-  // Zero-copy version, returns span to avoid vector allocation
   [[nodiscard]] auto get_deps_view(NodeIndex idx) const noexcept
       -> std::span<const NodeIndex>;
   [[nodiscard]] auto get_dependents_view(NodeIndex idx) const noexcept

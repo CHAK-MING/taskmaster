@@ -5,9 +5,9 @@
 #include <functional>
 #include <map>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 
-#include "taskmaster/coroutine.hpp"
 #include "taskmaster/event_queue.hpp"
 #include "taskmaster/task.hpp"
 
@@ -31,19 +31,21 @@ public:
     return running_.load();
   }
 
-  auto add_task(TaskDefinition def) -> void;
-  auto remove_task(std::string_view task_id) -> void;
-  auto enable_task(std::string_view task_id, bool enabled) -> void;
-  auto trigger(std::string_view task_id) -> void;
-  auto task_started(std::string_view instance_id) -> void;
-  auto task_completed(std::string_view instance_id, int exit_code) -> void;
+  [[nodiscard]] auto add_task(TaskDefinition def) -> bool;
+  [[nodiscard]] auto remove_task(std::string_view task_id) -> bool;
+  [[nodiscard]] auto enable_task(std::string_view task_id, bool enabled)
+      -> bool;
+  [[nodiscard]] auto trigger(std::string_view task_id) -> bool;
+  auto task_started(std::string_view instance_id) -> void; // Blocking
+  auto task_completed(std::string_view instance_id, int exit_code)
+      -> void; // Blocking
   auto task_failed(std::string_view instance_id, std::string_view error)
-      -> void;
+      -> void; // Blocking
 
   auto set_on_ready_callback(InstanceReadyCallback cb) -> void;
 
 private:
-  auto run_loop() -> spawn_task;
+  auto run_loop() -> void;
   auto process_events() -> void;
   auto tick() -> void;
   auto get_next_run_time() const -> TimePoint;
@@ -64,16 +66,17 @@ private:
   [[nodiscard]] auto generate_instance_id() const -> std::string;
 
   std::atomic<bool> running_{false};
+  std::thread event_loop_thread_;
   int event_fd_{-1};
   EventQueue events_;
 
   std::unordered_map<std::string, TaskDefinition> tasks_;
   std::unordered_map<std::string, TaskInstance> instances_;
 
-  // O(1) access to next scheduled task using multimap (sorted by time)
   std::multimap<TimePoint, std::string> schedule_;
-  // Track each task's position in schedule_ for O(log N) removal
-  std::unordered_map<std::string, TimePoint> task_schedule_;
+  std::unordered_map<std::string,
+                     std::multimap<TimePoint, std::string>::iterator>
+      task_schedule_;
 
   InstanceReadyCallback on_ready_;
 };

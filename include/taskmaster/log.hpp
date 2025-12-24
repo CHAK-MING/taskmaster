@@ -2,8 +2,8 @@
 
 #include <atomic>
 #include <chrono>
-#include <cstdio>
 #include <format>
+#include <print>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -48,39 +48,57 @@ class Logger {
 
   std::atomic<Level> level_{Level::Info};
   std::atomic<bool> running_{false};
-  LockFreeQueue<std::string> queue_{QUEUE_CAPACITY};
+  std::atomic<bool> accepting_{false};  // Whether accepting new log messages
+  BoundedMPSCQueue<std::string> queue_{QUEUE_CAPACITY};
   std::thread writer_;
 
   auto writer_loop() -> void {
     std::vector<std::string> batch;
     batch.reserve(64);
 
-    while (running_.load(std::memory_order_acquire) || !queue_.empty()) {
-      // Batch pop for efficiency
-      queue_.pop_bulk(batch, 64);
-
-      // Write batch to stdout
-      for (const auto &msg : batch) {
-        std::fputs(msg.c_str(), stdout);
+    while (running_.load(std::memory_order_acquire)) {
+      batch.clear();
+      while (batch.size() < 64) {
+        if (auto msg = queue_.try_pop()) {
+          batch.push_back(std::move(*msg));
+        } else {
+          break;
+        }
       }
-      if (!batch.empty()) {
-        std::fflush(stdout);
-        batch.clear();
-      } else if (running_.load(std::memory_order_acquire)) {
+
+      for (const auto &msg : batch) {
+        std::print("{}", msg);
+      }
+      if (batch.empty()) {
         std::this_thread::sleep_for(std::chrono::microseconds(100));
       }
     }
 
-    // Final drain
+    // Drain remaining messages after running_ is set to false
+    // At this point, accepting_ is already false, so no new messages can be pushed
     while (auto msg = queue_.try_pop()) {
-      std::fputs(msg->c_str(), stdout);
+      std::print("{}", *msg);
     }
-    std::fflush(stdout);
   }
 
 public:
   Logger() = default;
-  ~Logger() { stop(); }
+  ~Logger() {
+    // First, stop accepting new messages
+    // This ensures no new pushes happen after we start shutdown
+    accepting_.store(false, std::memory_order_release);
+    
+    // Memory fence to ensure all in-flight pushes complete
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    
+    // Now signal the writer thread to stop
+    running_.store(false, std::memory_order_release);
+
+    // Wait for the writer thread to finish
+    if (writer_.joinable()) {
+      writer_.join();
+    }
+  }
 
   Logger(const Logger &) = delete;
   Logger &operator=(const Logger &) = delete;
@@ -88,14 +106,21 @@ public:
   auto start() -> void {
     if (running_.exchange(true))
       return;
+    accepting_.store(true, std::memory_order_release);
     writer_ = std::thread([this] { writer_loop(); });
   }
 
   auto stop() -> void {
+    // Stop accepting new messages first
+    accepting_.store(false, std::memory_order_release);
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    
     if (!running_.exchange(false))
       return;
-    if (writer_.joinable())
+
+    if (writer_.joinable()) {
       writer_.join();
+    }
   }
 
   auto set_level(Level level) noexcept -> void {
@@ -111,6 +136,20 @@ public:
       -> void {
     if (level < level_.load(std::memory_order_acquire))
       return;
+    
+    // Check if we're still accepting messages
+    // This prevents access to queue_ during/after destruction
+    if (!accepting_.load(std::memory_order_acquire)) {
+      // Fallback to synchronous print during shutdown
+      auto now = std::chrono::system_clock::now();
+      auto time = std::chrono::floor<std::chrono::milliseconds>(now);
+      auto tid =
+          std::hash<std::thread::id>{}(std::this_thread::get_id()) % 1000000;
+      std::print("[{:%Y-%m-%d %H:%M:%S}] [{}{}{}] [{}] {}\n", time,
+                 level_color(level), level_name(level), "\033[0m", tid,
+                 std::format(fmt, std::forward<Args>(args)...));
+      return;
+    }
 
     auto now = std::chrono::system_clock::now();
     auto time = std::chrono::floor<std::chrono::milliseconds>(now);
@@ -127,8 +166,7 @@ public:
 
     // Try async queue, fallback to sync if full
     if (!queue_.push(std::string(buf))) {
-      std::fputs(buf.c_str(), stdout);
-      std::fflush(stdout);
+      std::print("{}", buf);
     }
   }
 };

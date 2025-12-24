@@ -1,6 +1,8 @@
 #include "taskmaster/dag.hpp"
 
 #include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <queue>
 #include <ranges>
 #include <span>
@@ -42,24 +44,26 @@ auto DAG::has_node(std::string_view key) const -> bool {
   return key_to_idx_.contains(key);
 }
 
-auto DAG::validate() const -> Result<void> {
+auto DAG::is_valid() const -> Result<void> {
   std::vector<std::uint8_t> state(nodes_.size(), 0);
-  std::vector<std::pair<NodeIndex, std::size_t>> stack;  // (node, next_child_index)
+  std::vector<std::pair<NodeIndex, std::size_t>>
+      stack; // (node, next_child_index)
 
   for (NodeIndex start = 0; start < nodes_.size(); ++start) {
-    if (state[start] != 0) continue;
+    if (state[start] != 0)
+      continue;
 
     stack.push_back({start, 0});
     state[start] = 1;
 
     while (!stack.empty()) {
-      auto& [node, child_idx] = stack.back();
-      const auto& deps = nodes_[node].dependents;
+      auto &[node, child_idx] = stack.back();
+      const auto &deps = nodes_[node].dependents;
 
       if (child_idx < deps.size()) {
         NodeIndex child = deps[child_idx++];
         if (state[child] == 1) {
-          return fail(Error::InvalidArgument);  // 发现环
+          return fail(Error::InvalidArgument);
         }
         if (state[child] == 0) {
           state[child] = 1;
@@ -74,7 +78,7 @@ auto DAG::validate() const -> Result<void> {
   return ok();
 }
 
-auto DAG::topological_sort() const -> std::vector<std::string> {
+auto DAG::get_topological_order() const -> std::vector<std::string> {
   auto in_degree = nodes_ | std::views::transform([](const Node &n) {
                      return static_cast<int>(n.deps.size());
                    }) |
@@ -140,7 +144,11 @@ auto DAG::get_index(std::string_view key) const -> NodeIndex {
 }
 
 auto DAG::get_key(NodeIndex idx) const -> const std::string & {
-  assert(idx < keys_.size() && "Invalid node index");
+  if (idx >= keys_.size()) {
+    std::fputs("Invalid node index\n", stderr);
+    std::fflush(stderr);
+    std::abort();
+  }
   return keys_[idx];
 }
 

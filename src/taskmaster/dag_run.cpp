@@ -120,6 +120,8 @@ auto DAGRun::mark_task_failed(NodeIndex task_idx, std::string_view error,
   info.error_message = std::string(error);
   info.finished_at = std::chrono::system_clock::now();
 
+  // Fix: Use < max_retries because attempt was already incremented in mark_task_started
+  // So if max_retries=3, we allow attempts 1, 2, 3 (3 total attempts)
   if (info.attempt < max_retries) {
     info.state = TaskState::Pending;
     info.started_at = {};
@@ -127,6 +129,7 @@ auto DAGRun::mark_task_failed(NodeIndex task_idx, std::string_view error,
     ready_mask_.set(task_idx);
     ready_set_.insert(task_idx);
     ++ready_count_;
+    // Note: Don't adjust pending_count_ - task moves from running back to ready
   } else {
     info.state = TaskState::Failed;
     failed_mask_.set(task_idx);

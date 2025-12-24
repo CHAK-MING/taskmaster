@@ -3,7 +3,9 @@
 #include "taskmaster/runtime.hpp"
 
 #include <array>
+#include <cerrno>
 #include <chrono>
+#include <cstring>
 #include <fcntl.h>
 #include <mutex>
 #include <poll.h>
@@ -118,15 +120,34 @@ auto read_output(int fd, std::chrono::seconds timeout,
 
 auto wait_process(int pidfd, pid_t pid, bool timed_out) -> task<int> {
   if (timed_out) {
+    // Send SIGKILL to the entire process group
     kill(-pid, SIGKILL);
   }
 
-  (void)co_await async_poll(pidfd, POLLIN);
+  // Wait for process to become waitable
+  if (pidfd >= 0) {
+    (void)co_await async_poll(pidfd, POLLIN);
+  }
 
   int status = 0;
-  if (waitpid(pid, &status, WNOHANG) <= 0) {
+  int wait_result = waitpid(pid, &status, WNOHANG);
+
+  if (wait_result == 0) {
+    // Process still running - this can happen in race conditions
+    // Force kill and wait synchronously
     kill(-pid, SIGKILL);
-    waitpid(pid, &status, 0);
+    // Brief delay to allow signal delivery
+    (void)co_await async_sleep(std::chrono::milliseconds(10));
+    wait_result = waitpid(pid, &status, WNOHANG);
+
+    if (wait_result == 0) {
+      // Still not dead, do blocking wait as last resort
+      waitpid(pid, &status, 0);
+    }
+  } else if (wait_result < 0) {
+    // waitpid error - process may have already been reaped
+    log::warn("waitpid failed for pid {}: {}", pid, strerror(errno));
+    co_return -1;
   }
 
   co_return get_exit_code(status);
@@ -211,9 +232,8 @@ auto execute_command(std::string cmd, std::string working_dir,
 
 class Executor : public IExecutor {
 public:
-  Executor() : ctx_{&mutex_, &active_processes_} {
-    Runtime::instance().start();
-  }
+  explicit Executor(Runtime &rt)
+      : runtime_{&rt}, ctx_{&mutex_, &active_processes_} {}
 
   ~Executor() override = default;
 
@@ -228,8 +248,10 @@ public:
       return;
     }
 
-    execute_command(shell->command, shell->working_dir, shell->timeout,
-                    instance_id, std::move(callback), &ctx_);
+    auto task =
+        execute_command(shell->command, shell->working_dir, shell->timeout,
+                        instance_id, std::move(callback), &ctx_);
+    runtime_->schedule_external(task.handle());
   }
 
   auto cancel(std::string_view instance_id) -> void override {
@@ -245,13 +267,14 @@ public:
   }
 
 private:
+  Runtime *runtime_;
   std::mutex mutex_;
   std::unordered_map<std::string, pid_t> active_processes_;
   ExecutionContext ctx_;
 };
 
-auto create_shell_executor() -> std::unique_ptr<IExecutor> {
-  return std::make_unique<Executor>();
+auto create_shell_executor(Runtime &rt) -> std::unique_ptr<IExecutor> {
+  return std::make_unique<Executor>(rt);
 }
 
 } // namespace taskmaster

@@ -55,8 +55,21 @@ using SchedulerEvent =
 
 class EventQueue {
 public:
-  auto push(SchedulerEvent event) -> void {
-    // Push with retry
+  // Returns true if event was pushed, false if queue is persistently full
+  [[nodiscard]] auto push(SchedulerEvent event) -> bool {
+    constexpr int MAX_RETRIES = 100;
+    for (int retry = 0; retry < MAX_RETRIES; ++retry) {
+      if (queue_.push(std::move(event))) {
+        pending_.fetch_add(1, std::memory_order_release);
+        return true;
+      }
+      std::this_thread::yield();
+    }
+    // Queue is persistently full - this is a serious condition
+    return false;
+  }
+
+  auto push_blocking(SchedulerEvent event) -> void {
     while (!queue_.push(std::move(event))) {
       std::this_thread::yield();
     }
@@ -97,8 +110,8 @@ private:
   // Queue capacity must be power of 2 for lock-free implementation.
   // 512 is sufficient for most workloads; increase if events are dropped.
   static constexpr std::size_t QUEUE_CAPACITY = 512;
-  
-  LockFreeQueue<SchedulerEvent> queue_{QUEUE_CAPACITY};
+
+  BoundedMPSCQueue<SchedulerEvent> queue_{QUEUE_CAPACITY};
   std::atomic<std::size_t> pending_{0};
 };
 

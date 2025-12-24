@@ -4,27 +4,59 @@
 #include <chrono>
 #include <coroutine>
 #include <cstdint>
+#include <deque>
 #include <expected>
 #include <functional>
-#include <liburing.h>
+#include <memory>
 #include <span>
 #include <system_error>
 #include <thread>
+#include <variant>
+#include <vector>
 
+#include <liburing.h>
+
+#include "taskmaster/cancellation.hpp"
 #include "taskmaster/lockfree_queue.hpp"
 
 namespace taskmaster {
 
-// io_uring submission queue size. Must be power of 2.
 inline constexpr std::uint32_t RING_SIZE = 256;
+
+using shard_id = unsigned;
+inline constexpr shard_id INVALID_SHARD = ~0u;
+
+inline thread_local shard_id current_shard_id_ = INVALID_SHARD;
+inline thread_local class Runtime *current_runtime_ = nullptr;
+
+[[nodiscard]] inline auto this_shard_id() noexcept -> shard_id {
+  return current_shard_id_;
+}
+
+[[nodiscard]] inline auto this_runtime() noexcept -> Runtime * {
+  return current_runtime_;
+}
 
 struct io_data {
   void *coroutine = nullptr;
   std::int32_t result = 0;
   std::uint32_t flags = 0;
+  __kernel_timespec ts{};
+  shard_id owner_shard = INVALID_SHARD;
+  std::uint64_t user_data = 0; // For cancel tracking
 };
 
-// IO request types for thread-safe submission
+struct PollResult {
+  bool ready = false;
+  bool timed_out = false;
+  std::errc error{};
+
+  [[nodiscard]] explicit operator bool() const noexcept { return ready; }
+  [[nodiscard]] auto has_error() const noexcept -> bool {
+    return !ready && !timed_out && error != std::errc{};
+  }
+};
+
 enum class IoOpType : std::uint8_t {
   Read,
   Write,
@@ -32,25 +64,69 @@ enum class IoOpType : std::uint8_t {
   PollTimeout,
   Timeout,
   Close,
+  Cancel,
   Nop
 };
 
 struct IoRequest {
-  IoOpType op;
-  io_data *data;
-  int fd;
-  void *buf;
-  std::uint32_t len;
-  std::uint64_t offset;
-  std::uint32_t poll_mask;
-  __kernel_timespec ts;
-  __kernel_timespec *ts_ptr; // For poll_timeout linked operations
-  bool has_link_timeout;
+  IoOpType op{IoOpType::Nop};
+  io_data *data{nullptr};
+  int fd{-1};
+  void *buf{nullptr};
+  std::uint32_t len{0};
+  std::uint64_t offset{0};
+  std::uint32_t poll_mask{0};
+  __kernel_timespec ts{};
+  __kernel_timespec *ts_ptr{nullptr};
+  bool has_link_timeout{false};
+  std::uint64_t cancel_user_data{0}; // user_data of SQE to cancel
+};
+
+inline constexpr std::uintptr_t WAKE_EVENT_TOKEN = 0x1;
+
+struct ShardLocal {
+  shard_id id = INVALID_SHARD;
+  io_uring ring{};
+  bool ring_initialized = false;
+  int wake_fd = -1;
+
+  std::optional<std::coroutine_handle<>> run_next;
+  std::deque<std::coroutine_handle<>> local_queue;
+  BoundedMPSCQueue<std::coroutine_handle<>> remote_queue{4096};
+  std::deque<IoRequest> io_queue;
+
+  std::atomic<bool> sleeping{false};
+  std::uint32_t pending_sqe_count{0};
+  static constexpr std::uint32_t SUBMIT_BATCH_SIZE = 8;
+};
+
+struct SmpMessage {
+  std::variant<std::coroutine_handle<>, std::move_only_function<void()>>
+      payload;
+
+  explicit SmpMessage(std::coroutine_handle<> h) : payload(h) {}
+  explicit SmpMessage(std::move_only_function<void()> f)
+      : payload(std::move(f)) {}
+
+  auto execute() -> void {
+    std::visit(
+        [](auto &&arg) {
+          using T = std::decay_t<decltype(arg)>;
+          if constexpr (std::is_same_v<T, std::coroutine_handle<>>) {
+            if (arg && !arg.done())
+              arg.resume();
+          } else {
+            arg();
+          }
+        },
+        payload);
+  }
 };
 
 class Runtime {
 public:
-  static auto instance() -> Runtime &;
+  explicit Runtime(unsigned num_shards = 0);
+  ~Runtime();
 
   Runtime(const Runtime &) = delete;
   Runtime &operator=(const Runtime &) = delete;
@@ -60,48 +136,72 @@ public:
   [[nodiscard]] auto is_running() const noexcept -> bool;
 
   auto schedule(std::coroutine_handle<> handle) -> void;
+  auto schedule_on(shard_id target, std::coroutine_handle<> handle) -> void;
 
-  // Thread-safe IO submission - awaiter calls this instead of accessing ring
-  // directly
+  // Schedule from external thread (non-shard context)
+  auto schedule_external(std::coroutine_handle<> handle) -> void;
+
+  auto submit_to(shard_id target, std::coroutine_handle<> handle) -> void {
+    if (target == current_shard_id_) {
+      if (handle && !handle.done())
+        handle.resume();
+    } else {
+      (void)smp_queues_[current_shard_id_][target]->push(SmpMessage{handle});
+      wake_shard(target);
+    }
+  }
+
+  template <typename Func>
+    requires std::invocable<Func>
+  auto submit_to(shard_id target, Func &&func) -> void {
+    if (target == current_shard_id_) {
+      func();
+    } else {
+      (void)smp_queues_[current_shard_id_][target]->push(SmpMessage{
+          std::move_only_function<void()>{std::forward<Func>(func)}});
+      wake_shard(target);
+    }
+  }
+
   auto submit_io(IoRequest req) -> bool;
 
+  [[nodiscard]] auto shard_count() const noexcept -> unsigned {
+    return num_shards_;
+  }
+
 private:
-  Runtime();
-  ~Runtime();
+  auto run_shard(shard_id id) -> void;
+  auto process_ready_queue(ShardLocal &shard) -> bool;
+  auto process_smp_messages(shard_id id) -> bool;
+  auto process_io_requests(ShardLocal &shard) -> void;
+  auto flush_submissions(ShardLocal &shard, bool force = false) -> bool;
+  auto process_completions(ShardLocal &shard) -> bool;
+  auto wait_for_work(ShardLocal &shard) -> void;
+  auto wake_shard(shard_id id) -> void;
+  auto setup_multishot_poll(ShardLocal &shard) -> void;
 
-  auto run() -> void;
-  auto process_ready_queue() -> void;
-  auto process_io_requests() -> void;
-  auto process_completions() -> void;
-  auto wake() -> void;
-
-  io_uring ring_{};
-  bool ring_initialized_ = false;
-  int wake_fd_ = -1;
-
-  LockFreeQueue<std::coroutine_handle<>> ready_queue_{4096};
-
-  LockFreeQueue<IoRequest> io_queue_{4096};
+  unsigned num_shards_;
+  std::vector<std::unique_ptr<ShardLocal>> shards_;
+  std::vector<std::thread> threads_;
+  std::vector<std::vector<
+      std::unique_ptr<SPSCQueue<SmpMessage, std::allocator<SmpMessage>>>>>
+      smp_queues_;
 
   std::atomic<bool> running_{false};
   std::atomic<bool> stop_requested_{false};
-  std::atomic<bool> sleeping_{false};
-  std::thread thread_;
 };
 
 [[nodiscard]] inline auto decode_result(std::int32_t result) noexcept
     -> std::expected<std::uint32_t, std::errc> {
-  if (result < 0) {
+  if (result < 0)
     return std::unexpected{static_cast<std::errc>(-result)};
-  }
   return static_cast<std::uint32_t>(result);
 }
 
 [[nodiscard]] inline auto decode_void_result(std::int32_t result) noexcept
     -> std::expected<void, std::errc> {
-  if (result < 0) {
+  if (result < 0)
     return std::unexpected{static_cast<std::errc>(-result)};
-  }
   return {};
 }
 
@@ -115,14 +215,14 @@ public:
 
   auto await_suspend(std::coroutine_handle<> handle) noexcept -> void {
     data_.coroutine = handle.address();
-    IoRequest req{};
-    req.op = IoOpType::Read;
-    req.data = &data_;
-    req.fd = fd_;
-    req.buf = buf_;
-    req.len = len_;
-    req.offset = offset_;
-    Runtime::instance().submit_io(req);
+    data_.owner_shard = this_shard_id();
+    IoRequest req{.op = IoOpType::Read,
+                  .data = &data_,
+                  .fd = fd_,
+                  .buf = buf_,
+                  .len = len_,
+                  .offset = offset_};
+    this_runtime()->submit_io(req);
   }
 
   [[nodiscard]] auto await_resume() const noexcept
@@ -148,14 +248,14 @@ public:
 
   auto await_suspend(std::coroutine_handle<> handle) noexcept -> void {
     data_.coroutine = handle.address();
-    IoRequest req{};
-    req.op = IoOpType::Write;
-    req.data = &data_;
-    req.fd = fd_;
-    req.buf = const_cast<void *>(buf_);
-    req.len = len_;
-    req.offset = offset_;
-    Runtime::instance().submit_io(req);
+    data_.owner_shard = this_shard_id();
+    IoRequest req{.op = IoOpType::Write,
+                  .data = &data_,
+                  .fd = fd_,
+                  .buf = const_cast<void *>(buf_),
+                  .len = len_,
+                  .offset = offset_};
+    this_runtime()->submit_io(req);
   }
 
   [[nodiscard]] auto await_resume() const noexcept
@@ -179,12 +279,10 @@ public:
 
   auto await_suspend(std::coroutine_handle<> handle) noexcept -> void {
     data_.coroutine = handle.address();
-    IoRequest req{};
-    req.op = IoOpType::Poll;
-    req.data = &data_;
-    req.fd = fd_;
-    req.poll_mask = mask_;
-    Runtime::instance().submit_io(req);
+    data_.owner_shard = this_shard_id();
+    IoRequest req{
+        .op = IoOpType::Poll, .data = &data_, .fd = fd_, .poll_mask = mask_};
+    this_runtime()->submit_io(req);
   }
 
   [[nodiscard]] auto await_resume() const noexcept
@@ -198,7 +296,6 @@ private:
   std::uint32_t mask_;
 };
 
-// Poll with timeout - wakes on either fd event or timeout
 class poll_timeout_awaiter {
 public:
   poll_timeout_awaiter(int fd, std::uint32_t mask,
@@ -207,36 +304,40 @@ public:
     auto secs = std::chrono::duration_cast<std::chrono::seconds>(timeout);
     auto nsecs =
         std::chrono::duration_cast<std::chrono::nanoseconds>(timeout - secs);
-    ts_.tv_sec = secs.count();
-    ts_.tv_nsec = nsecs.count();
+    poll_data_.ts.tv_sec = secs.count();
+    poll_data_.ts.tv_nsec = nsecs.count();
   }
 
   [[nodiscard]] auto await_ready() const noexcept -> bool { return false; }
 
   auto await_suspend(std::coroutine_handle<> handle) noexcept -> void {
     poll_data_.coroutine = handle.address();
-    IoRequest req{};
-    req.op = IoOpType::PollTimeout;
-    req.data = &poll_data_;
-    req.fd = fd_;
-    req.poll_mask = mask_;
-    req.ts = ts_;
-    req.ts_ptr = &ts_;
-    req.has_link_timeout = true;
-    Runtime::instance().submit_io(req);
+    poll_data_.owner_shard = this_shard_id();
+    IoRequest req{.op = IoOpType::PollTimeout,
+                  .data = &poll_data_,
+                  .fd = fd_,
+                  .poll_mask = mask_,
+                  .ts = poll_data_.ts,
+                  .ts_ptr = &poll_data_.ts,
+                  .has_link_timeout = true};
+    this_runtime()->submit_io(req);
   }
 
-  [[nodiscard]] auto await_resume() const noexcept -> bool {
-    // Returns true if poll succeeded (event arrived), false if
-    // timeout/cancelled
-    return poll_data_.result > 0;
+  [[nodiscard]] auto await_resume() const noexcept -> PollResult {
+    if (poll_data_.result > 0)
+      return {.ready = true};
+    if (poll_data_.result == -ECANCELED)
+      return {.timed_out = true};
+    if (poll_data_.result < 0) {
+      return {.error = static_cast<std::errc>(-poll_data_.result)};
+    }
+    return {};
   }
 
 private:
   io_data poll_data_;
   int fd_;
   std::uint32_t mask_;
-  __kernel_timespec ts_{};
 };
 
 class sleep_awaiter {
@@ -245,33 +346,31 @@ public:
     auto secs = std::chrono::duration_cast<std::chrono::seconds>(duration);
     auto nsecs =
         std::chrono::duration_cast<std::chrono::nanoseconds>(duration - secs);
-    ts_.tv_sec = secs.count();
-    ts_.tv_nsec = nsecs.count();
+    data_.ts.tv_sec = secs.count();
+    data_.ts.tv_nsec = nsecs.count();
   }
 
   [[nodiscard]] auto await_ready() const noexcept -> bool { return false; }
 
   auto await_suspend(std::coroutine_handle<> handle) noexcept -> void {
     data_.coroutine = handle.address();
-    IoRequest req{};
-    req.op = IoOpType::Timeout;
-    req.data = &data_;
-    req.ts = ts_;
-    req.ts_ptr = &ts_;
-    Runtime::instance().submit_io(req);
+    data_.owner_shard = this_shard_id();
+    IoRequest req{.op = IoOpType::Timeout,
+                  .data = &data_,
+                  .ts = data_.ts,
+                  .ts_ptr = &data_.ts};
+    this_runtime()->submit_io(req);
   }
 
   [[nodiscard]] auto await_resume() const noexcept
       -> std::expected<void, std::errc> {
-    if (data_.result == -ETIME) {
+    if (data_.result == -ETIME)
       return {};
-    }
     return decode_void_result(data_.result);
   }
 
 private:
   io_data data_;
-  __kernel_timespec ts_{};
 };
 
 class close_awaiter {
@@ -282,11 +381,9 @@ public:
 
   auto await_suspend(std::coroutine_handle<> handle) noexcept -> void {
     data_.coroutine = handle.address();
-    IoRequest req{};
-    req.op = IoOpType::Close;
-    req.data = &data_;
-    req.fd = fd_;
-    Runtime::instance().submit_io(req);
+    data_.owner_shard = this_shard_id();
+    IoRequest req{.op = IoOpType::Close, .data = &data_, .fd = fd_};
+    this_runtime()->submit_io(req);
   }
 
   [[nodiscard]] auto await_resume() const noexcept
@@ -344,5 +441,63 @@ async_sleep(std::chrono::milliseconds duration) noexcept -> sleep_awaiter {
 [[nodiscard]] inline auto async_close(int fd) noexcept -> close_awaiter {
   return close_awaiter{fd};
 }
+
+class cancel_awaiter {
+public:
+  explicit cancel_awaiter(std::uint64_t user_data) noexcept
+      : cancel_user_data_{user_data} {}
+
+  [[nodiscard]] auto await_ready() const noexcept -> bool { return false; }
+
+  auto await_suspend(std::coroutine_handle<> handle) noexcept -> void {
+    data_.coroutine = handle.address();
+    data_.owner_shard = this_shard_id();
+    IoRequest req{.op = IoOpType::Cancel,
+                  .data = &data_,
+                  .cancel_user_data = cancel_user_data_};
+    this_runtime()->submit_io(req);
+  }
+
+  [[nodiscard]] auto await_resume() const noexcept -> bool {
+    return data_.result >= 0;
+  }
+
+private:
+  io_data data_;
+  std::uint64_t cancel_user_data_;
+};
+
+[[nodiscard]] inline auto async_cancel(std::uint64_t user_data) noexcept
+    -> cancel_awaiter {
+  return cancel_awaiter{user_data};
+}
+
+[[nodiscard]] inline auto async_cancel(io_data *data) noexcept
+    -> cancel_awaiter {
+  return cancel_awaiter{reinterpret_cast<std::uint64_t>(data)};
+}
+
+// Awaiter that ensures coroutine runs in shard context
+// If already in shard context, continues immediately
+// If not, schedules to shard 0 via remote_queue
+class ensure_shard_context {
+public:
+  [[nodiscard]] auto await_ready() const noexcept -> bool {
+    return this_shard_id() != INVALID_SHARD;
+  }
+
+  auto await_suspend(std::coroutine_handle<> handle) noexcept -> bool {
+    auto *rt = this_runtime();
+    if (rt) {
+      rt->schedule(handle);
+      return true;
+    }
+    // No runtime available - this is a programming error
+    // Resume immediately and let the coroutine fail at IO submission
+    return false;
+  }
+
+  auto await_resume() const noexcept -> void {}
+};
 
 } // namespace taskmaster

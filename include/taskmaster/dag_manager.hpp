@@ -23,13 +23,35 @@ struct DAGInfo {
   std::vector<TaskConfig> tasks;
   std::unordered_map<std::string, std::size_t, StringHash, std::equal_to<>>
       task_index;
+  // Cached reverse adjacency list for cycle detection optimization
+  // Maps: task_id -> list of tasks that depend on it
+  std::unordered_map<std::string, std::vector<std::string>> reverse_adj_cache;
   bool from_config{false};
+  bool reverse_adj_dirty{true};  // Cache invalidation flag
 
   auto rebuild_task_index() -> void {
     task_index.clear();
     for (std::size_t i = 0; i < tasks.size(); ++i) {
       task_index[tasks[i].id] = i;
     }
+    reverse_adj_dirty = true;  // Invalidate cache when tasks change
+  }
+
+  auto rebuild_reverse_adj() -> void {
+    reverse_adj_cache.clear();
+    for (const auto &task : tasks) {
+      for (const auto &dep : task.deps) {
+        reverse_adj_cache[dep].push_back(task.id);
+      }
+    }
+    reverse_adj_dirty = false;
+  }
+
+  [[nodiscard]] auto get_reverse_adj() -> const std::unordered_map<std::string, std::vector<std::string>>& {
+    if (reverse_adj_dirty) {
+      rebuild_reverse_adj();
+    }
+    return reverse_adj_cache;
   }
 
   [[nodiscard]] auto find_task(std::string_view task_id) -> TaskConfig * {
@@ -41,6 +63,10 @@ struct DAGInfo {
       -> const TaskConfig * {
     auto it = task_index.find(task_id);
     return it != task_index.end() ? &tasks[it->second] : nullptr;
+  }
+
+  auto invalidate_cache() -> void {
+    reverse_adj_dirty = true;
   }
 };
 
