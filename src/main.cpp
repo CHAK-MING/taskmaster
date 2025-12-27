@@ -1,3 +1,7 @@
+#include "taskmaster/app/application.hpp"
+#include "taskmaster/storage/config.hpp"
+#include "taskmaster/util/log.hpp"
+
 #include <atomic>
 #include <csignal>
 #include <cstdlib>
@@ -6,10 +10,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-
-#include "taskmaster/application.hpp"
-#include "taskmaster/config.hpp"
-#include "taskmaster/log.hpp"
 
 namespace fs = std::filesystem;
 
@@ -21,7 +21,7 @@ void signal_handler(int) {
   g_shutdown_requested.store(true, std::memory_order_release);
 }
 
-void print_usage(const char *prog) {
+void print_usage(const char* prog) {
   std::cout
       << "TaskMaster - A DAG-based Task Scheduler\n\n"
       << "Usage: " << prog << " [OPTIONS]\n\n"
@@ -32,7 +32,7 @@ void print_usage(const char *prog) {
       << "  -c, --config <file>   Config file (YAML or JSON)\n"
       << "  --server              Run in server mode (API only, no config "
          "file)\n"
-      << "  --port <port>         API server port (default: 8080)\n"
+      << "  --port <port>         API server port (default: 8888)\n"
       << "  --host <host>         API server host (default: 127.0.0.1)\n"
       << "  --db <file>           Database file (default: taskmaster.db)\n"
       << "  -d, --daemon          Run as daemon\n"
@@ -42,13 +42,15 @@ void print_usage(const char *prog) {
       << "  -h, --help            Show this help message\n\n"
       << "Examples:\n"
       << "  " << prog << " -c config.yaml              # CLI mode\n"
-      << "  " << prog << " -c config.yaml --port 8080  # CLI + API\n"
-      << "  " << prog << " --server --port 8080        # Server mode\n";
+      << "  " << prog << " -c config.yaml --port 8888  # CLI + API\n"
+      << "  " << prog << " --server --port 8888        # Server mode\n";
 }
 
-void print_version() { std::cout << "TaskMaster v0.1.0\n"; }
+void print_version() {
+  std::cout << "TaskMaster v0.1.0\n";
+}
 
-void setup_logging(const std::string &log_level) {
+void setup_logging(const std::string& log_level) {
   taskmaster::log::set_level(log_level);
   taskmaster::log::start();
 }
@@ -86,13 +88,13 @@ struct Options {
   std::string db_file = "taskmaster.db";
   std::string trigger_dag;
   std::string host = "127.0.0.1";
-  std::uint16_t port = 8080;
+  std::uint16_t port = 8888;
   bool server_mode = false;
   bool daemon = false;
   bool list_tasks = false;
 };
 
-auto parse_args(int argc, char *argv[]) -> Options {
+auto parse_args(int argc, char* argv[]) -> Options {
   Options opts;
 
   for (int i = 1; i < argc; ++i) {
@@ -150,7 +152,7 @@ auto parse_args(int argc, char *argv[]) -> Options {
   return opts;
 }
 
-auto run_cli_mode(const Options &opts) -> int {
+auto run_cli_mode(const Options& opts) -> int {
   if (opts.config_file.empty()) {
     std::cerr << "Error: Config file required in CLI mode. Use -c <file>\n";
     return 1;
@@ -207,24 +209,22 @@ auto run_cli_mode(const Options &opts) -> int {
   taskmaster::log::info("TaskMaster starting in CLI mode...");
   app.start();
 
-  // Main loop: check shutdown flag (set by signal handler)
   while (app.is_running() &&
          !g_shutdown_requested.load(std::memory_order_acquire)) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 
-  // Handle graceful shutdown outside signal handler context
   if (g_shutdown_requested.load(std::memory_order_acquire)) {
     taskmaster::log::info("Received shutdown signal, stopping...");
-    app.stop();
   }
 
+  app.stop();
   taskmaster::log::info("TaskMaster stopped.");
   taskmaster::log::stop();
   return 0;
 }
 
-auto run_server_mode(const Options &opts) -> int {
+auto run_server_mode(const Options& opts) -> int {
   setup_logging("info");
 
   taskmaster::Application app(opts.db_file);
@@ -245,25 +245,23 @@ auto run_server_mode(const Options &opts) -> int {
                         opts.host, opts.port);
   app.start();
 
-  // Main loop: check shutdown flag (set by signal handler)
   while (app.is_running() &&
          !g_shutdown_requested.load(std::memory_order_acquire)) {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 
-  // Handle graceful shutdown outside signal handler context
   if (g_shutdown_requested.load(std::memory_order_acquire)) {
     taskmaster::log::info("Received shutdown signal, stopping...");
-    app.stop();
   }
 
+  app.stop();
   taskmaster::log::info("TaskMaster stopped.");
   return 0;
 }
 
-} // namespace
+}  // namespace
 
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
   auto opts = parse_args(argc, argv);
 
   if (opts.server_mode) {

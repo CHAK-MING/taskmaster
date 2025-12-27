@@ -15,19 +15,39 @@ include(ProjectOptions)
 include(Dependencies)
 
 add_library(taskmaster_lib
-    src/taskmaster/application.cpp
-    src/taskmaster/config.cpp
-    src/taskmaster/cron.cpp
-    src/taskmaster/dag.cpp
-    src/taskmaster/dag_manager.cpp
-    src/taskmaster/dag_run.cpp
-    src/taskmaster/engine.cpp
-    src/taskmaster/persistence.cpp
-    src/taskmaster/recovery.cpp
-    src/taskmaster/shell_executor.cpp
-    src/taskmaster/runtime.cpp
-    src/taskmaster/api/api_server.cpp
-    src/taskmaster/api/websocket_hub.cpp
+    src/taskmaster/core/io_ring.cpp
+    src/taskmaster/core/shard.cpp
+    src/taskmaster/core/runtime.cpp
+    src/taskmaster/scheduler/cron.cpp
+    src/taskmaster/scheduler/engine.cpp
+    src/taskmaster/dag/dag.cpp
+    src/taskmaster/dag/dag_run.cpp
+    src/taskmaster/dag/dag_manager.cpp
+    src/taskmaster/storage/config.cpp
+    src/taskmaster/storage/persistence.cpp
+    src/taskmaster/storage/recovery.cpp
+    src/taskmaster/executor/shell_executor.cpp
+    src/taskmaster/app/application.cpp
+    src/taskmaster/app/api/api_server.cpp
+    src/taskmaster/app/api/websocket_hub.cpp
+    src/taskmaster/app/services/persistence_service.cpp
+    src/taskmaster/app/services/event_service.cpp
+    src/taskmaster/app/services/scheduler_service.cpp
+    src/taskmaster/app/services/execution_service.cpp
+)
+
+# Precompiled headers for faster compilation
+target_precompile_headers(taskmaster_lib PRIVATE
+    <string>
+    <string_view>
+    <vector>
+    <memory>
+    <chrono>
+    <atomic>
+    <mutex>
+    <unordered_map>
+    <functional>
+    <optional>
 )
 add_library(TaskMaster::lib ALIAS taskmaster_lib)
 
@@ -36,6 +56,12 @@ target_include_directories(taskmaster_lib
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
+
+# Mark Crow includes as SYSTEM to suppress warnings from third-party headers
+get_target_property(CROW_INCLUDE_DIRS Crow::Crow INTERFACE_INCLUDE_DIRECTORIES)
+if(CROW_INCLUDE_DIRS)
+    target_include_directories(taskmaster_lib SYSTEM PUBLIC ${CROW_INCLUDE_DIRS})
+endif()
 
 target_link_libraries(taskmaster_lib
     PUBLIC
