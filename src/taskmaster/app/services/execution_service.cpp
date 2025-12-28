@@ -200,8 +200,7 @@ auto ExecutionService::run_task(std::string run_id, TaskJob job) -> spawn_task {
 
     if (on_task_failure(run_id, job.idx, result.error)) {
       auto retry = [](ExecutionService* self, std::string rid) -> spawn_task {
-        auto _ = co_await async_sleep(std::chrono::milliseconds(10));
-        (void)_;
+        co_await async_yield();
         self->dispatch(rid);
       }(this, run_id);
       runtime_.schedule_external(retry.take());

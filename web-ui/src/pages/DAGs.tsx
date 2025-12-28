@@ -326,11 +326,13 @@ export default function DAGs() {
                 <div className="grid gap-2">
                   <Label>Cron 表达式（可选，用于定时触发）</Label>
                   <Input
-                    placeholder="例如: */5 * * * * (每5分钟)"
+                    placeholder="例如: */5 * * * * 或 @daily"
                     value={newDAG.cron}
                     onChange={(e) => setNewDAG({ ...newDAG, cron: e.target.value })}
                   />
-                  <p className="text-xs text-muted-foreground">留空表示仅手动触发，填写 cron 表达式启用定时调度</p>
+                  <p className="text-xs text-muted-foreground">
+                    支持标准 cron 表达式和宏：@yearly, @monthly, @weekly, @daily, @hourly
+                  </p>
                 </div>
                 <div className="grid gap-2">
                   <Label>最大并发运行数（暂未实现）</Label>

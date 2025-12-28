@@ -42,16 +42,13 @@ struct TaskFailedEvent {
   std::string error;
 };
 
-struct TickEvent {
-  std::chrono::system_clock::time_point now;
-};
 
 struct ShutdownEvent {};
 
 using SchedulerEvent =
     std::variant<AddTaskEvent, RemoveTaskEvent, EnableTaskEvent,
                  TriggerTaskEvent, TaskStartedEvent, TaskCompletedEvent,
-                 TaskFailedEvent, TickEvent, ShutdownEvent>;
+                 TaskFailedEvent, ShutdownEvent>;
 
 class EventQueue {
 public:

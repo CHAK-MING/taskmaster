@@ -44,7 +44,7 @@ public:
   auto task_failed(std::string_view instance_id, std::string_view error)
       -> void;
 
-  auto set_on_ready_callback(InstanceReadyCallback cb) -> void;
+  auto set_on_ready(InstanceReadyCallback cb) -> void;
 
 private:
   auto run_loop() -> void;
@@ -62,7 +62,6 @@ private:
   auto handle_event(const TaskStartedEvent& e) -> void;
   auto handle_event(const TaskCompletedEvent& e) -> void;
   auto handle_event(const TaskFailedEvent& e) -> void;
-  auto handle_event(const TickEvent& e) -> void;
   auto handle_event(const ShutdownEvent& e) -> void;
 
   [[nodiscard]] auto generate_instance_id() const -> std::string;

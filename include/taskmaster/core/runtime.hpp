@@ -264,6 +264,26 @@ private:
   std::chrono::milliseconds timeout_;
 };
 
+class yield_awaiter {
+public:
+  yield_awaiter() noexcept = default;
+
+  yield_awaiter(const yield_awaiter&) = delete;
+  yield_awaiter& operator=(const yield_awaiter&) = delete;
+  yield_awaiter(yield_awaiter&&) = delete;
+  yield_awaiter& operator=(yield_awaiter&&) = delete;
+
+  [[nodiscard]] auto await_ready() const noexcept -> bool {
+    return false;
+  }
+
+  auto await_suspend(std::coroutine_handle<> handle) noexcept -> void {
+    detail::current_runtime->schedule(handle);
+  }
+
+  auto await_resume() const noexcept -> void {}
+};
+
 class sleep_awaiter {
 public:
   explicit sleep_awaiter(std::chrono::milliseconds duration) noexcept
@@ -388,6 +408,10 @@ async_poll_timeout(int fd, std::uint32_t mask,
 [[nodiscard]] inline auto
 async_sleep(std::chrono::milliseconds duration) noexcept -> sleep_awaiter {
   return sleep_awaiter{duration};
+}
+
+[[nodiscard]] inline auto async_yield() noexcept -> yield_awaiter {
+  return yield_awaiter{};
 }
 
 [[nodiscard]] inline auto async_close(int fd) noexcept -> close_awaiter {

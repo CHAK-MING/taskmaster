@@ -290,15 +290,19 @@ auto Runtime::alloc_io_data() -> io_data* {
     auto* mr = shards_[sid]->memory_resource();
     auto* p =
         static_cast<io_data*>(mr->allocate(sizeof(io_data), alignof(io_data)));
-    return std::construct_at(p);
+    auto* data = std::construct_at(p);
+    data->owner_shard = sid;
+    return data;
   }
-  return new io_data{};
+  auto* data = new io_data{};
+  data->owner_shard = INVALID_SHARD;
+  return data;
 }
 
 auto Runtime::free_io_data(io_data* data) -> void {
   if (data == nullptr)
     return;
-  auto sid = detail::current_shard_id;
+  auto sid = data->owner_shard;
   if (sid != INVALID_SHARD && sid < num_shards_) {
     auto* mr = shards_[sid]->memory_resource();
     std::destroy_at(data);
@@ -313,7 +317,6 @@ auto read_awaiter::await_suspend(std::coroutine_handle<> handle) noexcept
   auto* rt = detail::current_runtime;
   data_ = rt->alloc_io_data();
   data_->coroutine = handle.address();
-  data_->owner_shard = detail::current_shard_id;
 
   IoRequest req{.op = IoOpType::Read,
                 .data = data_,
@@ -329,7 +332,6 @@ auto write_awaiter::await_suspend(std::coroutine_handle<> handle) noexcept
   auto* rt = detail::current_runtime;
   data_ = rt->alloc_io_data();
   data_->coroutine = handle.address();
-  data_->owner_shard = detail::current_shard_id;
 
   IoRequest req{.op = IoOpType::Write,
                 .data = data_,
@@ -345,7 +347,6 @@ auto poll_awaiter::await_suspend(std::coroutine_handle<> handle) noexcept
   auto* rt = detail::current_runtime;
   data_ = rt->alloc_io_data();
   data_->coroutine = handle.address();
-  data_->owner_shard = detail::current_shard_id;
 
   IoRequest req{
       .op = IoOpType::Poll, .data = data_, .fd = fd_, .poll_mask = mask_};
@@ -357,7 +358,6 @@ auto poll_timeout_awaiter::await_suspend(
   auto* rt = detail::current_runtime;
   data_ = rt->alloc_io_data();
   data_->coroutine = handle.address();
-  data_->owner_shard = detail::current_shard_id;
 
   auto secs = std::chrono::duration_cast<std::chrono::seconds>(timeout_);
   auto nsecs =
@@ -378,7 +378,6 @@ auto sleep_awaiter::await_suspend(std::coroutine_handle<> handle) noexcept
   auto* rt = detail::current_runtime;
   data_ = rt->alloc_io_data();
   data_->coroutine = handle.address();
-  data_->owner_shard = detail::current_shard_id;
 
   auto secs = std::chrono::duration_cast<std::chrono::seconds>(duration_);
   auto nsecs =
@@ -395,7 +394,6 @@ auto close_awaiter::await_suspend(std::coroutine_handle<> handle) noexcept
   auto* rt = detail::current_runtime;
   data_ = rt->alloc_io_data();
   data_->coroutine = handle.address();
-  data_->owner_shard = detail::current_shard_id;
 
   IoRequest req{.op = IoOpType::Close, .data = data_, .fd = fd_};
   rt->submit_io(std::move(req));
@@ -406,7 +404,6 @@ auto cancel_awaiter::await_suspend(std::coroutine_handle<> handle) noexcept
   auto* rt = detail::current_runtime;
   data_ = rt->alloc_io_data();
   data_->coroutine = handle.address();
-  data_->owner_shard = detail::current_shard_id;
 
   IoRequest req{.op = IoOpType::Cancel,
                 .data = data_,

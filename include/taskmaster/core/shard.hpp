@@ -33,7 +33,7 @@ public:
     return ring_;
   }
   [[nodiscard]] auto memory_resource() noexcept -> std::pmr::memory_resource* {
-    return std::pmr::get_default_resource();
+    return &pool_;
   }
 
   auto schedule_local(std::coroutine_handle<> h) -> void;

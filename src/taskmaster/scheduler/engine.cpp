@@ -233,7 +233,7 @@ auto Engine::task_failed(std::string_view instance_id, std::string_view error)
   notify();
 }
 
-auto Engine::set_on_ready_callback(InstanceReadyCallback cb) -> void {
+auto Engine::set_on_ready(InstanceReadyCallback cb) -> void {
   on_ready_ = std::move(cb);
 }
 
@@ -373,10 +373,6 @@ auto Engine::handle_event(const TaskFailedEvent& e) -> void {
                  inst.task_id);
     }
   }
-}
-
-auto Engine::handle_event(const TickEvent&) -> void {
-  tick();
 }
 
 auto Engine::handle_event(const ShutdownEvent&) -> void {

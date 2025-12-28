@@ -6,6 +6,8 @@
 #include <nlohmann/json.hpp>
 #include <sqlite3.h>
 
+#include <utility>
+
 namespace taskmaster {
 
 namespace {
@@ -26,7 +28,7 @@ constexpr std::array kTaskStateNames = {
 constexpr std::array kTriggerTypeNames = {"manual", "schedule", "api"};
 
 auto dag_run_state_to_string(DAGRunState state) -> const char* {
-  auto idx = static_cast<std::size_t>(state);
+  auto idx = std::to_underlying(state);
   return idx < kDagRunStateNames.size() ? kDagRunStateNames[idx] : "unknown";
 }
 
@@ -40,7 +42,7 @@ auto string_to_dag_run_state(std::string_view s) -> DAGRunState {
 }
 
 auto trigger_type_to_string(TriggerType type) -> const char* {
-  auto idx = static_cast<std::size_t>(type);
+  auto idx = std::to_underlying(type);
   return idx < kTriggerTypeNames.size() ? kTriggerTypeNames[idx] : "manual";
 }
 
@@ -54,7 +56,7 @@ auto string_to_trigger_type(std::string_view s) -> TriggerType {
 }
 
 auto task_state_to_string(TaskState state) -> const char* {
-  auto idx = static_cast<std::size_t>(state);
+  auto idx = std::to_underlying(state);
   return idx < kTaskStateNames.size() ? kTaskStateNames[idx] : "unknown";
 }
 

@@ -3,6 +3,7 @@
 #include <expected>
 #include <string>
 #include <system_error>
+#include <utility>
 
 namespace taskmaster {
 
@@ -79,7 +80,7 @@ inline auto error_category() -> const ErrorCategory& {
 }
 
 inline auto make_error_code(Error e) -> std::error_code {
-  return {static_cast<int>(e), error_category()};
+  return {std::to_underlying(e), error_category()};
 }
 
 template <typename T = void>
@@ -112,7 +113,7 @@ namespace taskmaster {
 // Transparent hash for heterogeneous lookup with string_view
 struct StringHash {
   using is_transparent = void;
-  [[nodiscard]] auto operator()(std::string_view sv) const noexcept
+  [[nodiscard]] constexpr auto operator()(std::string_view sv) const noexcept
       -> std::size_t {
     return std::hash<std::string_view>{}(sv);
   }

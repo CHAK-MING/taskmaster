@@ -9,7 +9,7 @@ namespace taskmaster {
 
 auto SchedulerService::set_on_ready(EngineReadyCallback callback) -> void {
   on_ready_ = std::move(callback);
-  engine_.set_on_ready_callback([this](const TaskInstance& inst) {
+  engine_.set_on_ready([this](const TaskInstance& inst) {
     if (on_ready_) {
       on_ready_(inst);
     }

@@ -253,7 +253,7 @@ auto DAGManager::delete_task(std::string_view dag_id, std::string_view task_id)
 
   // Check if any task depends on this one
   for (const auto& t : dag->tasks) {
-    if (std::ranges::find(t.deps, task_id) != t.deps.end()) {
+    if (std::ranges::contains(t.deps, task_id)) {
       log::warn("Cannot delete task {} - task {} depends on it", task_id, t.id);
       return fail(Error::InvalidArgument);
     }
