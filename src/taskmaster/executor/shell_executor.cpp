@@ -1,4 +1,5 @@
 #include "taskmaster/core/coroutine.hpp"
+#include "taskmaster/core/error.hpp"
 #include "taskmaster/core/runtime.hpp"
 #include "taskmaster/executor/executor.hpp"
 #include "taskmaster/util/log.hpp"
@@ -41,12 +42,13 @@ auto create_pipe() -> std::pair<int, int> {
 
 auto fork_and_exec(const std::string& cmd, const std::string& working_dir,
                    int stdout_write_fd) -> pid_t {
-  pid_t pid = fork();
+  pid_t pid = vfork();
   if (pid < 0) {
     return -1;
   }
 
   if (pid == 0) {
+    // Child process - must only use async-signal-safe functions
     setpgid(0, 0);
 
     dup2(stdout_write_fd, STDOUT_FILENO);
@@ -63,8 +65,8 @@ auto fork_and_exec(const std::string& cmd, const std::string& working_dir,
     _exit(127);
   }
 
-  setpgid(pid, pid);
   close(stdout_write_fd);
+  setpgid(pid, pid);
   return pid;
 }
 
@@ -161,16 +163,17 @@ auto wait_process(int pidfd, pid_t pid, bool timed_out) -> task<int> {
 
 struct ExecutionContext {
   std::mutex* mutex;
-  std::unordered_map<std::string, pid_t>* active_processes;
+  std::unordered_map<std::string, pid_t, StringHash, std::equal_to<>>*
+      active_processes;
 
   auto register_process(const std::string& id, pid_t pid) -> void {
     std::lock_guard lock(*mutex);
     (*active_processes)[id] = pid;
   }
 
-  auto unregister_process(const std::string& id) -> void {
+  auto unregister_process(std::string_view id) -> void {
     std::lock_guard lock(*mutex);
-    active_processes->erase(id);
+    active_processes->erase(active_processes->find(id));
   }
 };
 
@@ -264,7 +267,7 @@ public:
 
   auto cancel(std::string_view instance_id) -> void override {
     std::lock_guard lock(mutex_);
-    auto it = active_processes_.find(std::string(instance_id));
+    auto it = active_processes_.find(instance_id);
     if (it != active_processes_.end()) {
       pid_t pid = it->second;
       if (pid > 0) {
@@ -277,7 +280,8 @@ public:
 private:
   Runtime* runtime_;
   std::mutex mutex_;
-  std::unordered_map<std::string, pid_t> active_processes_;
+  std::unordered_map<std::string, pid_t, StringHash, std::equal_to<>>
+      active_processes_;
   ExecutionContext ctx_;
 };
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "taskmaster/core/coroutine.hpp"
+#include "taskmaster/core/error.hpp"
 #include "taskmaster/dag/dag.hpp"
 #include "taskmaster/dag/dag_run.hpp"
 #include "taskmaster/executor/executor.hpp"
@@ -86,8 +87,12 @@ private:
   IExecutor& executor_;
   ExecutionCallbacks callbacks_;
 
-  std::unordered_map<std::string, std::unique_ptr<DAGRun>> runs_;
-  std::unordered_map<std::string, std::vector<ExecutorConfig>> run_cfgs_;
+  std::unordered_map<std::string, std::unique_ptr<DAGRun>, StringHash,
+                     std::equal_to<>>
+      runs_;
+  std::unordered_map<std::string, std::vector<ExecutorConfig>, StringHash,
+                     std::equal_to<>>
+      run_cfgs_;
 
   mutable std::mutex mu_;
   std::atomic<int> coro_count_{0};

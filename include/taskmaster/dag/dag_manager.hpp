@@ -142,7 +142,7 @@ private:
       -> bool;
 
   mutable std::shared_mutex mu_;
-  std::unordered_map<std::string, DAGInfo> dags_;
+  std::unordered_map<std::string, DAGInfo, StringHash, std::equal_to<>> dags_;
   Persistence* persistence_;
 };
 

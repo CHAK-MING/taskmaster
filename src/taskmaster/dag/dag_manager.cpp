@@ -20,12 +20,12 @@ auto DAGManager::generate_dag_id() const -> std::string {
 }
 
 auto DAGManager::find_dag(std::string_view dag_id) -> DAGInfo* {
-  auto it = dags_.find(std::string(dag_id));
+  auto it = dags_.find(dag_id);
   return it != dags_.end() ? &it->second : nullptr;
 }
 
 auto DAGManager::find_dag(std::string_view dag_id) const -> const DAGInfo* {
-  auto it = dags_.find(std::string(dag_id));
+  auto it = dags_.find(dag_id);
   return it != dags_.end() ? &it->second : nullptr;
 }
 
@@ -80,12 +80,12 @@ auto DAGManager::list_dags() const -> std::vector<DAGInfo> {
 auto DAGManager::delete_dag(std::string_view dag_id) -> Result<void> {
   std::unique_lock lock(mu_);
 
-  auto* dag = find_dag(dag_id);
-  if (!dag) {
+  auto it = dags_.find(dag_id);
+  if (it == dags_.end()) {
     return fail(Error::NotFound);
   }
 
-  if (dag->from_config) {
+  if (it->second.from_config) {
     log::warn("Cannot delete DAG {} loaded from config", dag_id);
     return fail(Error::InvalidArgument);
   }
@@ -98,7 +98,7 @@ auto DAGManager::delete_dag(std::string_view dag_id) -> Result<void> {
     }
   }
 
-  dags_.erase(std::string(dag_id));
+  dags_.erase(it);
   log::info("Deleted DAG: {}", dag_id);
   return ok();
 }
@@ -195,7 +195,7 @@ auto DAGManager::add_task(std::string_view dag_id, const TaskConfig& task)
   dag->updated_at = std::chrono::system_clock::now();
   dag->invalidate_cache();  // Invalidate reverse adjacency cache
 
-  log::info("Added task {} to DAG {}", task.id, dag_id);
+  // log::info("Added task {} to DAG {}", task.id, dag_id);
   return ok();
 }
 
@@ -272,9 +272,19 @@ auto DAGManager::delete_task(std::string_view dag_id, std::string_view task_id)
     }
   }
 
+  // Swap-and-Pop: O(1) deletion instead of O(n) erase
   std::size_t idx = idx_it->second;
-  dag->tasks.erase(dag->tasks.begin() + static_cast<std::ptrdiff_t>(idx));
-  dag->rebuild_task_index();  // This also invalidates the cache
+  std::size_t last_idx = dag->tasks.size() - 1;
+
+  if (idx != last_idx) {
+    // Update the index of the task being swapped
+    dag->task_index[dag->tasks[last_idx].id] = idx;
+    std::swap(dag->tasks[idx], dag->tasks[last_idx]);
+  }
+
+  dag->tasks.pop_back();
+  dag->task_index.erase(idx_it);
+  dag->invalidate_cache();
   dag->updated_at = std::chrono::system_clock::now();
 
   log::info("Deleted task {} from DAG {}", task_id, dag_id);

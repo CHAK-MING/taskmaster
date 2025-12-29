@@ -30,7 +30,7 @@ auto ExecutionService::start_run(std::string run_id,
 
 auto ExecutionService::get_run(std::string_view run_id) -> DAGRun* {
   std::lock_guard lock(mu_);
-  auto it = runs_.find(std::string(run_id));
+  auto it = runs_.find(run_id);
   return it != runs_.end() ? it->second.get() : nullptr;
 }
 
