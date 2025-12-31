@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstring>
 #include <mutex>
+#include <span>
 #include <unordered_map>
 
 #include <fcntl.h>
@@ -24,7 +25,7 @@ namespace taskmaster {
 namespace {
 
 // Configuration constants
-inline constexpr std::size_t MAX_OUTPUT_SIZE = 10 * 1024 * 1024; 
+inline constexpr std::size_t MAX_OUTPUT_SIZE = 10 * 1024 * 1024;
 inline constexpr std::size_t READ_BUFFER_SIZE = 4096;
 inline constexpr std::size_t INITIAL_OUTPUT_RESERVE = 8192;
 
@@ -112,7 +113,8 @@ auto read_output(int fd, std::chrono::seconds timeout,
     }
 
     // Now read - data should be available
-    ssize_t bytes_read = read(fd, buffer.data(), buffer.size());
+    std::span<char> buffer_span(buffer);
+    ssize_t bytes_read = read(fd, buffer_span.data(), buffer_span.size());
     if (bytes_read < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         continue;
@@ -123,7 +125,7 @@ auto read_output(int fd, std::chrono::seconds timeout,
       break;
     }
 
-    output.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+    output.append(buffer_span.data(), static_cast<std::size_t>(bytes_read));
     if (output.size() >= MAX_OUTPUT_SIZE) {
       output.resize(MAX_OUTPUT_SIZE);
       break;
@@ -173,7 +175,10 @@ struct ExecutionContext {
 
   auto unregister_process(std::string_view id) -> void {
     std::lock_guard lock(*mutex);
-    active_processes->erase(active_processes->find(id));
+    auto it = active_processes->find(id);
+    if (it != active_processes->end()) {
+      active_processes->erase(it);
+    }
   }
 };
 
@@ -196,6 +201,7 @@ auto execute_command(std::string cmd, std::string working_dir,
   pid_t pid = fork_and_exec(cmd, working_dir, write_fd);
   if (pid < 0) {
     close(read_fd);
+    close(write_fd);
     result.error = "Failed to fork process";
     result.exit_code = -1;
     callback(instance_id, std::move(result));

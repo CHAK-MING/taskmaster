@@ -9,6 +9,7 @@
 #include <expected>
 #include <functional>
 #include <memory>
+#include <ranges>
 #include <span>
 #include <system_error>
 #include <thread>
@@ -281,7 +282,8 @@ public:
     detail::current_runtime->schedule(handle);
   }
 
-  auto await_resume() const noexcept -> void {}
+  auto await_resume() const noexcept -> void {
+  }
 };
 
 class sleep_awaiter {

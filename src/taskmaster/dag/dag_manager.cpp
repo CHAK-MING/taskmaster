@@ -38,8 +38,8 @@ auto DAGManager::create_dag(std::string_view name, std::string_view description)
 
   DAGInfo info;
   info.id = dag_id;
-  info.name = std::string(name);
-  info.description = std::string(description);
+  info.name = name;
+  info.description = description;
   info.created_at = now;
   info.updated_at = now;
 
@@ -120,13 +120,13 @@ auto DAGManager::update_dag(std::string_view dag_id, std::string_view name,
   }
 
   if (!name.empty()) {
-    dag->name = std::string(name);
+    dag->name = name;
   }
   if (!description.empty()) {
-    dag->description = std::string(description);
+    dag->description = description;
   }
   if (!cron.empty()) {
-    dag->cron = std::string(cron);
+    dag->cron = cron;
   }
   if (max_concurrent_runs >= 0) {
     dag->max_concurrent_runs = max_concurrent_runs;
@@ -222,7 +222,7 @@ auto DAGManager::update_task(std::string_view dag_id, std::string_view task_id,
   }
 
   *existing = task;
-  existing->id = std::string(task_id);
+  existing->id = task_id;
   dag->updated_at = std::chrono::system_clock::now();
   dag->invalidate_cache();  // Invalidate reverse adjacency cache
 

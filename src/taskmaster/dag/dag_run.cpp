@@ -1,6 +1,7 @@
 #include "taskmaster/dag/dag_run.hpp"
 
 #include <ranges>
+#include <stdexcept>
 
 namespace taskmaster {
 

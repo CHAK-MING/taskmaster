@@ -517,14 +517,14 @@ auto Persistence::get_run_history(std::string_view run_id)
   }
 
   auto trigger_str = col_text(stmt.get(), 2);
-  return RunHistoryEntry{
-      .run_id = std::move(fetched_run_id),
-      .dag_id = std::move(extracted_dag_id),
-      .state = string_to_dag_run_state(col_text(stmt.get(), 1)),
-      .trigger_type = string_to_trigger_type(trigger_str),
-      .scheduled_at = sqlite3_column_int64(stmt.get(), 3),
-      .started_at = sqlite3_column_int64(stmt.get(), 4),
-      .finished_at = sqlite3_column_int64(stmt.get(), 5)};
+  return RunHistoryEntry{.run_id = std::move(fetched_run_id),
+                         .dag_id = std::move(extracted_dag_id),
+                         .state =
+                             string_to_dag_run_state(col_text(stmt.get(), 1)),
+                         .trigger_type = string_to_trigger_type(trigger_str),
+                         .scheduled_at = sqlite3_column_int64(stmt.get(), 3),
+                         .started_at = sqlite3_column_int64(stmt.get(), 4),
+                         .finished_at = sqlite3_column_int64(stmt.get(), 5)};
 }
 
 auto Persistence::begin_transaction() -> Result<void> {
@@ -538,8 +538,6 @@ auto Persistence::commit_transaction() -> Result<void> {
 auto Persistence::rollback_transaction() -> Result<void> {
   return execute("ROLLBACK;");
 }
-
-// DAG persistence implementations
 
 auto Persistence::save_dag(const DAGInfo& dag) -> Result<void> {
   if (auto r = begin_transaction(); !r)
@@ -744,19 +742,19 @@ auto Persistence::get_tasks(std::string_view dag_id)
     auto deps_str = col_text(stmt.get(), 5);
     auto executor_str = col_text(stmt.get(), 3);
 
-    TaskConfig task{
-        .id = col_text(stmt.get(), 0),
-        .name = col_text(stmt.get(), 1),
-        .command = col_text(stmt.get(), 2),
-        .working_dir = col_text(stmt.get(), 4),
-        .deps = {},
-        .executor = string_to_executor_type(
-            executor_str.empty() ? "shell" : executor_str),
-        .timeout = std::chrono::seconds(sqlite3_column_int(stmt.get(), 6)),
-        .retry_interval =
-            std::chrono::seconds(sqlite3_column_int(stmt.get(), 7)),
-        .max_retries = sqlite3_column_int(stmt.get(), 8),
-        .enabled = sqlite3_column_int(stmt.get(), 9) != 0};
+    TaskConfig task{.id = col_text(stmt.get(), 0),
+                    .name = col_text(stmt.get(), 1),
+                    .command = col_text(stmt.get(), 2),
+                    .working_dir = col_text(stmt.get(), 4),
+                    .deps = {},
+                    .executor = string_to_executor_type(
+                        executor_str.empty() ? "shell" : executor_str),
+                    .timeout =
+                        std::chrono::seconds(sqlite3_column_int(stmt.get(), 6)),
+                    .retry_interval =
+                        std::chrono::seconds(sqlite3_column_int(stmt.get(), 7)),
+                    .max_retries = sqlite3_column_int(stmt.get(), 8),
+                    .enabled = sqlite3_column_int(stmt.get(), 9) != 0};
 
     if (!deps_str.empty()) {
       try {

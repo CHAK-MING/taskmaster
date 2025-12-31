@@ -12,13 +12,14 @@
 #include "taskmaster/util/util.hpp"
 
 #include <format>
-#include <iostream>
+#include <print>
 
 namespace taskmaster {
 
 Application::Application()
     : events_(std::make_unique<EventService>()),
-      scheduler_(std::make_unique<SchedulerService>()) {}
+      scheduler_(std::make_unique<SchedulerService>()) {
+}
 
 Application::Application(std::string_view db_path)
     : persistence_(std::make_unique<PersistenceService>(db_path)),
@@ -68,7 +69,7 @@ auto Application::start() -> void {
   }
 
   // Register database DAGs with scheduler
-  for (const auto& d : dag_manager_.list_dags()) {
+  for (const auto& d : dag_manager_.list_dags())  {
     if (d.from_config)
       continue;
     for (const auto& t : d.tasks) {
@@ -91,22 +92,20 @@ auto Application::start() -> void {
   executor_ = create_shell_executor(runtime_);
 
   // Create execution service
-  execution_ =
-      std::make_unique<ExecutionService>(runtime_, *executor_);
+  execution_ = std::make_unique<ExecutionService>(runtime_, *executor_);
   setup_callbacks();
 
   // Setup scheduler callback
-  scheduler_->set_on_ready([this](const TaskInstance& inst) {
-    on_engine_ready(inst);
-  });
+  scheduler_->set_on_ready(
+      [this](const TaskInstance& inst) { on_engine_ready(inst); });
 
   // Start services
   scheduler_->start();
 
   // Start API server
   if (config_.api.enabled) {
-    api_ = std::make_unique<ApiServer>(*this, config_.api.port,
-                                       config_.api.host);
+    api_ =
+        std::make_unique<ApiServer>(*this, config_.api.port, config_.api.host);
     events_->set_api_server(api_.get());
     api_->start();
   }
@@ -181,13 +180,12 @@ auto Application::setup_callbacks() -> void {
       persistence_->save_task(run_id, info);
   };
 
-  callbacks.on_persist_log = [this](std::string_view run_id,
-                                    std::string_view task, int attempt,
-                                    std::string_view level,
-                                    std::string_view msg) {
-    if (persistence_)
-      persistence_->save_log(run_id, task, attempt, level, msg);
-  };
+  callbacks.on_persist_log =
+      [this](std::string_view run_id, std::string_view task, int attempt,
+             std::string_view level, std::string_view msg) {
+        if (persistence_)
+          persistence_->save_log(run_id, task, attempt, level, msg);
+      };
 
   callbacks.get_max_retries = [this](std::string_view run_id, NodeIndex idx) {
     return get_max_retries(run_id, idx);
@@ -325,7 +323,8 @@ auto Application::has_active_runs() const -> bool {
 auto Application::on_engine_ready(const TaskInstance& inst) -> void {
   // Check if this is a cron-triggered DAG
   if (inst.task_id.starts_with("cron:")) {
-    std::string dag_id = inst.task_id.substr(5);  // Remove "cron:" prefix
+    std::string_view dag_id = inst.task_id;
+    dag_id.remove_prefix(5);  // Remove "cron:" prefix
     log::info("Cron triggered DAG: {}", dag_id);
 
     // Mark the cron task as completed immediately
@@ -339,8 +338,10 @@ auto Application::on_engine_ready(const TaskInstance& inst) -> void {
 
   auto pos = inst.task_id.find(':');
   if (pos != std::string::npos) {
-    std::string dag_id = inst.task_id.substr(0, pos);
-    std::string task_id = inst.task_id.substr(pos + 1);
+    std::string_view dag_id = inst.task_id;
+    dag_id = dag_id.substr(0, pos);
+    std::string_view task_id = inst.task_id;
+    task_id = task_id.substr(pos + 1);
 
     scheduler_->engine().task_started(inst.instance_id);
 
@@ -356,7 +357,8 @@ auto Application::on_engine_ready(const TaskInstance& inst) -> void {
     exec.working_dir = task->working_dir;
     exec.timeout = task->timeout;
 
-    run_cron_task(dag_id, task_id, inst.instance_id, exec);
+    run_cron_task(std::string(dag_id), std::string(task_id), inst.instance_id,
+                  exec);
     return;
   }
 
@@ -399,7 +401,7 @@ auto Application::run_cron_task(std::string dag_id, std::string task_id,
                               "[ERROR] " + result.error);
     }
   }(this, std::move(dag_id), std::move(task_id), std::move(inst_id),
-    std::move(cfg));
+                                                          std::move(cfg));
 
   runtime_.schedule_external(coro.take());
 }
@@ -519,29 +521,31 @@ auto Application::recover_from_crash() -> Result<void> {
 }
 
 auto Application::list_tasks() const -> void {
-  std::cout << "Tasks:\n";
+
+  std::println("Tasks:");
   for (const auto& t : config_.tasks) {
-    std::cout << "  - " << t.id;
+      std::print("  - {}", t.id);
     if (!t.name.empty() && t.name != t.id)
-      std::cout << " (" << t.name << ")";
-    std::cout << " [" << executor_type_to_string(t.executor) << "]";
+      std::print(" ({})", t.name);
+    std::print("{}", executor_type_to_string(t.executor));
     if (!t.deps.empty()) {
-      std::cout << " deps:[";
+      std::print("deps:[");
       for (size_t i = 0; i < t.deps.size(); ++i) {
         if (i > 0)
-          std::cout << ",";
-        std::cout << t.deps[i];
+          std::print(",");
+        std::print("{}", t.deps[i]);
       }
-      std::cout << "]";
+      std::print("]");
     }
-    std::cout << "\n    command: " << t.command << "\n";
+    std::println("");
+    std::println("    command: {}", t.command);
   }
 }
 
 auto Application::show_status() const -> void {
-  std::cout << "Status: " << (running_.load() ? "running" : "stopped") << "\n";
-  std::cout << "Tasks: " << config_.tasks.size() << "\n";
-  std::cout << "Active runs: " << (execution_ ? "checking..." : "N/A") << "\n";
+  std::println("Status: {}", running_.load() ? "running" : "stopped");
+  std::println("Tasks: {}", config_.tasks.size());
+  std::println("Active runs: {}", execution_ ? "checking..." : "N/A");
 }
 
 auto Application::config() const noexcept -> const Config& {

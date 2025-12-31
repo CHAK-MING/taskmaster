@@ -15,15 +15,16 @@ Runtime::Runtime(unsigned num_shards) {
   num_shards_ = num_shards;
 
   shards_.reserve(num_shards);
-  for (unsigned i = 0; i < num_shards; ++i) {
-    shards_.push_back(std::make_unique<Shard>(i));
+  for (auto i : std::views::iota(0u, num_shards)) {
+    shards_.emplace_back(std::make_unique<Shard>(i));
   }
 
   smp_queues_.resize(num_shards);
-  for (unsigned from = 0; from < num_shards; ++from) {
+  for (auto from : std::views::iota(0u, num_shards)) {
     smp_queues_[from].reserve(num_shards);
-    for (unsigned to = 0; to < num_shards; ++to) {
-      smp_queues_[from].push_back(std::make_unique<SPSCQueue<SmpMessage>>(128));
+    for (auto _ : std::views::iota(0u, num_shards)) {
+      smp_queues_[from].emplace_back(
+          std::make_unique<SPSCQueue<SmpMessage>>(128));
     }
   }
 }
@@ -38,7 +39,7 @@ auto Runtime::start() -> void {
   stop_requested_.store(false);
 
   threads_.reserve(num_shards_);
-  for (unsigned i = 0; i < num_shards_; ++i) {
+  for (auto i : std::views::iota(0u, num_shards_)) {
     threads_.emplace_back([this, i] { run_shard(i); });
   }
 }
@@ -48,7 +49,7 @@ auto Runtime::stop() -> void {
     return;
   stop_requested_.store(true);
 
-  for (unsigned i = 0; i < num_shards_; ++i) {
+  for (auto i : std::views::iota(0u, num_shards_)) {
     wake_shard(i);
   }
 
@@ -58,8 +59,8 @@ auto Runtime::stop() -> void {
   }
   threads_.clear();
 
-  for (unsigned from = 0; from < num_shards_; ++from) {
-    for (unsigned to = 0; to < num_shards_; ++to) {
+  for (auto from : std::views::iota(0u, num_shards_)) {
+    for (auto to : std::views::iota(0u, num_shards_)) {
       while (auto msg = smp_queues_[from][to]->try_pop()) {
         if (std::holds_alternative<std::coroutine_handle<>>(msg->payload)) {
           auto h = std::get<std::coroutine_handle<>>(msg->payload);
@@ -126,7 +127,7 @@ auto Runtime::run_shard(shard_id id) -> void {
 auto Runtime::process_smp_messages(shard_id id) -> bool {
   bool did_work = false;
 
-  for (unsigned from = 0; from < num_shards_; ++from) {
+  for (auto from : std::views::iota(0u, num_shards_)) {
     if (from == id)
       continue;
 
