@@ -8,7 +8,9 @@
 #include "taskmaster/config/config_watcher.hpp"
 #include "taskmaster/config/dag_definition.hpp"
 #include "taskmaster/config/dag_file_loader.hpp"
+#include "taskmaster/core/constants.hpp"
 #include "taskmaster/core/error.hpp"
+#include "taskmaster/dag/dag_validator.hpp"
 #include "taskmaster/util/log.hpp"
 
 #include <chrono>
@@ -313,7 +315,7 @@ auto Application::trigger_dag_by_id(DAGId dag_id,
 
   for (const auto& t : info->tasks) {
     NodeIndex idx = graph->get_index(t.task_id);
-    if (idx != INVALID_NODE && idx < graph->size()) {
+    if (idx != kInvalidNode && idx < graph->size()) {
       run->set_instance_id(idx, generate_instance_id(dag_run_id, t.task_id));
     }
   }
@@ -348,10 +350,6 @@ auto Application::get_max_retries(DAGRunId dag_run_id, NodeIndex idx)
     if (idx < dag_info->tasks.size()) {
       return dag_info->tasks[idx].max_retries;
     }
-  }
-
-  if (idx < config_tasks_.size()) {
-    return config_tasks_[idx].max_retries;
   }
 
   return 3;
@@ -501,26 +499,7 @@ auto Application::runtime() -> Runtime& {
 }
 
 auto Application::validate_dag_info(const DAGInfo& info) -> Result<void> {
-  std::string error_message;
-
-  DAG temp_dag;
-  for (const auto& task : info.tasks) {
-    temp_dag.add_node(task.task_id);
-  }
-
-  for (const auto& task : info.tasks) {
-    for (const auto& dep : task.dependencies) {
-      if (auto result = temp_dag.add_edge(dep, task.task_id); !result) {
-        error_message += std::format("Invalid dependency: {} -> {}\n", dep, task.task_id);
-      }
-    }
-  }
-
-  if (auto result = temp_dag.is_valid(); !result) {
-    error_message += "DAG contains circular dependencies\n";
-  }
-
-  return error_message.empty() ? ok() : fail(Error::InvalidArgument);
+  return DAGValidator::validate(info);
 }
 
 auto Application::create_dag_atomically(DAGId dag_id,
@@ -561,16 +540,15 @@ auto Application::setup_config_watcher() -> void {
 }
 
 auto Application::config_watcher_loop(std::stop_token stop) -> void {
-  constexpr size_t kEventBufferSize = 4096;
-  std::array<char, kEventBufferSize> buffer{};
+  std::array<char, io::kEventBufferSize> buffer{};
 
   while (!stop.stop_requested() && watching_.load()) {
     ssize_t len = read(inotify_fd_, buffer.data(), buffer.size());
     if (len <= 0) {
       if (errno != EAGAIN) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          std::this_thread::sleep_for(timing::kConfigWatchInterval);
       } else {
-          std::this_thread::sleep_for(std::chrono::milliseconds(50));
+          std::this_thread::sleep_for(timing::kShutdownPollInterval);
       }
       continue;
     }

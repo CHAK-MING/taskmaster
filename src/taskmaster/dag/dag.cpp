@@ -25,7 +25,7 @@ auto DAG::add_node(TaskId task_id) -> NodeIndex {
 auto DAG::add_edge(TaskId from, TaskId to) -> Result<void> {
   NodeIndex from_idx = get_index(from);
   NodeIndex to_idx = get_index(to);
-  if (from_idx == INVALID_NODE || to_idx == INVALID_NODE) [[unlikely]] {
+  if (from_idx == kInvalidNode || to_idx == kInvalidNode) [[unlikely]] {
     return fail(Error::NotFound);
   }
   return add_edge(from_idx, to_idx);
@@ -172,7 +172,7 @@ auto DAG::get_dependents_view(NodeIndex idx) const noexcept
 
 auto DAG::get_index(TaskId task_id) const -> NodeIndex {
   auto it = key_to_idx_.find(task_id);
-  return it != key_to_idx_.end() ? it->second : INVALID_NODE;
+  return it != key_to_idx_.end() ? it->second : kInvalidNode;
 }
 
 auto DAG::get_key(NodeIndex idx) const -> TaskId {

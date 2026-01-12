@@ -29,8 +29,8 @@ class EventQueue {
 public:
   // Returns true if event was pushed, false if queue is persistently full
   [[nodiscard]] auto push(SchedulerEvent event) -> bool {
-    constexpr int MAX_RETRIES = 100;
-    for (int retry = 0; retry < MAX_RETRIES; ++retry) {
+    constexpr int kMaxRetries = 100;
+    for (int retry = 0; retry < kMaxRetries; ++retry) {
       if (queue_.push(std::move(event))) {
         pending_.fetch_add(1, std::memory_order_release);
         return true;
@@ -79,11 +79,9 @@ public:
   }
 
 private:
-  // Queue capacity must be power of 2 for lock-free implementation.
-  // 512 is sufficient for most workloads; increase if events are dropped.
-  static constexpr std::size_t QUEUE_CAPACITY = 512;
+  static constexpr std::size_t kQueueCapacity = 512;
 
-  BoundedMPSCQueue<SchedulerEvent> queue_{QUEUE_CAPACITY};
+  BoundedMPSCQueue<SchedulerEvent> queue_{kQueueCapacity};
   std::atomic<std::size_t> pending_{0};
 };
 

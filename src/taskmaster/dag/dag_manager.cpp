@@ -110,18 +110,15 @@ auto DAGManager::add_task(DAGId dag_id, const TaskConfig& task)
     return fail(Error::NotFound);
   }
 
-  // O(1) check if task ID already exists
   if (dag->find_task(task.task_id)) {
     return fail(Error::AlreadyExists);
   }
 
-  // Check for cycle using incremental DFS
   if (would_create_cycle_internal(*dag, task.task_id, task.dependencies)) {
     log::warn("Adding task {} would create a cycle in DAG {}", task.task_id, dag_id);
     return fail(Error::InvalidArgument);
   }
 
-  // Validate dependencies exist (O(1) per dep)
   for (const auto& dep : task.dependencies) {
     if (!dag->find_task(dep)) {
       log::warn("Dependency {} not found in DAG {}", dep, dag_id);
@@ -129,7 +126,6 @@ auto DAGManager::add_task(DAGId dag_id, const TaskConfig& task)
     }
   }
 
-  // Save task to database first
   if (persistence_) {
     if (auto r = persistence_->save_task(dag_id, task); !r) {
       log::error("Failed to persist task {} in DAG {}: {}", task.task_id, dag_id,
@@ -141,9 +137,8 @@ auto DAGManager::add_task(DAGId dag_id, const TaskConfig& task)
   dag->tasks.push_back(task);
   dag->task_index[task.task_id] = dag->tasks.size() - 1;
   dag->updated_at = std::chrono::system_clock::now();
-  dag->invalidate_cache();  // Invalidate reverse adjacency cache
+  dag->invalidate_cache();
 
-  // log::info("Added task {} to DAG {}", task.task_id, dag_id);
   return ok();
 }
 
@@ -212,12 +207,10 @@ auto DAGManager::delete_task(DAGId dag_id, TaskId task_id)
     }
   }
 
-  // Swap-and-Pop: O(1) deletion instead of O(n) erase
   std::size_t idx = idx_it->second;
   std::size_t last_idx = dag->tasks.size() - 1;
 
   if (idx != last_idx) {
-    // Update the index of the task being swapped
     dag->task_index[dag->tasks[last_idx].task_id] = idx;
     std::swap(dag->tasks[idx], dag->tasks[last_idx]);
   }
@@ -302,12 +295,10 @@ auto DAGManager::build_dag_graph(DAGId dag_id) const -> Result<DAG> {
 
   DAG dag;
 
-  // Add all nodes
   for (const auto& task : dag_info->tasks) {
     dag.add_node(task.task_id);
   }
 
-  // Add all edges
   for (const auto& task : dag_info->tasks) {
     for (const auto& dep : task.dependencies) {
       if (auto r = dag.add_edge(dep, task.task_id); !r) {

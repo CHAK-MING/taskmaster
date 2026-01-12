@@ -1,5 +1,7 @@
 #include "taskmaster/core/runtime.hpp"
 
+#include "taskmaster/core/constants.hpp"
+
 namespace taskmaster {
 
 namespace {
@@ -137,7 +139,7 @@ auto Runtime::run_shard(shard_id id) -> void {
   shard.process_ready();
   process_smp_messages(id);
 
-  detail::current_shard_id = INVALID_SHARD;
+  detail::current_shard_id = kInvalidShard;
   detail::current_runtime = nullptr;
 }
 
@@ -160,9 +162,9 @@ auto Runtime::process_smp_messages(shard_id id) -> bool {
 auto Runtime::process_completions(Shard& shard) -> bool {
   unsigned count = shard.ctx().process_completions([&](void* raw_data, int res,
                                                         unsigned flags) {
-    if (raw_data == reinterpret_cast<void*>(WAKE_EVENT_TOKEN)) {
+    if (raw_data == reinterpret_cast<void*>(kWakeEventToken)) {
       shard.wake_event().consume();
-      if (!(flags & CQE_F_MORE)) {
+      if (!(flags & kCqeFMore)) {
         shard.ctx().setup_wake_poll(shard.wake_fd());
       }
       return;
@@ -191,7 +193,7 @@ auto Runtime::process_completions(Shard& shard) -> bool {
       }
 
       // Avoid resuming inline from the completion callback to prevent re-entrancy.
-      if (data->owner_shard == shard.id() || data->owner_shard == INVALID_SHARD) {
+      if (data->owner_shard == shard.id() || data->owner_shard == kInvalidShard) {
         shard.schedule_next(handle);
       } else {
         submit_to(data->owner_shard, handle);
@@ -207,8 +209,7 @@ auto Runtime::wait_for_work(Shard& shard) -> void {
     return;
 
   if (!shard.ctx().valid()) {
-    // Fallback when io_uring is not available
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    std::this_thread::sleep_for(timing::kRuntimeYieldInterval);
     return;
   }
 
@@ -220,7 +221,7 @@ auto Runtime::schedule(std::coroutine_handle<> handle) noexcept -> void {
   if (!handle || handle.done())
     return;
 
-  if (detail::current_shard_id != INVALID_SHARD) {
+  if (detail::current_shard_id != kInvalidShard) {
     shards_[detail::current_shard_id]->schedule_next(handle);
   } else {
     schedule_external(handle);
@@ -228,12 +229,12 @@ auto Runtime::schedule(std::coroutine_handle<> handle) noexcept -> void {
 }
 
 auto Runtime::get_shard_id() const noexcept -> unsigned {
-  return detail::current_shard_id != INVALID_SHARD ? detail::current_shard_id
+  return detail::current_shard_id != kInvalidShard ? detail::current_shard_id
                                                    : 0;
 }
 
 auto Runtime::is_current_shard() const noexcept -> bool {
-  return detail::current_shard_id != INVALID_SHARD &&
+  return detail::current_shard_id != kInvalidShard &&
          this == detail::current_runtime;
 }
 

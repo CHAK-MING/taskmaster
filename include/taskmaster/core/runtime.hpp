@@ -88,7 +88,7 @@ private:
 
 // Thread-local for internal use only
 namespace detail {
-inline thread_local shard_id current_shard_id = INVALID_SHARD;
+inline thread_local shard_id current_shard_id = kInvalidShard;
 inline thread_local Runtime* current_runtime = nullptr;
 }  // namespace detail
 
@@ -119,7 +119,7 @@ public:
 
 [[nodiscard]] inline auto current_io_context() noexcept -> io::IoContext& {
   assert(detail::current_runtime != nullptr);
-  assert(detail::current_shard_id != INVALID_SHARD);
+  assert(detail::current_shard_id != kInvalidShard);
   return detail::current_runtime->current_context();
 }
 

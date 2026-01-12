@@ -48,7 +48,7 @@ enum class TriggerType : std::uint8_t {
 
 struct TaskInstanceInfo {
   InstanceId instance_id;
-  NodeIndex task_idx{INVALID_NODE};
+  NodeIndex task_idx{kInvalidNode};
   TaskState state{TaskState::Pending};
   int attempt{0};
   std::chrono::system_clock::time_point started_at{};
@@ -62,7 +62,7 @@ public:
   // Maximum number of tasks per DAG run.
   // This limit exists because we use std::bitset for O(1) state tracking.
   // For larger DAGs, consider using dynamic_bitset or vector<bool>.
-  static constexpr size_t MAX_TASKS = 4096;
+  static constexpr size_t kMaxTasks = 4096;
 
   [[nodiscard]] static auto create(DAGRunId dag_run_id, const DAG& dag) 
       -> Result<DAGRun>;
@@ -143,10 +143,10 @@ private:
   DAG dag_;
   DAGRunState state_{DAGRunState::Running};
 
-  std::bitset<MAX_TASKS> ready_mask_;
-  std::bitset<MAX_TASKS> running_mask_;
-  std::bitset<MAX_TASKS> completed_mask_;
-  std::bitset<MAX_TASKS> failed_mask_;
+  std::bitset<kMaxTasks> ready_mask_;
+  std::bitset<kMaxTasks> running_mask_;
+  std::bitset<kMaxTasks> completed_mask_;
+  std::bitset<kMaxTasks> failed_mask_;
 
   std::flat_set<NodeIndex> ready_set_;
   size_t ready_count_{0};

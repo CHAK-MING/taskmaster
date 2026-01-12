@@ -1,5 +1,7 @@
 #include "taskmaster/util/daemon.hpp"
 
+#include "taskmaster/core/constants.hpp"
+
 #include <csignal>
 #include <cstdlib>
 #include <thread>
@@ -39,7 +41,7 @@ void setup_signal_handlers() {
 
 void wait_for_shutdown() {
   while (!g_shutdown_requested.load(std::memory_order_relaxed)) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(timing::kDaemonPollInterval);
   }
 }
 

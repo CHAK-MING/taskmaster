@@ -15,9 +15,9 @@
 namespace taskmaster {
 
 using shard_id = unsigned;
-using io::INVALID_SHARD;
-using io::WAKE_EVENT_TOKEN;
-using io::CQE_F_MORE;
+using io::kInvalidShard;
+using io::kWakeEventToken;
+using io::kCqeFMore;
 using io::CompletionData;
 using io::IoRequest;
 using io::IoOpType;
@@ -25,7 +25,7 @@ using io::KernelTimespec;
 
 class Shard {
 public:
-  static constexpr std::size_t ARENA_SIZE = 64 * 1024;  // 64KB per shard
+  static constexpr std::size_t kArenaSize = 64 * 1024;  // 64KB per shard
 
   explicit Shard(shard_id id);
   ~Shard();
@@ -68,7 +68,7 @@ public:
 private:
   shard_id id_;
 
-  alignas(64) std::array<std::byte, ARENA_SIZE> arena_;
+  alignas(64) std::array<std::byte, kArenaSize> arena_;
   std::pmr::monotonic_buffer_resource upstream_{arena_.data(), arena_.size()};
   std::pmr::unsynchronized_pool_resource pool_{&upstream_};
 

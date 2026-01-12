@@ -108,13 +108,8 @@ private:
   std::unique_ptr<SchedulerService> scheduler_;
   std::unique_ptr<ExecutionService> execution_;
 
-  // DAG management
   DAGManager dag_manager_{nullptr};
-  DAG config_dag_;
-  std::vector<TaskConfig> config_tasks_;
-  std::vector<ExecutorConfig> config_cfgs_;
 
-  // API server
   std::unique_ptr<ApiServer> api_;
 
   // Config file watching

@@ -43,11 +43,11 @@ public:
                                           const TaskInstanceInfo& info)
       -> Result<void>;
 
-  [[nodiscard]] auto get_dag_run_state(DAGRunId dag_run_id)
+  [[nodiscard]] auto get_dag_run_state(DAGRunId dag_run_id) const
       -> Result<DAGRunState>;
-  [[nodiscard]] auto get_incomplete_dag_runs()
+  [[nodiscard]] auto get_incomplete_dag_runs() const
       -> Result<std::vector<DAGRunId>>;
-  [[nodiscard]] auto get_task_instances(DAGRunId dag_run_id)
+  [[nodiscard]] auto get_task_instances(DAGRunId dag_run_id) const
       -> Result<std::vector<TaskInstanceInfo>>;
 
   [[nodiscard]] auto clear_all_dag_data() -> Result<void>;
@@ -63,9 +63,9 @@ public:
     std::int64_t finished_at;
   };
   [[nodiscard]] auto list_run_history(std::optional<DAGId> dag_id = std::nullopt,
-                                      std::size_t limit = 50)
+                                      std::size_t limit = 50) const
       -> Result<std::vector<RunHistoryEntry>>;
-  [[nodiscard]] auto get_run_history(DAGRunId dag_run_id)
+  [[nodiscard]] auto get_run_history(DAGRunId dag_run_id) const
       -> Result<RunHistoryEntry>;
 
   // Task Log Entry
@@ -86,21 +86,21 @@ public:
                                    std::string_view message) -> Result<void>;
   [[nodiscard]] auto get_task_logs(DAGRunId dag_run_id,
                                    TaskId task_id,
-                                   int attempt = -1)
+                                   int attempt = -1) const
       -> Result<std::vector<TaskLogEntry>>;
 
   // DAG persistence (for Server mode)
   [[nodiscard]] auto save_dag(const DAGInfo& dag) -> Result<void>;
   [[nodiscard]] auto delete_dag(DAGId dag_id) -> Result<void>;
-  [[nodiscard]] auto get_dag(DAGId dag_id) -> Result<DAGInfo>;
-  [[nodiscard]] auto list_dags() -> Result<std::vector<DAGInfo>>;
+  [[nodiscard]] auto get_dag(DAGId dag_id) const -> Result<DAGInfo>;
+  [[nodiscard]] auto list_dags() const -> Result<std::vector<DAGInfo>>;
 
   // Task persistence (within DAG)
   [[nodiscard]] auto save_task(DAGId dag_id, const TaskConfig& task)
       -> Result<void>;
   [[nodiscard]] auto delete_task(DAGId dag_id,
                                  TaskId task_id) -> Result<void>;
-  [[nodiscard]] auto get_tasks(DAGId dag_id)
+  [[nodiscard]] auto get_tasks(DAGId dag_id) const
       -> Result<std::vector<TaskConfig>>;
 
   [[nodiscard]] auto
@@ -115,8 +115,8 @@ public:
 private:
   [[nodiscard]] auto create_tables() -> Result<void>;
   [[nodiscard]] auto execute(std::string_view sql) -> Result<void>;
-  [[nodiscard]] auto prepare(const char* sql) -> Result<sqlite3_stmt*>;
-  [[nodiscard]] auto get_all_tasks()
+  [[nodiscard]] auto prepare(const char* sql) const -> Result<sqlite3_stmt*>;
+  [[nodiscard]] auto get_all_tasks() const
       -> Result<std::unordered_map<std::string, std::vector<TaskConfig>>>;
 
   struct DbDeleter {

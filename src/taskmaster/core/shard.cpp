@@ -4,7 +4,7 @@
 
 namespace taskmaster {
 
-Shard::Shard(shard_id id) : id_(id), ctx_(io::DEFAULT_QUEUE_DEPTH, &pool_) {
+Shard::Shard(shard_id id) : id_(id), ctx_(io::kDefaultQueueDepth, &pool_) {
   io::AsyncEventFd::create(ctx_, 0, EFD_NONBLOCK)
       .transform([this](auto&& fd) { wake_fd_ = std::move(fd); })
       .or_else([id](auto err) -> std::expected<void, std::error_code> {

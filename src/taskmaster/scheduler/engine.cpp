@@ -104,7 +104,6 @@ auto Engine::tick() -> void {
   auto now = std::chrono::system_clock::now();
   log::debug("Engine tick: schedule_size={}", schedule_.size());
 
-  // Process scheduled cron tasks
   while (!schedule_.empty()) {
     auto it = schedule_.begin();
     if (it->first > now)
@@ -118,13 +117,11 @@ auto Engine::tick() -> void {
     if (task_it == tasks_.end())
       continue;
 
-    // Notify upper layer to trigger DAG
     if (on_dag_trigger_) {
       log::info("Cron triggered DAG: {}", task_it->second.dag_id);
       on_dag_trigger_(task_it->second.dag_id);
     }
 
-    // Schedule next cron run
     if (task_it->second.cron_expr.has_value()) {
       auto next_time = task_it->second.cron_expr->next_after(now);
       schedule_task(id, next_time);

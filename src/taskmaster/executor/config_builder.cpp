@@ -10,7 +10,7 @@ auto ExecutorConfigBuilder::build(const DAGInfo& dag_info, const DAG& graph)
 
   for (const auto& task : dag_info.tasks) {
     NodeIndex idx = graph.get_index(task.task_id);
-    if (idx != INVALID_NODE && idx < cfgs.size()) {
+    if (idx != kInvalidNode && idx < cfgs.size()) {
       ShellExecutorConfig exec;
       exec.command = task.command;
       exec.working_dir = task.working_dir;

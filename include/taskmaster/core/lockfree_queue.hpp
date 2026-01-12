@@ -11,7 +11,7 @@
 
 namespace taskmaster {
 
-inline constexpr std::size_t CACHE_LINE_SIZE = 64;
+inline constexpr std::size_t kCacheLineSize = 64;
 
 // Concept for queue element types
 template <typename T>
@@ -105,16 +105,16 @@ public:
   }
 
 private:
-  static constexpr std::size_t kPadding = (CACHE_LINE_SIZE - 1) / sizeof(T) + 1;
+  static constexpr std::size_t kPadding = (kCacheLineSize - 1) / sizeof(T) + 1;
 
   std::size_t capacity_;
   T* slots_;
   [[no_unique_address]] Allocator allocator_;
 
-  alignas(CACHE_LINE_SIZE) std::atomic<std::size_t> write_idx_{0};
-  alignas(CACHE_LINE_SIZE) std::size_t read_idx_cache_{0};
-  alignas(CACHE_LINE_SIZE) std::atomic<std::size_t> read_idx_{0};
-  alignas(CACHE_LINE_SIZE) std::size_t write_idx_cache_{0};
+  alignas(kCacheLineSize) std::atomic<std::size_t> write_idx_{0};
+  alignas(kCacheLineSize) std::size_t read_idx_cache_{0};
+  alignas(kCacheLineSize) std::atomic<std::size_t> read_idx_{0};
+  alignas(kCacheLineSize) std::size_t write_idx_cache_{0};
 };
 
 struct MPSCNode {
@@ -181,8 +181,8 @@ public:
   }
 
 private:
-  alignas(CACHE_LINE_SIZE) std::atomic<MPSCNode*> head_;
-  alignas(CACHE_LINE_SIZE) std::atomic<MPSCNode*> tail_;
+  alignas(kCacheLineSize) std::atomic<MPSCNode*> head_;
+  alignas(kCacheLineSize) std::atomic<MPSCNode*> tail_;
   MPSCNode stub_;
 };
 
@@ -277,8 +277,8 @@ private:
   std::size_t capacity_;
   std::size_t mask_;
   std::unique_ptr<Slot[]> slots_;
-  alignas(CACHE_LINE_SIZE) std::atomic<std::size_t> head_{0};
-  alignas(CACHE_LINE_SIZE) std::atomic<std::size_t> tail_{0};
+  alignas(kCacheLineSize) std::atomic<std::size_t> head_{0};
+  alignas(kCacheLineSize) std::atomic<std::size_t> tail_{0};
 };
 
 }  // namespace taskmaster

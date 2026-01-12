@@ -24,7 +24,7 @@ DAGRun::DAGRun(DAGRunPrivateTag, DAGRunId dag_run_id, const DAG& dag)
 auto DAGRun::create(DAGRunId dag_run_id, const DAG& dag)
     -> Result<DAGRun> {
   std::size_t n = dag.size();
-  if (n > MAX_TASKS) {
+  if (n > kMaxTasks) {
     return fail(Error::InvalidArgument);
   }
 

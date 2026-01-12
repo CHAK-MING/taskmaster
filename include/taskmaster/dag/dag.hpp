@@ -12,7 +12,7 @@
 namespace taskmaster {
 
 using NodeIndex = std::uint32_t;
-inline constexpr NodeIndex INVALID_NODE = UINT32_MAX;
+inline constexpr NodeIndex kInvalidNode = UINT32_MAX;
 
 class DAG {
 public:

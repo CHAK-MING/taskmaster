@@ -1,5 +1,6 @@
 #include "taskmaster/config/config_watcher.hpp"
 
+#include "taskmaster/core/constants.hpp"
 #include "taskmaster/util/log.hpp"
 
 #include <sys/inotify.h>
@@ -10,12 +11,6 @@
 #include <cstring>
 
 namespace taskmaster {
-
-namespace {
-
-constexpr size_t kEventBufferSize = 4096;
-
-}  // namespace
 
 ConfigWatcher::ConfigWatcher(std::string_view directory)
     : directory_(directory) {}
@@ -49,7 +44,7 @@ auto ConfigWatcher::start() -> void {
   watch_thread_ = std::jthread([this](std::stop_token st) {
     while (!st.stop_requested() && running_.load()) {
       watch_loop();
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      std::this_thread::sleep_for(timing::kConfigWatchInterval);
     }
   });
 
@@ -96,7 +91,7 @@ auto ConfigWatcher::directory() const -> const std::filesystem::path& {
 }
 
 auto ConfigWatcher::watch_loop() -> void {
-  std::array<char, kEventBufferSize> buffer{};
+  std::array<char, io::kEventBufferSize> buffer{};
 
   ssize_t len = read(inotify_fd_, buffer.data(), buffer.size());
   if (len <= 0) {

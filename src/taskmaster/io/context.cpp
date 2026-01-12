@@ -39,7 +39,7 @@ auto from_errno(int err) noexcept -> std::error_code {
 
 class IoContextImpl {
 public:
-  static constexpr std::uint32_t BATCH_SIZE = 8;
+  static constexpr std::uint32_t kBatchSize = 8;
 
   explicit IoContextImpl(std::uint32_t queue_depth) : queue_depth_(queue_depth) {
       unsigned flags = IORING_SETUP_SQPOLL;
@@ -152,7 +152,7 @@ public:
 
   auto submit(bool force) -> int {
     if (!initialized_) return 0;
-    if (!force && pending_count_ < BATCH_SIZE) return 0;
+    if (!force && pending_count_ < kBatchSize) return 0;
     return io_uring_submit(&ring_);
   }
 
@@ -172,7 +172,7 @@ public:
     if (!sqe) return;
 
     io_uring_prep_poll_multishot(sqe, fd, POLLIN);
-    io_uring_sqe_set_data(sqe, reinterpret_cast<void*>(WAKE_EVENT_TOKEN));
+    io_uring_sqe_set_data(sqe, reinterpret_cast<void*>(kWakeEventToken));
     ++pending_count_;
   }
 

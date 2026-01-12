@@ -80,7 +80,7 @@ auto Persistence::Statement::reset() -> void {
   }
 }
 
-auto Persistence::prepare(const char* sql) -> Result<sqlite3_stmt*> {
+auto Persistence::prepare(const char* sql) const -> Result<sqlite3_stmt*> {
   sqlite3_stmt* stmt = nullptr;
   if (sqlite3_prepare_v2(db_.get(), sql, -1, &stmt, nullptr) != SQLITE_OK) {
     log::error("Failed to prepare statement: {}", sqlite3_errmsg(db_.get()));
@@ -88,6 +88,41 @@ auto Persistence::prepare(const char* sql) -> Result<sqlite3_stmt*> {
   }
   return stmt;
 }
+
+namespace {
+
+auto parse_task_from_row(sqlite3_stmt* stmt, int task_id_col, int name_col,
+                         int command_col, int working_dir_col, int executor_col,
+                         int deps_col, int timeout_col, int retry_interval_col,
+                         int max_retries_col) -> TaskConfig {
+  auto deps_str = col_text(stmt, deps_col);
+  auto executor_str = col_text(stmt, executor_col);
+
+  TaskConfig task{.task_id = TaskId{col_text(stmt, task_id_col)},
+                  .name = col_text(stmt, name_col),
+                  .command = col_text(stmt, command_col),
+                  .working_dir = col_text(stmt, working_dir_col),
+                  .dependencies = {},
+                  .executor = string_to_executor_type(
+                      executor_str.empty() ? "shell" : executor_str),
+                  .timeout = std::chrono::seconds(sqlite3_column_int(stmt, timeout_col)),
+                  .retry_interval = std::chrono::seconds(sqlite3_column_int(stmt, retry_interval_col)),
+                  .max_retries = sqlite3_column_int(stmt, max_retries_col)};
+
+  if (!deps_str.empty()) {
+    auto deps_result = nlohmann::json::parse(deps_str, nullptr, false);
+    if (deps_result.is_array()) {
+      for (const auto& dep : deps_result) {
+        if (dep.is_string()) {
+          task.dependencies.push_back(TaskId{dep.get<std::string>()});
+        }
+      }
+    }
+  }
+  return task;
+}
+
+}  // namespace
 
 Persistence::Persistence(std::string_view db_path) : db_path_(db_path) {
 }
@@ -362,7 +397,7 @@ auto Persistence::update_task_instance(DAGRunId dag_run_id,
   return ok();
 }
 
-auto Persistence::get_dag_run_state(DAGRunId dag_run_id)
+auto Persistence::get_dag_run_state(DAGRunId dag_run_id) const
     -> Result<DAGRunState> {
   constexpr auto sql = "SELECT state FROM dag_runs WHERE dag_run_id = ?;";
 
@@ -378,7 +413,7 @@ auto Persistence::get_dag_run_state(DAGRunId dag_run_id)
   return string_to_dag_run_state(col_text(stmt.get(), 0));
 }
 
-auto Persistence::get_incomplete_dag_runs()
+auto Persistence::get_incomplete_dag_runs() const
     -> Result<std::vector<DAGRunId>> {
   constexpr auto sql =
       "SELECT dag_run_id FROM dag_runs WHERE state IN ('pending', 'running');";
@@ -397,7 +432,7 @@ auto Persistence::get_incomplete_dag_runs()
   return ids;
 }
 
-auto Persistence::get_task_instances(DAGRunId dag_run_id)
+auto Persistence::get_task_instances(DAGRunId dag_run_id) const
     -> Result<std::vector<TaskInstanceInfo>> {
   constexpr auto sql = R"(
     SELECT id, task_id, state, attempt, started_at, finished_at,
@@ -415,13 +450,13 @@ auto Persistence::get_task_instances(DAGRunId dag_run_id)
   std::vector<TaskInstanceInfo> instances;
   while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
     auto task_id_str = col_text(stmt.get(), 1);
-    NodeIndex task_idx = INVALID_NODE;
+    NodeIndex task_idx = kInvalidNode;
     if (!task_id_str.empty()) {
       auto [ptr, ec] = std::from_chars(
           task_id_str.data(), task_id_str.data() + task_id_str.size(),
           task_idx);
       if (ec != std::errc{}) {
-        task_idx = INVALID_NODE;
+        task_idx = kInvalidNode;
       }
     }
     instances.push_back(
@@ -437,7 +472,7 @@ auto Persistence::get_task_instances(DAGRunId dag_run_id)
   return instances;
 }
 
-auto Persistence::list_run_history(std::optional<DAGId> dag_id, std::size_t limit)
+auto Persistence::list_run_history(std::optional<DAGId> dag_id, std::size_t limit) const
     -> Result<std::vector<RunHistoryEntry>> {
   std::string sql;
   if (!dag_id.has_value() || dag_id->value().empty()) {
@@ -488,7 +523,7 @@ auto Persistence::list_run_history(std::optional<DAGId> dag_id, std::size_t limi
   return entries;
 }
 
-auto Persistence::get_run_history(DAGRunId dag_run_id)
+auto Persistence::get_run_history(DAGRunId dag_run_id) const
     -> Result<RunHistoryEntry> {
   constexpr auto sql = R"(
     SELECT dag_run_id, state, trigger_type, scheduled_at, started_at, finished_at
@@ -598,7 +633,7 @@ auto Persistence::delete_dag(DAGId dag_id) -> Result<void> {
              : fail(Error::DatabaseQueryFailed);
 }
 
-auto Persistence::get_dag(DAGId dag_id) -> Result<DAGInfo> {
+auto Persistence::get_dag(DAGId dag_id) const -> Result<DAGInfo> {
   constexpr auto sql =
       "SELECT dag_id, name, description, cron, max_concurrent_runs, "
       "created_at, updated_at FROM dags WHERE dag_id = ?;";
@@ -630,7 +665,7 @@ auto Persistence::get_dag(DAGId dag_id) -> Result<DAGInfo> {
   return dag;
 }
 
-auto Persistence::list_dags() -> Result<std::vector<DAGInfo>> {
+auto Persistence::list_dags() const -> Result<std::vector<DAGInfo>> {
   constexpr auto sql =
       "SELECT dag_id, name, description, cron, max_concurrent_runs, "
       "created_at, updated_at FROM dags;";
@@ -725,7 +760,7 @@ auto Persistence::delete_task(DAGId dag_id, TaskId task_id)
              : fail(Error::DatabaseQueryFailed);
 }
 
-auto Persistence::get_tasks(DAGId dag_id)
+auto Persistence::get_tasks(DAGId dag_id) const
     -> Result<std::vector<TaskConfig>> {
   constexpr auto sql = R"(
     SELECT task_id, name, command, working_dir, executor, deps, timeout, retry_interval, max_retries
@@ -741,40 +776,12 @@ auto Persistence::get_tasks(DAGId dag_id)
 
   std::vector<TaskConfig> tasks;
   while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
-    auto deps_str = col_text(stmt.get(), 5);
-    auto executor_str = col_text(stmt.get(), 3);
-
-    TaskConfig task{.task_id = TaskId{col_text(stmt.get(), 0)},
-                    .name = col_text(stmt.get(), 1),
-                    .command = col_text(stmt.get(), 2),
-                    .working_dir = col_text(stmt.get(), 4),
-                    .dependencies = {},
-                    .executor = string_to_executor_type(
-                        executor_str.empty() ? "shell" : executor_str),
-                    .timeout =
-                        std::chrono::seconds(sqlite3_column_int(stmt.get(), 6)),
-                    .retry_interval =
-                        std::chrono::seconds(sqlite3_column_int(stmt.get(), 7)),
-                    .max_retries = sqlite3_column_int(stmt.get(), 8)};
-
-    if (!deps_str.empty()) {
-      auto deps_result = nlohmann::json::parse(deps_str, nullptr, false);
-      if (deps_result.is_array()) {
-        for (const auto& dep : deps_result) {
-          if (dep.is_string()) {
-            task.dependencies.push_back(TaskId{dep.get<std::string>()});
-          }
-        }
-      } else {
-        log::warn("Invalid deps JSON format for task {}: {}", task.task_id, deps_str);
-      }
-    }
-    tasks.push_back(std::move(task));
+    tasks.push_back(parse_task_from_row(stmt.get(), 0, 1, 2, 4, 3, 5, 6, 7, 8));
   }
   return tasks;
 }
 
-auto Persistence::get_all_tasks()
+auto Persistence::get_all_tasks() const
     -> Result<std::unordered_map<std::string, std::vector<TaskConfig>>> {
   constexpr auto sql = R"(
     SELECT dag_id, task_id, name, command, working_dir, executor, deps, timeout, retry_interval, max_retries
@@ -789,32 +796,7 @@ auto Persistence::get_all_tasks()
   std::unordered_map<std::string, std::vector<TaskConfig>> tasks_by_dag;
   while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
     auto dag_id_str = col_text(stmt.get(), 0);
-    auto deps_str = col_text(stmt.get(), 6);
-    auto executor_str = col_text(stmt.get(), 5);
-
-    TaskConfig task{.task_id = TaskId{col_text(stmt.get(), 1)},
-                    .name = col_text(stmt.get(), 2),
-                    .command = col_text(stmt.get(), 3),
-                    .working_dir = col_text(stmt.get(), 4),
-                    .dependencies = {},
-                    .executor = string_to_executor_type(
-                        executor_str.empty() ? "shell" : executor_str),
-                    .timeout =
-                        std::chrono::seconds(sqlite3_column_int(stmt.get(), 7)),
-                    .retry_interval =
-                        std::chrono::seconds(sqlite3_column_int(stmt.get(), 8)),
-                    .max_retries = sqlite3_column_int(stmt.get(), 9)};
-
-    if (!deps_str.empty()) {
-      auto deps_result = nlohmann::json::parse(deps_str, nullptr, false);
-      if (deps_result.is_array()) {
-        for (const auto& dep : deps_result) {
-          if (dep.is_string()) {
-            task.dependencies.push_back(TaskId{dep.get<std::string>()});
-          }
-        }
-      }
-    }
+    auto task = parse_task_from_row(stmt.get(), 1, 2, 3, 4, 5, 6, 7, 8, 9);
     tasks_by_dag[dag_id_str].push_back(std::move(task));
   }
   return tasks_by_dag;
@@ -922,7 +904,7 @@ auto Persistence::save_task_log(DAGRunId dag_run_id,
 }
 
 auto Persistence::get_task_logs(DAGRunId dag_run_id,
-                                TaskId task_id, int attempt)
+                                TaskId task_id, int attempt) const
     -> Result<std::vector<TaskLogEntry>> {
   std::string sql;
   if (task_id.empty()) {

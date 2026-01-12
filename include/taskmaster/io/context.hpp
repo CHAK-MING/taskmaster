@@ -19,10 +19,10 @@ namespace taskmaster::io {
 class IoContext;
 class IoContextImpl;
 
-inline constexpr unsigned INVALID_SHARD = ~0u;
-inline constexpr std::uint32_t DEFAULT_QUEUE_DEPTH = 256;
-inline constexpr std::uintptr_t WAKE_EVENT_TOKEN = 0x1;
-inline constexpr std::uint32_t CQE_F_MORE = (1U << 1);
+inline constexpr unsigned kInvalidShard = ~0u;
+inline constexpr std::uint32_t kDefaultQueueDepth = 256;
+inline constexpr std::uintptr_t kWakeEventToken = 0x1;
+inline constexpr std::uint32_t kCqeFMore = (1U << 1);
 
 namespace ops {
 
@@ -108,7 +108,7 @@ struct CompletionData {
   std::int32_t result{0};
   std::uint32_t flags{0};
   IoContext* context{nullptr};
-  unsigned owner_shard{INVALID_SHARD};
+  unsigned owner_shard{kInvalidShard};
   KernelTimespec ts{};  // For timeout storage
   bool completed{false};
   bool cancelled{false};
@@ -241,7 +241,7 @@ private:
 class IoContext {
 public:
   /// Create IoContext with specified queue depth and optional memory resource
-  explicit IoContext(std::uint32_t queue_depth = DEFAULT_QUEUE_DEPTH,
+  explicit IoContext(std::uint32_t queue_depth = kDefaultQueueDepth,
                      std::pmr::memory_resource* mr = nullptr);
   ~IoContext();
 

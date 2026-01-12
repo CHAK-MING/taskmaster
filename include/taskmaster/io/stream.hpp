@@ -24,13 +24,10 @@ public:
     return EventFd{fd};
   }
 
-  /// Default constructor - invalid
   EventFd() noexcept = default;
 
-  /// Move constructor
   EventFd(EventFd&& other) noexcept : fd_(std::exchange(other.fd_, -1)) {}
 
-  /// Move assignment
   auto operator=(EventFd&& other) noexcept -> EventFd& {
     if (this != &other) {
       close_sync();
@@ -39,22 +36,17 @@ public:
     return *this;
   }
 
-  // Non-copyable
   EventFd(const EventFd&) = delete;
   auto operator=(const EventFd&) -> EventFd& = delete;
 
-  /// Destructor
   ~EventFd() { close_sync(); }
 
-  /// Get raw file descriptor
   [[nodiscard]] auto native_handle() const noexcept -> int { return fd_; }
   [[nodiscard]] auto fd() const noexcept -> int { return fd_; }
 
-  /// Check if valid
   [[nodiscard]] auto is_open() const noexcept -> bool { return fd_ >= 0; }
   [[nodiscard]] explicit operator bool() const noexcept { return is_open(); }
 
-  /// Signal the eventfd (write)
   auto signal(std::uint64_t value = 1) noexcept -> bool {
     while (true) {
       auto ret = ::write(fd_, &value, sizeof(value));
@@ -65,7 +57,6 @@ public:
     }
   }
 
-  /// Consume all pending signals (read and discard)
   auto consume() noexcept -> std::uint64_t {
     std::uint64_t total = 0;
     std::uint64_t val;
@@ -75,7 +66,6 @@ public:
     return total;
   }
 
-  /// Async wait for signal
   [[nodiscard]] auto wait(IoContext& ctx) -> task<IoResult> {
     if (fd_ < 0) {
       co_return io_failure(IoError::BadDescriptor);
