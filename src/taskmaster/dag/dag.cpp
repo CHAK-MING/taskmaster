@@ -9,39 +9,71 @@
 
 namespace taskmaster {
 
-auto DAG::add_node(std::string_view key) -> NodeIndex {
-  auto it = key_to_idx_.find(key);
+auto DAG::add_node(TaskId task_id) -> NodeIndex {
+  auto it = key_to_idx_.find(task_id);
   if (it != key_to_idx_.end()) {
     return it->second;
   }
 
   NodeIndex idx = static_cast<NodeIndex>(nodes_.size());
   nodes_.emplace_back();
-  keys_.emplace_back(key);
-  key_to_idx_.emplace(std::string(key), idx);
+  keys_.emplace_back(task_id);
+  key_to_idx_.emplace(task_id, idx);
   return idx;
 }
 
-auto DAG::add_edge(std::string_view from, std::string_view to) -> Result<void> {
+auto DAG::add_edge(TaskId from, TaskId to) -> Result<void> {
   NodeIndex from_idx = get_index(from);
   NodeIndex to_idx = get_index(to);
-  if (from_idx == INVALID_NODE || to_idx == INVALID_NODE) {
+  if (from_idx == INVALID_NODE || to_idx == INVALID_NODE) [[unlikely]] {
     return fail(Error::NotFound);
   }
   return add_edge(from_idx, to_idx);
 }
 
 auto DAG::add_edge(NodeIndex from, NodeIndex to) -> Result<void> {
-  if (from >= nodes_.size() || to >= nodes_.size() || from == to) {
+  if (from >= nodes_.size() || to >= nodes_.size() || from == to) [[unlikely]] {
     return fail(Error::InvalidArgument);
   }
+
+  if (would_create_cycle(from, to)) {
+    return fail(Error::CycleDetected);
+  }
+
   nodes_[to].deps.push_back(from);
   nodes_[from].dependents.push_back(to);
   return ok();
 }
 
-auto DAG::has_node(std::string_view key) const -> bool {
-  return key_to_idx_.contains(key);
+auto DAG::would_create_cycle(NodeIndex from, NodeIndex to) const -> bool {
+  std::vector<bool> visited(nodes_.size(), false);
+  std::vector<NodeIndex> stack;
+  stack.push_back(from);
+
+  while (!stack.empty()) {
+    NodeIndex current = stack.back();
+    stack.pop_back();
+
+    if (current == to) {
+      return true;
+    }
+
+    if (visited[current]) {
+      continue;
+    }
+    visited[current] = true;
+
+    for (NodeIndex dep : nodes_[current].deps) {
+      if (!visited[dep]) {
+        stack.push_back(dep);
+      }
+    }
+  }
+  return false;
+}
+
+auto DAG::has_node(TaskId task_id) const -> bool {
+  return key_to_idx_.contains(task_id);
 }
 
 auto DAG::is_valid() const -> Result<void> {
@@ -49,7 +81,7 @@ auto DAG::is_valid() const -> Result<void> {
   std::vector<std::pair<NodeIndex, std::size_t>>
       stack;  // (node, next_child_index)
 
-  for (NodeIndex start = 0; start < nodes_.size(); ++start) {
+  for (NodeIndex start : std::views::iota(NodeIndex{0}, static_cast<NodeIndex>(nodes_.size()))) {
     if (state[start] != 0)
       continue;
 
@@ -78,7 +110,7 @@ auto DAG::is_valid() const -> Result<void> {
   return ok();
 }
 
-auto DAG::get_topological_order() const -> std::vector<std::string> {
+auto DAG::get_topological_order() const -> std::vector<TaskId> {
   auto in_degree = nodes_ | std::views::transform([](const Node& n) {
                      return static_cast<int>(n.deps.size());
                    }) |
@@ -91,7 +123,7 @@ auto DAG::get_topological_order() const -> std::vector<std::string> {
     }
   }
 
-  std::vector<std::string> result;
+  std::vector<TaskId> result;
   result.reserve(nodes_.size());
   while (!ready.empty()) {
     NodeIndex current = ready.front();
@@ -138,12 +170,12 @@ auto DAG::get_dependents_view(NodeIndex idx) const noexcept
   return nodes_[idx].dependents;
 }
 
-auto DAG::get_index(std::string_view key) const -> NodeIndex {
-  auto it = key_to_idx_.find(key);
+auto DAG::get_index(TaskId task_id) const -> NodeIndex {
+  auto it = key_to_idx_.find(task_id);
   return it != key_to_idx_.end() ? it->second : INVALID_NODE;
 }
 
-auto DAG::get_key(NodeIndex idx) const -> std::string_view {
+auto DAG::get_key(NodeIndex idx) const -> TaskId {
   if (idx >= keys_.size()) {
     return {};
   }
@@ -156,7 +188,7 @@ auto DAG::clear() -> void {
   key_to_idx_.clear();
 }
 
-auto DAG::all_nodes() const -> std::vector<std::string> {
+auto DAG::all_nodes() const -> std::vector<TaskId> {
   return keys_;
 }
 

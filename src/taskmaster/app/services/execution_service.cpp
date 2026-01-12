@@ -4,6 +4,7 @@
 #include "taskmaster/util/log.hpp"
 
 #include <algorithm>
+#include <format>
 #include <ranges>
 
 namespace taskmaster {
@@ -17,20 +18,20 @@ auto ExecutionService::set_callbacks(ExecutionCallbacks callbacks) -> void {
   callbacks_ = std::move(callbacks);
 }
 
-auto ExecutionService::start_run(std::string run_id,
+auto ExecutionService::start_run(DAGRunId dag_run_id,
                                  std::unique_ptr<DAGRun> run,
                                  std::vector<ExecutorConfig> configs) -> void {
   {
     std::lock_guard lock(mu_);
-    runs_[run_id] = std::move(run);
-    run_cfgs_[run_id] = std::move(configs);
+    runs_.insert_or_assign(dag_run_id.clone(), std::move(run));
+    run_cfgs_.insert_or_assign(dag_run_id.clone(), std::move(configs));
   }
-  dispatch(run_id);
+  dispatch(dag_run_id);
 }
 
-auto ExecutionService::get_run(std::string_view run_id) -> DAGRun* {
+auto ExecutionService::get_run(const DAGRunId& dag_run_id) -> DAGRun* {
   std::lock_guard lock(mu_);
-  auto it = runs_.find(run_id);
+  auto it = runs_.find(dag_run_id);
   return it != runs_.end() ? it->second.get() : nullptr;
 }
 
@@ -54,20 +55,20 @@ auto ExecutionService::coro_count() const -> int {
   return coro_count_.load();
 }
 
-auto ExecutionService::dispatch(const std::string& run_id) -> void {
+auto ExecutionService::dispatch(const DAGRunId& dag_run_id) -> void {
   std::vector<TaskJob> jobs;
 
   {
     std::lock_guard lock(mu_);
-    auto it = runs_.find(run_id);
-    if (it == runs_.end()) {
-      log::debug("dispatch: run {} not found", run_id);
+    auto it = runs_.find(dag_run_id);
+    if (it == runs_.end()) [[unlikely]] {
+      log::debug("dispatch: run {} not found", dag_run_id);
       return;
     }
 
-    auto cfg_it = run_cfgs_.find(run_id);
-    if (cfg_it == run_cfgs_.end()) {
-      log::debug("dispatch: run_cfgs for {} not found", run_id);
+    auto cfg_it = run_cfgs_.find(dag_run_id);
+    if (cfg_it == run_cfgs_.end()) [[unlikely]] {
+      log::debug("dispatch: run_cfgs for {} not found", dag_run_id);
       return;
     }
 
@@ -76,16 +77,20 @@ auto ExecutionService::dispatch(const std::string& run_id) -> void {
     const auto& task_cfgs = cfg_it->second;
 
     auto ready = run.get_ready_tasks();
-    log::debug("dispatch: run {} has {} ready tasks", run_id, ready.size());
+    if (!ready.empty()) {
+      log::info("dispatch: run {} has {} ready tasks", dag_run_id, ready.size());
+    } else {
+      log::debug("dispatch: run {} has 0 ready tasks", dag_run_id);
+    }
 
     for (NodeIndex idx : ready) {
-      if (idx >= task_cfgs.size()) {
+      if (idx >= task_cfgs.size()) [[unlikely]] {
         log::error("Config not found for task {}", idx);
         continue;
       }
 
-      std::string name{g.get_key(idx)};
-      std::string inst_id = run_id + "_" + name;
+      TaskId task_id{std::string{g.get_key(idx)}};
+      InstanceId inst_id = generate_instance_id(dag_run_id, task_id);
 
       run.mark_task_started(idx, inst_id);
 
@@ -94,10 +99,9 @@ auto ExecutionService::dispatch(const std::string& run_id) -> void {
         attempt = info->attempt;
       }
 
-      jobs.push_back(
-          {idx, std::move(name), std::move(inst_id), task_cfgs[idx], attempt});
+      jobs.push_back({idx, task_id, inst_id, task_cfgs[idx], attempt});
       log::debug("dispatch: scheduled task {} (idx={}, attempt={})",
-                 jobs.back().name, idx, attempt);
+                 task_id, idx, attempt);
     }
 
     if (!jobs.empty() && callbacks_.on_persist_run) {
@@ -105,7 +109,7 @@ auto ExecutionService::dispatch(const std::string& run_id) -> void {
       for (const auto& job : jobs) {
         if (auto info = run.get_task_info(job.idx)) {
           if (callbacks_.on_persist_task) {
-            callbacks_.on_persist_task(run_id, *info);
+            callbacks_.on_persist_task(dag_run_id, *info);
           }
         }
       }
@@ -113,108 +117,114 @@ auto ExecutionService::dispatch(const std::string& run_id) -> void {
   }
 
   for (auto& job : jobs) {
-    log::debug("Executing task {} (idx={})", job.name, job.idx);
-    auto coro = run_task(run_id, std::move(job));
+    log::info("Executing task {} (idx={}, inst_id={})", job.task_id, job.idx,
+              job.inst_id);
+    auto coro = run_task(dag_run_id, std::move(job));
     runtime_.schedule_external(coro.take());
   }
 }
 
-auto ExecutionService::run_task(std::string run_id, TaskJob job) -> spawn_task {
+auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job) -> spawn_task {
   ++coro_count_;
   struct Guard {
     std::atomic<int>& c;
     ~Guard() { --c; }
   } guard{coro_count_};
 
-  log::debug("run_task: starting {} (idx={}, attempt={})", job.name, job.idx,
+  log::debug("run_task: starting {} (idx={}, attempt={})", job.task_id, job.idx,
              job.attempt);
+  log::info("run_task: dag_run_id={} task={} inst_id={} attempt={}", dag_run_id,
+            job.task_id, job.inst_id, job.attempt);
 
   std::string start_msg;
   if (job.attempt > 1) {
-    start_msg = "Task '" + job.name + "' starting (attempt " +
-                std::to_string(job.attempt) + ")";
+    start_msg = std::format("Task '{}' starting (attempt {})", job.task_id.value(), job.attempt);
   } else {
-    start_msg = "Task '" + job.name + "' starting";
+    start_msg = std::format("Task '{}' starting", job.task_id.value());
   }
 
   if (callbacks_.on_log) {
-    callbacks_.on_log(run_id, job.name, "stdout", start_msg);
+    callbacks_.on_log(dag_run_id, job.task_id, "stdout", start_msg);
   }
   if (callbacks_.on_persist_log) {
-    callbacks_.on_persist_log(run_id, job.name, job.attempt, "INFO", start_msg);
+    callbacks_.on_persist_log(dag_run_id, job.task_id, job.attempt, "INFO", start_msg);
   }
   if (callbacks_.on_task_status) {
-    callbacks_.on_task_status(run_id, job.name, "running");
+    callbacks_.on_task_status(dag_run_id, job.task_id, "running");
   }
 
-  auto result = co_await execute_async(executor_, job.inst_id, job.cfg);
-  log::debug("run_task: {} completed with exit_code={}", job.name,
-             result.exit_code);
+  auto result = co_await execute_async(runtime_, executor_, job.inst_id,
+                                         job.cfg);
+  log::info("run_task: completed dag_run_id={} task={} inst_id={} exit_code={} err='{}'",
+            dag_run_id, job.task_id, job.inst_id, result.exit_code, result.error);
 
   if (!result.stdout_output.empty()) {
     if (callbacks_.on_log) {
-      callbacks_.on_log(run_id, job.name, "stdout", result.stdout_output);
+      callbacks_.on_log(dag_run_id, job.task_id, "stdout", result.stdout_output);
     }
     if (callbacks_.on_persist_log) {
-      callbacks_.on_persist_log(run_id, job.name, job.attempt, "INFO",
+      callbacks_.on_persist_log(dag_run_id, job.task_id, job.attempt, "INFO",
                                 result.stdout_output);
     }
   }
   if (!result.stderr_output.empty()) {
     if (callbacks_.on_log) {
-      callbacks_.on_log(run_id, job.name, "stderr", result.stderr_output);
+      callbacks_.on_log(dag_run_id, job.task_id, "stderr", result.stderr_output);
     }
     if (callbacks_.on_persist_log) {
-      callbacks_.on_persist_log(run_id, job.name, job.attempt, "ERROR",
+      callbacks_.on_persist_log(dag_run_id, job.task_id, job.attempt, "ERROR",
                                 result.stderr_output);
     }
   }
 
   if (result.exit_code == 0 && result.error.empty()) {
-    std::string success_msg = "Task '" + job.name + "' completed successfully";
+    std::string success_msg = std::format("Task '{}' completed successfully", job.task_id.value());
     if (callbacks_.on_log) {
-      callbacks_.on_log(run_id, job.name, "stdout", success_msg);
+      callbacks_.on_log(dag_run_id, job.task_id, "stdout", success_msg);
     }
     if (callbacks_.on_persist_log) {
-      callbacks_.on_persist_log(run_id, job.name, job.attempt, "INFO",
+      callbacks_.on_persist_log(dag_run_id, job.task_id, job.attempt, "INFO",
                                 success_msg);
     }
     if (callbacks_.on_task_status) {
-      callbacks_.on_task_status(run_id, job.name, "success");
+      callbacks_.on_task_status(dag_run_id, job.task_id, "success");
     }
-    log::debug("run_task: calling on_task_success for {} (idx={})", job.name,
+    log::debug("run_task: calling on_task_success for {} (idx={})", job.task_id,
                job.idx);
-    on_task_success(run_id, job.idx);
+    on_task_success(dag_run_id, job.idx);
   } else {
-    std::string error_msg = "Task '" + job.name + "' failed: " + result.error;
+    std::string error_msg = std::format("Task '{}' failed: {}", job.task_id.value(), result.error);
     if (callbacks_.on_log) {
-      callbacks_.on_log(run_id, job.name, "stderr", error_msg);
+      callbacks_.on_log(dag_run_id, job.task_id, "stderr", error_msg);
     }
     if (callbacks_.on_persist_log) {
-      callbacks_.on_persist_log(run_id, job.name, job.attempt, "ERROR",
+      callbacks_.on_persist_log(dag_run_id, job.task_id, job.attempt, "ERROR",
                                 error_msg);
     }
     if (callbacks_.on_task_status) {
-      callbacks_.on_task_status(run_id, job.name, "failed");
+      callbacks_.on_task_status(dag_run_id, job.task_id, "failed");
     }
 
-    if (on_task_failure(run_id, job.idx, result.error)) {
-      auto retry = [](ExecutionService* self, std::string rid) -> spawn_task {
-        co_await async_yield();
-        self->dispatch(rid);
-      }(this, run_id);
+    if (on_task_failure(dag_run_id, job.idx, result.error, result.exit_code)) {
+      auto retry = dispatch_after_yield(dag_run_id);
       runtime_.schedule_external(retry.take());
     }
   }
 }
 
-auto ExecutionService::on_task_success(const std::string& run_id, NodeIndex idx)
+auto ExecutionService::dispatch_after_yield(DAGRunId dag_run_id) -> spawn_task {
+  co_await async_yield();
+  dispatch(dag_run_id);
+}
+
+auto ExecutionService::on_task_success(const DAGRunId& dag_run_id, NodeIndex idx)
     -> void {
   bool completed = false;
+  log::info("on_task_success: dag_run_id={} idx={}", dag_run_id, idx);
 
   {
     std::lock_guard lock(mu_);
-    auto it = runs_.find(run_id);
+    auto it = runs_.find(dag_run_id);
     if (it == runs_.end())
       return;
 
@@ -223,12 +233,14 @@ auto ExecutionService::on_task_success(const std::string& run_id, NodeIndex idx)
 
     if (auto info = run.get_task_info(idx)) {
       if (callbacks_.on_persist_task) {
-        callbacks_.on_persist_task(run_id, *info);
+        callbacks_.on_persist_task(dag_run_id, *info);
       }
     }
 
     if (run.is_complete()) {
-      on_run_complete(run, run_id);
+      on_run_complete(run, dag_run_id);
+      runs_.erase(it);
+      run_cfgs_.erase(dag_run_id);
       completed = true;
     }
   }
@@ -236,14 +248,15 @@ auto ExecutionService::on_task_success(const std::string& run_id, NodeIndex idx)
   if (completed) {
     done_cv_.notify_all();
   } else {
-    dispatch(run_id);
+    dispatch(dag_run_id);
   }
 }
 
-auto ExecutionService::on_task_failure(const std::string& run_id, NodeIndex idx,
-                                       const std::string& error) -> bool {
+auto ExecutionService::on_task_failure(const DAGRunId& dag_run_id, NodeIndex idx,
+                                        const std::string& error, int exit_code) -> bool {
+  log::info("on_task_failure: dag_run_id={} idx={} err='{}'", dag_run_id, idx, error);
   std::lock_guard lock(mu_);
-  auto it = runs_.find(run_id);
+  auto it = runs_.find(dag_run_id);
   if (it == runs_.end())
     return false;
 
@@ -251,10 +264,10 @@ auto ExecutionService::on_task_failure(const std::string& run_id, NodeIndex idx,
 
   int max_retries = 3;
   if (callbacks_.get_max_retries) {
-    max_retries = callbacks_.get_max_retries(run_id, idx);
+    max_retries = callbacks_.get_max_retries(dag_run_id, idx);
   }
 
-  run.mark_task_failed(idx, error, max_retries);
+  run.mark_task_failed(idx, error, max_retries, exit_code);
 
   bool needs_retry = false;
   if (auto info = run.get_task_info(idx)) {
@@ -266,13 +279,15 @@ auto ExecutionService::on_task_failure(const std::string& run_id, NodeIndex idx,
         info.state == TaskState::UpstreamFailed ||
         info.state == TaskState::Pending) {
       if (callbacks_.on_persist_task) {
-        callbacks_.on_persist_task(run_id, info);
+        callbacks_.on_persist_task(dag_run_id, info);
       }
     }
   }
 
   if (run.is_complete()) {
-    on_run_complete(run, run_id);
+    on_run_complete(run, dag_run_id);
+    runs_.erase(it);
+    run_cfgs_.erase(dag_run_id);
     done_cv_.notify_all();
     return false;
   }
@@ -280,7 +295,7 @@ auto ExecutionService::on_task_failure(const std::string& run_id, NodeIndex idx,
   return needs_retry;
 }
 
-auto ExecutionService::on_run_complete(DAGRun& run, const std::string& run_id)
+auto ExecutionService::on_run_complete(DAGRun& run, const DAGRunId& dag_run_id)
     -> void {
   if (callbacks_.on_persist_run) {
     callbacks_.on_persist_run(run);
@@ -288,9 +303,9 @@ auto ExecutionService::on_run_complete(DAGRun& run, const std::string& run_id)
   std::string status =
       run.state() == DAGRunState::Success ? "success" : "failed";
   if (callbacks_.on_run_status) {
-    callbacks_.on_run_status(run_id, status);
+    callbacks_.on_run_status(dag_run_id, status);
   }
-  log::info("DAG run {} {}", run_id, status);
+  log::info("DAG run {} {}", dag_run_id, status);
 }
 
 }  // namespace taskmaster

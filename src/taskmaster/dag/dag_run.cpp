@@ -1,17 +1,12 @@
 #include "taskmaster/dag/dag_run.hpp"
 
 #include <ranges>
-#include <stdexcept>
 
 namespace taskmaster {
 
-DAGRun::DAGRun(std::string dag_run_id, const DAG& dag)
+DAGRun::DAGRun(DAGRunPrivateTag, DAGRunId dag_run_id, const DAG& dag)
     : dag_run_id_(std::move(dag_run_id)), dag_(dag) {
   std::size_t n = dag_.size();
-  if (n > MAX_TASKS) {
-    throw std::runtime_error("DAG size exceeds MAX_TASKS limit");
-  }
-
   in_degree_.resize(n, 0);
   task_info_.resize(n);
 
@@ -26,15 +21,24 @@ DAGRun::DAGRun(std::string dag_run_id, const DAG& dag)
   init_ready_set();
 }
 
+auto DAGRun::create(DAGRunId dag_run_id, const DAG& dag)
+    -> Result<DAGRun> {
+  std::size_t n = dag.size();
+  if (n > MAX_TASKS) {
+    return fail(Error::InvalidArgument);
+  }
+
+  return DAGRun(DAGRunPrivateTag{}, std::move(dag_run_id), dag);
+}
+
 auto DAGRun::init_ready_set() -> void {
   ready_mask_.reset();
   ready_count_ = 0;
   ready_set_.clear();
-  ready_set_.reserve(dag_.size());
 
-  for (size_t i = 0; i < dag_.size(); ++i) {
-    if (in_degree_[i] == 0) {
-      ready_mask_.set(i);
+  for (auto [i, deg] : std::views::enumerate(in_degree_)) {
+    if (deg == 0) {
+      ready_mask_.set(static_cast<std::size_t>(i));
       ready_set_.insert(static_cast<NodeIndex>(i));
       ++ready_count_;
     }
@@ -49,7 +53,7 @@ auto DAGRun::get_ready_tasks() const -> std::vector<NodeIndex> {
   return {ready_set_.begin(), ready_set_.end()};
 }
 
-auto DAGRun::mark_task_started(NodeIndex task_idx, std::string_view instance_id)
+auto DAGRun::mark_task_started(NodeIndex task_idx, const InstanceId& instance_id)
     -> void {
   if (task_idx >= dag_.size()) {
     return;
@@ -65,19 +69,19 @@ auto DAGRun::mark_task_started(NodeIndex task_idx, std::string_view instance_id)
   ++running_count_;
 
   auto& info = task_info_[task_idx];
-  info.instance_id = std::string(instance_id);
+  info.instance_id = instance_id;
   info.state = TaskState::Running;
   info.attempt++;
   info.started_at = std::chrono::system_clock::now();
 }
 
-auto DAGRun::set_instance_id(NodeIndex task_idx, std::string_view instance_id)
+auto DAGRun::set_instance_id(NodeIndex task_idx, const InstanceId& instance_id)
     -> void {
   if (task_idx >= dag_.size()) {
     return;
   }
   auto& info = task_info_[task_idx];
-  info.instance_id = std::string(instance_id);
+  info.instance_id = instance_id;
 }
 
 auto DAGRun::mark_task_completed(NodeIndex task_idx, int exit_code) -> void {
@@ -113,7 +117,7 @@ auto DAGRun::update_ready_set(NodeIndex completed_task) -> void {
 }
 
 auto DAGRun::mark_task_failed(NodeIndex task_idx, std::string_view error,
-                              int max_retries) -> void {
+                              int max_retries, int exit_code) -> void {
   if (task_idx >= dag_.size()) {
     return;
   }
@@ -122,6 +126,7 @@ auto DAGRun::mark_task_failed(NodeIndex task_idx, std::string_view error,
   --running_count_;
 
   auto& info = task_info_[task_idx];
+  info.exit_code = exit_code;
   info.error_message = std::string(error);
   info.finished_at = std::chrono::system_clock::now();
 

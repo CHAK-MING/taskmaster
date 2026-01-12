@@ -10,8 +10,8 @@ Recovery::Recovery(Persistence& persistence) : persistence_(persistence) {
 }
 
 auto Recovery::recover(
-    std::move_only_function<TaskDAG(const std::string&)> dag_provider,
-    std::move_only_function<void(const std::string&, DAGRun&)> on_recovered)
+    std::move_only_function<TaskDAG(DAGRunId)> dag_provider,
+    std::move_only_function<void(DAGRunId, DAGRun&)> on_recovered)
     -> Result<RecoveryResult> {
   RecoveryResult result;
 
@@ -41,7 +41,13 @@ auto Recovery::recover(
       continue;
     }
 
-    DAGRun run(dag_run_id, dag);
+    auto run_result = DAGRun::create(DAGRunId{dag_run_id}, dag);
+    if (!run_result) {
+      log::warn("Failed to create DAGRun for {}", dag_run_id);
+      result.failed_dag_runs.push_back(dag_run_id);
+      continue;
+    }
+    DAGRun run = std::move(*run_result);
 
     for (const auto& info : task_instances) {
       if (info.state == TaskState::Success) {
@@ -80,7 +86,7 @@ auto Recovery::recover(
 }
 
 auto Recovery::mark_running_as_failed(Persistence& persistence,
-                                      std::string_view dag_run_id)
+                                      DAGRunId dag_run_id)
     -> Result<void> {
   auto task_instances_result = persistence.get_task_instances(dag_run_id);
   if (!task_instances_result) {

@@ -2,23 +2,24 @@
 
 #include "taskmaster/util/log.hpp"
 
-#include <sys/eventfd.h>
-
-#include <unistd.h>
-
 namespace taskmaster {
 
-Shard::Shard(shard_id id) : id_(id) {
-  wake_fd_ = eventfd(0, EFD_NONBLOCK);
-  if (wake_fd_ < 0) {
-    log::error("Failed to create eventfd for shard {}", id);
-  }
+Shard::Shard(shard_id id) : id_(id), ctx_(io::DEFAULT_QUEUE_DEPTH, &pool_) {
+  io::AsyncEventFd::create(ctx_, 0, EFD_NONBLOCK)
+      .transform([this](auto&& fd) { wake_fd_ = std::move(fd); })
+      .or_else([id](auto err) -> std::expected<void, std::error_code> {
+        log::error("Failed to create eventfd for shard {}: {}", id,
+                   err.message());
+        return {};
+      });
+
+  ctx_.set_completion_tracker(
+      [this](CompletionData* data) { track_io_data(data); },
+      [this](CompletionData* data) { untrack_io_data(data); });
 }
 
 Shard::~Shard() {
-  if (wake_fd_ >= 0) {
-    close(wake_fd_);
-  }
+  drain_pending();
 }
 
 auto Shard::schedule_local(std::coroutine_handle<> h) -> void {
@@ -66,19 +67,22 @@ auto Shard::process_ready() -> bool {
     }
   }
 
-  std::deque<std::coroutine_handle<>> batch;
-  batch.swap(local_queue_);
-
-  for (auto& handle : batch) {
-    if (handle) {
-      if (!handle.done()) {
-        handle.resume();
-        did_work = true;
-      }
-      if (handle.done()) {
-        handle.destroy();
+  // Swap to reusable buffer instead of allocating new deque
+  if (!local_queue_.empty()) {
+    batch_buffer_.swap(local_queue_);
+    
+    for (auto& handle : batch_buffer_) {
+      if (handle) {
+        if (!handle.done()) {
+          handle.resume();
+          did_work = true;
+        }
+        if (handle.done()) {
+          handle.destroy();
+        }
       }
     }
+    batch_buffer_.clear();
   }
 
   while (auto h = remote_queue_.try_pop()) {
@@ -101,7 +105,7 @@ auto Shard::process_io() -> void {
     auto req = std::move(io_queue_.front());
     io_queue_.pop_front();
 
-    if (!ring_.prepare(req)) {
+    if (!ctx_.prepare(req)) {
       io_queue_.push_front(std::move(req));
       return;
     }
@@ -122,16 +126,43 @@ auto Shard::set_sleeping(bool v) noexcept -> void {
 }
 
 auto Shard::drain_pending() -> void {
+  // Collect all pending CompletionData pointers (from both the local io_queue_
+  // and the tracked pending_io_ set) and delete them after destroying their
+  // continuations. This is important because awaitables allocate CompletionData
+  // dynamically and normally free it in await_resume(); during shutdown, many
+  // awaiters will never resume, so we must clean them up here.
+  std::unordered_set<CompletionData*> to_delete;
+  to_delete.reserve(io_queue_.size() + pending_io_.size());
+
   for (auto& req : io_queue_) {
-    if (req.data && req.data->coroutine) {
-      auto h = std::coroutine_handle<>::from_address(req.data->coroutine);
-      if (h) {
-        h.destroy();
-      }
-      req.data->coroutine = nullptr;
+    if (req.data) {
+      to_delete.insert(req.data);
     }
   }
   io_queue_.clear();
+
+  for (auto* data : pending_io_) {
+    if (data) {
+      to_delete.insert(data);
+    }
+  }
+  pending_io_.clear();
+
+  for (auto* data : to_delete) {
+    if (!data) continue;
+    if (data->continuation) {
+      auto h = data->continuation;
+      if (h) {
+        h.destroy();
+      }
+      data->continuation = {};
+    }
+    if (data->context) {
+      data->context->cleanup_completion_data(data);
+    } else {
+      delete data;
+    }
+  }
 
   if (run_next_.has_value()) {
     auto h = run_next_.value();
@@ -153,26 +184,15 @@ auto Shard::drain_pending() -> void {
       (*h).destroy();
     }
   }
-
-  for (auto* data : pending_io_) {
-    if (data && data->coroutine) {
-      auto h = std::coroutine_handle<>::from_address(data->coroutine);
-      if (h) {
-        h.destroy();
-      }
-      data->coroutine = nullptr;
-    }
-  }
-  pending_io_.clear();
 }
 
-auto Shard::track_io_data(io_data* data) -> void {
+auto Shard::track_io_data(CompletionData* data) -> void {
   if (data) {
     pending_io_.insert(data);
   }
 }
 
-auto Shard::untrack_io_data(io_data* data) -> void {
+auto Shard::untrack_io_data(CompletionData* data) -> void {
   if (data) {
     pending_io_.erase(data);
   }

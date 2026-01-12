@@ -1,6 +1,8 @@
 #pragma once
 
 #include <atomic>
+#include <new>
+#include <concepts>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -11,7 +13,12 @@ namespace taskmaster {
 
 inline constexpr std::size_t CACHE_LINE_SIZE = 64;
 
-template <typename T, typename Allocator = std::allocator<T>>
+// Concept for queue element types
+template <typename T>
+concept QueueElement = std::movable<T> && std::destructible<T>;
+
+template <QueueElement T, typename Allocator = std::allocator<T>>
+  requires std::same_as<typename Allocator::value_type, T>
 class SPSCQueue {
 public:
   explicit SPSCQueue(std::size_t capacity, Allocator alloc = Allocator())
@@ -34,19 +41,20 @@ public:
   SPSCQueue& operator=(const SPSCQueue&) = delete;
 
   template <typename... Args>
+    requires std::constructible_from<T, Args...>
   [[nodiscard]] auto try_push(Args&&... args) noexcept -> bool {
-    auto writeIdx = writeIdx_.load(std::memory_order_relaxed);
-    auto nextIdx = writeIdx + 1 == capacity_ ? 0 : writeIdx + 1;
+    auto write_idx = write_idx_.load(std::memory_order_relaxed);
+    auto next_idx = write_idx + 1 == capacity_ ? 0 : write_idx + 1;
 
-    if (nextIdx == readIdxCache_) {
-      readIdxCache_ = readIdx_.load(std::memory_order_acquire);
-      if (nextIdx == readIdxCache_)
+    if (next_idx == read_idx_cache_) [[unlikely]] {
+      read_idx_cache_ = read_idx_.load(std::memory_order_acquire);
+      if (next_idx == read_idx_cache_) [[unlikely]]
         return false;
     }
 
-    std::construct_at(&slots_[writeIdx + kPadding],
+    std::construct_at(&slots_[write_idx + kPadding],
                       std::forward<Args>(args)...);
-    writeIdx_.store(nextIdx, std::memory_order_release);
+    write_idx_.store(next_idx, std::memory_order_release);
     return true;
   }
 
@@ -55,25 +63,25 @@ public:
   }
 
   [[nodiscard]] auto front() noexcept -> T* {
-    auto readIdx = readIdx_.load(std::memory_order_relaxed);
-    if (readIdx == writeIdxCache_) {
-      writeIdxCache_ = writeIdx_.load(std::memory_order_acquire);
-      if (readIdx == writeIdxCache_)
+    auto read_idx = read_idx_.load(std::memory_order_relaxed);
+    if (read_idx == write_idx_cache_) [[unlikely]] {
+      write_idx_cache_ = write_idx_.load(std::memory_order_acquire);
+      if (read_idx == write_idx_cache_) [[unlikely]]
         return nullptr;
     }
-    return &slots_[readIdx + kPadding];
+    return &slots_[read_idx + kPadding];
   }
 
   auto pop() noexcept -> void {
-    auto readIdx = readIdx_.load(std::memory_order_relaxed);
-    std::destroy_at(&slots_[readIdx + kPadding]);
-    auto nextIdx = readIdx + 1 == capacity_ ? 0 : readIdx + 1;
-    readIdx_.store(nextIdx, std::memory_order_release);
+    auto read_idx = read_idx_.load(std::memory_order_relaxed);
+    std::destroy_at(&slots_[read_idx + kPadding]);
+    auto next_idx = read_idx + 1 == capacity_ ? 0 : read_idx + 1;
+    read_idx_.store(next_idx, std::memory_order_release);
   }
 
   [[nodiscard]] auto try_pop() noexcept -> std::optional<T> {
     auto* p = front();
-    if (!p)
+    if (!p) [[unlikely]]
       return std::nullopt;
     T value = std::move(*p);
     pop();
@@ -81,14 +89,14 @@ public:
   }
 
   [[nodiscard]] auto empty() const noexcept -> bool {
-    return writeIdx_.load(std::memory_order_acquire) ==
-           readIdx_.load(std::memory_order_acquire);
+    return write_idx_.load(std::memory_order_acquire) ==
+           read_idx_.load(std::memory_order_acquire);
   }
 
   [[nodiscard]] auto size() const noexcept -> std::size_t {
     auto diff =
-        static_cast<std::ptrdiff_t>(writeIdx_.load(std::memory_order_acquire)) -
-        static_cast<std::ptrdiff_t>(readIdx_.load(std::memory_order_acquire));
+        static_cast<std::ptrdiff_t>(write_idx_.load(std::memory_order_acquire)) -
+        static_cast<std::ptrdiff_t>(read_idx_.load(std::memory_order_acquire));
     return diff < 0 ? diff + capacity_ : diff;
   }
 
@@ -103,20 +111,22 @@ private:
   T* slots_;
   [[no_unique_address]] Allocator allocator_;
 
-  alignas(CACHE_LINE_SIZE) std::atomic<std::size_t> writeIdx_{0};
-  alignas(CACHE_LINE_SIZE) std::size_t readIdxCache_{0};
-  alignas(CACHE_LINE_SIZE) std::atomic<std::size_t> readIdx_{0};
-  alignas(CACHE_LINE_SIZE) std::size_t writeIdxCache_{0};
+  alignas(CACHE_LINE_SIZE) std::atomic<std::size_t> write_idx_{0};
+  alignas(CACHE_LINE_SIZE) std::size_t read_idx_cache_{0};
+  alignas(CACHE_LINE_SIZE) std::atomic<std::size_t> read_idx_{0};
+  alignas(CACHE_LINE_SIZE) std::size_t write_idx_cache_{0};
 };
 
 struct MPSCNode {
   std::atomic<MPSCNode*> next{nullptr};
 };
 
+// Concept for MPSC queue node types
 template <typename T>
-class MPSCQueue {
-  static_assert(std::is_base_of_v<MPSCNode, T>, "T must derive from MPSCNode");
+concept MPSCNodeDerived = std::derived_from<T, MPSCNode>;
 
+template <MPSCNodeDerived T>
+class MPSCQueue {
 public:
   MPSCQueue() {
     head_.store(&stub_, std::memory_order_relaxed);
@@ -176,7 +186,7 @@ private:
   MPSCNode stub_;
 };
 
-template <typename T>
+template <QueueElement T>
 class BoundedMPSCQueue {
 public:
   explicit BoundedMPSCQueue(std::size_t capacity)
@@ -194,6 +204,8 @@ public:
 
   BoundedMPSCQueue(const BoundedMPSCQueue&) = delete;
   BoundedMPSCQueue& operator=(const BoundedMPSCQueue&) = delete;
+  BoundedMPSCQueue(BoundedMPSCQueue&&) = delete;
+  BoundedMPSCQueue& operator=(BoundedMPSCQueue&&) = delete;
 
   [[nodiscard]] auto push(T value) noexcept -> bool {
     auto pos = head_.load(std::memory_order_relaxed);
@@ -205,6 +217,7 @@ public:
 
       if (diff == 0) {
         if (head_.compare_exchange_weak(pos, pos + 1,
+                                        std::memory_order_acq_rel,
                                         std::memory_order_relaxed)) {
           std::construct_at(slot.ptr(), std::move(value));
           slot.seq.store(pos + 1, std::memory_order_release);
@@ -254,10 +267,10 @@ private:
     alignas(T) std::byte storage[sizeof(T)];
 
     auto ptr() noexcept -> T* {
-      return reinterpret_cast<T*>(storage);
+      return std::launder(reinterpret_cast<T*>(storage));
     }
     auto ptr() const noexcept -> const T* {
-      return reinterpret_cast<const T*>(storage);
+      return std::launder(reinterpret_cast<const T*>(storage));
     }
   };
 

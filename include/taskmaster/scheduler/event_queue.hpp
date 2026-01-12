@@ -12,43 +12,18 @@
 namespace taskmaster {
 
 struct AddTaskEvent {
-  TaskDefinition def;
+  ExecutionInfo exec_info;
 };
 
 struct RemoveTaskEvent {
-  std::string task_id;
+  DAGId dag_id;
+  TaskId task_id;
 };
-
-struct EnableTaskEvent {
-  std::string task_id;
-  bool enabled;
-};
-
-struct TriggerTaskEvent {
-  std::string task_id;
-};
-
-struct TaskStartedEvent {
-  std::string instance_id;
-};
-
-struct TaskCompletedEvent {
-  std::string instance_id;
-  int exit_code;
-};
-
-struct TaskFailedEvent {
-  std::string instance_id;
-  std::string error;
-};
-
 
 struct ShutdownEvent {};
 
 using SchedulerEvent =
-    std::variant<AddTaskEvent, RemoveTaskEvent, EnableTaskEvent,
-                 TriggerTaskEvent, TaskStartedEvent, TaskCompletedEvent,
-                 TaskFailedEvent, ShutdownEvent>;
+    std::variant<AddTaskEvent, RemoveTaskEvent, ShutdownEvent>;
 
 class EventQueue {
 public:

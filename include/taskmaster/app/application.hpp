@@ -6,10 +6,13 @@
 #include "taskmaster/dag/dag_manager.hpp"
 #include "taskmaster/dag/dag_run.hpp"
 #include "taskmaster/executor/executor.hpp"
-#include "taskmaster/storage/config.hpp"
+#include "taskmaster/config/config.hpp"
+#include "taskmaster/config/dag_definition.hpp"
 
 #include <atomic>
 #include <memory>
+#include <optional>
+#include <string>
 #include <string_view>
 
 namespace taskmaster {
@@ -29,6 +32,7 @@ class Application {
 public:
   Application();
   explicit Application(std::string_view db_path);
+  explicit Application(Config config);
   ~Application();
 
   Application(const Application&) = delete;
@@ -36,38 +40,31 @@ public:
 
   // Configuration
   [[nodiscard]] auto load_config(std::string_view path) -> Result<void>;
-  [[nodiscard]] auto load_config_string(std::string_view json) -> Result<void>;
   [[nodiscard]] auto config() const noexcept -> const Config&;
   [[nodiscard]] auto config() noexcept -> Config&;
 
   // Lifecycle
-  auto start() -> void;
+  [[nodiscard]] auto init() -> Result<void>;
+  [[nodiscard]] auto init_db_only() -> Result<void>;
+  [[nodiscard]] auto start() -> Result<void>;
   auto stop() -> void;
   [[nodiscard]] auto is_running() const noexcept -> bool;
 
+  // DAG loading
+  [[nodiscard]] auto load_dags_from_directory(std::string_view dags_dir) -> Result<bool>;
+
   // DAG operations
-  auto trigger_dag(std::string_view dag_id) -> void;
-  auto trigger_dag_by_id(std::string_view dag_id,
-                         TriggerType trigger = TriggerType::Manual) -> void;
+  [[nodiscard]] auto trigger_dag_by_id(DAGId dag_id,
+                         TriggerType trigger = TriggerType::Manual) -> std::optional<DAGRunId>;
   auto wait_for_completion(int timeout_ms = 60000) -> void;
   [[nodiscard]] auto has_active_runs() const -> bool;
-
-  // Task operations
-  auto register_task_with_engine(std::string_view dag_id,
-                                 const TaskConfig& task) -> void;
-  auto unregister_task_from_engine(std::string_view dag_id,
-                                   std::string_view task_id) -> void;
-  [[nodiscard]] auto set_task_enabled(std::string_view dag_id,
-                                      std::string_view task_id, bool enabled)
-      -> Result<void>;
-  [[nodiscard]] auto trigger_task(std::string_view dag_id,
-                                  std::string_view task_id) -> Result<void>;
+  [[nodiscard]] auto get_run_state(DAGRunId dag_run_id) const -> std::optional<DAGRunState>;
 
   // Cron schedule management
-  auto register_dag_cron(std::string_view dag_id, std::string_view cron_expr)
+  auto register_dag_cron(DAGId dag_id, std::string_view cron_expr)
       -> bool;
-  auto unregister_dag_cron(std::string_view dag_id) -> void;
-  auto update_dag_cron(std::string_view dag_id, std::string_view cron_expr,
+  auto unregister_dag_cron(DAGId dag_id) -> void;
+  auto update_dag_cron(DAGId dag_id, std::string_view cron_expr,
                        bool is_active) -> void;
 
   // Recovery
@@ -79,7 +76,8 @@ public:
   [[nodiscard]] auto engine() -> Engine&;
   [[nodiscard]] auto persistence() -> Persistence*;
   [[nodiscard]] auto api_server() -> ApiServer*;
-  [[nodiscard]] auto get_active_dag_run(std::string_view run_id) -> DAGRun*;
+  [[nodiscard]] auto get_active_dag_run(DAGRunId dag_run_id) -> DAGRun*;
+  [[nodiscard]] auto runtime() -> Runtime&;
 
   // Debug
   auto list_tasks() const -> void;
@@ -87,12 +85,15 @@ public:
 
 private:
   auto setup_callbacks() -> void;
-  auto init_from_config() -> Result<void>;
-  auto on_engine_ready(const TaskInstance& inst) -> void;
-  auto run_cron_task(std::string dag_id, std::string task_id,
-                     std::string inst_id, ExecutorConfig cfg) -> void;
-  [[nodiscard]] auto get_max_retries(std::string_view run_id, NodeIndex idx)
-      -> int;
+  auto setup_config_watcher() -> void;
+  auto config_watcher_loop(std::stop_token stop) -> void;
+  auto handle_file_change(const std::string& filename) -> void;
+  auto get_max_retries(DAGRunId dag_run_id, NodeIndex idx) -> int;
+
+  [[nodiscard]] auto validate_dag_info(const DAGInfo& info) -> Result<void>;
+  [[nodiscard]] auto create_dag_atomically(DAGId dag_id,
+                                           const DAGInfo& info) -> Result<void>;
+  [[nodiscard]] auto reload_single_dag(const DAGDefinition& def) -> Result<void>;
 
   std::atomic<bool> running_{false};
   Config config_;
@@ -115,6 +116,12 @@ private:
 
   // API server
   std::unique_ptr<ApiServer> api_;
+
+  // Config file watching
+  int inotify_fd_ = -1;
+  int watch_descriptor_ = -1;
+  std::jthread watcher_thread_;
+  std::atomic<bool> watching_{false};
 };
 
 }  // namespace taskmaster

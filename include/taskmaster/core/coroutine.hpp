@@ -2,24 +2,17 @@
 
 #include <concepts>
 #include <coroutine>
-#include <cstdio>
 #include <exception>
 #include <memory>
 #include <new>
+#include <type_traits>
 #include <utility>
 
 namespace taskmaster {
 
-template <typename T>
+template <typename T = void>
+  requires std::movable<T> || std::is_void_v<T>
 class task;
-
-class scheduler {
-public:
-  virtual ~scheduler() = default;
-  virtual auto schedule(std::coroutine_handle<> handle) noexcept -> void = 0;
-  [[nodiscard]] virtual auto get_shard_id() const noexcept -> unsigned = 0;
-  [[nodiscard]] virtual auto is_current_shard() const noexcept -> bool = 0;
-};
 
 template <typename T>
 concept await_suspend_result = std::same_as<T, void> || std::same_as<T, bool> ||
@@ -39,7 +32,18 @@ concept awaitable = awaiter<T> || requires(T t) {
   { operator co_await(t) } -> awaiter;
 };
 
+// Concept for deferred initialization types
 template <typename T>
+concept DeferredInitializable =
+    std::destructible<T> && !std::is_reference_v<T> && !std::is_const_v<T>;
+
+// Concept for promise types with continuation support
+template <typename Promise>
+concept HasContinuation = requires(Promise p) {
+  { p.continuation() } -> std::same_as<std::coroutine_handle<>>;
+};
+
+template <DeferredInitializable T>
 class deferred_init {
 public:
   deferred_init() noexcept = default;
@@ -86,7 +90,7 @@ public:
     return false;
   }
 
-  template <typename Promise>
+  template <HasContinuation Promise>
   auto await_suspend(std::coroutine_handle<Promise> h) const noexcept
       -> std::coroutine_handle<> {
     auto continuation = h.promise().continuation();
@@ -139,7 +143,7 @@ public:
 
 private:
   deferred_init<T> result_;
-  std::coroutine_handle<> continuation_;
+  std::coroutine_handle<> continuation_{};
 };
 
 template <>
@@ -169,10 +173,11 @@ public:
   }
 
 private:
-  std::coroutine_handle<> continuation_;
+  std::coroutine_handle<> continuation_{};
 };
 
-template <typename T = void>
+template <typename T>
+  requires std::movable<T> || std::is_void_v<T>
 class [[nodiscard]] task {
 public:
   using promise_type = task_promise<T>;
@@ -262,24 +267,6 @@ inline auto task_promise<void>::get_return_object() noexcept -> task<void> {
       std::coroutine_handle<task_promise<void>>::from_promise(*this)};
 }
 
-inline thread_local scheduler* current_scheduler_ptr = nullptr;
-
-[[nodiscard]] inline auto current_scheduler() noexcept -> scheduler* {
-  return current_scheduler_ptr;
-}
-
 using spawn_task = task<void>;
-
-inline auto spawn(spawn_task&& t) -> void {
-  auto* sched = current_scheduler();
-  if (sched) {
-    sched->schedule(t.take());
-  } else {
-    // Programming error: spawn called outside of shard context
-    std::fprintf(
-        stderr,
-        "[WARN] spawn() called without scheduler context, task dropped\n");
-  }
-}
 
 }  // namespace taskmaster

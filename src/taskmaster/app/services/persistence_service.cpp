@@ -1,5 +1,6 @@
 #include "taskmaster/app/services/persistence_service.hpp"
 
+#include "taskmaster/dag/dag_run.hpp"
 #include "taskmaster/util/log.hpp"
 
 namespace taskmaster {
@@ -37,24 +38,23 @@ auto PersistenceService::save_run(const DAGRun& run) -> void {
   }
 }
 
-auto PersistenceService::save_task(std::string_view run_id,
-                                   const TaskInstanceInfo& info) -> void {
+auto PersistenceService::save_task(DAGRunId dag_run_id, const TaskInstanceInfo& info) -> void {
   if (!db_)
     return;
-  if (auto r = db_->update_task_instance(run_id, info); !r) {
-    if (auto r2 = db_->save_task_instance(run_id, info); !r2) {
+  if (auto r = db_->update_task_instance(dag_run_id, info); !r) {
+    if (auto r2 = db_->save_task_instance(dag_run_id, info); !r2) {
       log::warn("Failed to persist task: {}", r2.error().message());
     }
   }
 }
 
-auto PersistenceService::save_log(std::string_view run_id,
-                                  std::string_view task, int attempt,
+auto PersistenceService::save_log(DAGRunId dag_run_id,
+                                  TaskId task, int attempt,
                                   std::string_view level,
                                   std::string_view msg) -> void {
   if (!db_)
     return;
-  if (auto r = db_->save_task_log(run_id, task, attempt, level, "stdout", msg);
+  if (auto r = db_->save_task_log(dag_run_id, task, attempt, level, "stdout", msg);
       !r) {
     log::debug("Failed to save log: {}", r.error().message());
   }

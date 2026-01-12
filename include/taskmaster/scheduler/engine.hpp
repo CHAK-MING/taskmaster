@@ -1,28 +1,32 @@
 #pragma once
 
+#include "taskmaster/core/coroutine.hpp"
+#include "taskmaster/io/stream.hpp"
 #include "taskmaster/scheduler/event_queue.hpp"
 #include "taskmaster/scheduler/task.hpp"
+#include "taskmaster/util/id.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <functional>
 #include <map>
 #include <string_view>
-#include <thread>
 #include <unordered_map>
 
 namespace taskmaster {
 
+class Runtime;
+
 // Single-threaded event loop scheduler.
-// All state mutations happen in the event loop thread.
+// All state mutations happen on the Engine shard in Runtime.
 // External calls communicate via lock-free event queue.
 class Engine {
 public:
-  using InstanceReadyCallback =
-      std::move_only_function<void(const TaskInstance&)>;
+  using DAGTriggerCallback =
+      std::move_only_function<void(const DAGId&)>;
   using TimePoint = std::chrono::system_clock::time_point;
 
-  Engine();
+  explicit Engine(Runtime& runtime);
   ~Engine();
 
   Engine(const Engine&) = delete;
@@ -34,53 +38,37 @@ public:
     return running_.load();
   }
 
-  [[nodiscard]] auto add_task(TaskDefinition def) -> bool;
-  [[nodiscard]] auto remove_task(std::string_view task_id) -> bool;
-  [[nodiscard]] auto enable_task(std::string_view task_id, bool enabled)
-      -> bool;
-  [[nodiscard]] auto trigger(std::string_view task_id) -> bool;
-  auto task_started(std::string_view instance_id) -> void;
-  auto task_completed(std::string_view instance_id, int exit_code) -> void;
-  auto task_failed(std::string_view instance_id, std::string_view error)
-      -> void;
+  [[nodiscard]] auto add_task(ExecutionInfo exec_info) -> bool;
+  [[nodiscard]] auto remove_task(DAGId dag_id, TaskId task_id) -> bool;
 
-  auto set_on_ready(InstanceReadyCallback cb) -> void;
+  auto set_on_dag_trigger(DAGTriggerCallback cb) -> void;
 
 private:
-  auto run_loop() -> void;
+  auto run_loop() -> spawn_task;
   auto process_events() -> void;
   auto tick() -> void;
   auto get_next_run_time() const -> TimePoint;
   auto notify() -> void;
-  auto schedule_task(const std::string& task_id, TimePoint next_time) -> void;
-  auto unschedule_task(const std::string& task_id) -> void;
+  auto schedule_task(DAGTaskId dag_task_id, TimePoint next_time) -> void;
+  auto unschedule_task(DAGTaskId dag_task_id) -> void;
 
   auto handle_event(const AddTaskEvent& e) -> void;
   auto handle_event(const RemoveTaskEvent& e) -> void;
-  auto handle_event(const EnableTaskEvent& e) -> void;
-  auto handle_event(const TriggerTaskEvent& e) -> void;
-  auto handle_event(const TaskStartedEvent& e) -> void;
-  auto handle_event(const TaskCompletedEvent& e) -> void;
-  auto handle_event(const TaskFailedEvent& e) -> void;
   auto handle_event(const ShutdownEvent& e) -> void;
 
-  [[nodiscard]] auto generate_instance_id() const -> std::string;
-
   std::atomic<bool> running_{false};
-  std::thread event_loop_thread_;
-  int event_fd_{-1};
+  std::atomic<bool> stopped_{true};  // true when coroutine is not running
+  Runtime* runtime_{nullptr};
+  io::EventFd wake_fd_;
   EventQueue events_;
 
   // Accessed only in event loop thread
-  std::unordered_map<std::string, TaskDefinition> tasks_;
-  std::unordered_map<std::string, TaskInstance> instances_;
-  std::multimap<TimePoint, std::string> schedule_;
-  std::unordered_map<std::string,
-                     std::multimap<TimePoint, std::string>::iterator>
+  std::unordered_map<DAGTaskId, ExecutionInfo> tasks_;
+  std::multimap<TimePoint, DAGTaskId> schedule_;
+  std::unordered_map<DAGTaskId, std::multimap<TimePoint, DAGTaskId>::iterator>
       task_schedule_;
-  std::multimap<TimePoint, std::string> retry_schedule_;
 
-  InstanceReadyCallback on_ready_;
+  DAGTriggerCallback on_dag_trigger_;
 };
 
 }  // namespace taskmaster

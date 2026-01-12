@@ -3,6 +3,7 @@
 #include <array>
 #include <cctype>
 #include <charconv>
+#include <concepts>
 #include <ctime>
 #include <optional>
 #include <ranges>
@@ -10,6 +11,10 @@
 
 namespace taskmaster {
 namespace {
+
+// Concept for string_view consuming functions
+template <typename Func>
+concept StringViewConsumer = std::invocable<Func, std::string_view>;
 
 constexpr std::array<std::pair<std::string_view, std::string_view>, 6> kMacros{{
     {"@yearly", "0 0 1 1 *"},
@@ -40,17 +45,17 @@ auto trim(std::string_view s) -> std::string_view {
 auto iequals(std::string_view a, std::string_view b) noexcept -> bool {
   if (a.size() != b.size())
     return false;
-  for (size_t i = 0; i < a.size(); ++i) {
-    if (std::tolower(static_cast<unsigned char>(a[i])) !=
-        std::tolower(static_cast<unsigned char>(b[i]))) {
+  for (auto [ca, cb] : std::views::zip(a, b)) {
+    if (std::tolower(static_cast<unsigned char>(ca)) !=
+        std::tolower(static_cast<unsigned char>(cb))) {
       return false;
     }
   }
   return true;
 }
 
-template <typename Func>
-auto for_each_split(std::string_view s, char delim, Func&& func) -> void {
+auto for_each_split(std::string_view s, char delim,
+                    StringViewConsumer auto&& func) -> void {
   size_t start = 0;
   while (start < s.size()) {
     size_t end = s.find(delim, start);
@@ -84,14 +89,14 @@ auto parse_name(std::string_view s,
                 const std::array<std::string_view, 7>& names7, bool use_12)
     -> std::optional<int> {
   if (use_12) {
-    for (size_t i = 0; i < names12.size(); ++i) {
-      if (iequals(s, names12[i])) {
+    for (auto [i, name] : std::views::enumerate(names12)) {
+      if (iequals(s, name)) {
         return static_cast<int>(i + 1);
       }
     }
   } else {
-    for (size_t i = 0; i < names7.size(); ++i) {
-      if (iequals(s, names7[i])) {
+    for (auto [i, name] : std::views::enumerate(names7)) {
+      if (iequals(s, name)) {
         return static_cast<int>(i);
       }
     }
@@ -150,7 +155,7 @@ bool parse_field(std::string_view field, std::bitset<N>& bs, int min_val,
       start = *a;
       end = *b;
       if (dow_names && end == 7) {
-        for (int v = start; v <= 6; v += step) {
+        for (int v = start; v < 7; v += step) {
           if (v >= min_val && v <= max_val)
             bs.set(static_cast<std::size_t>(v));
         }

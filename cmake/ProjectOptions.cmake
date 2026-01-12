@@ -30,6 +30,16 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     if(COMPILER_SUPPORTS_MARCH_NATIVE)
         add_compile_options(-march=native)
     endif()
+
+    # Enable LTO (Link Time Optimization)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT result OUTPUT output)
+    if(result)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
+        message(STATUS "LTO/IPO enabled")
+    else()
+        message(WARNING "LTO/IPO is not supported: ${output}")
+    endif()
 endif()
 
 # 设置 C++23（已在主文件中设置，但这里作为保障）

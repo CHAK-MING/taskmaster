@@ -2,17 +2,20 @@
 
 #include "taskmaster/dag/dag.hpp"
 #include "taskmaster/scheduler/task.hpp"
+#include "taskmaster/util/id.hpp"
 
 #include <bitset>
 #include <chrono>
 #include <cstdint>
+#include <flat_set>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 #include <vector>
 
 namespace taskmaster {
+
+struct DAGRunPrivateTag {};
 
 enum class DAGRunState : std::uint8_t {
   Running,
@@ -23,11 +26,28 @@ enum class DAGRunState : std::uint8_t {
 enum class TriggerType : std::uint8_t {
   Manual,
   Schedule,
-  Api,
 };
 
+[[nodiscard]] constexpr auto trigger_type_to_string(TriggerType type) noexcept
+    -> std::string_view {
+  switch (type) {
+  case TriggerType::Manual:
+    return "manual";
+  case TriggerType::Schedule:
+    return "schedule";
+  default:
+    return "manual";
+  }
+}
+
+[[nodiscard]] constexpr auto string_to_trigger_type(std::string_view s) noexcept
+    -> TriggerType {
+  if (s == "schedule") return TriggerType::Schedule;
+  return TriggerType::Manual;
+}
+
 struct TaskInstanceInfo {
-  std::string instance_id;
+  InstanceId instance_id;
   NodeIndex task_idx{INVALID_NODE};
   TaskState state{TaskState::Pending};
   int attempt{0};
@@ -44,9 +64,10 @@ public:
   // For larger DAGs, consider using dynamic_bitset or vector<bool>.
   static constexpr size_t MAX_TASKS = 4096;
 
-  DAGRun(std::string dag_run_id, const DAG& dag);
+  [[nodiscard]] static auto create(DAGRunId dag_run_id, const DAG& dag) 
+      -> Result<DAGRun>;
 
-  [[nodiscard]] auto id() const noexcept -> const std::string& {
+  [[nodiscard]] auto id() const noexcept -> const DAGRunId& {
     return dag_run_id_;
   }
   [[nodiscard]] auto state() const noexcept -> DAGRunState {
@@ -61,14 +82,13 @@ public:
     return ready_count_;
   }
 
-  auto mark_task_started(NodeIndex task_idx, std::string_view instance_id)
+  auto mark_task_started(NodeIndex task_idx, const InstanceId& instance_id)
       -> void;
   auto mark_task_completed(NodeIndex task_idx, int exit_code) -> void;
   auto mark_task_failed(NodeIndex task_idx, std::string_view error,
-                        int max_retries) -> void;
+                        int max_retries, int exit_code = 0) -> void;
 
-  // Initialize instance ID for a task without changing its state
-  auto set_instance_id(NodeIndex task_idx, std::string_view instance_id)
+  auto set_instance_id(NodeIndex task_idx, const InstanceId& instance_id)
       -> void;
 
   [[nodiscard]] auto is_complete() const noexcept -> bool;
@@ -112,12 +132,14 @@ public:
   }
 
 private:
+  DAGRun(DAGRunPrivateTag, DAGRunId dag_run_id, const DAG& dag);
+  
   auto update_state() -> void;
   auto update_ready_set(NodeIndex completed_task) -> void;
   auto init_ready_set() -> void;
   auto mark_downstream_failed(NodeIndex failed_task) -> void;
 
-  std::string dag_run_id_;
+  DAGRunId dag_run_id_;
   DAG dag_;
   DAGRunState state_{DAGRunState::Running};
 
@@ -126,7 +148,7 @@ private:
   std::bitset<MAX_TASKS> completed_mask_;
   std::bitset<MAX_TASKS> failed_mask_;
 
-  std::unordered_set<NodeIndex> ready_set_;
+  std::flat_set<NodeIndex> ready_set_;
   size_t ready_count_{0};
 
   std::vector<int> in_degree_;

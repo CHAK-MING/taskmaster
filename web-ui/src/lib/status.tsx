@@ -7,6 +7,7 @@ import {
     Terminal,
     AlertTriangle,
     RotateCcw,
+    CalendarClock,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -14,12 +15,15 @@ import {
     DAGDisplayStatus,
     dagStatusLabels,
     dagStatusColors,
-    TaskInstanceStatus,
+    TaskState,
     taskStatusLabels,
     taskStatusColors,
     ExecutorType,
-    executorLabels,
 } from "@/types/dag";
+
+export const executorLabels: Record<ExecutorType, string> = {
+    shell: "Shell",
+};
 
 export const dagStatusIcons: Record<DAGDisplayStatus, React.ElementType> = {
     running: Loader2,
@@ -29,8 +33,9 @@ export const dagStatusIcons: Record<DAGDisplayStatus, React.ElementType> = {
     inactive: Timer,
 };
 
-export const taskStatusIcons: Record<TaskInstanceStatus, React.ElementType> = {
+export const taskStatusIcons: Record<TaskState, React.ElementType> = {
     pending: Clock,
+    scheduled: CalendarClock,
     running: Loader2,
     success: CheckCircle2,
     failed: XCircle,
@@ -65,7 +70,7 @@ export function DAGStatusBadge({ status, className }: DAGStatusBadgeProps) {
 }
 
 interface TaskStatusBadgeProps {
-    status: TaskInstanceStatus;
+    status: TaskState;
     className?: string;
 }
 
@@ -107,7 +112,7 @@ export function DAGStatusIcon({ status, className }: DAGStatusIconProps) {
 }
 
 interface TaskStatusIconProps {
-    status: TaskInstanceStatus;
+    status: TaskState;
     className?: string;
 }
 
@@ -144,5 +149,3 @@ export function formatTime(isoString: string): string {
         return isoString;
     }
 }
-
-export { executorLabels };

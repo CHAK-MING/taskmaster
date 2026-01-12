@@ -1,13 +1,14 @@
 #include "taskmaster/dag/dag_manager.hpp"
 
+#include "taskmaster/config/task_config.hpp"
 #include "taskmaster/storage/persistence.hpp"
+#include "taskmaster/util/id.hpp"
 #include "taskmaster/util/log.hpp"
 #include "taskmaster/util/util.hpp"
 
 #include <algorithm>
 #include <mutex>
 #include <queue>
-#include <ranges>
 #include <unordered_set>
 
 namespace taskmaster {
@@ -15,48 +16,46 @@ namespace taskmaster {
 DAGManager::DAGManager(Persistence* persistence) : persistence_(persistence) {
 }
 
-auto DAGManager::generate_dag_id() const -> std::string {
-  return "dag_" + generate_uuid().substr(0, 8);
-}
-
-auto DAGManager::find_dag(std::string_view dag_id) -> DAGInfo* {
+auto DAGManager::find_dag(DAGId dag_id) -> DAGInfo* {
   auto it = dags_.find(dag_id);
   return it != dags_.end() ? &it->second : nullptr;
 }
 
-auto DAGManager::find_dag(std::string_view dag_id) const -> const DAGInfo* {
+auto DAGManager::find_dag(DAGId dag_id) const -> const DAGInfo* {
   auto it = dags_.find(dag_id);
   return it != dags_.end() ? &it->second : nullptr;
 }
 
-auto DAGManager::create_dag(std::string_view name, std::string_view description)
-    -> Result<std::string> {
+auto DAGManager::create_dag(DAGId dag_id, const DAGInfo& info) -> Result<void> {
   std::unique_lock lock(mu_);
 
-  std::string dag_id = generate_dag_id();
-  auto now = std::chrono::system_clock::now();
+  if (find_dag(dag_id)) {
+    return fail(Error::AlreadyExists);
+  }
 
-  DAGInfo info;
-  info.id = dag_id;
-  info.name = name;
-  info.description = description;
-  info.created_at = now;
-  info.updated_at = now;
+  DAGInfo dag_copy = info;
+  dag_copy.dag_id = dag_id;
+  dag_copy.rebuild_task_index();
 
   if (persistence_) {
-    if (auto r = persistence_->save_dag(info); !r) {
+    if (auto r = persistence_->save_dag(dag_copy); !r) {
       log::error("Failed to persist DAG {}: {}", dag_id, r.error().message());
       return fail(r.error());
     }
+    for (const auto& task : dag_copy.tasks) {
+      if (auto r = persistence_->save_task(dag_id, task); !r) {
+        log::error("Failed to persist task {} in DAG {}: {}", task.task_id, dag_id, r.error().message());
+        return fail(r.error());
+      }
+    }
   }
 
-  dags_[dag_id] = std::move(info);
-  log::info("Created DAG: {} ({})", dag_id, name);
+  dags_.emplace(dag_id, std::move(dag_copy));
 
-  return ok(dag_id);
+  return ok();
 }
 
-auto DAGManager::get_dag(std::string_view dag_id) const -> Result<DAGInfo> {
+auto DAGManager::get_dag(DAGId dag_id) const -> Result<DAGInfo> {
   std::shared_lock lock(mu_);
 
   const auto* dag = find_dag(dag_id);
@@ -77,17 +76,12 @@ auto DAGManager::list_dags() const -> std::vector<DAGInfo> {
   return result;
 }
 
-auto DAGManager::delete_dag(std::string_view dag_id) -> Result<void> {
+auto DAGManager::delete_dag(DAGId dag_id) -> Result<void> {
   std::unique_lock lock(mu_);
 
-  auto it = dags_.find(dag_id);
-  if (it == dags_.end()) {
+  auto* dag = find_dag(dag_id);
+  if (!dag) {
     return fail(Error::NotFound);
-  }
-
-  if (it->second.from_config) {
-    log::warn("Cannot delete DAG {} loaded from config", dag_id);
-    return fail(Error::InvalidArgument);
   }
 
   if (persistence_) {
@@ -98,83 +92,37 @@ auto DAGManager::delete_dag(std::string_view dag_id) -> Result<void> {
     }
   }
 
-  dags_.erase(it);
+  dags_.erase(dag_id);
+
   log::info("Deleted DAG: {}", dag_id);
   return ok();
 }
 
-auto DAGManager::update_dag(std::string_view dag_id, std::string_view name,
-                            std::string_view description, std::string_view cron,
-                            int max_concurrent_runs, int is_active)
-    -> Result<void> {
+auto DAGManager::clear_all() -> void {
   std::unique_lock lock(mu_);
-
-  auto* dag = find_dag(dag_id);
-  if (!dag) {
-    return fail(Error::NotFound);
-  }
-
-  if (dag->from_config) {
-    log::warn("Cannot update DAG {} loaded from config", dag_id);
-    return fail(Error::InvalidArgument);
-  }
-
-  if (!name.empty()) {
-    dag->name = name;
-  }
-  if (!description.empty()) {
-    dag->description = description;
-  }
-  if (!cron.empty()) {
-    dag->cron = cron;
-  }
-  if (max_concurrent_runs >= 0) {
-    dag->max_concurrent_runs = max_concurrent_runs;
-  }
-  if (is_active >= 0) {
-    dag->is_active = (is_active != 0);
-  }
-  dag->updated_at = std::chrono::system_clock::now();
-
-  if (persistence_) {
-    if (auto r = persistence_->save_dag(*dag); !r) {
-      log::error("Failed to persist DAG update {}: {}", dag_id,
-                 r.error().message());
-      return fail(r.error());
-    }
-  }
-
-  log::info("Updated DAG: {}", dag_id);
-  return ok();
+  dags_.clear();
 }
 
-auto DAGManager::add_task(std::string_view dag_id, const TaskConfig& task)
+auto DAGManager::add_task(DAGId dag_id, const TaskConfig& task)
     -> Result<void> {
-  std::unique_lock lock(mu_);
-
   auto* dag = find_dag(dag_id);
   if (!dag) {
     return fail(Error::NotFound);
-  }
-
-  if (dag->from_config) {
-    log::warn("Cannot add task to DAG {} loaded from config", dag_id);
-    return fail(Error::InvalidArgument);
   }
 
   // O(1) check if task ID already exists
-  if (dag->find_task(task.id)) {
+  if (dag->find_task(task.task_id)) {
     return fail(Error::AlreadyExists);
   }
 
   // Check for cycle using incremental DFS
-  if (would_create_cycle_internal(*dag, task.id, task.deps)) {
-    log::warn("Adding task {} would create a cycle in DAG {}", task.id, dag_id);
+  if (would_create_cycle_internal(*dag, task.task_id, task.dependencies)) {
+    log::warn("Adding task {} would create a cycle in DAG {}", task.task_id, dag_id);
     return fail(Error::InvalidArgument);
   }
 
   // Validate dependencies exist (O(1) per dep)
-  for (const auto& dep : task.deps) {
+  for (const auto& dep : task.dependencies) {
     if (!dag->find_task(dep)) {
       log::warn("Dependency {} not found in DAG {}", dep, dag_id);
       return fail(Error::NotFound);
@@ -184,22 +132,22 @@ auto DAGManager::add_task(std::string_view dag_id, const TaskConfig& task)
   // Save task to database first
   if (persistence_) {
     if (auto r = persistence_->save_task(dag_id, task); !r) {
-      log::error("Failed to persist task {} in DAG {}: {}", task.id, dag_id,
+      log::error("Failed to persist task {} in DAG {}: {}", task.task_id, dag_id,
                  r.error().message());
       return fail(r.error());
     }
   }
 
   dag->tasks.push_back(task);
-  dag->task_index[task.id] = dag->tasks.size() - 1;
+  dag->task_index[task.task_id] = dag->tasks.size() - 1;
   dag->updated_at = std::chrono::system_clock::now();
   dag->invalidate_cache();  // Invalidate reverse adjacency cache
 
-  // log::info("Added task {} to DAG {}", task.id, dag_id);
+  // log::info("Added task {} to DAG {}", task.task_id, dag_id);
   return ok();
 }
 
-auto DAGManager::update_task(std::string_view dag_id, std::string_view task_id,
+auto DAGManager::update_task(DAGId dag_id, TaskId task_id,
                              const TaskConfig& task) -> Result<void> {
   std::unique_lock lock(mu_);
 
@@ -208,21 +156,17 @@ auto DAGManager::update_task(std::string_view dag_id, std::string_view task_id,
     return fail(Error::NotFound);
   }
 
-  if (dag->from_config) {
-    return fail(Error::InvalidArgument);
-  }
-
   auto* existing = dag->find_task(task_id);
   if (!existing) {
     return fail(Error::NotFound);
   }
 
-  if (would_create_cycle_internal(*dag, std::string(task_id), task.deps)) {
+  if (would_create_cycle_internal(*dag, task_id, task.dependencies)) {
     return fail(Error::InvalidArgument);
   }
 
   *existing = task;
-  existing->id = task_id;
+  existing->task_id = task_id;
   dag->updated_at = std::chrono::system_clock::now();
   dag->invalidate_cache();  // Invalidate reverse adjacency cache
 
@@ -238,7 +182,7 @@ auto DAGManager::update_task(std::string_view dag_id, std::string_view task_id,
   return ok();
 }
 
-auto DAGManager::delete_task(std::string_view dag_id, std::string_view task_id)
+auto DAGManager::delete_task(DAGId dag_id, TaskId task_id)
     -> Result<void> {
   std::unique_lock lock(mu_);
 
@@ -247,14 +191,10 @@ auto DAGManager::delete_task(std::string_view dag_id, std::string_view task_id)
     return fail(Error::NotFound);
   }
 
-  if (dag->from_config) {
-    return fail(Error::InvalidArgument);
-  }
-
   // Check if any task depends on this one
   for (const auto& t : dag->tasks) {
-    if (std::ranges::contains(t.deps, task_id)) {
-      log::warn("Cannot delete task {} - task {} depends on it", task_id, t.id);
+    if (std::ranges::contains(t.dependencies, task_id)) {
+      log::warn("Cannot delete task {} - task {} depends on it", task_id, t.task_id);
       return fail(Error::InvalidArgument);
     }
   }
@@ -278,7 +218,7 @@ auto DAGManager::delete_task(std::string_view dag_id, std::string_view task_id)
 
   if (idx != last_idx) {
     // Update the index of the task being swapped
-    dag->task_index[dag->tasks[last_idx].id] = idx;
+    dag->task_index[dag->tasks[last_idx].task_id] = idx;
     std::swap(dag->tasks[idx], dag->tasks[last_idx]);
   }
 
@@ -291,8 +231,8 @@ auto DAGManager::delete_task(std::string_view dag_id, std::string_view task_id)
   return ok();
 }
 
-auto DAGManager::get_task(std::string_view dag_id,
-                          std::string_view task_id) const
+auto DAGManager::get_task(DAGId dag_id,
+                          TaskId task_id) const
     -> Result<TaskConfig> {
   std::shared_lock lock(mu_);
 
@@ -309,7 +249,7 @@ auto DAGManager::get_task(std::string_view dag_id,
   return ok(*task);
 }
 
-auto DAGManager::validate_dag(std::string_view dag_id) const -> Result<void> {
+auto DAGManager::validate_dag(DAGId dag_id) const -> Result<void> {
   auto dag_result = build_dag_graph(dag_id);
   if (!dag_result) {
     return fail(dag_result.error());
@@ -318,22 +258,20 @@ auto DAGManager::validate_dag(std::string_view dag_id) const -> Result<void> {
 }
 
 auto DAGManager::would_create_cycle_internal(
-    const DAGInfo& dag, std::string_view task_id,
-    const std::vector<std::string>& deps) const -> bool {
-  if (deps.empty())
+    const DAGInfo& dag, TaskId task_id,
+    const std::vector<TaskId>& dependencies) const -> bool {
+  if (dependencies.empty())
     return false;
 
-  // Use cached reverse adjacency list (const_cast is safe here as we're only
-  // reading/rebuilding the cache, not modifying the logical state)
-  const auto& reverse_adj = const_cast<DAGInfo&>(dag).get_reverse_adj();
+  const auto& reverse_adj = dag.get_reverse_adj();
 
-  std::unordered_set<std::string> deps_set(deps.begin(), deps.end());
-  std::unordered_set<std::string> visited;
-  std::queue<std::string> q;
-  q.push(std::string(task_id));
+  std::unordered_set<TaskId> deps_set(dependencies.begin(), dependencies.end());
+  std::unordered_set<TaskId> visited;
+  std::queue<TaskId> q;
+  q.push(task_id);
 
   while (!q.empty()) {
-    std::string current = q.front();
+    auto current = q.front();
     q.pop();
 
     if (deps_set.contains(current)) {
@@ -354,7 +292,7 @@ auto DAGManager::would_create_cycle_internal(
   return false;
 }
 
-auto DAGManager::build_dag_graph(std::string_view dag_id) const -> Result<DAG> {
+auto DAGManager::build_dag_graph(DAGId dag_id) const -> Result<DAG> {
   std::shared_lock lock(mu_);
 
   const auto* dag_info = find_dag(dag_id);
@@ -366,13 +304,13 @@ auto DAGManager::build_dag_graph(std::string_view dag_id) const -> Result<DAG> {
 
   // Add all nodes
   for (const auto& task : dag_info->tasks) {
-    dag.add_node(task.id);
+    dag.add_node(task.task_id);
   }
 
   // Add all edges
   for (const auto& task : dag_info->tasks) {
-    for (const auto& dep : task.deps) {
-      if (auto r = dag.add_edge(dep, task.id); !r) {
+    for (const auto& dep : task.dependencies) {
+      if (auto r = dag.add_edge(dep, task.task_id); !r) {
         return fail(r.error());
       }
     }
@@ -381,43 +319,15 @@ auto DAGManager::build_dag_graph(std::string_view dag_id) const -> Result<DAG> {
   return ok(std::move(dag));
 }
 
-auto DAGManager::would_create_cycle(std::string_view dag_id,
-                                    std::string_view task_id,
-                                    const std::vector<std::string>& deps) const
+auto DAGManager::would_create_cycle(DAGId dag_id,
+                                    TaskId task_id,
+                                    const std::vector<TaskId>& dependencies) const
     -> bool {
   std::shared_lock lock(mu_);
   const auto* dag = find_dag(dag_id);
   if (!dag)
     return false;
-  return would_create_cycle_internal(*dag, task_id, deps);
-}
-
-auto DAGManager::load_from_config(const Config& config) -> Result<void> {
-  std::unique_lock lock(mu_);
-
-  if (config.tasks.empty()) {
-    return ok();
-  }
-
-  // Create a single DAG from config tasks
-  std::string dag_id = "config_dag";
-  auto now = std::chrono::system_clock::now();
-
-  DAGInfo info;
-  info.id = dag_id;
-  info.name = "Config DAG";
-  info.description = "DAG loaded from config file (read-only)";
-  info.created_at = now;
-  info.updated_at = now;
-  info.tasks = config.tasks;
-  info.from_config = true;
-  info.rebuild_task_index();
-
-  dags_[dag_id] = std::move(info);
-  log::info("Loaded {} tasks from config into DAG {}", config.tasks.size(),
-            dag_id);
-
-  return ok();
+  return would_create_cycle_internal(*dag, task_id, dependencies);
 }
 
 auto DAGManager::load_from_database() -> Result<void> {
@@ -434,37 +344,12 @@ auto DAGManager::load_from_database() -> Result<void> {
 
   std::unique_lock lock(mu_);
   for (auto& dag : *dags_result) {
-    // Skip config DAGs (they will be loaded separately)
-    if (dag.from_config) {
-      continue;
-    }
     dag.rebuild_task_index();
-    dags_[dag.id] = std::move(dag);
+    DAGId id = dag.dag_id;  // Copy before move
+    dags_.insert_or_assign(std::move(id), std::move(dag));
   }
 
   log::info("Loaded {} DAGs from database", dags_result->size());
-  return ok();
-}
-
-auto DAGManager::save_to_database() -> Result<void> {
-  if (!persistence_) {
-    return ok();
-  }
-
-  std::shared_lock lock(mu_);
-  for (const auto& [_, dag] : dags_) {
-    // Skip config DAGs
-    if (dag.from_config) {
-      continue;
-    }
-    if (auto r = persistence_->save_dag(dag); !r) {
-      log::error("Failed to save DAG {} to database: {}", dag.id,
-                 r.error().message());
-      return fail(r.error());
-    }
-  }
-
-  log::info("Saved {} DAGs to database", dags_.size());
   return ok();
 }
 
@@ -473,7 +358,7 @@ auto DAGManager::dag_count() const noexcept -> std::size_t {
   return dags_.size();
 }
 
-auto DAGManager::has_dag(std::string_view dag_id) const -> bool {
+auto DAGManager::has_dag(DAGId dag_id) const -> bool {
   std::shared_lock lock(mu_);
   return find_dag(dag_id) != nullptr;
 }

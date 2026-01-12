@@ -15,7 +15,7 @@ import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { listHistory, type RunRecord } from "@/lib/api";
 import { DAGStatusBadge, DAGStatusIcon, formatDuration, formatTime } from "@/lib/status";
-import { DAGRunStatus } from "@/types/dag";
+import { DAGRunState } from "@/types/dag";
 import { wsManager } from "@/lib/websocket";
 
 const TriggerTypeBadge = ({ type }: { type: string }) => {
@@ -65,21 +65,22 @@ export default function History() {
 
     useEffect(() => {
         fetchHistory();
-        
+
         wsManager.connect();
-        
+
         const unsubscribe = wsManager.on('dag_run_completed', () => {
             fetchHistory();
         });
-        
+
         return () => {
             unsubscribe();
         };
     }, []);
 
     const filteredHistory = history.filter((run) => {
-        const matchesSearch = run.dag_name.toLowerCase().includes(searchQuery.toLowerCase());
-        const matchesStatus = statusFilter === "all" || run.status === statusFilter;
+        const dagName = run.dag_name || run.dag_id;
+        const matchesSearch = dagName.toLowerCase().includes(searchQuery.toLowerCase());
+        const matchesStatus = statusFilter === "all" || run.state === statusFilter;
         return matchesSearch && matchesStatus;
     });
 
@@ -129,28 +130,30 @@ export default function History() {
                         <div className="space-y-3">
                             {filteredHistory.map((run) => (
                                 <div
-                                    key={run.run_id}
+                                    key={run.dag_run_id}
                                     className="flex items-center justify-between p-4 rounded-lg border border-border hover:bg-accent/30 transition-colors cursor-pointer"
                                 >
                                     <div className="flex items-center gap-4">
-                                        <DAGStatusIcon status={run.status as DAGRunStatus} />
+                                        <DAGStatusIcon status={run.state as DAGRunState} />
                                         <div>
-                                            <p className="font-medium">{run.dag_name}</p>
-                                            <p className="text-sm text-muted-foreground">{formatTime(run.start_time)}</p>
+                                            <p className="font-medium">{run.dag_name || run.dag_id}</p>
+                                            <p className="text-sm text-muted-foreground">{formatTime(run.started_at)}</p>
                                         </div>
                                     </div>
                                     <div className="flex items-center gap-6">
                                         <TriggerTypeBadge type={run.trigger_type} />
                                         <div className="text-right">
                                             <p className="text-sm font-medium">
-                                                {run.status === "running" ? "进行中" : formatDuration(run.duration_ms)}
+                                                {run.state === "running" ? "进行中" : (run.finished_at ? formatDuration(new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()) : "-")}
                                             </p>
-                                            <p className="text-xs text-muted-foreground">
-                                                {run.completed_tasks}/{run.total_tasks} 个任务
-                                                {run.failed_tasks > 0 && <span className="text-destructive"> ({run.failed_tasks} 失败)</span>}
-                                            </p>
+                                            {run.total_tasks !== undefined && (
+                                                <p className="text-xs text-muted-foreground">
+                                                    {run.completed_tasks}/{run.total_tasks} 个任务
+                                                    {(run.failed_tasks || 0) > 0 && <span className="text-destructive"> ({run.failed_tasks} 失败)</span>}
+                                                </p>
+                                            )}
                                         </div>
-                                        <DAGStatusBadge status={run.status as DAGRunStatus} />
+                                        <DAGStatusBadge status={run.state as DAGRunState} />
                                     </div>
                                 </div>
                             ))}

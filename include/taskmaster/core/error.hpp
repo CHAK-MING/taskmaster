@@ -1,8 +1,10 @@
 #pragma once
 
+#include <concepts>
 #include <expected>
 #include <string>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 
 namespace taskmaster {
@@ -68,13 +70,20 @@ inline auto error_category() -> const ErrorCategory& {
 }
 
 inline auto make_error_code(Error e) -> std::error_code {
-  return {static_cast<int>(e), error_category()};
+  return {std::to_underlying(e), error_category()};
 }
+
+// Concept for types that can be used with Result<T>
+// Note: Result<T> alias itself is unconstrained to allow use with incomplete types
+// (e.g., Result<CronExpr> inside CronExpr class definition)
+template <typename T>
+concept ResultValue = std::destructible<T> || std::is_void_v<T>;
 
 template <typename T>
 using Result = std::expected<T, std::error_code>;
 
 template <typename T>
+  requires ResultValue<std::decay_t<T>>
 [[nodiscard]] constexpr auto ok(T&& value) -> Result<std::decay_t<T>> {
   return std::forward<T>(value);
 }

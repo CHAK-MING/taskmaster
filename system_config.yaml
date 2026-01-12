@@ -1,0 +1,16 @@
+scheduler:
+  log_level: info
+  tick_interval_ms: 1000
+  max_concurrency: 10
+
+storage:
+  db_file: taskmaster.db
+
+api:
+  enabled: true
+  host: 127.0.0.1
+  port: 8888
+
+dag_source:
+  directory: ./dags
+  scan_interval_sec: 60

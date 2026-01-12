@@ -30,25 +30,41 @@ include(ProjectOptions)
 include(Dependencies)
 
 add_library(taskmaster_lib
-    src/taskmaster/core/io_ring.cpp
     src/taskmaster/core/shard.cpp
     src/taskmaster/core/runtime.cpp
+    src/taskmaster/io/context.cpp
+    src/taskmaster/io/async_fd.cpp
     src/taskmaster/scheduler/cron.cpp
     src/taskmaster/scheduler/engine.cpp
     src/taskmaster/dag/dag.cpp
     src/taskmaster/dag/dag_run.cpp
     src/taskmaster/dag/dag_manager.cpp
-    src/taskmaster/storage/config.cpp
     src/taskmaster/storage/persistence.cpp
     src/taskmaster/storage/recovery.cpp
     src/taskmaster/executor/shell_executor.cpp
+    src/taskmaster/executor/noop_executor.cpp
+    src/taskmaster/executor/config_builder.cpp
     src/taskmaster/app/application.cpp
     src/taskmaster/app/api/api_server.cpp
-    src/taskmaster/app/api/websocket_hub.cpp
+    src/taskmaster/app/services/execution_service.cpp
+    src/taskmaster/app/services/scheduler_service.cpp
     src/taskmaster/app/services/persistence_service.cpp
     src/taskmaster/app/services/event_service.cpp
-    src/taskmaster/app/services/scheduler_service.cpp
-    src/taskmaster/app/services/execution_service.cpp
+    src/taskmaster/app/http/http_types.cpp
+    src/taskmaster/app/http/http_parser.cpp
+    src/taskmaster/app/http/router.cpp
+    src/taskmaster/app/http/http_server.cpp
+    src/taskmaster/app/http/websocket.cpp
+    src/taskmaster/config/dag_definition.cpp
+    src/taskmaster/config/dag_file_loader.cpp
+    src/taskmaster/config/config_watcher.cpp
+    src/taskmaster/config/config.cpp
+    src/taskmaster/cli/serve.cpp
+    src/taskmaster/cli/run.cpp
+    src/taskmaster/cli/list.cpp
+    src/taskmaster/cli/status.cpp
+    src/taskmaster/cli/validate.cpp
+    src/taskmaster/util/daemon.cpp
 )
 
 # Precompiled headers for faster compilation (20-40% improvement)
@@ -88,51 +104,80 @@ target_include_directories(taskmaster_lib
         $<INSTALL_INTERFACE:include>
 )
 
-# Mark Crow includes as SYSTEM to suppress warnings from third-party headers
-get_target_property(CROW_INCLUDE_DIRS Crow::Crow INTERFACE_INCLUDE_DIRECTORIES)
-if(CROW_INCLUDE_DIRS)
-    target_include_directories(taskmaster_lib SYSTEM PUBLIC ${CROW_INCLUDE_DIRS})
-endif()
-
 target_link_libraries(taskmaster_lib
     PUBLIC
         nlohmann_json::nlohmann_json
         yaml-cpp::yaml-cpp
         SQLite::SQLite3
-        Crow::Crow
+        llhttp::llhttp
+        OpenSSL::SSL
+        OpenSSL::Crypto
+    PRIVATE
+        CLI11::CLI11
 )
-
-if(UNIX AND NOT APPLE AND LIBURING_FOUND)
-    target_link_libraries(taskmaster_lib PUBLIC ${LIBURING_LIBRARIES})
-    target_include_directories(taskmaster_lib PUBLIC ${LIBURING_INCLUDE_DIRS})
-endif()
 
 taskmaster_configure_target(taskmaster_lib)
 
-# Unity build option (30-50% faster first build)
-option(TASKMASTER_UNITY_BUILD "Enable unity build" OFF)
-if(TASKMASTER_UNITY_BUILD)
-    set_target_properties(taskmaster_lib PROPERTIES
-        UNITY_BUILD ON
-        UNITY_BUILD_MODE BATCH
-        UNITY_BUILD_BATCH_SIZE 8
-    )
-endif()
+# Main executable
+add_executable(taskmaster
+    src/main.cpp
+)
 
-add_executable(taskmaster src/main.cpp)
-target_link_libraries(taskmaster PRIVATE taskmaster_lib)
+target_link_libraries(taskmaster PRIVATE TaskMaster::lib CLI11::CLI11)
 taskmaster_configure_target(taskmaster)
 
+# Tests
 if(TASKMASTER_ENABLE_TESTS)
-    add_subdirectory(tests)
+    enable_testing()
+
+    add_executable(taskmaster_tests
+        tests/config_test.cpp
+        tests/cron_test.cpp
+        tests/dag_test.cpp
+        tests/dag_run_test.cpp
+        tests/dag_manager_test.cpp
+        tests/dag_validation_test.cpp
+        tests/executor_test.cpp
+        tests/persistence_test.cpp
+        tests/runtime_test.cpp
+        tests/shard_test.cpp
+        tests/engine_test.cpp
+        tests/integration_test.cpp
+        tests/crash_recovery_test.cpp
+        tests/test_utils.hpp
+    )
+
+    target_link_libraries(taskmaster_tests
+        PRIVATE
+            TaskMaster::lib
+            GTest::gtest
+            GTest::gtest_main
+    )
+
+    taskmaster_configure_target(taskmaster_tests)
+
+    include(GoogleTest)
+    gtest_discover_tests(taskmaster_tests)
+
+    find_package(benchmark REQUIRED)
+    add_executable(taskmaster_benchmarks
+        tests/runtime_bench.cpp
+        tests/lockfree_queue_bench.cpp
+        tests/shard_bench.cpp
+        tests/cron_bench.cpp
+        tests/persistence_bench.cpp
+        tests/executor_bench.cpp
+        tests/interview_bench.cpp
+        tests/iouring_bench.cpp
+        tests/e2e_bench.cpp
+    )
+
+    target_link_libraries(taskmaster_benchmarks
+        PRIVATE
+            TaskMaster::lib
+            benchmark::benchmark
+            benchmark::benchmark_main
+    )
+
+    taskmaster_configure_target(taskmaster_benchmarks)
 endif()
-
-install(TARGETS taskmaster taskmaster_lib
-    RUNTIME DESTINATION bin
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
-)
-
-install(DIRECTORY include/taskmaster
-    DESTINATION include
-)

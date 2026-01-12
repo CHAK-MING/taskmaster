@@ -9,7 +9,7 @@
 - DAG 任务依赖管理
 - 标准 Cron 表达式定时调度
 - Web UI 可视化管理（React Flow）
-- REST API + WebSocket 实时日志
+- REST API 监控与控制
 - SQLite 持久化，支持崩溃恢复
 
 ## 快速开始
@@ -24,10 +24,10 @@ cmake --build build -j
 ### 运行
 
 ```bash
-# 启动服务（含 Web UI）
-./build/bin/taskmaster --server --port 8080
+# 启动服务（含调度器和 Web UI）
+./build/bin/taskmaster serve -c system_config.yaml
 
-# 访问 http://localhost:8080
+# 访问 http://localhost:8888
 ```
 
 ### 构建 Web UI（可选）
@@ -37,33 +37,162 @@ cd web-ui
 npm install && npm run build
 ```
 
-## 任务配置
+## CLI 命令参考
 
-| 字段          | 类型   | 说明                       |
-| ------------- | ------ | -------------------------- |
-| `id`          | string | 唯一标识（必填）           |
-| `name`        | string | 显示名称                   |
-| `command`     | string | Shell 命令（必填）         |
-| `cron`        | string | Cron 表达式                |
-| `deps`        | array  | 依赖任务 ID 列表           |
-| `timeout`     | int    | 超时秒数（默认 300）       |
-| `max_retries` | int    | 最大重试次数（默认 3）     |
+### 命令
+
+#### `serve` - 启动 TaskMaster 服务
+
+```bash
+taskmaster serve -c system_config.yaml
+```
+
+启动调度器和 API 服务器。需要 `-c, --config` 指定系统配置文件。
+
+#### `run` - 触发 DAG 运行
+
+```bash
+taskmaster run --db taskmaster.db <dag_id>
+```
+
+检查 DAG 是否存在于数据库中。实际触发请使用 API 端点。
+
+#### `list` - 列出所有 DAG
+
+```bash
+taskmaster list --db taskmaster.db
+```
+
+列出数据库中存储的所有 DAG。
+
+#### `validate` - 验证 DAG 文件
+
+```bash
+taskmaster validate -c system_config.yaml
+```
+
+验证配置目录中的 DAG YAML 文件。
+
+#### `status` - 显示 DAG 运行历史
+
+```bash
+taskmaster status --db taskmaster.db <dag_id>
+taskmaster status --db taskmaster.db <dag_id> --run <run_id>
+```
+
+显示 DAG 的运行历史或特定运行的详情。
+
+## 项目结构
+
+```
+TaskMaster/
+├── system_config.yaml    # 系统配置文件
+├── dags/                 # DAG 定义文件目录
+│   ├── simple.yaml       # 简单示例 DAG
+│   └── monitoring.yaml   # 系统监控 DAG
+├── build/bin/taskmaster  # 编译后的二进制文件
+└── web-ui/               # React 前端
+```
+
+## 系统配置
+
+`system_config.yaml` 配置调度器、存储和 API：
+
+```yaml
+scheduler:
+  log_level: info
+  tick_interval_ms: 1000
+  max_concurrency: 10
+
+storage:
+  db_file: taskmaster.db
+
+api:
+  enabled: true
+  host: 127.0.0.1
+  port: 8888
+
+dag_source:
+  directory: ./dags
+  scan_interval_sec: 60
+```
+
+### 配置字段
+
+| 字段 | 说明 |
+|------|------|
+| `scheduler.log_level` | 日志级别（debug, info, warn, error） |
+| `scheduler.tick_interval_ms` | 调度器检查间隔（毫秒） |
+| `scheduler.max_concurrency` | 最大并发任务数 |
+| `storage.db_file` | SQLite 数据库路径 |
+| `api.enabled` | 启用/禁用 REST API 和 Web UI |
+| `api.host` | API 绑定地址 |
+| `api.port` | API 端口 |
+| `dag_source.directory` | DAG 文件目录 |
+| `dag_source.scan_interval_sec` | DAG 文件热重载间隔（秒） |
+
+## DAG 配置
+
+DAG 文件放置在 `dags/` 目录。**文件名即为 DAG ID**（如 `simple.yaml` → DAG ID: `simple`）。
+
+### DAG 文件结构
+
+```yaml
+name: 我的 DAG
+description: 可选描述
+cron: "0 2 * * *"  # 可选：启用自动调度
+tasks:
+  - id: task1
+    name: 任务一
+    command: echo "Hello"
+    dependencies: []
+  - id: task2
+    name: 任务二
+    command: echo "World"
+    dependencies: [task1]
+```
+
+### DAG 字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | string | 显示名称 |
+| `description` | string | 描述信息（可选） |
+| `cron` | string | Cron 表达式（可选，有值则启用自动调度） |
+| `tasks` | array | 任务列表（必填） |
+
+**注意：** 有 `cron` 字段的 DAG 会按计划自动运行。无 `cron` 的 DAG 只能手动触发（通过 API 或 CLI）。
+
+### 任务字段
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string | 任务 ID（必填） |
+| `name` | string | 显示名称（可选） |
+| `command` | string | Shell 命令（必填） |
+| `dependencies` | array | 依赖的任务 ID 列表 |
+| `timeout` | int | 超时秒数（默认 300） |
+| `max_retries` | int | 最大重试次数（默认 3） |
+
+### DAG 示例
+
+参见 `dags/` 目录：
+
+- **simple.yaml** - 简单的两任务 DAG，每分钟运行一次
+- **monitoring.yaml** - 系统健康检查（磁盘、API、数据库）及指标采集
 
 ## REST API
 
-| 方法      | 端点                          | 说明         |
-| --------- | ----------------------------- | ------------ |
-| GET       | `/api/dags`                   | 获取 DAG 列表 |
-| POST      | `/api/dags`                   | 创建 DAG     |
-| GET       | `/api/dags/:id`               | 获取 DAG     |
-| PUT       | `/api/dags/:id`               | 更新 DAG     |
-| DELETE    | `/api/dags/:id`               | 删除 DAG     |
-| POST      | `/api/dags/:id/trigger`       | 触发运行     |
-| GET       | `/api/dags/:id/tasks`         | 获取任务列表 |
-| POST      | `/api/dags/:id/tasks`         | 添加任务     |
-| PUT       | `/api/dags/:id/tasks/:taskId` | 更新任务     |
-| DELETE    | `/api/dags/:id/tasks/:taskId` | 删除任务     |
-| WebSocket | `/ws/logs`                    | 实时日志     |
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | `/api/health` | 健康检查 |
+| GET | `/api/status` | 系统状态（DAG 数量、活跃运行） |
+| GET | `/api/dags` | 获取所有 DAG |
+| GET | `/api/dags/:id` | 获取 DAG 详情 |
+| GET | `/api/dags/:id/tasks/:taskId` | 获取任务详情 |
+| POST | `/api/dags/:id/trigger` | 触发 DAG 运行 |
+| GET | `/api/history` | 获取运行历史 |
+| GET | `/api/runs/:runId/tasks/:taskId/logs` | 获取任务日志 |
 
 ## 环境要求
 

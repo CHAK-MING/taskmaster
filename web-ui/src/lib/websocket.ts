@@ -34,7 +34,7 @@ export class WebSocketManager {
 
   constructor() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    this.url = `${protocol}//${window.location.host}/ws/logs`;
+    this.url = `${protocol}//${window.location.host}/ws`;
   }
 
   connect(): void {

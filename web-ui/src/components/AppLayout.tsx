@@ -2,8 +2,7 @@ import { ReactNode, useState, useEffect } from "react";
 import { SidebarProvider, SidebarTrigger, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { Bell, Search, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { Bell, CheckCircle2, XCircle, AlertCircle } from "lucide-react";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -12,7 +11,6 @@ import {
     DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 
 interface AppLayoutProps {
     children: ReactNode;
@@ -28,15 +26,7 @@ interface Notification {
 }
 
 export function AppLayout({ children, title, subtitle }: AppLayoutProps) {
-    const navigate = useNavigate();
     const [notifications, setNotifications] = useState<Notification[]>([]);
-    const [searchQuery, setSearchQuery] = useState("");
-
-    const handleSearch = (e: React.KeyboardEvent<HTMLInputElement>) => {
-        if (e.key === "Enter" && searchQuery.trim()) {
-            navigate(`/dags?search=${encodeURIComponent(searchQuery.trim())}`);
-        }
-    };
 
     useEffect(() => {
         const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -118,18 +108,6 @@ export function AppLayout({ children, title, subtitle }: AppLayoutProps) {
                         </div>
 
                         <div className="flex items-center gap-3">
-                            {/* Search */}
-                            <div className="relative hidden md:block">
-                                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                                <Input
-                                    placeholder="搜索 DAG... (回车)"
-                                    className="w-64 pl-9 bg-secondary/50"
-                                    value={searchQuery}
-                                    onChange={(e) => setSearchQuery(e.target.value)}
-                                    onKeyDown={handleSearch}
-                                />
-                            </div>
-
                             {/* Notifications */}
                             <DropdownMenu>
                                 <DropdownMenuTrigger asChild>

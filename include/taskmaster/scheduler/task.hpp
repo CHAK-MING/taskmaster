@@ -1,7 +1,7 @@
 #pragma once
 
-#include "taskmaster/executor/executor.hpp"
 #include "taskmaster/scheduler/cron.hpp"
+#include "taskmaster/util/id.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -19,22 +19,20 @@ enum class TaskState : std::uint8_t {
 };
 
 struct RetryPolicy {
-  int max_attempts{3};
-  std::chrono::seconds delay{std::chrono::seconds(0)};
+  int max_retries{3};
+  std::chrono::seconds retry_interval{std::chrono::seconds(0)};
 };
 
-struct TaskDefinition {
-  std::string id;
+struct ExecutionInfo {
+  DAGId dag_id;
+  TaskId task_id;
   std::string name;
-  CronExpr schedule;
-  ExecutorConfig executor;
-  RetryPolicy retry{};
-  bool enabled{true};
+  std::optional<CronExpr> cron_expr;
 };
 
 struct TaskInstance {
-  std::string instance_id;
-  std::string task_id;
+  InstanceId instance_id;
+  TaskId task_id;
   TaskState state{TaskState::Pending};
   std::chrono::system_clock::time_point scheduled_at{};
   std::chrono::system_clock::time_point started_at{};

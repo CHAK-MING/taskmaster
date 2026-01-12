@@ -1,0 +1,108 @@
+name: System Monitoring & Alerting
+description: Checks system health and generates reports
+cron: "*/5 * * * *"
+tasks:
+  - id: check_disk
+    name: Check Disk Usage
+    command: |
+      # Get disk usage percentage for root partition
+      USAGE=$(df -h / | awk 'NR==2 {print $5}' | tr -d '%')
+      
+      # Alert threshold (percentage)
+      THRESHOLD=85
+      
+      if [ "$USAGE" -gt "$THRESHOLD" ]; then
+        echo "WARN: Disk usage at ${USAGE}% (threshold: ${THRESHOLD}%)"
+        exit 1
+      fi
+      echo "OK: Disk usage at ${USAGE}%"
+    timeout: 30
+    max_retries: 1
+    dependencies: []
+  - id: check_api
+    name: Check API Health
+    command: |
+      # Target endpoint (customize for your service)
+      ENDPOINT="http://localhost:8080/health"
+      
+      # Get HTTP status code
+      STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$ENDPOINT" --max-time 10)
+      
+      if [ "$STATUS" != "200" ]; then
+        echo "ERROR: API returned status $STATUS"
+        exit 1
+      fi
+      echo "OK: API is healthy (status: $STATUS)"
+    timeout: 30
+    max_retries: 2
+    dependencies: []
+  - id: check_database
+    name: Check Database Connection
+    command: |
+      # Database connection parameters (customize these)
+      DB_HOST="localhost"
+      DB_PORT="5432"
+      DB_USER="postgres"
+      
+      # Check if database is ready
+      if ! pg_isready -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -q; then
+        echo "ERROR: Database is not responding at ${DB_HOST}:${DB_PORT}"
+        exit 1
+      fi
+      echo "OK: Database is ready"
+    timeout: 30
+    dependencies: []
+  - id: collect_metrics
+    name: Collect System Metrics
+    command: |
+      # Output directory (ensure it exists and is writable)
+      METRICS_DIR="/var/log/metrics"
+      mkdir -p "$METRICS_DIR"
+      
+      # Get current timestamp
+      TIMESTAMP=$(date -Iseconds)
+      
+      # Get CPU usage (user percentage from top)
+      CPU=$(top -bn1 | grep "Cpu(s)" | awk '{print $2}')
+      
+      # Get memory usage percentage
+      MEM=$(free | awk '/Mem:/ {printf "%.1f", $3/$2*100}')
+      
+      # Append metrics as JSON
+      echo "{\"ts\":\"$TIMESTAMP\",\"cpu\":$CPU,\"mem\":$MEM}" >> "$METRICS_DIR/system_$(date +%Y%m%d).json"
+      
+      echo "OK: Metrics collected (CPU: ${CPU}%, MEM: ${MEM}%)"
+    timeout: 30
+    dependencies: []
+  - id: rotate_logs
+    name: Rotate Application Logs
+    command: |
+      # Force log rotation
+      logrotate -f /etc/logrotate.d/app
+      echo "OK: Logs rotated at $(date)"
+    timeout: 300
+    dependencies: []
+  - id: weekly_report
+    name: Generate Weekly Report
+    command: |
+      # Report parameters
+      SCRIPT="/opt/scripts/generate_report.py"
+      OUTPUT_DIR="/reports"
+      
+      # Calculate date range (last Monday to today)
+      START_DATE=$(date -d 'last monday' +%Y-%m-%d)
+      END_DATE=$(date +%Y-%m-%d)
+      WEEK_NUM=$(date +%Y%W)
+      
+      # Ensure output directory exists
+      mkdir -p "$OUTPUT_DIR"
+      
+      # Generate report
+      python3 "$SCRIPT" \
+        --start "$START_DATE" \
+        --end "$END_DATE" \
+        --output "$OUTPUT_DIR/weekly_${WEEK_NUM}.html"
+      
+      echo "OK: Weekly report generated for $START_DATE to $END_DATE"
+    timeout: 600
+    dependencies: []

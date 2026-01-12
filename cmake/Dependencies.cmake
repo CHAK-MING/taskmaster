@@ -43,6 +43,26 @@ else()
     message(STATUS "Found system yaml-cpp: ${yaml-cpp_VERSION}")
 endif()
 
+# CLI11
+find_package(CLI11 QUIET)
+if(NOT CLI11_FOUND)
+    message(STATUS "CLI11 not found, fetching from GitHub...")
+    FetchContent_Declare(
+        CLI11
+        GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
+        GIT_TAG v2.4.2
+        GIT_SHALLOW TRUE
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SYSTEM
+    )
+    set(CLI11_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(CLI11_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(CLI11_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(CLI11)
+else()
+    message(STATUS "Found system CLI11: ${CLI11_VERSION}")
+endif()
+
 # SQLite3
 find_package(SQLite3 QUIET)
 if(NOT SQLite3_FOUND)
@@ -81,43 +101,27 @@ if(UNIX AND NOT APPLE)
     endif()
 endif()
 
-# Asio (standalone, for Crow)
-find_package(asio QUIET)
-if(NOT asio_FOUND)
-    message(STATUS "Asio not found, fetching from GitHub...")
+# llhttp (HTTP parser)
+find_package(llhttp QUIET)
+if(NOT llhttp_FOUND)
+    message(STATUS "llhttp not found, fetching from GitHub...")
     FetchContent_Declare(
-        asio
-        GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
-        GIT_TAG asio-1-30-2
+        llhttp
+        GIT_REPOSITORY https://github.com/nodejs/llhttp.git
+        GIT_TAG release/v9.2.1
         GIT_SHALLOW TRUE
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
         SYSTEM
     )
-    FetchContent_MakeAvailable(asio)
-    add_library(asio INTERFACE)
-    target_include_directories(asio SYSTEM INTERFACE ${asio_SOURCE_DIR}/asio/include)
-    target_compile_definitions(asio INTERFACE ASIO_STANDALONE)
+    FetchContent_MakeAvailable(llhttp)
 else()
-    message(STATUS "Found system asio")
+    message(STATUS "Found system llhttp: ${llhttp_VERSION}")
 endif()
 
-# Crow (HTTP/WebSocket framework)
-find_package(Crow QUIET)
-if(NOT Crow_FOUND)
-    message(STATUS "Crow not found, fetching from GitHub...")
-    FetchContent_Declare(
-        Crow
-        GIT_REPOSITORY https://github.com/CrowCpp/Crow.git
-        GIT_TAG v1.2.0
-        GIT_SHALLOW TRUE
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-        SYSTEM
-    )
-    set(CROW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(CROW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(Crow)
-else()
-    message(STATUS "Found system Crow: ${Crow_VERSION}")
+# OpenSSL (for WebSocket handshake SHA1)
+find_package(OpenSSL REQUIRED)
+if(OpenSSL_FOUND)
+    message(STATUS "Found OpenSSL: ${OPENSSL_VERSION}")
 endif()
 
 # GoogleTest (tests only)

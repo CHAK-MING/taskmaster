@@ -1,13 +1,14 @@
 #pragma once
 
+#include "taskmaster/core/runtime.hpp"
+#include "taskmaster/util/id.hpp"
 #include <chrono>
-#include <coroutine>
 #include <cstdint>
+#include <flat_map>
 #include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <variant>
 
 namespace taskmaster {
@@ -45,8 +46,8 @@ private:
     register_type(ExecutorType::Shell, "shell");
   }
 
-  std::unordered_map<ExecutorType, std::string_view> type_to_name_;
-  std::unordered_map<std::string, ExecutorType> name_to_type_;
+  std::flat_map<ExecutorType, std::string_view> type_to_name_;
+  std::flat_map<std::string, ExecutorType, std::less<>> name_to_type_;
 };
 
 [[nodiscard]] inline auto executor_type_to_string(ExecutorType type) noexcept
@@ -75,32 +76,57 @@ struct ExecutorResult {
   bool timed_out{false};
 };
 
-using ExecutorCallback = std::move_only_function<void(
-    const std::string& instance_id, ExecutorResult result)>;
+struct ExecutorRequest {
+  InstanceId instance_id;
+  ExecutorConfig config;
+};
+
+struct ExecutionSink {
+  std::move_only_function<void(const InstanceId& instance_id,
+                               std::string_view message)>
+      on_state;
+  std::move_only_function<void(const InstanceId& instance_id,
+                               std::string_view data)>
+      on_stdout;
+  std::move_only_function<void(const InstanceId& instance_id,
+                               std::string_view data)>
+      on_stderr;
+  std::move_only_function<void(const InstanceId& instance_id,
+                               ExecutorResult result)>
+      on_complete;
+};
+
+class Runtime;
+struct ExecutorContext {
+  Runtime& runtime;
+};
 
 class IExecutor {
 public:
   virtual ~IExecutor() = default;
 
-  virtual auto execute(const std::string& instance_id,
-                       const ExecutorConfig& config, ExecutorCallback callback)
-      -> void = 0;
+  virtual auto start(ExecutorContext ctx, ExecutorRequest req,
+                     ExecutionSink sink) -> void = 0;
 
-  virtual auto cancel(std::string_view instance_id) -> void = 0;
+  virtual auto cancel(const InstanceId& instance_id) -> void = 0;
 };
 
-class Runtime;  // Forward declaration
+class Runtime;
 
 [[nodiscard]] auto create_shell_executor(Runtime& rt)
     -> std::unique_ptr<IExecutor>;
 
+[[nodiscard]] auto create_noop_executor(Runtime& rt)
+    -> std::unique_ptr<IExecutor>;
+
 class ExecutorAwaiter {
 public:
-  ExecutorAwaiter(IExecutor& executor, std::string instance_id,
-                  ExecutorConfig config)
+  ExecutorAwaiter(IExecutor& executor, InstanceId instance_id,
+                  ExecutorConfig config, Runtime& runtime)
       : executor_{executor},
         instance_id_{std::move(instance_id)},
-        config_{std::move(config)} {
+        config_{std::move(config)},
+        runtime_{&runtime} {
   }
 
   // Non-copyable and non-movable because lambda captures 'this' pointer
@@ -114,11 +140,19 @@ public:
   }
 
   auto await_suspend(std::coroutine_handle<> handle) -> void {
-    executor_.execute(instance_id_, config_,
-                      [this, handle](const std::string&, ExecutorResult res) {
-                        result_ = std::move(res);
-                        handle.resume();
-                      });
+    ExecutorContext ctx{.runtime = *runtime_};
+
+    ExecutorRequest req{.instance_id = std::move(instance_id_),
+                        .config = std::move(config_)};
+
+    ExecutionSink sink;
+    sink.on_complete =
+        [this, handle](const InstanceId&, ExecutorResult res) mutable {
+          result_ = std::move(res);
+          runtime_->schedule(handle);
+        };
+
+    executor_.start(ctx, std::move(req), std::move(sink));
   }
 
   [[nodiscard]] auto await_resume() noexcept -> ExecutorResult {
@@ -127,14 +161,17 @@ public:
 
 private:
   IExecutor& executor_;
-  std::string instance_id_;
+  InstanceId instance_id_;
   ExecutorConfig config_;
   ExecutorResult result_;
+  Runtime* runtime_;
 };
 
-inline auto execute_async(IExecutor& executor, std::string instance_id,
-                          ExecutorConfig config) -> ExecutorAwaiter {
-  return ExecutorAwaiter{executor, std::move(instance_id), std::move(config)};
+inline auto execute_async(Runtime& runtime, IExecutor& executor,
+                          InstanceId instance_id, ExecutorConfig config)
+    -> ExecutorAwaiter {
+  return ExecutorAwaiter{executor, std::move(instance_id), std::move(config),
+                         runtime};
 }
 
 }  // namespace taskmaster

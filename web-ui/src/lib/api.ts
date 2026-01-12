@@ -1,45 +1,29 @@
-// API service for TaskMaster backend
-
 const API_BASE = '/api';
 
 export interface TaskConfig {
-    id: string;
+    task_id: string;
     name: string;
     command: string;
-    executor: string;
-    deps: string[];
-    timeout: number;
-    retry_interval: number;
-    max_retries: number;
-    enabled: boolean;
-    working_dir?: string;
+    dependencies: string[];
 }
 
 export interface DAGInfo {
-    id: string;
+    dag_id: string;
     name: string;
     description: string;
-    cron: string;  // Cron expression at DAG level
+    cron: string;
     max_concurrent_runs: number;
-    is_active: boolean;
-    created_at: string;
-    updated_at: string;
-    tasks: TaskConfig[];
-    task_count: number;
-    from_config: boolean;
+    tasks: string[];
 }
 
 export interface SystemStatus {
-    running: boolean;
-    tasks: number;
-    dags: number;
-    active_runs: number;
+    dag_count: number;
+    active_runs: boolean | number;
     timestamp: string;
 }
 
 export interface HealthStatus {
     status: 'healthy' | 'stopped';
-    timestamp: string;
 }
 
 export interface ApiError {
@@ -47,6 +31,22 @@ export interface ApiError {
         code: string;
         message: string;
     };
+}
+
+interface DAGListResponse {
+    dags: DAGInfo[];
+}
+
+interface TaskListResponse {
+    tasks: string[];
+}
+
+interface HistoryListResponse {
+    runs: RunRecord[];
+}
+
+interface TaskLogsResponse {
+    logs: TaskLogEntry[];
 }
 
 async function handleResponse<T>(response: Response): Promise<T> {
@@ -69,7 +69,8 @@ export async function getStatus(): Promise<SystemStatus> {
 
 export async function listDAGs(): Promise<DAGInfo[]> {
     const response = await fetch(`${API_BASE}/dags`);
-    return handleResponse<DAGInfo[]>(response);
+    const data = await handleResponse<DAGListResponse>(response);
+    return data.dags;
 }
 
 export async function getDAG(dagId: string): Promise<DAGInfo> {
@@ -77,117 +78,56 @@ export async function getDAG(dagId: string): Promise<DAGInfo> {
     return handleResponse<DAGInfo>(response);
 }
 
-export interface CreateDAGRequest {
-    name: string;
-    description?: string;
-    cron?: string;
-    max_concurrent_runs?: number;
-    is_active?: boolean;
+export async function listTasks(dagId: string): Promise<string[]> {
+    const response = await fetch(`${API_BASE}/dags/${dagId}/tasks`);
+    const data = await handleResponse<TaskListResponse>(response);
+    return data.tasks;
 }
 
-export async function createDAG(data: CreateDAGRequest): Promise<DAGInfo> {
-    const response = await fetch(`${API_BASE}/dags`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-    });
-    return handleResponse<DAGInfo>(response);
+export async function getTask(dagId: string, taskId: string): Promise<TaskConfig> {
+    const response = await fetch(`${API_BASE}/dags/${dagId}/tasks/${taskId}`);
+    return handleResponse<TaskConfig>(response);
 }
 
-export interface UpdateDAGRequest {
-    name?: string;
-    description?: string;
-    cron?: string;
-    max_concurrent_runs?: number;
-    is_active?: boolean;
-}
-
-export async function updateDAG(dagId: string, updates: UpdateDAGRequest): Promise<DAGInfo> {
-    const response = await fetch(`${API_BASE}/dags/${dagId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-    });
-    return handleResponse<DAGInfo>(response);
-}
-
-export async function deleteDAG(dagId: string): Promise<void> {
-    const response = await fetch(`${API_BASE}/dags/${dagId}`, {
-        method: 'DELETE',
-    });
-    if (!response.ok) {
-        const error = await response.json() as ApiError;
-        throw new Error(error.error?.message || `HTTP ${response.status}`);
-    }
-}
-
-export async function triggerDAG(dagId: string): Promise<{ status: string; dag_id: string }> {
+export async function triggerDAG(dagId: string): Promise<{ dag_run_id: string; status: string }> {
     const response = await fetch(`${API_BASE}/dags/${dagId}/trigger`, {
         method: 'POST',
     });
-    return handleResponse<{ status: string; dag_id: string }>(response);
-}
-
-export async function createTask(dagId: string, task: TaskConfig): Promise<TaskConfig> {
-    const response = await fetch(`${API_BASE}/dags/${dagId}/tasks`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(task),
-    });
-    return handleResponse<TaskConfig>(response);
-}
-
-export async function updateTask(dagId: string, taskId: string, task: Partial<TaskConfig>): Promise<TaskConfig> {
-    const response = await fetch(`${API_BASE}/dags/${dagId}/tasks/${taskId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(task),
-    });
-    return handleResponse<TaskConfig>(response);
-}
-
-export async function deleteTask(dagId: string, taskId: string): Promise<void> {
-    const response = await fetch(`${API_BASE}/dags/${dagId}/tasks/${taskId}`, {
-        method: 'DELETE',
-    });
-    if (!response.ok) {
-        const error = await response.json() as ApiError;
-        throw new Error(error.error?.message || `HTTP ${response.status}`);
-    }
+    return handleResponse<{ dag_run_id: string; status: string }>(response);
 }
 
 export interface RunRecord {
-    run_id: string;
+    dag_run_id: string;
     dag_id: string;
-    dag_name: string;
-    status: 'running' | 'success' | 'failed';
+    dag_name?: string;
+    state: 'running' | 'success' | 'failed';
     trigger_type: 'manual' | 'schedule' | 'api';
-    start_time: string;
-    end_time: string;
-    duration_ms: number;
-    total_tasks: number;
-    completed_tasks: number;
-    failed_tasks: number;
+    started_at: string;
+    finished_at: string;
+    total_tasks?: number;
+    completed_tasks?: number;
+    failed_tasks?: number;
 }
 
 export interface TaskRunRecord {
     task_id: string;
-    status: 'pending' | 'scheduled' | 'running' | 'success' | 'failed' | 'upstream_failed' | 'retrying';
+    state: 'pending' | 'scheduled' | 'running' | 'success' | 'failed' | 'upstream_failed' | 'retrying';
     attempt: number;
-    start_time: string;
-    end_time: string;
-    exit_code: number;
-    error: string;
+    started_at: string;
+    finished_at: string;
+    exit_code?: number;
+    error?: string;
 }
 
 export interface RunDetail extends RunRecord {
-    task_runs: TaskRunRecord[];
+    task_runs?: TaskRunRecord[];
 }
 
 export async function listHistory(dagId?: string): Promise<RunRecord[]> {
     const url = dagId ? `${API_BASE}/dags/${dagId}/history` : `${API_BASE}/history`;
     const response = await fetch(url);
-    return handleResponse<RunRecord[]>(response);
+    const data = await handleResponse<HistoryListResponse>(response);
+    return data.runs;
 }
 
 export async function getRunDetail(runId: string): Promise<RunDetail> {
@@ -196,28 +136,16 @@ export async function getRunDetail(runId: string): Promise<RunDetail> {
 }
 
 export interface TaskLogEntry {
-    id: number;
-    run_id: string;
-    task_id: string;
-    attempt: number;
     timestamp: number;
     level: string;
     stream: string;
     message: string;
 }
 
-export async function getRunLogs(runId: string): Promise<TaskLogEntry[]> {
-    const response = await fetch(`${API_BASE}/runs/${runId}/logs`);
-    return handleResponse<TaskLogEntry[]>(response);
-}
-
-export async function getTaskLogs(runId: string, taskId: string, attempt?: number): Promise<TaskLogEntry[]> {
-    let url = `${API_BASE}/runs/${runId}/tasks/${taskId}/logs`;
-    if (attempt !== undefined && attempt > 0) {
-        url += `?attempt=${attempt}`;
-    }
-    const response = await fetch(url);
-    return handleResponse<TaskLogEntry[]>(response);
+export async function getTaskLogs(runId: string, taskId: string): Promise<TaskLogEntry[]> {
+    const response = await fetch(`${API_BASE}/runs/${runId}/tasks/${taskId}/logs`);
+    const data = await handleResponse<TaskLogsResponse>(response);
+    return data.logs;
 }
 
 export function connectLogsWebSocket(onMessage: (data: unknown) => void): WebSocket {
@@ -229,7 +157,7 @@ export function connectLogsWebSocket(onMessage: (data: unknown) => void): WebSoc
             const data = JSON.parse(event.data);
             onMessage(data);
         } catch {
-            // Ignore parse errors
+            // ignore
         }
     };
 

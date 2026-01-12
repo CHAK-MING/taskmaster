@@ -1,6 +1,7 @@
 #pragma once
 
-#include "taskmaster/core/io_ring.hpp"
+#include "taskmaster/io/async_fd.hpp"
+#include "taskmaster/io/context.hpp"
 #include "taskmaster/core/lockfree_queue.hpp"
 
 #include <array>
@@ -12,6 +13,15 @@
 #include <unordered_set>
 
 namespace taskmaster {
+
+using shard_id = unsigned;
+using io::INVALID_SHARD;
+using io::WAKE_EVENT_TOKEN;
+using io::CQE_F_MORE;
+using io::CompletionData;
+using io::IoRequest;
+using io::IoOpType;
+using io::KernelTimespec;
 
 class Shard {
 public:
@@ -27,10 +37,13 @@ public:
     return id_;
   }
   [[nodiscard]] auto wake_fd() const noexcept -> int {
+    return wake_fd_.fd();
+  }
+  [[nodiscard]] auto wake_event() noexcept -> io::AsyncEventFd& {
     return wake_fd_;
   }
-  [[nodiscard]] auto ring() noexcept -> IoRing& {
-    return ring_;
+  [[nodiscard]] auto ctx() noexcept -> io::IoContext& {
+    return ctx_;
   }
   [[nodiscard]] auto memory_resource() noexcept -> std::pmr::memory_resource* {
     return &pool_;
@@ -49,25 +62,31 @@ public:
   [[nodiscard]] auto is_sleeping() const noexcept -> bool;
   auto set_sleeping(bool v) noexcept -> void;
 
-  auto track_io_data(io_data* data) -> void;
-  auto untrack_io_data(io_data* data) -> void;
+  auto track_io_data(CompletionData* data) -> void;
+  auto untrack_io_data(CompletionData* data) -> void;
 
 private:
   shard_id id_;
-  int wake_fd_ = -1;
-  IoRing ring_;
 
   alignas(64) std::array<std::byte, ARENA_SIZE> arena_;
   std::pmr::monotonic_buffer_resource upstream_{arena_.data(), arena_.size()};
   std::pmr::unsynchronized_pool_resource pool_{&upstream_};
 
+  io::IoContext ctx_;
+  io::AsyncEventFd wake_fd_;
+
   std::optional<std::coroutine_handle<>> run_next_;
   std::deque<std::coroutine_handle<>> local_queue_;
-  BoundedMPSCQueue<std::coroutine_handle<>> remote_queue_{4096};
+  // Reusable buffer for batch processing to avoid allocation
+  std::deque<std::coroutine_handle<>> batch_buffer_;
+  
+  // Align remote queue to cache line to prevent false sharing
+  alignas(64) BoundedMPSCQueue<std::coroutine_handle<>> remote_queue_{4096};
+  
   std::deque<IoRequest> io_queue_;
-  std::unordered_set<io_data*> pending_io_;
+  std::unordered_set<CompletionData*> pending_io_;
 
-  std::atomic<bool> sleeping_{false};
+  alignas(64) std::atomic<bool> sleeping_{false};
 };
 
 }  // namespace taskmaster

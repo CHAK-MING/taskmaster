@@ -1,140 +1,80 @@
 #include "taskmaster/app/services/scheduler_service.hpp"
 
+#include "taskmaster/config/dag_definition.hpp"
+#include "taskmaster/dag/dag_manager.hpp"
 #include "taskmaster/scheduler/cron.hpp"
+#include "taskmaster/scheduler/task.hpp"
 #include "taskmaster/util/log.hpp"
 
+#include <optional>
 #include <ranges>
 
 namespace taskmaster {
 
-auto SchedulerService::set_on_ready(EngineReadyCallback callback) -> void {
-  on_ready_ = std::move(callback);
-  engine_.set_on_ready([this](const TaskInstance& inst) {
-    if (on_ready_) {
-      on_ready_(inst);
+SchedulerService::SchedulerService(Runtime& runtime)
+    : engine_(runtime) {
+}
+
+auto SchedulerService::set_on_dag_trigger(DAGTriggerCallback callback) -> void {
+  on_dag_trigger_ = std::move(callback);
+  engine_.set_on_dag_trigger([this](const DAGId& dag_id) {
+    if (on_dag_trigger_) {
+      on_dag_trigger_(dag_id);
     }
   });
 }
 
-auto SchedulerService::init_from_config(const std::vector<TaskConfig>& tasks,
-                                        const std::vector<ExecutorConfig>& cfgs)
-    -> Result<void> {
-  for (auto [idx, tc] : std::views::enumerate(tasks)) {
-    // Only register root tasks (no dependencies)
-    if (!tc.deps.empty())
-      continue;
-
-    TaskDefinition def;
-    def.id = tc.id;
-    def.name = tc.name;
-    def.executor = cfgs[idx];
-    def.retry.max_attempts = tc.max_retries;
-    def.retry.delay = tc.retry_interval;
-    def.enabled = tc.enabled;
-
-    if (!engine_.add_task(std::move(def))) {
-      log::warn("Failed to add task {} to engine", tc.id);
-    }
-  }
-  return ok();
-}
-
-auto SchedulerService::register_task(std::string_view dag_id,
-                                     const TaskConfig& task) -> void {
-  // Only register root tasks
-  if (!task.deps.empty())
+auto SchedulerService::register_dag(DAGId dag_id, const DAGInfo& dag_info)
+    -> void {
+  if (dag_info.cron.empty()) {
     return;
+  }
 
-  std::string id = std::string(dag_id) + ":" + task.id;
+  auto cron_expr = CronExpr::parse(dag_info.cron);
+  if (!cron_expr) {
+    log::warn("Invalid cron expression for DAG {}: {}", dag_id, dag_info.cron);
+    return;
+  }
 
-  TaskDefinition def;
-  def.id = id;
-  def.name = task.name.empty() ? task.id : task.name;
+  auto root_tasks = dag_info.tasks | std::views::filter(
+      [](const auto& t) { return t.dependencies.empty(); });
 
-  ShellExecutorConfig exec;
-  exec.command = task.command;
-  exec.working_dir = task.working_dir;
-  exec.timeout = task.timeout;
-  def.executor = exec;
+  auto it = std::ranges::begin(root_tasks);
+  if (it == std::ranges::end(root_tasks)) {
+    log::warn("DAG {} has no root tasks to register", dag_id);
+    return;
+  }
 
-  def.retry.max_attempts = task.max_retries;
-  def.retry.delay = task.retry_interval;
-  def.enabled = task.enabled;
+  const auto& task = *it;
+  ExecutionInfo info{
+      .dag_id = dag_id,
+      .task_id = task.task_id,
+      .name = task.name,
+      .cron_expr = std::make_optional(*cron_expr),
+  };
 
-  if (!engine_.add_task(std::move(def))) {
-    log::warn("Failed to register task {}", id);
+  if (!engine_.add_task(std::move(info))) {
+    log::warn("Failed to register DAG schedule: {}", dag_id);
+    return;
+  }
+
+  log::info("Registered DAG schedule: {} (root task: {}) with cron: {}",
+            dag_id, task.task_id, dag_info.cron);
+  registered_root_tasks_[dag_id] = task.task_id;
+}
+
+auto SchedulerService::unregister_dag(DAGId dag_id) -> void {
+  auto it = registered_root_tasks_.find(dag_id);
+  if (it == registered_root_tasks_.end()) {
+    return;
+  }
+
+  if (!engine_.remove_task(dag_id, it->second)) {
+    log::warn("Failed to unregister DAG schedule: {}", dag_id);
   } else {
-    log::info("Registered task: {}", id);
+    log::info("Unregistered DAG schedule: {}", dag_id);
   }
-}
-
-auto SchedulerService::unregister_task(std::string_view dag_id,
-                                       std::string_view task_id) -> void {
-  std::string id = std::string(dag_id) + ":" + std::string(task_id);
-  if (!engine_.remove_task(id)) {
-    log::warn("Failed to unregister task {}", id);
-  } else {
-    log::info("Unregistered task {}", id);
-  }
-}
-
-auto SchedulerService::enable_task(std::string_view dag_id,
-                                   std::string_view task_id, bool enabled)
-    -> bool {
-  std::string id = std::string(dag_id) + ":" + std::string(task_id);
-  return engine_.enable_task(id, enabled);
-}
-
-auto SchedulerService::trigger_task(std::string_view dag_id,
-                                    std::string_view task_id) -> bool {
-  std::string id = std::string(dag_id) + ":" + std::string(task_id);
-  return engine_.trigger(id);
-}
-
-auto SchedulerService::register_dag_cron(std::string_view dag_id,
-                                         std::string_view cron_expr) -> bool {
-  if (cron_expr.empty()) {
-    return false;
-  }
-
-  auto cron_result = CronExpr::parse(cron_expr);
-  if (!cron_result) {
-    log::error("Failed to parse cron expression '{}' for DAG {}", cron_expr,
-               dag_id);
-    return false;
-  }
-
-  // Use dag_id as the task_id for cron-triggered DAGs
-  // The format is "cron:<dag_id>" to distinguish from task triggers
-  std::string id = "cron:" + std::string(dag_id);
-
-  TaskDefinition def;
-  def.id = id;
-  def.name = std::string(dag_id) + " (cron)";
-  def.schedule = std::move(*cron_result);
-  def.enabled = true;
-
-  // No executor config needed - we'll handle DAG triggering in the callback
-  ShellExecutorConfig exec;
-  exec.command = "";  // Empty command - handled specially
-  def.executor = exec;
-
-  if (!engine_.add_task(std::move(def))) {
-    log::warn("Failed to register cron schedule for DAG {}", dag_id);
-    return false;
-  }
-
-  log::info("Registered cron schedule '{}' for DAG {}", cron_expr, dag_id);
-  return true;
-}
-
-auto SchedulerService::unregister_dag_cron(std::string_view dag_id) -> void {
-  std::string id = "cron:" + std::string(dag_id);
-  if (!engine_.remove_task(id)) {
-    log::warn("Failed to unregister cron schedule for DAG {}", dag_id);
-  } else {
-    log::info("Unregistered cron schedule for DAG {}", dag_id);
-  }
+  registered_root_tasks_.erase(it);
 }
 
 auto SchedulerService::start() -> void {

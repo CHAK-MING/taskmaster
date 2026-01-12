@@ -1,29 +1,26 @@
 #pragma once
 
-#include "taskmaster/app/api/websocket_hub.hpp"
-
-#include <cstdint>
+#include "taskmaster/app/http/websocket.hpp"
 #include <memory>
-#include <string>
 
 namespace taskmaster {
 
 class Application;
 
+namespace http {
+class HttpServer;
+class WebSocketHub;
+}  // namespace http
+
 class ApiServer {
 public:
-  ApiServer(Application& app, uint16_t port = 8080,
-            const std::string& host = "127.0.0.1");
+  explicit ApiServer(Application& app);
   ~ApiServer();
 
-  ApiServer(const ApiServer&) = delete;
-  auto operator=(const ApiServer&) -> ApiServer& = delete;
-
-  auto start() -> void;
-  auto stop() -> void;
-  [[nodiscard]] auto is_running() const noexcept -> bool;
-
-  [[nodiscard]] auto hub() -> WebSocketHub&;
+  void start();
+  void stop();
+  bool is_running() const;
+  http::WebSocketHub& websocket_hub();
 
 private:
   struct Impl;

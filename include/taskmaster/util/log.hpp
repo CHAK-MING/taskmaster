@@ -56,9 +56,9 @@ class Logger {
 
   std::atomic<Level> level_{Level::Info};
   std::atomic<bool> running_{false};
-  std::atomic<bool> accepting_{false};  // Whether accepting new log messages
+  std::atomic<bool> accepting_{false};
   BoundedMPSCQueue<std::string> queue_{QUEUE_CAPACITY};
-  std::thread writer_;
+  std::jthread writer_;
 
   auto writer_loop() -> void {
     std::vector<std::string> batch;
@@ -93,42 +93,28 @@ class Logger {
 public:
   Logger() = default;
   ~Logger() {
-    // First, stop accepting new messages
-    // This ensures no new pushes happen after we start shutdown
     accepting_.store(false, std::memory_order_release);
-
-    // Memory fence to ensure all in-flight pushes complete
-    std::atomic_thread_fence(std::memory_order_seq_cst);
-
-    // Now signal the writer thread to stop
     running_.store(false, std::memory_order_release);
-
-    // Wait for the writer thread to finish
-    if (writer_.joinable()) {
-      writer_.join();
-    }
   }
 
   Logger(const Logger&) = delete;
   Logger& operator=(const Logger&) = delete;
 
   auto start() -> void {
-    if (running_.exchange(true))
+    if (running_.exchange(true, std::memory_order_acq_rel))
       return;
     accepting_.store(true, std::memory_order_release);
-    writer_ = std::thread([this] { writer_loop(); });
+    writer_ = std::jthread([this] { writer_loop(); });
   }
 
   auto stop() -> void {
-    // Stop accepting new messages first
     accepting_.store(false, std::memory_order_release);
-    std::atomic_thread_fence(std::memory_order_seq_cst);
 
-    if (!running_.exchange(false))
+    if (!running_.exchange(false, std::memory_order_acq_rel))
       return;
 
     if (writer_.joinable()) {
-      writer_.join();
+      writer_.request_stop();
     }
   }
 
