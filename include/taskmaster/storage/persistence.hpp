@@ -4,6 +4,8 @@
 #include "taskmaster/dag/dag_run.hpp"
 #include "taskmaster/config/config.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <memory>
 #include <string>
 #include <string_view>
@@ -88,6 +90,18 @@ public:
                                    TaskId task_id,
                                    int attempt = -1) const
       -> Result<std::vector<TaskLogEntry>>;
+
+  // XCom persistence (cross-task communication)
+  [[nodiscard]] auto save_xcom(DAGRunId dag_run_id, TaskId task_id,
+                               std::string_view key,
+                               const nlohmann::json& value) -> Result<void>;
+  [[nodiscard]] auto get_xcom(DAGRunId dag_run_id, TaskId task_id,
+                              std::string_view key) const
+      -> Result<nlohmann::json>;
+  [[nodiscard]] auto get_task_xcoms(DAGRunId dag_run_id,
+                                    TaskId task_id) const
+      -> Result<std::vector<std::pair<std::string, nlohmann::json>>>;
+  [[nodiscard]] auto delete_run_xcoms(DAGRunId dag_run_id) -> Result<void>;
 
   // DAG persistence (for Server mode)
   [[nodiscard]] auto save_dag(const DAGInfo& dag) -> Result<void>;

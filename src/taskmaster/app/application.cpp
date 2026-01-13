@@ -264,6 +264,14 @@ auto Application::setup_callbacks() -> void {
         }
       };
 
+  callbacks.on_persist_xcom =
+      [this](DAGRunId dag_run_id, TaskId task,
+             std::string_view key, const nlohmann::json& value) {
+        if (persistence_) {
+          persistence_->save_xcom(dag_run_id, task, key, value);
+        }
+      };
+
   callbacks.get_max_retries = [this](DAGRunId dag_run_id, NodeIndex idx) {
     return get_max_retries(DAGRunId(dag_run_id), idx);
   };

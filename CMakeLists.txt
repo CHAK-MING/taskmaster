@@ -65,6 +65,8 @@ add_library(taskmaster_lib
     src/taskmaster/cli/status.cpp
     src/taskmaster/cli/validate.cpp
     src/taskmaster/util/daemon.cpp
+    src/taskmaster/xcom/xcom_extractor.cpp
+    src/taskmaster/xcom/template_resolver.cpp
 )
 
 # Precompiled headers for faster compilation (20-40% improvement)
@@ -129,55 +131,6 @@ taskmaster_configure_target(taskmaster)
 # Tests
 if(TASKMASTER_ENABLE_TESTS)
     enable_testing()
-
-    add_executable(taskmaster_tests
-        tests/config_test.cpp
-        tests/cron_test.cpp
-        tests/dag_test.cpp
-        tests/dag_run_test.cpp
-        tests/dag_manager_test.cpp
-        tests/dag_validation_test.cpp
-        tests/executor_test.cpp
-        tests/persistence_test.cpp
-        tests/runtime_test.cpp
-        tests/shard_test.cpp
-        tests/engine_test.cpp
-        tests/integration_test.cpp
-        tests/crash_recovery_test.cpp
-        tests/test_utils.hpp
-    )
-
-    target_link_libraries(taskmaster_tests
-        PRIVATE
-            TaskMaster::lib
-            GTest::gtest
-            GTest::gtest_main
-    )
-
-    taskmaster_configure_target(taskmaster_tests)
-
-    include(GoogleTest)
-    gtest_discover_tests(taskmaster_tests)
-
-    find_package(benchmark REQUIRED)
-    add_executable(taskmaster_benchmarks
-        tests/runtime_bench.cpp
-        tests/lockfree_queue_bench.cpp
-        tests/shard_bench.cpp
-        tests/cron_bench.cpp
-        tests/persistence_bench.cpp
-        tests/executor_bench.cpp
-        tests/interview_bench.cpp
-        tests/iouring_bench.cpp
-        tests/e2e_bench.cpp
-    )
-
-    target_link_libraries(taskmaster_benchmarks
-        PRIVATE
-            TaskMaster::lib
-            benchmark::benchmark
-            benchmark::benchmark_main
-    )
-
-    taskmaster_configure_target(taskmaster_benchmarks)
+    add_subdirectory(tests)
 endif()
+

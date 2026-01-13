@@ -8,6 +8,7 @@ A high-performance DAG task scheduler built with modern C++23.
 
 - DAG-based task dependencies
 - Cron scheduling with standard expressions
+- **XCom (Cross-Communication)** - Pass data between tasks
 - Web UI with DAG visualization (React Flow)
 - REST API for monitoring and control
 - SQLite persistence with crash recovery
@@ -89,7 +90,8 @@ TaskMaster/
 ├── system_config.yaml    # System configuration
 ├── dags/                 # DAG definition files
 │   ├── simple.yaml       # Simple example DAG
-│   └── monitoring.yaml   # System monitoring DAG
+│   ├── monitoring.yaml   # System monitoring DAG
+│   └── xcom_example.yaml # XCom data pipeline example
 ├── build/bin/taskmaster  # Compiled binary
 └── web-ui/               # React frontend
 ```
@@ -144,12 +146,18 @@ cron: "0 2 * * *"  # Optional: enables auto-scheduling
 tasks:
   - id: task1
     name: Task One
-    command: echo "Hello"
-    dependencies: []
+    command: echo '{"status": "ok", "count": 42}'
+    xcom_push:
+      - key: result
+        source: json
   - id: task2
     name: Task Two
-    command: echo "World"
+    command: echo "Received $DATA"
     dependencies: [task1]
+    xcom_pull:
+      - key: result
+        from: task1
+        env: DATA
 ```
 
 ### DAG Fields
@@ -173,6 +181,8 @@ tasks:
 | `dependencies` | array | List of task IDs this task depends on |
 | `timeout` | int | Timeout in seconds (default: 300) |
 | `max_retries` | int | Max retries on failure (default: 3) |
+| `xcom_push` | array | XCom values to extract from task output |
+| `xcom_pull` | array | XCom values to inject as environment variables |
 
 ### Example DAGs
 
@@ -180,6 +190,67 @@ See the `dags/` directory for examples:
 
 - **simple.yaml** - Basic two-task DAG that runs every minute
 - **monitoring.yaml** - System health checks (disk, API, database) with metrics collection
+- **xcom_example.yaml** - Data pipeline demonstrating XCom for passing data between tasks
+
+## XCom (Cross-Communication)
+
+XCom enables data passing between tasks in a DAG. Common use cases:
+
+- **ETL pipelines**: Pass record counts, file paths, or batch IDs between extract/transform/load stages
+- **Dynamic workflows**: Let upstream tasks determine parameters for downstream tasks
+- **Result aggregation**: Collect outputs from multiple tasks for a final summary
+
+Producer tasks push values extracted from their output; consumer tasks pull them as environment variables.
+
+### Push Configuration (`xcom_push`)
+
+Extract values from task output:
+
+```yaml
+xcom_push:
+  - key: result           # Key name for this value
+    source: stdout        # stdout, stderr, exit_code, or json
+    json_path: data.id    # Optional: extract from JSON (e.g., "items[0].name")
+    regex: "ID: (\\d+)"   # Optional: extract via regex
+    regex_group: 1        # Which capture group (default: 0)
+```
+
+| Source | Description |
+|--------|-------------|
+| `stdout` | Capture stdout as string (default) |
+| `stderr` | Capture stderr as string |
+| `exit_code` | Capture exit code as integer |
+| `json` | Parse stdout as JSON |
+
+### Pull Configuration (`xcom_pull`)
+
+Inject values as environment variables:
+
+```yaml
+xcom_pull:
+  - key: result           # Key to retrieve
+    from: producer_task   # Source task ID
+    env: MY_DATA          # Environment variable name
+```
+
+### Example
+
+```yaml
+tasks:
+  - id: producer
+    command: echo '{"count": 42}'
+    xcom_push:
+      - key: data
+        source: json
+
+  - id: consumer
+    command: echo "Received $COUNT items"
+    dependencies: [producer]
+    xcom_pull:
+      - key: data
+        from: producer
+        env: COUNT
+```
 
 ## REST API
 

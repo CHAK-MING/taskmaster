@@ -107,7 +107,9 @@ auto parse_task_from_row(sqlite3_stmt* stmt, int task_id_col, int name_col,
                       executor_str.empty() ? "shell" : executor_str),
                   .timeout = std::chrono::seconds(sqlite3_column_int(stmt, timeout_col)),
                   .retry_interval = std::chrono::seconds(sqlite3_column_int(stmt, retry_interval_col)),
-                  .max_retries = sqlite3_column_int(stmt, max_retries_col)};
+                  .max_retries = sqlite3_column_int(stmt, max_retries_col),
+                  .xcom_push = {},
+                  .xcom_pull = {}};
 
   if (!deps_str.empty()) {
     auto deps_result = nlohmann::json::parse(deps_str, nullptr, false);
@@ -241,6 +243,18 @@ auto Persistence::create_tables() -> Result<void> {
       ON task_logs(dag_run_id, task_id);
     CREATE INDEX IF NOT EXISTS idx_task_logs_attempt
       ON task_logs(dag_run_id, task_id, attempt);
+
+    CREATE TABLE IF NOT EXISTS xcom_values (
+      dag_run_id TEXT NOT NULL,
+      task_id TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (dag_run_id, task_id, key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_xcom_run_task
+      ON xcom_values(dag_run_id, task_id);
   )";
 
   return execute(sql);
@@ -960,12 +974,110 @@ auto Persistence::get_task_logs(DAGRunId dag_run_id,
 
 auto Persistence::clear_all_dag_data() -> Result<void> {
   if (auto r = begin_transaction(); !r) return r;
+  if (auto r = execute("DELETE FROM xcom_values;"); !r) return r;
   if (auto r = execute("DELETE FROM task_logs;"); !r) return r;
   if (auto r = execute("DELETE FROM task_instances;"); !r) return r;
   if (auto r = execute("DELETE FROM dag_runs;"); !r) return r;
   if (auto r = execute("DELETE FROM dag_tasks;"); !r) return r;
   if (auto r = execute("DELETE FROM dags;"); !r) return r;
   return commit_transaction();
+}
+
+auto Persistence::save_xcom(DAGRunId dag_run_id, TaskId task_id,
+                            std::string_view key,
+                            const nlohmann::json& value) -> Result<void> {
+  constexpr auto sql = R"(
+    INSERT INTO xcom_values (dag_run_id, task_id, key, value, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(dag_run_id, task_id, key) DO UPDATE SET
+      value = excluded.value, created_at = excluded.created_at;
+  )";
+
+  auto result = prepare(sql);
+  if (!result)
+    return std::unexpected(result.error());
+  Statement stmt(*result);
+
+  auto now = to_timestamp(std::chrono::system_clock::now());
+  std::string value_str = value.dump();
+
+  sqlite3_bind_text(stmt.get(), 1, dag_run_id.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.get(), 2, task_id.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.get(), 3, key.data(), static_cast<int>(key.size()),
+                    SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.get(), 4, value_str.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt.get(), 5, now);
+
+  return sqlite3_step(stmt.get()) == SQLITE_DONE
+             ? ok()
+             : fail(Error::DatabaseQueryFailed);
+}
+
+auto Persistence::get_xcom(DAGRunId dag_run_id, TaskId task_id,
+                           std::string_view key) const
+    -> Result<nlohmann::json> {
+  constexpr auto sql =
+      "SELECT value FROM xcom_values WHERE dag_run_id = ? AND task_id = ? AND key = ?;";
+
+  auto result = prepare(sql);
+  if (!result)
+    return std::unexpected(result.error());
+  Statement stmt(*result);
+
+  sqlite3_bind_text(stmt.get(), 1, dag_run_id.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.get(), 2, task_id.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.get(), 3, key.data(), static_cast<int>(key.size()),
+                    SQLITE_TRANSIENT);
+
+  if (sqlite3_step(stmt.get()) != SQLITE_ROW)
+    return fail(Error::NotFound);
+
+  auto value_str = col_text(stmt.get(), 0);
+  auto parsed = nlohmann::json::parse(value_str, nullptr, false);
+  if (parsed.is_discarded())
+    return fail(Error::InvalidArgument);
+
+  return parsed;
+}
+
+auto Persistence::get_task_xcoms(DAGRunId dag_run_id, TaskId task_id) const
+    -> Result<std::vector<std::pair<std::string, nlohmann::json>>> {
+  constexpr auto sql =
+      "SELECT key, value FROM xcom_values WHERE dag_run_id = ? AND task_id = ?;";
+
+  auto result = prepare(sql);
+  if (!result)
+    return std::unexpected(result.error());
+  Statement stmt(*result);
+
+  sqlite3_bind_text(stmt.get(), 1, dag_run_id.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.get(), 2, task_id.c_str(), -1, SQLITE_TRANSIENT);
+
+  std::vector<std::pair<std::string, nlohmann::json>> xcoms;
+  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+    auto key = col_text(stmt.get(), 0);
+    auto value_str = col_text(stmt.get(), 1);
+    auto parsed = nlohmann::json::parse(value_str, nullptr, false);
+    if (!parsed.is_discarded()) {
+      xcoms.emplace_back(std::move(key), std::move(parsed));
+    }
+  }
+  return xcoms;
+}
+
+auto Persistence::delete_run_xcoms(DAGRunId dag_run_id) -> Result<void> {
+  constexpr auto sql = "DELETE FROM xcom_values WHERE dag_run_id = ?;";
+
+  auto result = prepare(sql);
+  if (!result)
+    return std::unexpected(result.error());
+  Statement stmt(*result);
+
+  sqlite3_bind_text(stmt.get(), 1, dag_run_id.c_str(), -1, SQLITE_TRANSIENT);
+
+  return sqlite3_step(stmt.get()) == SQLITE_DONE
+             ? ok()
+             : fail(Error::DatabaseQueryFailed);
 }
 
 }  // namespace taskmaster

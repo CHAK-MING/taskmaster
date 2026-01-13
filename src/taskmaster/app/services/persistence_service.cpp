@@ -60,4 +60,15 @@ auto PersistenceService::save_log(DAGRunId dag_run_id,
   }
 }
 
+auto PersistenceService::save_xcom(DAGRunId dag_run_id,
+                                   TaskId task,
+                                   std::string_view key,
+                                   const nlohmann::json& value) -> void {
+  if (!db_)
+    return;
+  if (auto r = db_->save_xcom(dag_run_id, task, key, value); !r) {
+    log::debug("Failed to save xcom: {}", r.error().message());
+  }
+}
+
 }  // namespace taskmaster

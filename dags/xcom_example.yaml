@@ -1,0 +1,66 @@
+name: XCom Data Pipeline Example
+description: Demonstrates cross-task communication (XCom) for passing data between tasks
+tasks:
+  - id: generate_data
+    name: Generate Data
+    command: |
+      echo '{"batch_id": "batch_001", "records": 42, "status": "ready"}'
+    xcom_push:
+      - key: result
+        source: json
+
+  - id: validate_data
+    name: Validate Data
+    command: |
+      echo "Validating batch: $BATCH_DATA"
+      RECORDS=$(echo "$BATCH_DATA" | jq -r '.records')
+      if [ "$RECORDS" -gt 0 ]; then
+        echo '{"valid": true, "count": '$RECORDS'}'
+      else
+        echo '{"valid": false, "error": "No records"}'
+        exit 1
+      fi
+    dependencies: [generate_data]
+    xcom_pull:
+      - key: result
+        from: generate_data
+        env: BATCH_DATA
+    xcom_push:
+      - key: validation
+        source: json
+
+  - id: process_data
+    name: Process Data
+    command: |
+      echo "Processing $RECORD_COUNT records..."
+      sleep 1
+      PROCESSED=$RECORD_COUNT
+      echo "Result: $PROCESSED records processed successfully"
+    dependencies: [validate_data]
+    xcom_pull:
+      - key: result
+        from: generate_data
+        env: BATCH_INFO
+      - key: validation
+        from: validate_data
+        env: VALIDATION_RESULT
+    xcom_push:
+      - key: processed_count
+        source: stdout
+        regex: "Result: (\\d+)"
+        regex_group: 1
+
+  - id: notify
+    name: Send Notification
+    command: |
+      echo "Pipeline complete!"
+      echo "Batch: $BATCH_ID"
+      echo "Records processed: $PROCESSED"
+    dependencies: [process_data]
+    xcom_pull:
+      - key: result
+        from: generate_data
+        env: BATCH_ID
+      - key: processed_count
+        from: process_data
+        env: PROCESSED

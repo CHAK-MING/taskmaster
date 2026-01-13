@@ -1,7 +1,9 @@
 #include "taskmaster/app/services/execution_service.hpp"
 
+#include "taskmaster/config/task_config.hpp"
 #include "taskmaster/core/runtime.hpp"
 #include "taskmaster/util/log.hpp"
+#include "taskmaster/xcom/xcom_extractor.hpp"
 
 #include <algorithm>
 #include <format>
@@ -20,11 +22,15 @@ auto ExecutionService::set_callbacks(ExecutionCallbacks callbacks) -> void {
 
 auto ExecutionService::start_run(DAGRunId dag_run_id,
                                  std::unique_ptr<DAGRun> run,
-                                 std::vector<ExecutorConfig> configs) -> void {
+                                 std::vector<ExecutorConfig> configs,
+                                 std::vector<TaskConfig> task_configs) -> void {
   {
     std::lock_guard lock(mu_);
     runs_.insert_or_assign(dag_run_id.clone(), std::move(run));
     run_cfgs_.insert_or_assign(dag_run_id.clone(), std::move(configs));
+    if (!task_configs.empty()) {
+      task_cfgs_.insert_or_assign(dag_run_id.clone(), std::move(task_configs));
+    }
   }
   dispatch(dag_run_id);
 }
@@ -99,7 +105,13 @@ auto ExecutionService::dispatch(const DAGRunId& dag_run_id) -> void {
         attempt = info->attempt;
       }
 
-      jobs.push_back({idx, task_id, inst_id, task_cfgs[idx], attempt});
+      std::vector<XComPushConfig> xcom_push;
+      auto tcfg_it = task_cfgs_.find(dag_run_id);
+      if (tcfg_it != task_cfgs_.end() && idx < tcfg_it->second.size()) {
+        xcom_push = tcfg_it->second[idx].xcom_push;
+      }
+
+      jobs.push_back({idx, task_id, inst_id, cfg_it->second[idx], std::move(xcom_push), attempt});
       log::debug("dispatch: scheduled task {} (idx={}, attempt={})",
                  task_id, idx, attempt);
     }
@@ -178,6 +190,18 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job) -> spawn_task 
   }
 
   if (result.exit_code == 0 && result.error.empty()) {
+    if (!job.xcom_push.empty()) {
+      XComExtractor extractor;
+      auto xcoms = extractor.extract(result, job.xcom_push);
+      if (xcoms) {
+        for (const auto& xcom : *xcoms) {
+          if (callbacks_.on_persist_xcom) {
+            callbacks_.on_persist_xcom(dag_run_id, job.task_id, xcom.key, xcom.value);
+          }
+        }
+      }
+    }
+
     std::string success_msg = std::format("Task '{}' completed successfully", job.task_id.value());
     if (callbacks_.on_log) {
       callbacks_.on_log(dag_run_id, job.task_id, "stdout", success_msg);

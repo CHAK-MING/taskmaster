@@ -8,6 +8,7 @@
 
 - DAG 任务依赖管理
 - 标准 Cron 表达式定时调度
+- **XCom（跨任务通信）** - 在任务间传递数据
 - Web UI 可视化管理（React Flow）
 - REST API 监控与控制
 - SQLite 持久化，支持崩溃恢复
@@ -89,7 +90,8 @@ TaskMaster/
 ├── system_config.yaml    # 系统配置文件
 ├── dags/                 # DAG 定义文件目录
 │   ├── simple.yaml       # 简单示例 DAG
-│   └── monitoring.yaml   # 系统监控 DAG
+│   ├── monitoring.yaml   # 系统监控 DAG
+│   └── xcom_example.yaml # XCom 数据管道示例
 ├── build/bin/taskmaster  # 编译后的二进制文件
 └── web-ui/               # React 前端
 ```
@@ -144,12 +146,18 @@ cron: "0 2 * * *"  # 可选：启用自动调度
 tasks:
   - id: task1
     name: 任务一
-    command: echo "Hello"
-    dependencies: []
+    command: echo '{"status": "ok", "count": 42}'
+    xcom_push:
+      - key: result
+        source: json
   - id: task2
     name: 任务二
-    command: echo "World"
+    command: echo "收到 $DATA"
     dependencies: [task1]
+    xcom_pull:
+      - key: result
+        from: task1
+        env: DATA
 ```
 
 ### DAG 字段
@@ -173,6 +181,8 @@ tasks:
 | `dependencies` | array | 依赖的任务 ID 列表 |
 | `timeout` | int | 超时秒数（默认 300） |
 | `max_retries` | int | 最大重试次数（默认 3） |
+| `xcom_push` | array | 从任务输出提取的 XCom 值 |
+| `xcom_pull` | array | 注入为环境变量的 XCom 值 |
 
 ### DAG 示例
 
@@ -180,6 +190,67 @@ tasks:
 
 - **simple.yaml** - 简单的两任务 DAG，每分钟运行一次
 - **monitoring.yaml** - 系统健康检查（磁盘、API、数据库）及指标采集
+- **xcom_example.yaml** - 演示 XCom 跨任务数据传递的数据管道
+
+## XCom（跨任务通信）
+
+XCom 实现 DAG 中任务间的数据传递。常见场景：
+
+- **ETL 管道**：在抽取/转换/加载阶段传递记录数、文件路径或批次 ID
+- **动态工作流**：上游任务决定下游任务的参数
+- **结果汇总**：收集多个任务的输出用于最终报告
+
+生产者任务从输出中提取值并推送；消费者任务将其作为环境变量拉取。
+
+### 推送配置（`xcom_push`）
+
+从任务输出提取值：
+
+```yaml
+xcom_push:
+  - key: result           # 值的键名
+    source: stdout        # stdout, stderr, exit_code 或 json
+    json_path: data.id    # 可选：从 JSON 提取（如 "items[0].name"）
+    regex: "ID: (\\d+)"   # 可选：通过正则提取
+    regex_group: 1        # 使用哪个捕获组（默认 0）
+```
+
+| 来源 | 说明 |
+|------|------|
+| `stdout` | 捕获标准输出为字符串（默认） |
+| `stderr` | 捕获标准错误为字符串 |
+| `exit_code` | 捕获退出码为整数 |
+| `json` | 将标准输出解析为 JSON |
+
+### 拉取配置（`xcom_pull`）
+
+将值注入为环境变量：
+
+```yaml
+xcom_pull:
+  - key: result           # 要获取的键
+    from: producer_task   # 源任务 ID
+    env: MY_DATA          # 环境变量名
+```
+
+### 示例
+
+```yaml
+tasks:
+  - id: producer
+    command: echo '{"count": 42}'
+    xcom_push:
+      - key: data
+        source: json
+
+  - id: consumer
+    command: echo "收到 $COUNT 条记录"
+    dependencies: [producer]
+    xcom_pull:
+      - key: data
+        from: producer
+        env: COUNT
+```
 
 ## REST API
 

@@ -1,11 +1,14 @@
 #pragma once
 
+#include "taskmaster/config/task_config.hpp"
 #include "taskmaster/core/coroutine.hpp"
 #include "taskmaster/core/error.hpp"
 #include "taskmaster/dag/dag.hpp"
 #include "taskmaster/dag/dag_run.hpp"
 #include "taskmaster/executor/executor.hpp"
 #include "taskmaster/util/id.hpp"
+
+#include <nlohmann/json.hpp>
 
 #include <atomic>
 #include <condition_variable>
@@ -21,6 +24,7 @@ namespace taskmaster {
 class Runtime;
 class IExecutor;
 struct TaskConfig;
+struct XComPushConfig;
 
 struct ExecutionCallbacks {
   std::move_only_function<void(const DAGRunId& dag_run_id, const TaskId& task,
@@ -40,6 +44,9 @@ struct ExecutionCallbacks {
                                int attempt, std::string_view level,
                                std::string_view msg)>
       on_persist_log;
+  std::move_only_function<void(const DAGRunId& dag_run_id, const TaskId& task,
+                               std::string_view key, const nlohmann::json& value)>
+      on_persist_xcom;
   std::move_only_function<int(const DAGRunId& dag_run_id, NodeIndex idx)>
       get_max_retries;
 };
@@ -55,7 +62,8 @@ public:
   auto set_callbacks(ExecutionCallbacks callbacks) -> void;
 
   auto start_run(DAGRunId dag_run_id, std::unique_ptr<DAGRun> run,
-                 std::vector<ExecutorConfig> configs) -> void;
+                 std::vector<ExecutorConfig> configs,
+                 std::vector<TaskConfig> task_configs = {}) -> void;
 
   [[nodiscard]] auto get_run(const DAGRunId& dag_run_id) -> DAGRun*;
 
@@ -71,6 +79,7 @@ private:
     TaskId task_id;
     InstanceId inst_id;
     ExecutorConfig cfg;
+    std::vector<XComPushConfig> xcom_push;
     int attempt{0};
   };
 
@@ -88,6 +97,7 @@ private:
 
   std::flat_map<DAGRunId, std::unique_ptr<DAGRun>> runs_;
   std::flat_map<DAGRunId, std::vector<ExecutorConfig>> run_cfgs_;
+  std::flat_map<DAGRunId, std::vector<TaskConfig>> task_cfgs_;
 
   mutable std::mutex mu_;
   std::atomic<int> coro_count_{0};

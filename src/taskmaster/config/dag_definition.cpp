@@ -14,6 +14,44 @@
 namespace YAML {
 
 template<>
+struct convert<taskmaster::XComSource> {
+  static bool decode(const Node& node, taskmaster::XComSource& s) {
+    if (!node.IsScalar()) return false;
+    auto str = node.as<std::string>();
+    if (str == "stdout") s = taskmaster::XComSource::Stdout;
+    else if (str == "stderr") s = taskmaster::XComSource::Stderr;
+    else if (str == "exit_code") s = taskmaster::XComSource::ExitCode;
+    else if (str == "json") s = taskmaster::XComSource::Json;
+    else return false;
+    return true;
+  }
+};
+
+template<>
+struct convert<taskmaster::XComPushConfig> {
+  static bool decode(const Node& node, taskmaster::XComPushConfig& p) {
+    if (!node.IsMap()) return false;
+    p.key = taskmaster::yaml_get_or<std::string>(node, "key", "");
+    p.source = taskmaster::yaml_get_or(node, "source", taskmaster::XComSource::Stdout);
+    if (auto jp = node["json_path"]) p.json_path = jp.as<std::string>();
+    if (auto rp = node["regex"]) p.regex_pattern = rp.as<std::string>();
+    p.regex_group = taskmaster::yaml_get_or(node, "regex_group", 0);
+    return true;
+  }
+};
+
+template<>
+struct convert<taskmaster::XComPullConfig> {
+  static bool decode(const Node& node, taskmaster::XComPullConfig& p) {
+    if (!node.IsMap()) return false;
+    p.key = taskmaster::yaml_get_or<std::string>(node, "key", "");
+    p.source_task = taskmaster::TaskId{taskmaster::yaml_get_or<std::string>(node, "from", "")};
+    p.env_var = taskmaster::yaml_get_or<std::string>(node, "env", "");
+    return true;
+  }
+};
+
+template<>
 struct convert<taskmaster::TaskConfig> {
   static bool decode(const Node& node, taskmaster::TaskConfig& t) {
     if (!node.IsMap()) {
@@ -34,6 +72,13 @@ struct convert<taskmaster::TaskConfig> {
     t.timeout = std::chrono::seconds(taskmaster::yaml_get_or(node, "timeout", 300));
     t.retry_interval = std::chrono::seconds(taskmaster::yaml_get_or(node, "retry_interval", 60));
     t.max_retries = taskmaster::yaml_get_or(node, "max_retries", 3);
+
+    if (auto push = node["xcom_push"]) {
+      t.xcom_push = push.as<std::vector<taskmaster::XComPushConfig>>();
+    }
+    if (auto pull = node["xcom_pull"]) {
+      t.xcom_pull = pull.as<std::vector<taskmaster::XComPullConfig>>();
+    }
 
     return true;
   }
@@ -105,6 +150,34 @@ void to_yaml(YAML::Emitter& out, const TaskConfig& t) {
   }
   if (t.max_retries != 3) {
     to_yaml(out, "max_retries", t.max_retries);
+  }
+  if (!t.xcom_push.empty()) {
+    out << YAML::Key << "xcom_push" << YAML::Value << YAML::BeginSeq;
+    for (const auto& p : t.xcom_push) {
+      out << YAML::BeginMap;
+      out << YAML::Key << "key" << YAML::Value << p.key;
+      if (p.source != XComSource::Stdout) {
+        const char* src = p.source == XComSource::Stderr ? "stderr" :
+                          p.source == XComSource::ExitCode ? "exit_code" : "json";
+        out << YAML::Key << "source" << YAML::Value << src;
+      }
+      if (p.json_path) out << YAML::Key << "json_path" << YAML::Value << *p.json_path;
+      if (p.regex_pattern) out << YAML::Key << "regex" << YAML::Value << *p.regex_pattern;
+      if (p.regex_group != 0) out << YAML::Key << "regex_group" << YAML::Value << p.regex_group;
+      out << YAML::EndMap;
+    }
+    out << YAML::EndSeq;
+  }
+  if (!t.xcom_pull.empty()) {
+    out << YAML::Key << "xcom_pull" << YAML::Value << YAML::BeginSeq;
+    for (const auto& p : t.xcom_pull) {
+      out << YAML::BeginMap;
+      out << YAML::Key << "key" << YAML::Value << p.key;
+      out << YAML::Key << "from" << YAML::Value << std::string(p.source_task.value());
+      out << YAML::Key << "env" << YAML::Value << p.env_var;
+      out << YAML::EndMap;
+    }
+    out << YAML::EndSeq;
   }
   out << YAML::EndMap;
 }
