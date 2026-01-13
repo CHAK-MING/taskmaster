@@ -67,13 +67,7 @@ auto DAGManager::get_dag(DAGId dag_id) const -> Result<DAGInfo> {
 
 auto DAGManager::list_dags() const -> std::vector<DAGInfo> {
   std::shared_lock lock(mu_);
-
-  std::vector<DAGInfo> result;
-  result.reserve(dags_.size());
-  for (const auto& [_, dag] : dags_) {
-    result.push_back(dag);
-  }
-  return result;
+  return dags_ | std::views::values | std::ranges::to<std::vector>();
 }
 
 auto DAGManager::delete_dag(DAGId dag_id) -> Result<void> {

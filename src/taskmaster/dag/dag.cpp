@@ -1,5 +1,7 @@
 #include "taskmaster/dag/dag.hpp"
 
+#include "taskmaster/core/arena.hpp"
+
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -46,8 +48,10 @@ auto DAG::add_edge(NodeIndex from, NodeIndex to) -> Result<void> {
 }
 
 auto DAG::would_create_cycle(NodeIndex from, NodeIndex to) const -> bool {
-  std::vector<bool> visited(nodes_.size(), false);
-  std::vector<NodeIndex> stack;
+  Arena<2048> arena;
+  auto visited = arena.vector<bool>(nodes_.size());
+  visited.assign(nodes_.size(), false);
+  auto stack = arena.vector<NodeIndex>();
   stack.push_back(from);
 
   while (!stack.empty()) {
@@ -77,9 +81,10 @@ auto DAG::has_node(TaskId task_id) const -> bool {
 }
 
 auto DAG::is_valid() const -> Result<void> {
-  std::vector<std::uint8_t> state(nodes_.size(), 0);
-  std::vector<std::pair<NodeIndex, std::size_t>>
-      stack;  // (node, next_child_index)
+  Arena<2048> arena;
+  auto state = arena.vector<std::uint8_t>(nodes_.size());
+  state.assign(nodes_.size(), 0);
+  auto stack = arena.vector<std::pair<NodeIndex, std::size_t>>();
 
   for (NodeIndex start : std::views::iota(NodeIndex{0}, static_cast<NodeIndex>(nodes_.size()))) {
     if (state[start] != 0)

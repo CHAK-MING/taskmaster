@@ -13,7 +13,8 @@ std::atomic<bool> g_shutdown_requested{false};
 
 namespace {
 void signal_handler(int) {
-  g_shutdown_requested.store(true, std::memory_order_relaxed);
+  g_shutdown_requested.store(true, std::memory_order_release);
+  g_shutdown_requested.notify_one();
 }
 }
 
@@ -40,9 +41,7 @@ void setup_signal_handlers() {
 }
 
 void wait_for_shutdown() {
-  while (!g_shutdown_requested.load(std::memory_order_relaxed)) {
-    std::this_thread::sleep_for(timing::kDaemonPollInterval);
-  }
+  g_shutdown_requested.wait(false, std::memory_order_acquire);
 }
 
 }  // namespace taskmaster

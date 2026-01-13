@@ -171,10 +171,8 @@ auto Application::start() -> Result<void> {
 
   runtime_.start();
 
-  for (const auto& d : dag_manager_.list_dags()) {
-    if (!d.cron.empty()) {
-      scheduler_->register_dag(d.dag_id, d);
-    }
+  for (const auto& d : dag_manager_.list_dags() | std::views::filter([](const auto& d) { return !d.cron.empty(); })) {
+    scheduler_->register_dag(d.dag_id, d);
   }
 
   scheduler_->start();

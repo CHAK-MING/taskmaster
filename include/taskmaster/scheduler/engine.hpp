@@ -1,6 +1,7 @@
 #pragma once
 
 #include "taskmaster/core/coroutine.hpp"
+#include "taskmaster/core/lockfree_queue.hpp"
 #include "taskmaster/io/stream.hpp"
 #include "taskmaster/scheduler/event_queue.hpp"
 #include "taskmaster/scheduler/task.hpp"
@@ -56,8 +57,8 @@ private:
   auto handle_event(const RemoveTaskEvent& e) -> void;
   auto handle_event(const ShutdownEvent& e) -> void;
 
-  std::atomic<bool> running_{false};
-  std::atomic<bool> stopped_{true};  // true when coroutine is not running
+  alignas(kCacheLineSize) std::atomic<bool> running_{false};
+  alignas(kCacheLineSize) std::atomic<bool> stopped_{true};
   Runtime* runtime_{nullptr};
   io::EventFd wake_fd_;
   EventQueue events_;

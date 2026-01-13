@@ -33,11 +33,11 @@ public:
     for (int retry = 0; retry < kMaxRetries; ++retry) {
       if (queue_.push(std::move(event))) {
         pending_.fetch_add(1, std::memory_order_release);
+        pending_.notify_one();
         return true;
       }
       std::this_thread::yield();
     }
-    // Queue is persistently full - this is a serious condition
     return false;
   }
 
@@ -46,6 +46,7 @@ public:
       std::this_thread::yield();
     }
     pending_.fetch_add(1, std::memory_order_release);
+    pending_.notify_one();
   }
 
   [[nodiscard]] auto try_pop() -> std::optional<SchedulerEvent> {
@@ -61,12 +62,7 @@ public:
       if (auto event = try_pop()) {
         return *event;
       }
-      // Brief sleep to avoid busy-wait
-      if (pending_.load(std::memory_order_acquire) == 0) {
-        std::this_thread::sleep_for(std::chrono::microseconds(10));
-      } else {
-        std::this_thread::yield();
-      }
+      pending_.wait(0, std::memory_order_acquire);
     }
   }
 

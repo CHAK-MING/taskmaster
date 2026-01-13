@@ -51,9 +51,7 @@ auto Engine::stop() -> void {
   events_.push_blocking(ShutdownEvent{});
   notify();
 
-  while (!stopped_.load(std::memory_order_acquire)) {
-    std::this_thread::yield();
-  }
+  stopped_.wait(false, std::memory_order_acquire);
 }
 
 auto Engine::run_loop() -> spawn_task {
@@ -90,6 +88,7 @@ auto Engine::run_loop() -> spawn_task {
   }
 
   stopped_.store(true, std::memory_order_release);
+  stopped_.notify_one();
   log::info("Engine stopped");
   co_return;
 }

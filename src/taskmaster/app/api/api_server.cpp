@@ -60,10 +60,9 @@ auto dag_run_state_to_string(DAGRunState state) -> std::string_view {
 }
 
 auto dag_info_to_json(const DAGInfo& dag_info) -> json {
-  json tasks = json::array();
-  for (const auto& task : dag_info.tasks) {
-    tasks.push_back(task.task_id.str());
-  }
+  auto tasks = dag_info.tasks 
+      | std::views::transform([](const auto& t) { return t.task_id.str(); })
+      | std::ranges::to<std::vector<std::string>>();
   return {
       {"dag_id", dag_info.dag_id.str()},
       {"name", dag_info.name},

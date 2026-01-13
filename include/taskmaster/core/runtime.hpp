@@ -1,5 +1,6 @@
 #pragma once
 
+#include "taskmaster/core/lockfree_queue.hpp"
 #include "taskmaster/core/shard.hpp"
 
 #include <cassert>
@@ -82,8 +83,8 @@ private:
       std::unique_ptr<SPSCQueue<SmpMessage, std::allocator<SmpMessage>>>>>
       smp_queues_;
 
-  std::atomic<bool> running_{false};
-  std::atomic<bool> stop_requested_{false};
+  alignas(kCacheLineSize) std::atomic<bool> running_{false};
+  alignas(kCacheLineSize) std::atomic<bool> stop_requested_{false};
 };
 
 // Thread-local for internal use only

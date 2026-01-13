@@ -11,7 +11,12 @@
 
 namespace taskmaster {
 
-inline constexpr std::size_t kCacheLineSize = 64;
+inline constexpr std::size_t kCacheLineSize =
+#ifdef __cpp_lib_hardware_interference_size
+    std::hardware_destructive_interference_size;
+#else
+    64;
+#endif
 
 // Concept for queue element types
 template <typename T>

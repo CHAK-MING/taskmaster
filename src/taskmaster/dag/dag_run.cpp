@@ -1,5 +1,7 @@
 #include "taskmaster/dag/dag_run.hpp"
 
+#include "taskmaster/core/arena.hpp"
+
 #include <ranges>
 
 namespace taskmaster {
@@ -148,7 +150,8 @@ auto DAGRun::mark_task_failed(NodeIndex task_idx, std::string_view error,
 }
 
 auto DAGRun::mark_downstream_failed(NodeIndex failed_task) -> void {
-  std::vector<NodeIndex> to_process;
+  Arena<512> arena;
+  auto to_process = arena.vector<NodeIndex>();
   for (NodeIndex dep : dag_.get_dependents_view(failed_task)) {
     to_process.push_back(dep);
   }
