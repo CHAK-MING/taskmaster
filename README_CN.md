@@ -1,5 +1,7 @@
 # TaskMaster
 
+[English](README.md)
+
 基于现代 C++23 的高性能 DAG 任务调度器。
 
 ![TaskMaster UI](image/web-ui.png)

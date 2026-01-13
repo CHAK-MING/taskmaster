@@ -1,5 +1,7 @@
 # TaskMaster
 
+[中文文档](README_CN.md)
+
 A high-performance DAG task scheduler built with modern C++23.
 
 ![TaskMaster UI](image/web-ui.png)
