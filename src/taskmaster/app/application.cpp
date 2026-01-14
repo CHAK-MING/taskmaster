@@ -272,8 +272,21 @@ auto Application::setup_callbacks() -> void {
         }
       };
 
+  callbacks.get_xcom =
+      [this](DAGRunId dag_run_id, TaskId task,
+             std::string_view key) -> Result<nlohmann::json> {
+        if (persistence_) {
+          return persistence_->get_xcom(dag_run_id, task, key);
+        }
+        return fail(Error::NotFound);
+      };
+
   callbacks.get_max_retries = [this](DAGRunId dag_run_id, NodeIndex idx) {
     return get_max_retries(DAGRunId(dag_run_id), idx);
+  };
+
+  callbacks.get_retry_interval = [this](const DAGRunId& dag_run_id, NodeIndex idx) {
+    return get_retry_interval(dag_run_id, idx);
   };
 
   execution_->set_callbacks(std::move(callbacks));
@@ -333,7 +346,8 @@ auto Application::trigger_dag_by_id(DAGId dag_id,
     }
   }
 
-  execution_->start_run(dag_run_id, std::move(run), std::move(cfgs));
+  execution_->start_run(dag_run_id, std::move(run), std::move(cfgs),
+                        info->tasks);
   log::info("DAG run {} triggered for {} ({})", dag_run_id, dag_id,
             trigger == TriggerType::Schedule ? "schedule" : "manual");
   return dag_run_id;
@@ -359,6 +373,19 @@ auto Application::get_max_retries(DAGRunId dag_run_id, NodeIndex idx)
   }
 
   return 3;
+}
+
+auto Application::get_retry_interval(DAGRunId dag_run_id, NodeIndex idx)
+    -> std::chrono::seconds {
+  DAGId dag_id = extract_dag_id(dag_run_id);
+
+  if (auto dag_info = dag_manager_.get_dag(dag_id)) {
+    if (idx < dag_info->tasks.size()) {
+      return dag_info->tasks[idx].retry_interval;
+    }
+  }
+
+  return std::chrono::seconds(60);
 }
 
 auto Application::register_dag_cron(DAGId dag_id,

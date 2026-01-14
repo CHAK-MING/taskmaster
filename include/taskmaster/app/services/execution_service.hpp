@@ -47,8 +47,14 @@ struct ExecutionCallbacks {
   std::move_only_function<void(const DAGRunId& dag_run_id, const TaskId& task,
                                std::string_view key, const nlohmann::json& value)>
       on_persist_xcom;
+  std::move_only_function<Result<nlohmann::json>(const DAGRunId& dag_run_id,
+                                                  const TaskId& task,
+                                                  std::string_view key)>
+      get_xcom;
   std::move_only_function<int(const DAGRunId& dag_run_id, NodeIndex idx)>
       get_max_retries;
+  std::move_only_function<std::chrono::seconds(const DAGRunId& dag_run_id, NodeIndex idx)>
+      get_retry_interval;
 };
 
 class ExecutionService {
@@ -80,11 +86,13 @@ private:
     InstanceId inst_id;
     ExecutorConfig cfg;
     std::vector<XComPushConfig> xcom_push;
+    std::vector<XComPullConfig> xcom_pull;
     int attempt{0};
   };
 
   auto dispatch(const DAGRunId& dag_run_id) -> void;
   auto dispatch_after_yield(DAGRunId dag_run_id) -> spawn_task;
+  auto dispatch_after_delay(DAGRunId dag_run_id, std::chrono::seconds delay) -> spawn_task;
   auto run_task(DAGRunId dag_run_id, TaskJob job) -> spawn_task;
   auto on_task_success(const DAGRunId& dag_run_id, NodeIndex idx) -> void;
   auto on_task_failure(const DAGRunId& dag_run_id, NodeIndex idx,

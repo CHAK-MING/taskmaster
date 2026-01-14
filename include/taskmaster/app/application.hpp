@@ -89,6 +89,7 @@ private:
   auto config_watcher_loop(std::stop_token stop) -> void;
   auto handle_file_change(const std::string& filename) -> void;
   auto get_max_retries(DAGRunId dag_run_id, NodeIndex idx) -> int;
+  auto get_retry_interval(DAGRunId dag_run_id, NodeIndex idx) -> std::chrono::seconds;
 
   [[nodiscard]] auto validate_dag_info(const DAGInfo& info) -> Result<void>;
   [[nodiscard]] auto create_dag_atomically(DAGId dag_id,

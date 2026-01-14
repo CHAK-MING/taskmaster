@@ -106,12 +106,14 @@ auto ExecutionService::dispatch(const DAGRunId& dag_run_id) -> void {
       }
 
       std::vector<XComPushConfig> xcom_push;
+      std::vector<XComPullConfig> xcom_pull;
       auto tcfg_it = task_cfgs_.find(dag_run_id);
       if (tcfg_it != task_cfgs_.end() && idx < tcfg_it->second.size()) {
         xcom_push = tcfg_it->second[idx].xcom_push;
+        xcom_pull = tcfg_it->second[idx].xcom_pull;
       }
 
-      jobs.push_back({idx, task_id, inst_id, cfg_it->second[idx], std::move(xcom_push), attempt});
+      jobs.push_back({idx, task_id, inst_id, cfg_it->second[idx], std::move(xcom_push), std::move(xcom_pull), attempt});
       log::debug("dispatch: scheduled task {} (idx={}, attempt={})",
                  task_id, idx, attempt);
     }
@@ -163,6 +165,35 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job) -> spawn_task 
   }
   if (callbacks_.on_task_status) {
     callbacks_.on_task_status(dag_run_id, job.task_id, "running");
+  }
+
+  if (!job.xcom_pull.empty() && callbacks_.get_xcom) {
+    auto* shell_cfg = std::get_if<ShellExecutorConfig>(&job.cfg);
+    if (shell_cfg) {
+      for (const auto& pull : job.xcom_pull) {
+        auto xcom_result = callbacks_.get_xcom(dag_run_id, pull.source_task, pull.key);
+        if (xcom_result) {
+          std::string value;
+          if (xcom_result->is_string()) {
+            value = xcom_result->get<std::string>();
+          } else if (xcom_result->is_number_integer()) {
+            value = std::to_string(xcom_result->get<int64_t>());
+          } else if (xcom_result->is_number_float()) {
+            value = std::to_string(xcom_result->get<double>());
+          } else if (xcom_result->is_boolean()) {
+            value = xcom_result->get<bool>() ? "true" : "false";
+          } else {
+            value = xcom_result->dump();
+          }
+          shell_cfg->env[pull.env_var] = std::move(value);
+          log::debug("xcom_pull: {}={} from task {}", pull.env_var, 
+                     shell_cfg->env[pull.env_var], pull.source_task.value());
+        } else {
+          log::warn("xcom_pull: failed to get key '{}' from task '{}'",
+                    pull.key, pull.source_task.value());
+        }
+      }
+    }
   }
 
   auto result = co_await execute_async(runtime_, executor_, job.inst_id,
@@ -230,10 +261,20 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job) -> spawn_task 
     }
 
     if (on_task_failure(dag_run_id, job.idx, result.error, result.exit_code)) {
-      auto retry = dispatch_after_yield(dag_run_id);
+      auto retry_interval = std::chrono::seconds(60);
+      if (callbacks_.get_retry_interval) {
+        retry_interval = callbacks_.get_retry_interval(dag_run_id, job.idx);
+      }
+      auto retry = dispatch_after_delay(dag_run_id, retry_interval);
       runtime_.schedule_external(retry.take());
     }
   }
+}
+
+auto ExecutionService::dispatch_after_delay(DAGRunId dag_run_id,
+                                             std::chrono::seconds delay) -> spawn_task {
+  co_await async_sleep(delay);
+  dispatch(dag_run_id);
 }
 
 auto ExecutionService::dispatch_after_yield(DAGRunId dag_run_id) -> spawn_task {

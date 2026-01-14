@@ -183,6 +183,7 @@ tasks:
 | `dependencies` | array | List of task IDs this task depends on |
 | `timeout` | int | Timeout in seconds (default: 300) |
 | `max_retries` | int | Max retries on failure (default: 3) |
+| `retry_interval` | int | Seconds to wait between retries (default: 60) |
 | `xcom_push` | array | XCom values to extract from task output |
 | `xcom_pull` | array | XCom values to inject as environment variables |
 
