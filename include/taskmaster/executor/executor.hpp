@@ -64,6 +64,7 @@ struct ShellExecutorConfig {
   std::string command;
   std::string working_dir;
   std::chrono::seconds timeout{std::chrono::seconds(300)};
+  std::flat_map<std::string, std::string> env;
 };
 
 using ExecutorConfig = std::variant<ShellExecutorConfig>;

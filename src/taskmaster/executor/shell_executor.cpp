@@ -346,7 +346,21 @@ public:
         : shell->command;
     log::info("ShellExecutor start: instance_id={} timeout={}s cmd='{}'",
               req.instance_id, shell->timeout.count(), cmd_preview);
-    auto t = execute_command(shell->command, shell->working_dir, shell->timeout,
+
+    std::string cmd = shell->command;
+    if (!shell->env.empty()) {
+      std::string env_prefix;
+      for (const auto& [key, value] : shell->env) {
+        std::string escaped_value = value;
+        for (size_t pos = 0; (pos = escaped_value.find('\'', pos)) != std::string::npos; pos += 4) {
+          escaped_value.replace(pos, 1, "'\\''");
+        }
+        env_prefix += std::format("export {}='{}'; ", key, escaped_value);
+      }
+      cmd = env_prefix + cmd;
+    }
+
+    auto t = execute_command(std::move(cmd), shell->working_dir, shell->timeout,
                              req.instance_id, std::move(sink), &ctx_);
     runtime_->schedule_external(t.take());
   }

@@ -71,4 +71,12 @@ auto PersistenceService::save_xcom(DAGRunId dag_run_id,
   }
 }
 
+auto PersistenceService::get_xcom(DAGRunId dag_run_id,
+                                  TaskId task,
+                                  std::string_view key) -> Result<nlohmann::json> {
+  if (!db_)
+    return fail(Error::NotFound);
+  return db_->get_xcom(dag_run_id, task, key);
+}
+
 }  // namespace taskmaster

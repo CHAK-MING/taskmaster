@@ -7,7 +7,6 @@
 #include <memory>
 #include <optional>
 #include <thread>
-#include <type_traits>
 
 namespace taskmaster {
 

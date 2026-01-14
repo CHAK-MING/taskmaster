@@ -31,6 +31,8 @@ public:
                 std::string_view level, std::string_view msg) -> void;
   auto save_xcom(DAGRunId dag_run_id, TaskId task,
                  std::string_view key, const nlohmann::json& value) -> void;
+  [[nodiscard]] auto get_xcom(DAGRunId dag_run_id, TaskId task,
+                              std::string_view key) -> Result<nlohmann::json>;
 
 private:
   std::unique_ptr<Persistence> db_;
