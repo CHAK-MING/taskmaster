@@ -215,7 +215,7 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job) -> spawn_task 
       callbacks_.on_log(dag_run_id, job.task_id, "stderr", result.stderr_output);
     }
     if (callbacks_.on_persist_log) {
-      callbacks_.on_persist_log(dag_run_id, job.task_id, job.attempt, "ERROR",
+      callbacks_.on_persist_log(dag_run_id, job.task_id, job.attempt, "INFO",
                                 result.stderr_output);
     }
   }

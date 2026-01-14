@@ -47,7 +47,7 @@ auto finish(ExecutionSink& sink, const InstanceId& instance_id,
 }
 
 [[nodiscard]] auto fork_and_exec(const std::string& cmd, const std::string& working_dir,
-                   int stdout_write_fd) -> pid_t {
+                   int stdout_write_fd, int stderr_write_fd) -> pid_t {
   pid_t pid = vfork();
   if (pid < 0) {
     return -1;
@@ -57,8 +57,9 @@ auto finish(ExecutionSink& sink, const InstanceId& instance_id,
     setpgid(0, 0);
 
     dup2(stdout_write_fd, STDOUT_FILENO);
-    dup2(stdout_write_fd, STDERR_FILENO);
+    dup2(stderr_write_fd, STDERR_FILENO);
     close(stdout_write_fd);
+    close(stderr_write_fd);
 
     if (!working_dir.empty()) {
       if (chdir(working_dir.c_str()) < 0) {
@@ -71,6 +72,7 @@ auto finish(ExecutionSink& sink, const InstanceId& instance_id,
   }
 
   close(stdout_write_fd);
+  close(stderr_write_fd);
   setpgid(pid, pid);
   return pid;
 }
@@ -279,19 +281,30 @@ auto execute_command(std::string cmd, std::string working_dir,
   ExecutorResult result;
 
   auto& io_ctx = current_io_context();
-  auto pipe_result = io::AsyncPipe::create(io_ctx, O_CLOEXEC | O_NONBLOCK);
-  if (!pipe_result) {
-    result.error = "Failed to create pipe";
+  
+  auto stdout_pipe_result = io::AsyncPipe::create(io_ctx, O_CLOEXEC | O_NONBLOCK);
+  if (!stdout_pipe_result) {
+    result.error = "Failed to create stdout pipe";
     result.exit_code = -1;
     finish(sink, instance_id, std::move(result));
     co_return;
   }
-  auto pipe = std::move(*pipe_result);
+  auto stdout_pipe = std::move(*stdout_pipe_result);
+
+  auto stderr_pipe_result = io::AsyncPipe::create(io_ctx, O_CLOEXEC | O_NONBLOCK);
+  if (!stderr_pipe_result) {
+    result.error = "Failed to create stderr pipe";
+    result.exit_code = -1;
+    finish(sink, instance_id, std::move(result));
+    co_return;
+  }
+  auto stderr_pipe = std::move(*stderr_pipe_result);
 
   auto start = std::chrono::steady_clock::now();
 
-  int write_fd = pipe.write_end.release();
-  pid_t pid = fork_and_exec(cmd, working_dir, write_fd);
+  int stdout_write_fd = stdout_pipe.write_end.release();
+  int stderr_write_fd = stderr_pipe.write_end.release();
+  pid_t pid = fork_and_exec(cmd, working_dir, stdout_write_fd, stderr_write_fd);
   if (pid < 0) {
     result.error = "Failed to fork process";
     result.exit_code = -1;
@@ -304,14 +317,18 @@ auto execute_command(std::string cmd, std::string working_dir,
 
   auto pidfd = open_pidfd(io_ctx, pid);
 
-  auto read_result = co_await read_output(pipe.read_end, timeout, start);
-  std::string output = std::move(read_result.output);
-  bool timed_out = read_result.timed_out;
+  auto [stdout_result, stderr_result] = co_await when_all(
+      read_output(stdout_pipe.read_end, timeout, start),
+      read_output(stderr_pipe.read_end, timeout, start)
+  );
+  
+  bool timed_out = stdout_result.timed_out || stderr_result.timed_out;
 
   int exit_code = co_await wait_for_exit(pidfd, pid, timed_out);
 
   result.exit_code = exit_code;
-  result.stdout_output = std::move(output);
+  result.stdout_output = std::move(stdout_result.output);
+  result.stderr_output = std::move(stderr_result.output);
   result.timed_out = timed_out;
 
   finish(sink, instance_id, std::move(result));

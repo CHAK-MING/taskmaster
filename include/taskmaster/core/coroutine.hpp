@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <concepts>
 #include <coroutine>
 #include <exception>
@@ -268,5 +269,124 @@ inline auto task_promise<void>::get_return_object() noexcept -> task<void> {
 }
 
 using spawn_task = task<void>;
+
+// ============================================================================
+// when_all: Concurrently await multiple tasks
+// ============================================================================
+
+namespace detail {
+
+struct when_all_counter {
+  std::atomic<std::size_t> count;
+  std::coroutine_handle<> continuation{nullptr};
+
+  explicit when_all_counter(std::size_t n) noexcept : count(n) {}
+
+  auto notify_complete() noexcept -> void {
+    if (count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+      if (continuation) {
+        continuation.resume();
+      }
+    }
+  }
+};
+
+template <typename T>
+struct when_all_task_state {
+  deferred_init<T> result;
+  when_all_counter* counter{nullptr};
+
+  auto store_and_notify(T&& value) noexcept -> void {
+    result.emplace(std::move(value));
+    counter->notify_complete();
+  }
+};
+
+template <typename T>
+class when_all_task {
+public:
+  struct promise_type;
+  using handle_type = std::coroutine_handle<promise_type>;
+
+  struct promise_type {
+    when_all_task_state<T>* state{nullptr};
+
+    auto get_return_object() noexcept -> when_all_task {
+      return when_all_task{handle_type::from_promise(*this)};
+    }
+    auto initial_suspend() noexcept -> std::suspend_always { return {}; }
+    auto final_suspend() noexcept {
+      struct final_awaiter {
+        auto await_ready() noexcept -> bool { return false; }
+        auto await_suspend(handle_type h) noexcept -> void {
+          h.destroy();
+        }
+        auto await_resume() noexcept -> void {}
+      };
+      return final_awaiter{};
+    }
+    auto return_value(T value) noexcept -> void {
+      if (state) {
+        state->store_and_notify(std::move(value));
+      }
+    }
+    [[noreturn]] auto unhandled_exception() noexcept -> void { std::terminate(); }
+  };
+
+  when_all_task(handle_type h) noexcept : handle_(h) {}
+  when_all_task(when_all_task&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {}
+  ~when_all_task() = default;
+
+  auto start(when_all_task_state<T>& state) noexcept -> void {
+    handle_.promise().state = &state;
+    handle_.resume();
+  }
+
+private:
+  handle_type handle_;
+};
+
+template <typename T>
+auto make_when_all_task(task<T> t) -> when_all_task<T> {
+  co_return co_await std::move(t);
+}
+
+}  // namespace detail
+
+template <typename T, typename U>
+class when_all_awaiter_2 {
+public:
+  when_all_awaiter_2(task<T>&& t1, task<U>&& t2) noexcept
+      : task1_(detail::make_when_all_task(std::move(t1))),
+        task2_(detail::make_when_all_task(std::move(t2))),
+        counter_(2) {
+    state1_.counter = &counter_;
+    state2_.counter = &counter_;
+  }
+
+  [[nodiscard]] auto await_ready() const noexcept -> bool { return false; }
+
+  auto await_suspend(std::coroutine_handle<> continuation) noexcept -> void {
+    counter_.continuation = continuation;
+    task1_.start(state1_);
+    task2_.start(state2_);
+  }
+
+  [[nodiscard]] auto await_resume() noexcept -> std::tuple<T, U> {
+    return {std::move(state1_.result).get(), std::move(state2_.result).get()};
+  }
+
+private:
+  detail::when_all_task<T> task1_;
+  detail::when_all_task<U> task2_;
+  detail::when_all_task_state<T> state1_;
+  detail::when_all_task_state<U> state2_;
+  detail::when_all_counter counter_;
+};
+
+template <typename T, typename U>
+[[nodiscard]] auto when_all(task<T>&& t1, task<U>&& t2) -> when_all_awaiter_2<T, U> {
+  return when_all_awaiter_2<T, U>(std::move(t1), std::move(t2));
+}
 
 }  // namespace taskmaster

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -23,6 +23,7 @@ import {
 import { useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { LogEntry } from "@/types/dag";
+import { LogTimeline } from "@/components/LogTimeline";
 import {
     getDAG,
     getTask,
@@ -145,6 +146,7 @@ export default function DAGDetail() {
                         timestamp,
                         level: log.level.toUpperCase() as LogEntry["level"],
                         message: `[${taskDef.task_id}] ${log.message}`,
+                        stream: log.stream as LogEntry["stream"],
                         taskId: taskDef.task_id,
                     });
                 });
@@ -195,6 +197,43 @@ export default function DAGDetail() {
         }
     }, [selectedRun, taskDefinitions, fetchLogsForRun, fetchXComForRun, fetchTaskInstancesForRun]);
 
+    const wsRef = useRef<WebSocket | null>(null);
+
+    useEffect(() => {
+        if (!id) return;
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws/logs`;
+
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                if (data.type === "event") {
+                    const eventType = data.event_type;
+                    const dagId = data.dag_id;
+                    
+                    if (dagId !== id) return;
+
+                    if (eventType === "task_status_changed" || eventType === "dag_run_completed") {
+                        fetchRunHistory();
+                        if (selectedRun) {
+                            fetchTaskInstancesForRun(selectedRun.id);
+                        }
+                    }
+                }
+            } catch {
+            }
+        };
+
+        return () => {
+            ws.close();
+            wsRef.current = null;
+        };
+    }, [id, fetchRunHistory, selectedRun, fetchTaskInstancesForRun]);
+
     const taskDependencies = taskDefinitions.flatMap((task) =>
         task.dependencies.map((dep) => ({ from: dep, to: task.task_id }))
     );
@@ -221,12 +260,21 @@ export default function DAGDetail() {
         }
     };
 
+    const currentTaskInstances = selectedRun ? runTaskInstances.get(selectedRun.id) || [] : [];
+
     const flowTasks = taskDefinitions.map((td) => {
         let status: "pending" | "running" | "success" | "failed" = "pending";
         if (selectedRun) {
-            if (selectedRun.state === "success") status = "success";
-            else if (selectedRun.state === "failed") status = "failed";
-            else if (selectedRun.state === "running") status = "running";
+            const taskInstance = currentTaskInstances.find(t => t.task_id === td.task_id);
+            if (taskInstance) {
+                const taskState = taskInstance.state;
+                if (taskState === "success") status = "success";
+                else if (taskState === "failed" || taskState === "upstream_failed") status = "failed";
+                else if (taskState === "running" || taskState === "retrying") status = "running";
+                else if (taskState === "pending" || taskState === "scheduled") status = "pending";
+            } else if (selectedRun.state === "running") {
+                status = "pending";
+            }
         }
         return {
             id: td.task_id,
@@ -261,7 +309,6 @@ export default function DAGDetail() {
 
     const currentLogs = selectedRun ? runLogs.get(selectedRun.id) || [] : [];
     const currentXCom = selectedRun ? runXCom.get(selectedRun.id) || {} : {};
-    const currentTaskInstances = selectedRun ? runTaskInstances.get(selectedRun.id) || [] : [];
 
     if (!dagInfo) {
         return (
@@ -440,16 +487,8 @@ export default function DAGDetail() {
                                     <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
                                 </div>
                             ) : currentLogs.length > 0 ? (
-                                <div className="bg-muted/50 rounded-lg p-4 max-h-[500px] overflow-y-auto">
-                                    <div className="font-mono text-xs space-y-1">
-                                        {currentLogs.map((log, i) => (
-                                            <p key={i}>
-                                                <span className="text-muted-foreground">[{log.timestamp}]</span>
-                                                <span className={`ml-1 font-semibold ${getLogLevelClass(log.level)}`}>[{log.level}]</span>
-                                                <span className="ml-1">{log.message}</span>
-                                            </p>
-                                        ))}
-                                    </div>
+                                <div className="bg-muted/30 rounded-lg p-4 max-h-[500px] overflow-y-auto">
+                                    <LogTimeline logs={currentLogs} />
                                 </div>
                             ) : (
                                 <div className="text-center py-8 text-muted-foreground">
