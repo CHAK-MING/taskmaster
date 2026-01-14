@@ -29,9 +29,13 @@ import {
     triggerDAG,
     listHistory,
     getTaskLogs,
+    getRunXCom,
+    getRunTasks,
     DAGInfo,
     TaskConfig,
     RunRecord,
+    XComValue,
+    TaskRunRecord,
 } from "@/lib/api";
 import {
     DAGStatusBadge,
@@ -65,6 +69,8 @@ export default function DAGDetail() {
     const [dagRuns, setDagRuns] = useState<DAGRun[]>([]);
     const [selectedRun, setSelectedRun] = useState<DAGRun | null>(null);
     const [runLogs, setRunLogs] = useState<Map<string, LogEntry[]>>(new Map());
+    const [runXCom, setRunXCom] = useState<Map<string, { [taskId: string]: XComValue }>>(new Map());
+    const [runTaskInstances, setRunTaskInstances] = useState<Map<string, TaskRunRecord[]>>(new Map());
     const [triggering, setTriggering] = useState(false);
     const [loadingLogs, setLoadingLogs] = useState(false);
 
@@ -151,6 +157,26 @@ export default function DAGDetail() {
         setLoadingLogs(false);
     }, [taskDefinitions, runLogs]);
 
+    const fetchXComForRun = useCallback(async (runId: string) => {
+        if (runXCom.has(runId)) return;
+        try {
+            const data = await getRunXCom(runId);
+            setRunXCom(prev => new Map(prev).set(runId, data.xcom));
+        } catch {
+            setRunXCom(prev => new Map(prev).set(runId, {}));
+        }
+    }, [runXCom]);
+
+    const fetchTaskInstancesForRun = useCallback(async (runId: string) => {
+        if (runTaskInstances.has(runId)) return;
+        try {
+            const tasks = await getRunTasks(runId);
+            setRunTaskInstances(prev => new Map(prev).set(runId, tasks));
+        } catch {
+            setRunTaskInstances(prev => new Map(prev).set(runId, []));
+        }
+    }, [runTaskInstances]);
+
     useEffect(() => {
         fetchDAGData();
     }, [fetchDAGData]);
@@ -164,8 +190,10 @@ export default function DAGDetail() {
     useEffect(() => {
         if (selectedRun && taskDefinitions.length > 0) {
             fetchLogsForRun(selectedRun.id);
+            fetchXComForRun(selectedRun.id);
+            fetchTaskInstancesForRun(selectedRun.id);
         }
-    }, [selectedRun, taskDefinitions, fetchLogsForRun]);
+    }, [selectedRun, taskDefinitions, fetchLogsForRun, fetchXComForRun, fetchTaskInstancesForRun]);
 
     const taskDependencies = taskDefinitions.flatMap((task) =>
         task.dependencies.map((dep) => ({ from: dep, to: task.task_id }))
@@ -232,6 +260,8 @@ export default function DAGDetail() {
     };
 
     const currentLogs = selectedRun ? runLogs.get(selectedRun.id) || [] : [];
+    const currentXCom = selectedRun ? runXCom.get(selectedRun.id) || {} : {};
+    const currentTaskInstances = selectedRun ? runTaskInstances.get(selectedRun.id) || [] : [];
 
     if (!dagInfo) {
         return (
@@ -279,6 +309,7 @@ export default function DAGDetail() {
                     <TabsTrigger value="graph">流程图</TabsTrigger>
                     <TabsTrigger value="runs">运行实例</TabsTrigger>
                     <TabsTrigger value="logs">运行日志</TabsTrigger>
+                    <TabsTrigger value="xcom">XCom 数据</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="runs">
@@ -423,6 +454,68 @@ export default function DAGDetail() {
                             ) : (
                                 <div className="text-center py-8 text-muted-foreground">
                                     该运行实例暂无日志
+                                </div>
+                            )}
+                        </CardContent>
+                    </Card>
+                </TabsContent>
+
+                <TabsContent value="xcom">
+                    <Card>
+                        <CardHeader>
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <CardTitle className="text-base">XCom 跨任务数据</CardTitle>
+                                    <p className="text-sm text-muted-foreground mt-1">
+                                        任务间传递的数据值
+                                    </p>
+                                </div>
+                                {dagRuns.length > 0 && (
+                                    <Select
+                                        value={selectedRun?.id || ""}
+                                        onValueChange={(val) => {
+                                            const run = dagRuns.find(r => r.id === val);
+                                            if (run) setSelectedRun(run);
+                                        }}
+                                    >
+                                        <SelectTrigger className="w-48">
+                                            <SelectValue placeholder="选择运行实例" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {dagRuns.map((run) => (
+                                                <SelectItem key={run.id} value={run.id}>
+                                                    Run #{run.runNumber} - {run.state === "success" ? "成功" : run.state === "failed" ? "失败" : "运行中"}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                )}
+                            </div>
+                        </CardHeader>
+                        <CardContent>
+                            {!selectedRun ? (
+                                <div className="text-center py-8 text-muted-foreground">
+                                    请选择一个运行实例查看 XCom 数据
+                                </div>
+                            ) : Object.keys(currentXCom).length > 0 ? (
+                                <div className="space-y-4">
+                                    {Object.entries(currentXCom).map(([taskId, values]) => (
+                                        <div key={taskId} className="border rounded-lg p-4">
+                                            <div className="flex items-center gap-2 mb-3">
+                                                <Badge variant="outline">{taskId}</Badge>
+                                                <span className="text-sm text-muted-foreground">
+                                                    {Object.keys(values).length} 个键值
+                                                </span>
+                                            </div>
+                                            <div className="bg-muted/50 rounded p-3 font-mono text-sm overflow-x-auto">
+                                                <pre>{JSON.stringify(values, null, 2)}</pre>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="text-center py-8 text-muted-foreground">
+                                    该运行实例没有 XCom 数据
                                 </div>
                             )}
                         </CardContent>

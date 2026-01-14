@@ -148,6 +148,41 @@ export async function getTaskLogs(runId: string, taskId: string): Promise<TaskLo
     return data.logs;
 }
 
+export interface XComValue {
+    [key: string]: unknown;
+}
+
+export interface TaskXComResponse {
+    task_id: string;
+    xcom: XComValue;
+}
+
+export interface RunXComResponse {
+    dag_run_id: string;
+    xcom: { [taskId: string]: XComValue };
+}
+
+export interface RunTasksResponse {
+    dag_run_id: string;
+    tasks: TaskRunRecord[];
+}
+
+export async function getTaskXCom(runId: string, taskId: string): Promise<TaskXComResponse> {
+    const response = await fetch(`${API_BASE}/runs/${runId}/tasks/${taskId}/xcom`);
+    return handleResponse<TaskXComResponse>(response);
+}
+
+export async function getRunXCom(runId: string): Promise<RunXComResponse> {
+    const response = await fetch(`${API_BASE}/runs/${runId}/xcom`);
+    return handleResponse<RunXComResponse>(response);
+}
+
+export async function getRunTasks(runId: string): Promise<TaskRunRecord[]> {
+    const response = await fetch(`${API_BASE}/runs/${runId}/tasks`);
+    const data = await handleResponse<RunTasksResponse>(response);
+    return data.tasks;
+}
+
 export function connectLogsWebSocket(onMessage: (data: unknown) => void): WebSocket {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws/logs`);

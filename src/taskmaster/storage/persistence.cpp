@@ -2,6 +2,7 @@
 
 #include "taskmaster/dag/dag_manager.hpp"
 #include "taskmaster/dag/dag_run.hpp"
+#include "taskmaster/storage/state_strings.hpp"
 #include "taskmaster/util/id.hpp"
 #include "taskmaster/util/log.hpp"
 
@@ -24,39 +25,6 @@ namespace {
   return std::chrono::system_clock::time_point(std::chrono::milliseconds(ts));
 }
 
-constexpr std::array kDagRunStateNames = {"running", "success", "failed"};
-constexpr std::array kTaskStateNames = {
-    "pending", "running", "success", "failed", "upstream_failed", "retrying"};
-
-[[nodiscard]] auto dag_run_state_to_string(DAGRunState state) -> const char* {
-  auto idx = std::to_underlying(state);
-  return idx < kDagRunStateNames.size() ? kDagRunStateNames[idx] : "unknown";
-}
-
-[[nodiscard]] auto string_to_dag_run_state(std::string_view s) -> DAGRunState {
-  auto it = std::ranges::find(kDagRunStateNames, s);
-  if (it != kDagRunStateNames.end()) {
-    return static_cast<DAGRunState>(
-        std::ranges::distance(kDagRunStateNames.begin(), it));
-  }
-  return DAGRunState::Running;
-}
-
-[[nodiscard]] auto task_state_to_string(TaskState state) -> const char* {
-  auto idx = std::to_underlying(state);
-  return idx < kTaskStateNames.size() ? kTaskStateNames[idx] : "unknown";
-}
-
-[[nodiscard]] auto string_to_task_state(std::string_view s) -> TaskState {
-  auto it = std::ranges::find(kTaskStateNames, s);
-  if (it != kTaskStateNames.end()) {
-    return static_cast<TaskState>(
-        std::ranges::distance(kTaskStateNames.begin(), it));
-  }
-  return TaskState::Pending;
-}
-
-// Helper to safely get text from sqlite column
 [[nodiscard]] auto col_text(sqlite3_stmt* stmt, int col) -> std::string {
   auto* p = reinterpret_cast<const char*>(sqlite3_column_text(stmt, col));
   return p ? p : "";
@@ -290,7 +258,7 @@ auto Persistence::save_dag_run(const DAGRun& run) -> Result<void> {
   Statement stmt(*result);
 
   sqlite3_bind_text(stmt.get(), 1, run.id().c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt.get(), 2, dag_run_state_to_string(run.state()), -1,
+  sqlite3_bind_text(stmt.get(), 2, dag_run_state_name(run.state()), -1,
                     SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt.get(), 3,
                     std::string(trigger_type_to_string(run.trigger_type())).c_str(),
@@ -314,7 +282,7 @@ auto Persistence::update_dag_run_state(DAGRunId dag_run_id,
   Statement stmt(*result);
 
   std::string id_str(dag_run_id);
-  sqlite3_bind_text(stmt.get(), 1, dag_run_state_to_string(state), -1,
+  sqlite3_bind_text(stmt.get(), 1, dag_run_state_name(state), -1,
                     SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt.get(), 2, id_str.c_str(), -1, SQLITE_TRANSIENT);
 
@@ -353,7 +321,7 @@ auto Persistence::save_task_instance(DAGRunId dag_run_id,
   sqlite3_bind_text(stmt.get(), 2, dag_run_id.c_str(), -1, SQLITE_TRANSIENT);
   auto task_idx_str = std::to_string(info.task_idx);
   sqlite3_bind_text(stmt.get(), 3, task_idx_str.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt.get(), 4, task_state_to_string(info.state), -1,
+  sqlite3_bind_text(stmt.get(), 4, task_state_name(info.state), -1,
                     SQLITE_TRANSIENT);
   sqlite3_bind_int(stmt.get(), 5, info.attempt);
   sqlite3_bind_int64(stmt.get(), 6, to_timestamp(info.started_at));
@@ -387,7 +355,7 @@ auto Persistence::update_task_instance(DAGRunId dag_run_id,
   }
 
   sqlite3_bind_text(stmt.get(), 1, info.instance_id.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt.get(), 2, task_state_to_string(info.state), -1,
+  sqlite3_bind_text(stmt.get(), 2, task_state_name(info.state), -1,
                     SQLITE_TRANSIENT);
   sqlite3_bind_int(stmt.get(), 3, info.attempt);
   sqlite3_bind_int64(stmt.get(), 4, to_timestamp(info.started_at));
@@ -424,7 +392,7 @@ auto Persistence::get_dag_run_state(DAGRunId dag_run_id) const
 
   if (sqlite3_step(stmt.get()) != SQLITE_ROW)
     return fail(Error::NotFound);
-  return string_to_dag_run_state(col_text(stmt.get(), 0));
+  return parse_dag_run_state(col_text(stmt.get(), 0));
 }
 
 auto Persistence::get_incomplete_dag_runs() const
@@ -476,7 +444,7 @@ auto Persistence::get_task_instances(DAGRunId dag_run_id) const
     instances.push_back(
         {.instance_id = InstanceId{col_text(stmt.get(), 0)},
          .task_idx = task_idx,
-         .state = string_to_task_state(col_text(stmt.get(), 2)),
+         .state = parse_task_state(col_text(stmt.get(), 2)),
          .attempt = sqlite3_column_int(stmt.get(), 3),
          .started_at = from_timestamp(sqlite3_column_int64(stmt.get(), 4)),
          .finished_at = from_timestamp(sqlite3_column_int64(stmt.get(), 5)),
@@ -528,7 +496,7 @@ auto Persistence::list_run_history(std::optional<DAGId> dag_id, std::size_t limi
     entries.push_back(
         {.dag_run_id = std::move(run_id),
          .dag_id = std::move(extracted_dag_id),
-         .state = string_to_dag_run_state(col_text(stmt.get(), 1)),
+         .state = parse_dag_run_state(col_text(stmt.get(), 1)),
          .trigger_type = string_to_trigger_type(trigger_str),
          .scheduled_at = sqlite3_column_int64(stmt.get(), 3),
          .started_at = sqlite3_column_int64(stmt.get(), 4),
@@ -567,7 +535,7 @@ auto Persistence::get_run_history(DAGRunId dag_run_id) const
   return RunHistoryEntry{.dag_run_id = std::move(run_id),
                          .dag_id = std::move(dag_id),
                          .state =
-                             string_to_dag_run_state(col_text(stmt.get(), 1)),
+                             parse_dag_run_state(col_text(stmt.get(), 1)),
                          .trigger_type = string_to_trigger_type(trigger_str),
                          .scheduled_at = sqlite3_column_int64(stmt.get(), 3),
                          .started_at = sqlite3_column_int64(stmt.get(), 4),
@@ -855,7 +823,7 @@ auto Persistence::save_task_instances_batch(
     sqlite3_bind_text(stmt.get(), 2, dag_run_id.c_str(), -1, SQLITE_TRANSIENT);
     auto task_idx_str = std::to_string(info.task_idx);
     sqlite3_bind_text(stmt.get(), 3, task_idx_str.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt.get(), 4, task_state_to_string(info.state), -1,
+    sqlite3_bind_text(stmt.get(), 4, task_state_name(info.state), -1,
                       SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt.get(), 5, info.attempt);
     sqlite3_bind_int64(stmt.get(), 6, to_timestamp(info.started_at));

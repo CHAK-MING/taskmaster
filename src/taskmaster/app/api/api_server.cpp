@@ -11,6 +11,7 @@
 #include "taskmaster/dag/dag_manager.hpp"
 #include "taskmaster/dag/dag_run.hpp"
 #include "taskmaster/storage/persistence.hpp"
+#include "taskmaster/storage/state_strings.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -47,18 +48,6 @@ auto timestamp_to_iso(int64_t timestamp_ms) -> std::string {
   return buf;
 }
 
-auto dag_run_state_to_string(DAGRunState state) -> std::string_view {
-  switch (state) {
-  case DAGRunState::Running:
-    return "running";
-  case DAGRunState::Success:
-    return "success";
-  case DAGRunState::Failed:
-    return "failed";
-  }
-  return "unknown";
-}
-
 auto dag_info_to_json(const DAGInfo& dag_info) -> json {
   auto tasks = dag_info.tasks 
       | std::views::transform([](const auto& t) { return t.task_id.str(); })
@@ -77,7 +66,7 @@ auto run_to_json(const Persistence::RunHistoryEntry& run) -> json {
   return {
       {"dag_run_id", run.dag_run_id.str()},
       {"dag_id", run.dag_id.str()},
-      {"state", dag_run_state_to_string(run.state)},
+      {"state", dag_run_state_name(run.state)},
       {"trigger_type", trigger_type_to_string(run.trigger_type)},
       {"started_at", timestamp_to_iso(run.started_at)},
       {"finished_at", timestamp_to_iso(run.finished_at)},
@@ -263,7 +252,7 @@ struct ApiServer::Impl {
                  for (const auto& run : *runs_result) {
                    runs.push_back({
                        {"dag_run_id", run.dag_run_id.str()},
-                       {"state", dag_run_state_to_string(run.state)},
+                       {"state", dag_run_state_name(run.state)},
                        {"started_at", timestamp_to_iso(run.started_at)},
                        {"finished_at", timestamp_to_iso(run.finished_at)},
                    });
@@ -296,7 +285,107 @@ struct ApiServer::Impl {
                        {"message", log.message},
                    });
                  }
-                 co_return json_response({{"logs", logs}});
+                  co_return json_response({{"logs", logs}});
+                });
+
+    router.get("/api/runs/{dag_run_id}/tasks/{task_id}/xcom",
+               [this](const HttpRequest& req) -> task<HttpResponse> {
+                 auto dag_run_id = req.path_param("dag_run_id");
+                 auto task_id = req.path_param("task_id");
+                 if (!dag_run_id || !task_id) {
+                   co_return error_response(400, "Missing dag_run_id or task_id");
+                 }
+                 auto* persistence = app_.persistence();
+                 if (!persistence) {
+                   co_return error_response(500, "Persistence not available");
+                 }
+                 auto xcoms_result = persistence->get_task_xcoms(
+                     DAGRunId{*dag_run_id}, TaskId{*task_id});
+                 if (!xcoms_result) {
+                   co_return error_response(500, "Failed to retrieve XCom values");
+                 }
+                 json xcoms = json::object();
+                 for (const auto& [key, value] : *xcoms_result) {
+                   xcoms[key] = value;
+                 }
+                 co_return json_response({{"task_id", *task_id}, {"xcom", xcoms}});
+               });
+
+    router.get("/api/runs/{dag_run_id}/xcom",
+               [this](const HttpRequest& req) -> task<HttpResponse> {
+                 auto dag_run_id = req.path_param("dag_run_id");
+                 if (!dag_run_id) {
+                   co_return error_response(400, "Missing dag_run_id");
+                 }
+                 auto* persistence = app_.persistence();
+                 if (!persistence) {
+                   co_return error_response(500, "Persistence not available");
+                 }
+                 auto run_result = persistence->get_run_history(DAGRunId{*dag_run_id});
+                 if (!run_result) {
+                   co_return error_response(404, "Run not found");
+                 }
+                 auto dag_info = app_.dag_manager().get_dag(run_result->dag_id);
+                 if (!dag_info) {
+                   co_return error_response(404, "DAG not found");
+                 }
+                 json all_xcoms = json::object();
+                 for (const auto& task : dag_info->tasks) {
+                   auto xcoms_result = persistence->get_task_xcoms(
+                       DAGRunId{*dag_run_id}, task.task_id);
+                   if (xcoms_result && !xcoms_result->empty()) {
+                     json task_xcoms = json::object();
+                     for (const auto& [key, value] : *xcoms_result) {
+                       task_xcoms[key] = value;
+                     }
+                     all_xcoms[task.task_id.str()] = task_xcoms;
+                   }
+                 }
+                 co_return json_response({{"dag_run_id", *dag_run_id}, {"xcom", all_xcoms}});
+               });
+
+    router.get("/api/runs/{dag_run_id}/tasks",
+               [this](const HttpRequest& req) -> task<HttpResponse> {
+                 auto dag_run_id = req.path_param("dag_run_id");
+                 if (!dag_run_id) {
+                   co_return error_response(400, "Missing dag_run_id");
+                 }
+                 auto* persistence = app_.persistence();
+                 if (!persistence) {
+                   co_return error_response(500, "Persistence not available");
+                 }
+                 auto run_result = persistence->get_run_history(DAGRunId{*dag_run_id});
+                 if (!run_result) {
+                   co_return error_response(404, "Run not found");
+                 }
+                 auto dag_info = app_.dag_manager().get_dag(run_result->dag_id);
+                 if (!dag_info) {
+                   co_return error_response(404, "DAG not found");
+                 }
+                 auto tasks_result = persistence->get_task_instances(DAGRunId{*dag_run_id});
+                 if (!tasks_result) {
+                   co_return error_response(500, "Failed to retrieve task instances");
+                 }
+                 json tasks = json::array();
+                 for (const auto& t : *tasks_result) {
+                   std::string task_id_str = (t.task_idx < dag_info->tasks.size())
+                       ? dag_info->tasks[t.task_idx].task_id.str()
+                       : std::format("task_{}", t.task_idx);
+                   tasks.push_back({
+                       {"task_id", task_id_str},
+                       {"state", task_state_name(t.state)},
+                       {"attempt", t.attempt},
+                       {"exit_code", t.exit_code},
+                       {"started_at", timestamp_to_iso(
+                           std::chrono::duration_cast<std::chrono::milliseconds>(
+                               t.started_at.time_since_epoch()).count())},
+                       {"finished_at", timestamp_to_iso(
+                           std::chrono::duration_cast<std::chrono::milliseconds>(
+                               t.finished_at.time_since_epoch()).count())},
+                       {"error", t.error_message},
+                   });
+                 }
+                 co_return json_response({{"dag_run_id", *dag_run_id}, {"tasks", tasks}});
                });
   }
 
