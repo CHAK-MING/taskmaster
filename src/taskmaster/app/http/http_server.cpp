@@ -52,7 +52,7 @@ struct HttpServer::Impl {
 
   auto handle_connection(int client_fd) -> task<void> {
     auto& io_ctx = current_io_context();
-    HttpParser parser;
+    HttpRequestParser request_parser;
 
     try {
       std::vector<uint8_t> buffer(8192);
@@ -66,7 +66,7 @@ struct HttpServer::Impl {
           break;
         }
 
-        auto req_opt = parser.parse(std::span{buffer.data(), result.bytes_transferred});
+        auto req_opt = request_parser.parse(std::span{buffer.data(), result.bytes_transferred});
         if (req_opt) {
           auto& req = *req_opt;
           log::debug("Received {} {}", method_to_string(req.method), req.path);
@@ -86,7 +86,7 @@ struct HttpServer::Impl {
             break;
           }
 
-          parser.reset();
+          request_parser.reset();
         }
       }
     } catch (const std::exception& e) {

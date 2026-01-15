@@ -4,6 +4,7 @@
 
 #include <liburing.h>
 #include <poll.h>
+#include <sys/socket.h>
 
 #include <cerrno>
 #include <cstring>
@@ -99,6 +100,11 @@ public:
         io_uring_prep_write(sqe, req.fd, req.buf, req.len, req.offset);
         break;
 
+      case IoOpType::Connect:
+        io_uring_prep_connect(sqe, req.fd,
+                              static_cast<const sockaddr*>(req.buf), req.len);
+        break;
+ 
       case IoOpType::Poll:
         io_uring_prep_poll_add(sqe, req.fd, req.poll_mask);
         break;
@@ -222,6 +228,16 @@ public:
     if (!sqe) return;
 
     io_uring_prep_accept(sqe, fd, nullptr, nullptr, 0);
+    io_uring_sqe_set_data(sqe, data);
+    ++pending_count_;
+  }
+
+  auto submit_connect(CompletionData* data, int fd, const void* addr,
+                      std::uint32_t addrlen) -> void {
+    auto* sqe = get_sqe();
+    if (!sqe) return;
+
+    io_uring_prep_connect(sqe, fd, static_cast<const sockaddr*>(addr), addrlen);
     io_uring_sqe_set_data(sqe, data);
     ++pending_count_;
   }
@@ -466,6 +482,11 @@ auto IoContext::async_accept(int listen_fd) -> IoAwaitable<ops::Accept> {
   return IoAwaitable<ops::Accept>{*this, {listen_fd}};
 }
 
+auto IoContext::async_connect(int fd, const void* addr, std::uint32_t addrlen)
+    -> IoAwaitable<ops::Connect> {
+  return IoAwaitable<ops::Connect>{*this, {fd, addr, addrlen}};
+}
+
 auto IoContext::async_close(int fd) -> IoAwaitable<ops::Close> {
   return IoAwaitable<ops::Close>{*this, {fd}};
 }
@@ -498,6 +519,11 @@ auto IoContext::submit_write(CompletionData* data, int fd, ConstBuffer buffer,
 
 auto IoContext::submit_accept(CompletionData* data, int fd) -> void {
   if (impl_) impl_->submit_accept(data, fd);
+}
+
+auto IoContext::submit_connect(CompletionData* data, int fd, const void* addr,
+                               std::uint32_t addrlen) -> void {
+  if (impl_) impl_->submit_connect(data, fd, addr, addrlen);
 }
 
 auto IoContext::submit_close(CompletionData* data, int fd) -> void {
@@ -566,6 +592,9 @@ auto IoAwaitable<Operation>::await_suspend(std::coroutine_handle<> h) noexcept
                            operation_.offset);
   } else if constexpr (std::is_same_v<Operation, ops::Accept>) {
     context_->submit_accept(data_, operation_.listen_fd);
+  } else if constexpr (std::is_same_v<Operation, ops::Connect>) {
+    context_->submit_connect(data_, operation_.fd, operation_.addr,
+                             operation_.addrlen);
   } else if constexpr (std::is_same_v<Operation, ops::Close>) {
     context_->submit_close(data_, operation_.fd);
   } else if constexpr (std::is_same_v<Operation, ops::Poll>) {
@@ -609,6 +638,7 @@ IoAwaitable<Operation>::~IoAwaitable() {
 template class IoAwaitable<ops::Read>;
 template class IoAwaitable<ops::Write>;
 template class IoAwaitable<ops::Accept>;
+template class IoAwaitable<ops::Connect>;
 template class IoAwaitable<ops::Close>;
 template class IoAwaitable<ops::Poll>;
 

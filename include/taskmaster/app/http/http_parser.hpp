@@ -10,15 +10,32 @@
 
 namespace taskmaster::http {
 
-class HttpParser {
+class HttpRequestParser {
 public:
-  HttpParser();
-  ~HttpParser();
+  HttpRequestParser();
+  ~HttpRequestParser();
 
-  HttpParser(const HttpParser&) = delete;
-  auto operator=(const HttpParser&) -> HttpParser& = delete;
+  HttpRequestParser(const HttpRequestParser&) = delete;
+  auto operator=(const HttpRequestParser&) -> HttpRequestParser& = delete;
 
   auto parse(std::span<const uint8_t> data) -> std::optional<HttpRequest>;
+  auto reset() -> void;
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+
+class HttpResponseParser {
+public:
+  HttpResponseParser();
+  ~HttpResponseParser();
+
+  HttpResponseParser(const HttpResponseParser&) = delete;
+  auto operator=(const HttpResponseParser&) -> HttpResponseParser& = delete;
+
+  auto parse(std::span<const uint8_t> data) -> std::optional<HttpResponse>;
   auto reset() -> void;
 
 private:

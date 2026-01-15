@@ -90,6 +90,7 @@ struct Nop {};
 enum class IoOpType : std::uint8_t {
   Read,
   Write,
+  Connect,
   Poll,
   PollTimeout,
   Timeout,
@@ -267,6 +268,11 @@ public:
   /// Async accept connection
   [[nodiscard]] auto async_accept(int listen_fd) -> IoAwaitable<ops::Accept>;
 
+  /// Async connect to address
+  [[nodiscard]] auto async_connect(int fd, const void* addr,
+                                   std::uint32_t addrlen)
+      -> IoAwaitable<ops::Connect>;
+
   /// Async close file descriptor
   [[nodiscard]] auto async_close(int fd) -> IoAwaitable<ops::Close>;
 
@@ -349,8 +355,10 @@ public:
   auto submit_read(CompletionData* data, int fd, MutableBuffer buffer,
                    std::uint64_t offset) -> void;
   auto submit_write(CompletionData* data, int fd, ConstBuffer buffer,
-                    std::uint64_t offset) -> void;
+                     std::uint64_t offset) -> void;
   auto submit_accept(CompletionData* data, int fd) -> void;
+  auto submit_connect(CompletionData* data, int fd, const void* addr,
+                      std::uint32_t addrlen) -> void;
   auto submit_close(CompletionData* data, int fd) -> void;
   auto submit_timeout(CompletionData* data, std::chrono::nanoseconds duration)
       -> void;

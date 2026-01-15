@@ -4,7 +4,7 @@
 
 namespace taskmaster::http {
 
-struct HttpParser::Impl {
+struct HttpRequestParser::Impl {
   llhttp_t parser;
   llhttp_settings_t settings;
   HttpRequest current_request;
@@ -100,7 +100,7 @@ struct HttpParser::Impl {
   }
 };
 
-HttpParser::HttpParser() : impl_(std::make_unique<Impl>()) {
+HttpRequestParser::HttpRequestParser() : impl_(std::make_unique<Impl>()) {
   llhttp_settings_init(&impl_->settings);
   impl_->settings.on_url = Impl::on_url;
   impl_->settings.on_header_field = Impl::on_header_field;
@@ -113,9 +113,9 @@ HttpParser::HttpParser() : impl_(std::make_unique<Impl>()) {
   impl_->parser.data = impl_.get();
 }
 
-HttpParser::~HttpParser() = default;
+HttpRequestParser::~HttpRequestParser() = default;
 
-auto HttpParser::parse(std::span<const uint8_t> data)
+auto HttpRequestParser::parse(std::span<const uint8_t> data)
     -> std::optional<HttpRequest> {
   enum llhttp_errno err = llhttp_execute(
       &impl_->parser, reinterpret_cast<const char*>(data.data()), data.size());
@@ -133,13 +133,114 @@ auto HttpParser::parse(std::span<const uint8_t> data)
   return std::nullopt;
 }
 
-auto HttpParser::reset() -> void {
+auto HttpRequestParser::reset() -> void {
   impl_->current_request = HttpRequest{};
   impl_->request_complete = false;
   impl_->current_header_field.clear();
   impl_->current_header_value.clear();
   impl_->in_header_field = false;
   llhttp_init(&impl_->parser, HTTP_REQUEST, &impl_->settings);
+  impl_->parser.data = impl_.get();
+}
+
+struct HttpResponseParser::Impl {
+  llhttp_t parser;
+  llhttp_settings_t settings;
+  HttpResponse current_response;
+  bool response_complete = false;
+  std::string current_header_field;
+  std::string current_header_value;
+  bool in_header_field = false;
+
+  static auto on_header_field(llhttp_t* parser, const char* at, size_t length)
+      -> int {
+    auto* impl = static_cast<Impl*>(parser->data);
+    if (!impl->in_header_field && !impl->current_header_field.empty()) {
+      impl->current_response.headers[impl->current_header_field] =
+          impl->current_header_value;
+      impl->current_header_field.clear();
+      impl->current_header_value.clear();
+    }
+    impl->current_header_field.append(at, length);
+    impl->in_header_field = true;
+    return 0;
+  }
+
+  static auto on_header_value(llhttp_t* parser, const char* at, size_t length)
+      -> int {
+    auto* impl = static_cast<Impl*>(parser->data);
+    impl->current_header_value.append(at, length);
+    impl->in_header_field = false;
+    return 0;
+  }
+
+  static auto on_headers_complete(llhttp_t* parser) -> int {
+    auto* impl = static_cast<Impl*>(parser->data);
+    if (!impl->current_header_field.empty()) {
+      impl->current_response.headers[impl->current_header_field] =
+          impl->current_header_value;
+      impl->current_header_field.clear();
+      impl->current_header_value.clear();
+    }
+
+    int status_code = llhttp_get_status_code(&impl->parser);
+    impl->current_response.status = static_cast<HttpStatus>(status_code);
+    return 0;
+  }
+
+  static auto on_body(llhttp_t* parser, const char* at, size_t length) -> int {
+    auto* impl = static_cast<Impl*>(parser->data);
+    impl->current_response.body.insert(impl->current_response.body.end(), at,
+                                       at + length);
+    return 0;
+  }
+
+  static auto on_message_complete(llhttp_t* parser) -> int {
+    auto* impl = static_cast<Impl*>(parser->data);
+    impl->response_complete = true;
+    return 0;
+  }
+};
+
+HttpResponseParser::HttpResponseParser() : impl_(std::make_unique<Impl>()) {
+  llhttp_settings_init(&impl_->settings);
+  impl_->settings.on_header_field = Impl::on_header_field;
+  impl_->settings.on_header_value = Impl::on_header_value;
+  impl_->settings.on_headers_complete = Impl::on_headers_complete;
+  impl_->settings.on_body = Impl::on_body;
+  impl_->settings.on_message_complete = Impl::on_message_complete;
+
+  llhttp_init(&impl_->parser, HTTP_RESPONSE, &impl_->settings);
+  impl_->parser.data = impl_.get();
+}
+
+HttpResponseParser::~HttpResponseParser() = default;
+
+auto HttpResponseParser::parse(std::span<const uint8_t> data)
+    -> std::optional<HttpResponse> {
+  enum llhttp_errno err = llhttp_execute(
+      &impl_->parser, reinterpret_cast<const char*>(data.data()), data.size());
+
+  if (err != HPE_OK) {
+    return std::nullopt;
+  }
+
+  if (impl_->response_complete) {
+    auto resp = std::move(impl_->current_response);
+    reset();
+    return resp;
+  }
+
+  return std::nullopt;
+}
+
+auto HttpResponseParser::reset() -> void {
+  impl_->current_response = HttpResponse{HttpStatus::Ok, {}, {}};
+  impl_->response_complete = false;
+  impl_->current_header_field.clear();
+  impl_->current_header_value.clear();
+  impl_->in_header_field = false;
+  llhttp_init(&impl_->parser, HTTP_RESPONSE, &impl_->settings);
   impl_->parser.data = impl_.get();
 }
 

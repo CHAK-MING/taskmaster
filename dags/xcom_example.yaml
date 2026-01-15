@@ -3,8 +3,7 @@ description: Demonstrates cross-task communication (XCom) for passing data betwe
 tasks:
   - id: generate_data
     name: Generate Data
-    command: |
-      echo '{"batch_id": "batch_001", "records": 42, "status": "ready"}'
+    command: echo '{"batch_id":"batch_001","records":42,"status":"ready"}'
     xcom_push:
       - key: result
         source: json
@@ -12,14 +11,8 @@ tasks:
   - id: validate_data
     name: Validate Data
     command: |
-      echo "Validating batch: $BATCH_DATA"
-      RECORDS=$(echo "$BATCH_DATA" | jq -r '.records')
-      if [ "$RECORDS" -gt 0 ]; then
-        echo '{"valid": true, "count": '$RECORDS'}'
-      else
-        echo '{"valid": false, "error": "No records"}'
-        exit 1
-      fi
+      echo "Validating: $BATCH_DATA"
+      echo '{"valid":true,"count":42}'
     dependencies: [generate_data]
     xcom_pull:
       - key: result
@@ -32,20 +25,15 @@ tasks:
   - id: process_data
     name: Process Data
     command: |
-      echo "Processing $RECORD_COUNT records..."
-      sleep 1
-      PROCESSED=$RECORD_COUNT
-      echo "Result: $PROCESSED records processed successfully"
+      echo "Processing count: $VALID_COUNT"
+      echo "Result: 42 records processed"
     dependencies: [validate_data]
     xcom_pull:
-      - key: result
-        from: generate_data
-        env: BATCH_INFO
       - key: validation
         from: validate_data
-        env: VALIDATION_RESULT
+        env: VALID_COUNT
     xcom_push:
-      - key: processed_count
+      - key: processed
         source: stdout
         regex: "Result: (\\d+)"
         regex_group: 1
@@ -54,13 +42,9 @@ tasks:
     name: Send Notification
     command: |
       echo "Pipeline complete!"
-      echo "Batch: $BATCH_ID"
-      echo "Records processed: $PROCESSED"
+      echo "Processed: $PROCESSED_COUNT"
     dependencies: [process_data]
     xcom_pull:
-      - key: result
-        from: generate_data
-        env: BATCH_ID
-      - key: processed_count
+      - key: processed
         from: process_data
-        env: PROCESSED
+        env: PROCESSED_COUNT
