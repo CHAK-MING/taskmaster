@@ -1,6 +1,7 @@
 #include "taskmaster/app/http/http_types.hpp"
 
 #include <algorithm>
+#include <format>
 
 namespace taskmaster::http {
 
@@ -16,17 +17,17 @@ auto HttpRequest::header(std::string_view key) const
 auto HttpRequest::is_websocket_upgrade() const -> bool {
   auto upgrade = header("Upgrade");
   auto connection = header("Connection");
-  
+
   if (!upgrade || !connection) {
     return false;
   }
-  
+
   auto to_lower = [](std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), ::tolower);
     return s;
   };
-  
-  return to_lower(*upgrade) == "websocket" && 
+
+  return to_lower(*upgrade) == "websocket" &&
          to_lower(*connection).find("upgrade") != std::string::npos;
 }
 
@@ -42,6 +43,42 @@ auto HttpRequest::path_param(std::string_view key) const
     return it->second;
   }
   return std::nullopt;
+}
+
+auto HttpRequest::serialize() const -> std::vector<uint8_t> {
+  std::string request_line = std::format("{} {} HTTP/1.1\r\n", method, path);
+
+  std::string header_block;
+  bool has_content_length = false;
+  bool has_host = false;
+
+  for (const auto& [key, value] : headers) {
+    header_block += std::format("{}: {}\r\n", key, value);
+    if (key == "Content-Length") {
+      has_content_length = true;
+    }
+    if (key == "Host") {
+      has_host = true;
+    }
+  }
+
+  if (!has_host) {
+    header_block += "Host: localhost\r\n";
+  }
+
+  if (!has_content_length && !body.empty()) {
+    header_block += std::format("Content-Length: {}\r\n", body.size());
+  }
+
+  header_block += "\r\n";
+
+  std::vector<uint8_t> result;
+  result.reserve(request_line.size() + header_block.size() + body.size());
+  result.insert(result.end(), request_line.begin(), request_line.end());
+  result.insert(result.end(), header_block.begin(), header_block.end());
+  result.insert(result.end(), body.begin(), body.end());
+
+  return result;
 }
 
 QueryParams::QueryParams(std::string_view query_string) {
@@ -69,8 +106,7 @@ QueryParams::QueryParams(std::string_view query_string) {
   }
 }
 
-auto QueryParams::get(std::string_view key) const
-    -> std::optional<std::string> {
+auto QueryParams::get(std::string_view key) const -> std::optional<std::string> {
   auto it = params_.find(std::string(key));
   if (it != params_.end())
     return it->second;
@@ -96,6 +132,10 @@ auto HttpResponse::not_found() -> HttpResponse {
   return {HttpStatus::NotFound, {}, {}};
 }
 
+auto HttpResponse::bad_request() -> HttpResponse {
+  return {HttpStatus::BadRequest, {}, {}};
+}
+
 auto HttpResponse::internal_error() -> HttpResponse {
   return {HttpStatus::InternalServerError, {}, {}};
 }
@@ -111,28 +151,61 @@ auto HttpResponse::set_body(std::string body_str) -> HttpResponse& {
   return *this;
 }
 
-auto method_to_string(HttpMethod method) -> std::string_view {
-  switch (method) {
-    case HttpMethod::GET:
-      return "GET";
-    case HttpMethod::POST:
-      return "POST";
-    case HttpMethod::PUT:
-      return "PUT";
-    case HttpMethod::DELETE:
-      return "DELETE";
-    case HttpMethod::PATCH:
-      return "PATCH";
-    case HttpMethod::OPTIONS:
-      return "OPTIONS";
-    case HttpMethod::HEAD:
-      return "HEAD";
-  }
-  return "UNKNOWN";
+auto HttpResponse::set_body(std::vector<uint8_t> body_data) -> HttpResponse& {
+  body = std::move(body_data);
+  return *this;
 }
 
-auto status_to_int(HttpStatus status) -> int {
-  return static_cast<int>(status);
+auto HttpResponse::serialize() const -> std::vector<uint8_t> {
+  std::string status_line =
+      std::format("HTTP/1.1 {} {}\r\n", status, status_reason_phrase(status));
+
+  std::string header_block;
+  bool has_content_length = false;
+
+  for (const auto& [key, value] : headers) {
+    header_block += std::format("{}: {}\r\n", key, value);
+    if (key == "Content-Length") {
+      has_content_length = true;
+    }
+  }
+
+  if (!has_content_length && !body.empty()) {
+    header_block += std::format("Content-Length: {}\r\n", body.size());
+  }
+
+  header_block += "\r\n";
+
+  std::vector<uint8_t> result;
+  result.reserve(status_line.size() + header_block.size() + body.size());
+  result.insert(result.end(), status_line.begin(), status_line.end());
+  result.insert(result.end(), header_block.begin(), header_block.end());
+  result.insert(result.end(), body.begin(), body.end());
+
+  return result;
+}
+
+auto status_reason_phrase(HttpStatus status) -> std::string_view {
+  switch (status) {
+    case HttpStatus::Ok: return "OK";
+    case HttpStatus::Created: return "Created";
+    case HttpStatus::Accepted: return "Accepted";
+    case HttpStatus::NoContent: return "No Content";
+    case HttpStatus::MovedPermanently: return "Moved Permanently";
+    case HttpStatus::Found: return "Found";
+    case HttpStatus::NotModified: return "Not Modified";
+    case HttpStatus::BadRequest: return "Bad Request";
+    case HttpStatus::Unauthorized: return "Unauthorized";
+    case HttpStatus::Forbidden: return "Forbidden";
+    case HttpStatus::NotFound: return "Not Found";
+    case HttpStatus::MethodNotAllowed: return "Method Not Allowed";
+    case HttpStatus::Conflict: return "Conflict";
+    case HttpStatus::InternalServerError: return "Internal Server Error";
+    case HttpStatus::NotImplemented: return "Not Implemented";
+    case HttpStatus::BadGateway: return "Bad Gateway";
+    case HttpStatus::ServiceUnavailable: return "Service Unavailable";
+  }
+  return "Unknown";
 }
 
 }  // namespace taskmaster::http

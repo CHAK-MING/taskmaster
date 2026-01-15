@@ -54,6 +54,7 @@ add_library(taskmaster_lib
     src/taskmaster/app/http/http_parser.cpp
     src/taskmaster/app/http/router.cpp
     src/taskmaster/app/http/http_server.cpp
+    src/taskmaster/app/http/http_client.cpp
     src/taskmaster/app/http/websocket.cpp
     src/taskmaster/config/dag_definition.cpp
     src/taskmaster/config/dag_file_loader.cpp

@@ -24,32 +24,6 @@ struct HttpServer::Impl {
   explicit Impl(Runtime& rt) : runtime(rt) {
   }
 
-  auto serialize_response(const HttpResponse& resp) -> std::vector<uint8_t> {
-    std::string response;
-    response += std::format("HTTP/1.1 {} OK\r\n", status_to_int(resp.status));
-
-    bool has_content_length = false;
-    for (const auto& [key, value] : resp.headers) {
-      response += std::format("{}: {}\r\n", key, value);
-      if (key == "Content-Length") {
-        has_content_length = true;
-      }
-    }
-
-    if (!has_content_length && !resp.body.empty()) {
-      response += std::format("Content-Length: {}\r\n", resp.body.size());
-    }
-
-    response += "\r\n";
-
-    std::vector<uint8_t> result;
-    result.reserve(response.size() + resp.body.size());
-    result.insert(result.end(), response.begin(), response.end());
-    result.insert(result.end(), resp.body.begin(), resp.body.end());
-
-    return result;
-  }
-
   auto handle_connection(int client_fd) -> task<void> {
     auto& io_ctx = current_io_context();
     HttpRequestParser request_parser;
@@ -69,10 +43,10 @@ struct HttpServer::Impl {
         auto req_opt = request_parser.parse(std::span{buffer.data(), result.bytes_transferred});
         if (req_opt) {
           auto& req = *req_opt;
-          log::debug("Received {} {}", method_to_string(req.method), req.path);
+          log::debug("Received {} {}", req.method, req.path);
 
           auto resp = co_await router_.route(req);
-          auto resp_data = serialize_response(resp);
+          auto resp_data = resp.serialize();
 
           auto write_result =
               co_await io_ctx.async_write(client_fd, io::buffer(resp_data));
