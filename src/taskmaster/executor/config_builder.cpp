@@ -11,11 +11,29 @@ auto ExecutorConfigBuilder::build(const DAGInfo& dag_info, const DAG& graph)
   for (const auto& task : dag_info.tasks) {
     NodeIndex idx = graph.get_index(task.task_id);
     if (idx != kInvalidNode && idx < cfgs.size()) {
-      ShellExecutorConfig exec;
-      exec.command = task.command;
-      exec.working_dir = task.working_dir;
-      exec.timeout = task.timeout;
-      cfgs[idx] = exec;
+      switch (task.executor) {
+        case ExecutorType::Shell: {
+          ShellExecutorConfig exec;
+          exec.command = task.command;
+          exec.working_dir = task.working_dir;
+          exec.timeout = task.timeout;
+          cfgs[idx] = exec;
+          break;
+        }
+        case ExecutorType::Docker: {
+          DockerExecutorConfig exec;
+          if (auto* docker_cfg = std::get_if<DockerTaskConfig>(&task.executor_config)) {
+            exec.image = docker_cfg->image;
+            exec.docker_socket = docker_cfg->socket;
+            exec.pull_policy = docker_cfg->pull_policy;
+          }
+          exec.command = task.command;
+          exec.working_dir = task.working_dir;
+          exec.timeout = task.timeout;
+          cfgs[idx] = exec;
+          break;
+        }
+      }
     }
   }
 

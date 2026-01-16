@@ -24,14 +24,14 @@ static void BM_ExecutorTypeRegistryFromString(benchmark::State& state) {
 
 static void BM_ExecutorTypeToString(benchmark::State& state) {
   for (auto _ : state) {
-    auto name = executor_type_to_string(ExecutorType::Shell);
+    auto name = to_string_view(ExecutorType::Shell);
     benchmark::DoNotOptimize(name);
   }
 }
 
 static void BM_StringToExecutorType(benchmark::State& state) {
   for (auto _ : state) {
-    auto type = string_to_executor_type("shell");
+    auto type = parse<ExecutorType>("shell");
     benchmark::DoNotOptimize(type);
   }
 }

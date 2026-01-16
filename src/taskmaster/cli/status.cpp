@@ -37,7 +37,7 @@ auto cmd_status(const StatusOptions& opts) -> int {
     std::println("Run:     {}", e.dag_run_id);
     std::println("DAG:     {}", e.dag_id);
     std::println("Status:  {}", state_str(e.state));
-    std::println("Trigger: {}", trigger_type_to_string(e.trigger_type));
+    std::println("Trigger: {}", to_string_view(e.trigger_type));
     if (e.started_at > 0) {
       auto t = std::chrono::system_clock::from_time_t(e.started_at / 1000);
       std::println("Started: {:%Y-%m-%d %H:%M:%S}", t);

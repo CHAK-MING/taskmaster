@@ -107,8 +107,9 @@ auto Router::del(std::string path, RouteHandler handler) -> void {
   add_route(HttpMethod::DELETE, std::move(path), std::move(handler));
 }
 
-auto Router::route(const HttpRequest& req) const -> taskmaster::task<HttpResponse> {
-  for (const auto& route : impl_->routes) {
+auto Router::route(const HttpRequest& req)
+    -> taskmaster::task<HttpResponse> {
+  for (auto& route : impl_->routes) {
     if (route.method != req.method) {
       continue;
     }

@@ -62,9 +62,20 @@ struct convert<taskmaster::TaskConfig> {
     t.name = taskmaster::yaml_get_or<std::string>(node, "name", "");
     t.command = taskmaster::yaml_get_or<std::string>(node, "command", "");
     t.working_dir = taskmaster::yaml_get_or<std::string>(node, "working_dir", "");
-    t.executor = taskmaster::string_to_executor_type(
+    t.executor = taskmaster::parse<taskmaster::ExecutorType>(
         taskmaster::yaml_get_or<std::string>(node, "executor", "shell"));
     
+    if (t.executor == taskmaster::ExecutorType::Docker) {
+      taskmaster::DockerTaskConfig docker_cfg;
+      docker_cfg.image = taskmaster::yaml_get_or<std::string>(node, "docker_image", "");
+      docker_cfg.socket = taskmaster::yaml_get_or<std::string>(node, "docker_socket", "/var/run/docker.sock");
+      docker_cfg.pull_policy = taskmaster::parse<taskmaster::ImagePullPolicy>(
+          taskmaster::yaml_get_or<std::string>(node, "pull_policy", "never"));
+      t.executor_config = docker_cfg;
+    } else {
+      t.executor_config = taskmaster::ShellTaskConfig{};
+    }
+
     if (auto deps = node["dependencies"]) {
       t.dependencies = deps.as<std::vector<taskmaster::TaskId>>();
     }
@@ -132,7 +143,18 @@ void to_yaml(YAML::Emitter& out, const TaskConfig& t) {
   }
   to_yaml(out, "command", t.command);
   if (t.executor != ExecutorType::Shell) {
-    to_yaml(out, "executor", std::string(executor_type_to_string(t.executor)));
+    to_yaml(out, "executor", std::string(to_string_view(t.executor)));
+  }
+  if (auto* docker_cfg = std::get_if<DockerTaskConfig>(&t.executor_config)) {
+    if (!docker_cfg->image.empty()) {
+      to_yaml(out, "docker_image", docker_cfg->image);
+    }
+    if (docker_cfg->socket != "/var/run/docker.sock") {
+      to_yaml(out, "docker_socket", docker_cfg->socket);
+    }
+    if (docker_cfg->pull_policy != ImagePullPolicy::Never) {
+      to_yaml(out, "pull_policy", std::string(to_string_view(docker_cfg->pull_policy)));
+    }
   }
   to_yaml_if_not_empty(out, "working_dir", t.working_dir);
   if (!t.dependencies.empty()) {

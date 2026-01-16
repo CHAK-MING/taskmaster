@@ -9,8 +9,8 @@
 
 namespace taskmaster {
 
-using FileChangeCallback = std::function<void(const std::filesystem::path&)>;
-using FileRemoveCallback = std::function<void(const std::filesystem::path&)>;
+using FileChangeCallback = std::move_only_function<void(const std::filesystem::path&)>;
+using FileRemoveCallback = std::move_only_function<void(const std::filesystem::path&)>;
 
 class ConfigWatcher {
 public:

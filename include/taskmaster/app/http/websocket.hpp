@@ -44,7 +44,7 @@ public:
   auto send_pong(std::span<const uint8_t> data) -> task<void>;
 
   auto handle_frames(
-      std::function<void(WebSocketOpCode, std::span<const uint8_t>)> on_message)
+      std::move_only_function<void(WebSocketOpCode, std::span<const uint8_t>)> on_message)
       -> task<void>;
 
   [[nodiscard]] auto fd() const -> int;

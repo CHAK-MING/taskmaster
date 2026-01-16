@@ -93,7 +93,8 @@ TaskMaster/
 ├── dags/                 # DAG definition files
 │   ├── simple.yaml       # Simple example DAG
 │   ├── monitoring.yaml   # System monitoring DAG
-│   └── xcom_example.yaml # XCom data pipeline example
+│   ├── xcom_example.yaml # XCom data pipeline example
+│   └── docker_example.yaml # Docker executor example
 ├── build/bin/taskmaster  # Compiled binary
 └── web-ui/               # React frontend
 ```
@@ -180,6 +181,9 @@ tasks:
 | `id` | string | Unique task identifier (required) |
 | `name` | string | Display name (optional) |
 | `command` | string | Shell command to execute (required) |
+| `executor` | string | Executor type: `shell` (default) or `docker` |
+| `docker_image` | string | Docker image (required when executor is `docker`) |
+| `docker_socket` | string | Docker socket path (default: `/var/run/docker.sock`) |
 | `dependencies` | array | List of task IDs this task depends on |
 | `timeout` | int | Timeout in seconds (default: 300) |
 | `max_retries` | int | Max retries on failure (default: 3) |
@@ -194,6 +198,7 @@ See the `dags/` directory for examples:
 - **simple.yaml** - Basic two-task DAG that runs every minute
 - **monitoring.yaml** - System health checks (disk, API, database) with metrics collection
 - **xcom_example.yaml** - Data pipeline demonstrating XCom for passing data between tasks
+- **docker_example.yaml** - Docker executor demo with mixed shell/container tasks
 
 ## XCom (Cross-Communication)
 

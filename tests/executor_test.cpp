@@ -30,8 +30,8 @@ TEST(ExecutorTypeRegistryTest, UnknownString_ReturnsDefaultShell) {
 }
 
 TEST(ExecutorTypeConversionTest, HelperFunctions_MatchRegistry) {
-  EXPECT_EQ(executor_type_to_string(ExecutorType::Shell), "shell");
-  EXPECT_EQ(string_to_executor_type("shell"), ExecutorType::Shell);
+  EXPECT_EQ(to_string_view(ExecutorType::Shell), "shell");
+  EXPECT_EQ(parse<ExecutorType>("shell"), ExecutorType::Shell);
 }
 
 TEST(ExecutorResultTest, DefaultConstruction_HasZeroValues) {

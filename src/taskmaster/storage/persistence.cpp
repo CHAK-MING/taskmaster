@@ -71,7 +71,7 @@ auto parse_task_from_row(sqlite3_stmt* stmt, int task_id_col, int name_col,
                   .command = col_text(stmt, command_col),
                   .working_dir = col_text(stmt, working_dir_col),
                   .dependencies = {},
-                  .executor = string_to_executor_type(
+                  .executor = parse<ExecutorType>(
                       executor_str.empty() ? "shell" : executor_str),
                   .timeout = std::chrono::seconds(sqlite3_column_int(stmt, timeout_col)),
                   .retry_interval = std::chrono::seconds(sqlite3_column_int(stmt, retry_interval_col)),
@@ -261,7 +261,7 @@ auto Persistence::save_dag_run(const DAGRun& run) -> Result<void> {
   sqlite3_bind_text(stmt.get(), 2, dag_run_state_name(run.state()), -1,
                     SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt.get(), 3,
-                    std::string(trigger_type_to_string(run.trigger_type())).c_str(),
+                    std::string(to_string_view(run.trigger_type())).c_str(),
                     -1, SQLITE_TRANSIENT);
   sqlite3_bind_int64(stmt.get(), 4, to_timestamp(run.scheduled_at()));
   sqlite3_bind_int64(stmt.get(), 5, to_timestamp(run.started_at()));
@@ -497,7 +497,7 @@ auto Persistence::list_run_history(std::optional<DAGId> dag_id, std::size_t limi
         {.dag_run_id = std::move(run_id),
          .dag_id = std::move(extracted_dag_id),
          .state = parse_dag_run_state(col_text(stmt.get(), 1)),
-         .trigger_type = string_to_trigger_type(trigger_str),
+         .trigger_type = parse<TriggerType>(trigger_str),
          .scheduled_at = sqlite3_column_int64(stmt.get(), 3),
          .started_at = sqlite3_column_int64(stmt.get(), 4),
          .finished_at = sqlite3_column_int64(stmt.get(), 5)});
@@ -536,7 +536,7 @@ auto Persistence::get_run_history(DAGRunId dag_run_id) const
                          .dag_id = std::move(dag_id),
                          .state =
                              parse_dag_run_state(col_text(stmt.get(), 1)),
-                         .trigger_type = string_to_trigger_type(trigger_str),
+                         .trigger_type = parse<TriggerType>(trigger_str),
                          .scheduled_at = sqlite3_column_int64(stmt.get(), 3),
                          .started_at = sqlite3_column_int64(stmt.get(), 4),
                          .finished_at = sqlite3_column_int64(stmt.get(), 5)};
@@ -703,7 +703,7 @@ auto Persistence::save_task(DAGId dag_id, const TaskConfig& task)
   Statement stmt(*result);
 
   std::string deps_str = nlohmann::json(task.dependencies).dump();
-  std::string executor_str(executor_type_to_string(task.executor));
+  std::string executor_str(to_string_view(task.executor));
 
   sqlite3_bind_text(stmt.get(), 1, dag_id.c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt.get(), 2, task.task_id.c_str(), -1, SQLITE_TRANSIENT);

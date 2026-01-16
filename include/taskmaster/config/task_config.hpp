@@ -7,6 +7,7 @@
 #include <chrono>
 #include <optional>
 #include <string>
+#include <variant>
 #include <vector>
 
 namespace taskmaster {
@@ -27,6 +28,16 @@ struct XComPullConfig {
   std::string env_var;
 };
 
+struct ShellTaskConfig {};
+
+struct DockerTaskConfig {
+  std::string image;
+  std::string socket{"/var/run/docker.sock"};
+  ImagePullPolicy pull_policy{ImagePullPolicy::Never};
+};
+
+using ExecutorTaskConfig = std::variant<ShellTaskConfig, DockerTaskConfig>;
+
 struct TaskConfig {
   TaskId task_id;
   std::string name;
@@ -34,6 +45,7 @@ struct TaskConfig {
   std::string working_dir;
   std::vector<TaskId> dependencies;
   ExecutorType executor{ExecutorType::Shell};
+  ExecutorTaskConfig executor_config{ShellTaskConfig{}};
   std::chrono::seconds timeout{std::chrono::seconds(300)};
   std::chrono::seconds retry_interval{std::chrono::seconds(60)};
   int max_retries{3};

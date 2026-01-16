@@ -28,7 +28,7 @@ class TemplateResolver {
  private:
   Persistence& persistence_;
 
-  [[nodiscard]] auto json_to_string(const nlohmann::json& value) -> std::string;
+  [[nodiscard]] auto stringify(const nlohmann::json& value) -> std::string;
 };
 
 }  // namespace taskmaster

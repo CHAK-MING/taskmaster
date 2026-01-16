@@ -43,6 +43,8 @@ add_library(taskmaster_lib
     src/taskmaster/storage/recovery.cpp
     src/taskmaster/executor/shell_executor.cpp
     src/taskmaster/executor/noop_executor.cpp
+    src/taskmaster/executor/docker_executor.cpp
+    src/taskmaster/executor/composite_executor.cpp
     src/taskmaster/executor/config_builder.cpp
     src/taskmaster/app/application.cpp
     src/taskmaster/app/api/api_server.cpp
@@ -56,6 +58,7 @@ add_library(taskmaster_lib
     src/taskmaster/app/http/http_server.cpp
     src/taskmaster/app/http/http_client.cpp
     src/taskmaster/app/http/websocket.cpp
+    src/taskmaster/app/docker/docker_client.cpp
     src/taskmaster/config/dag_definition.cpp
     src/taskmaster/config/dag_file_loader.cpp
     src/taskmaster/config/config_watcher.cpp

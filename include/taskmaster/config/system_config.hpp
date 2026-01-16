@@ -25,7 +25,7 @@ struct ApiConfig {
 
 enum class DAGSourceMode { File, Api, Hybrid };
 
-[[nodiscard]] constexpr auto dag_source_mode_to_string(DAGSourceMode mode) noexcept
+[[nodiscard]] constexpr auto to_string_view(DAGSourceMode mode) noexcept
     -> std::string_view {
   switch (mode) {
     case DAGSourceMode::File: return "file";
@@ -35,7 +35,11 @@ enum class DAGSourceMode { File, Api, Hybrid };
   return "file";
 }
 
-[[nodiscard]] inline auto string_to_dag_source_mode(std::string_view str) noexcept
+template <typename T>
+[[nodiscard]] auto parse(std::string_view str) noexcept -> T;
+
+template <>
+[[nodiscard]] inline auto parse<DAGSourceMode>(std::string_view str) noexcept
     -> DAGSourceMode {
   if (str == "api") return DAGSourceMode::Api;
   if (str == "hybrid") return DAGSourceMode::Hybrid;

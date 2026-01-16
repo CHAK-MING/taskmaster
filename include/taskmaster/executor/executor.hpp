@@ -15,7 +15,27 @@ namespace taskmaster {
 
 enum class ExecutorType : std::uint8_t {
   Shell,
+  Docker,
 };
+
+enum class ImagePullPolicy : std::uint8_t {
+  Never,
+  IfNotPresent,
+  Always,
+};
+
+[[nodiscard]] constexpr auto to_string_view(ImagePullPolicy policy) noexcept
+    -> std::string_view {
+  switch (policy) {
+    case ImagePullPolicy::Never:
+      return "never";
+    case ImagePullPolicy::IfNotPresent:
+      return "if_not_present";
+    case ImagePullPolicy::Always:
+      return "always";
+  }
+  return "never";
+}
 
 class ExecutorTypeRegistry {
 public:
@@ -44,20 +64,37 @@ public:
 private:
   ExecutorTypeRegistry() {
     register_type(ExecutorType::Shell, "shell");
+    register_type(ExecutorType::Docker, "docker");
   }
 
   std::flat_map<ExecutorType, std::string_view> type_to_name_;
   std::flat_map<std::string, ExecutorType, std::less<>> name_to_type_;
 };
 
-[[nodiscard]] inline auto executor_type_to_string(ExecutorType type) noexcept
+[[nodiscard]] inline auto to_string_view(ExecutorType type) noexcept
     -> std::string_view {
   return ExecutorTypeRegistry::instance().to_string(type);
 }
 
-[[nodiscard]] inline auto string_to_executor_type(std::string_view str) noexcept
+template <typename T>
+[[nodiscard]] auto parse(std::string_view str) noexcept -> T;
+
+template <>
+[[nodiscard]] inline auto parse<ExecutorType>(std::string_view str) noexcept
     -> ExecutorType {
   return ExecutorTypeRegistry::instance().from_string(str);
+}
+
+template <>
+[[nodiscard]] inline auto parse<ImagePullPolicy>(std::string_view str) noexcept
+    -> ImagePullPolicy {
+  if (str == "if_not_present" || str == "IfNotPresent") {
+    return ImagePullPolicy::IfNotPresent;
+  }
+  if (str == "always" || str == "Always") {
+    return ImagePullPolicy::Always;
+  }
+  return ImagePullPolicy::Never;
 }
 
 struct ShellExecutorConfig {
@@ -67,7 +104,17 @@ struct ShellExecutorConfig {
   std::flat_map<std::string, std::string> env;
 };
 
-using ExecutorConfig = std::variant<ShellExecutorConfig>;
+struct DockerExecutorConfig {
+  std::string image;
+  std::string command;
+  std::string working_dir;
+  std::chrono::seconds timeout{std::chrono::seconds(300)};
+  std::flat_map<std::string, std::string> env;
+  std::string docker_socket{"/var/run/docker.sock"};
+  ImagePullPolicy pull_policy{ImagePullPolicy::Never};
+};
+
+using ExecutorConfig = std::variant<ShellExecutorConfig, DockerExecutorConfig>;
 
 struct ExecutorResult {
   int exit_code{0};
@@ -118,6 +165,9 @@ class Runtime;
     -> std::unique_ptr<IExecutor>;
 
 [[nodiscard]] auto create_noop_executor(Runtime& rt)
+    -> std::unique_ptr<IExecutor>;
+
+[[nodiscard]] auto create_docker_executor(Runtime& rt)
     -> std::unique_ptr<IExecutor>;
 
 class ExecutorAwaiter {

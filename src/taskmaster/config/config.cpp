@@ -56,7 +56,7 @@ struct convert<taskmaster::DAGSourceConfig> {
       return false;
     }
     auto mode_str = taskmaster::yaml_get_or<std::string>(node, "mode", "file");
-    d.mode = taskmaster::string_to_dag_source_mode(mode_str);
+    d.mode = taskmaster::parse<taskmaster::DAGSourceMode>(mode_str);
     d.directory = taskmaster::yaml_get_or<std::string>(node, "directory", "./dags");
     d.scan_interval_sec = taskmaster::yaml_get_or(node, "scan_interval_sec", 30);
     return true;
@@ -130,7 +130,7 @@ void to_yaml(YAML::Emitter& out, const ApiConfig& a) {
 void to_yaml(YAML::Emitter& out, const DAGSourceConfig& d) {
   out << YAML::BeginMap;
   if (d.mode != DAGSourceMode::File) {
-    yaml_emit(out, "mode", std::string(dag_source_mode_to_string(d.mode)));
+    yaml_emit(out, "mode", std::string(to_string_view(d.mode)));
   }
   if (d.directory != "./dags") {
     yaml_emit(out, "directory", d.directory);

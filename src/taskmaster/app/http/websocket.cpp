@@ -193,7 +193,7 @@ auto WebSocketConnection::send_pong(std::span<const uint8_t> data)
 }
 
 auto WebSocketConnection::handle_frames(
-    std::function<void(WebSocketOpCode, std::span<const uint8_t>)> on_message)
+    std::move_only_function<void(WebSocketOpCode, std::span<const uint8_t>)> on_message)
     -> task<void> {
   auto& io_ctx = current_io_context();
   std::vector<uint8_t> buffer(8192);

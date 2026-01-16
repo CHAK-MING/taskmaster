@@ -21,7 +21,7 @@ auto TemplateResolver::resolve_env_vars(
       return std::unexpected(xcom_result.error());
     }
 
-    env_vars[pull.env_var] = json_to_string(*xcom_result);
+    env_vars[pull.env_var] = stringify(*xcom_result);
   }
 
   return env_vars;
@@ -55,7 +55,7 @@ auto TemplateResolver::resolve_template(
       return std::unexpected(xcom_result.error());
     }
 
-    output.append(json_to_string(*xcom_result));
+    output.append(stringify(*xcom_result));
 
     last_pos = match_pos + match.length();
     search_start = result.cbegin() + static_cast<std::ptrdiff_t>(last_pos);
@@ -66,7 +66,7 @@ auto TemplateResolver::resolve_template(
   return output;
 }
 
-auto TemplateResolver::json_to_string(const nlohmann::json& value)
+auto TemplateResolver::stringify(const nlohmann::json& value)
     -> std::string {
   if (value.is_string()) {
     return value.get<std::string>();

@@ -17,8 +17,8 @@ struct DAGFile {
   DAGDefinition definition;
 };
 
-using DAGLoadCallback = std::function<void(DAGId, const DAGDefinition&)>;
-using DAGRemoveCallback = std::function<void(DAGId dag_id)>;
+using DAGLoadCallback = std::move_only_function<void(DAGId, const DAGDefinition&)>;
+using DAGRemoveCallback = std::move_only_function<void(DAGId dag_id)>;
 
 class DAGFileLoader {
 public:

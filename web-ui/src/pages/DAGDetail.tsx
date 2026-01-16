@@ -212,8 +212,8 @@ export default function DAGDetail() {
             try {
                 const data = JSON.parse(event.data);
                 if (data.type === "event") {
-                    const eventType = data.event_type;
-                    const dagId = data.dag_id;
+                    const eventType = data.event;
+                    const dagId = data.dag_run_id?.split('_').slice(0, -1).join('_') || data.dag_id;
                     
                     if (dagId !== id) return;
 

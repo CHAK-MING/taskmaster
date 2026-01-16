@@ -93,7 +93,8 @@ TaskMaster/
 ├── dags/                 # DAG 定义文件目录
 │   ├── simple.yaml       # 简单示例 DAG
 │   ├── monitoring.yaml   # 系统监控 DAG
-│   └── xcom_example.yaml # XCom 数据管道示例
+│   ├── xcom_example.yaml # XCom 数据管道示例
+│   └── docker_example.yaml # Docker 执行器示例
 ├── build/bin/taskmaster  # 编译后的二进制文件
 └── web-ui/               # React 前端
 ```
@@ -180,6 +181,9 @@ tasks:
 | `id` | string | 任务 ID（必填） |
 | `name` | string | 显示名称（可选） |
 | `command` | string | Shell 命令（必填） |
+| `executor` | string | 执行器类型：`shell`（默认）或 `docker` |
+| `docker_image` | string | Docker 镜像（executor 为 `docker` 时必填） |
+| `docker_socket` | string | Docker socket 路径（默认 `/var/run/docker.sock`） |
 | `dependencies` | array | 依赖的任务 ID 列表 |
 | `timeout` | int | 超时秒数（默认 300） |
 | `max_retries` | int | 最大重试次数（默认 3） |
@@ -193,6 +197,7 @@ tasks:
 - **simple.yaml** - 简单的两任务 DAG，每分钟运行一次
 - **monitoring.yaml** - 系统健康检查（磁盘、API、数据库）及指标采集
 - **xcom_example.yaml** - 演示 XCom 跨任务数据传递的数据管道
+- **docker_example.yaml** - Docker 执行器示例，混合 shell/容器任务
 
 ## XCom（跨任务通信）
 

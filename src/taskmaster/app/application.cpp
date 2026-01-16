@@ -21,12 +21,13 @@
 #include <unistd.h>
 
 #include "taskmaster/executor/config_builder.hpp"
+#include "taskmaster/executor/composite_executor.hpp"
 #include "taskmaster/storage/recovery.hpp"
 
 namespace taskmaster {
 
 Application::Application()
-    : executor_(create_shell_executor(runtime_)),
+    : executor_(create_composite_executor(runtime_)),
       events_(std::make_unique<EventService>()),
       scheduler_(std::make_unique<SchedulerService>(runtime_)),
       execution_(std::make_unique<ExecutionService>(runtime_, *executor_)) {
@@ -34,7 +35,7 @@ Application::Application()
 }
 
 Application::Application(std::string_view db_path)
-    : executor_(create_shell_executor(runtime_)),
+    : executor_(create_composite_executor(runtime_)),
       persistence_(std::make_unique<PersistenceService>(db_path)),
       events_(std::make_unique<EventService>()),
       scheduler_(std::make_unique<SchedulerService>(runtime_)),
@@ -45,7 +46,7 @@ Application::Application(std::string_view db_path)
 
 Application::Application(Config config)
     : config_(std::move(config)),
-      executor_(create_shell_executor(runtime_)),
+      executor_(create_composite_executor(runtime_)),
       persistence_(std::make_unique<PersistenceService>(config_.storage.db_file)),
       events_(std::make_unique<EventService>()),
       scheduler_(std::make_unique<SchedulerService>(runtime_)),
@@ -494,7 +495,7 @@ auto Application::list_tasks() const -> void {
       
       std::println("  {:<20} {:<10} {}", 
                    task.task_id,
-                   executor_type_to_string(task.executor),
+                   to_string_view(task.executor),
                    deps);
     }
     std::println("");

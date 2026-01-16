@@ -29,6 +29,11 @@ add_executable(taskmaster_tests
 
   # Executor tests
   executor_test.cpp
+  docker_executor_test.cpp
+
+  # HTTP/Docker client tests
+  http_client_test.cpp
+  docker_client_test.cpp
 
   # XCom tests
   xcom_test.cpp
@@ -89,6 +94,8 @@ add_executable(taskmaster_benchmarks
 
   # io_uring vs epoll comparison
   iouring_bench.cpp
+
+  e2e_bench.cpp
 )
 
 target_link_libraries(taskmaster_benchmarks

@@ -28,7 +28,7 @@ enum class TriggerType : std::uint8_t {
   Schedule,
 };
 
-[[nodiscard]] constexpr auto trigger_type_to_string(TriggerType type) noexcept
+[[nodiscard]] constexpr auto to_string_view(TriggerType type) noexcept
     -> std::string_view {
   switch (type) {
   case TriggerType::Manual:
@@ -40,7 +40,11 @@ enum class TriggerType : std::uint8_t {
   }
 }
 
-[[nodiscard]] constexpr auto string_to_trigger_type(std::string_view s) noexcept
+template <typename T>
+[[nodiscard]] auto parse(std::string_view s) noexcept -> T;
+
+template <>
+[[nodiscard]] inline auto parse<TriggerType>(std::string_view s) noexcept
     -> TriggerType {
   if (s == "schedule") return TriggerType::Schedule;
   return TriggerType::Manual;

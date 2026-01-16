@@ -12,7 +12,7 @@
 
 namespace taskmaster::http {
 
-using RouteHandler = std::function<taskmaster::task<HttpResponse>(const HttpRequest&)>;
+using RouteHandler = std::move_only_function<taskmaster::task<HttpResponse>(const HttpRequest&)>;
 
 class Router {
 public:
@@ -30,7 +30,7 @@ public:
   auto put(std::string path, RouteHandler handler) -> void;
   auto del(std::string path, RouteHandler handler) -> void;
 
-  [[nodiscard]] auto route(const HttpRequest& req) const
+  [[nodiscard]] auto route(const HttpRequest& req)
       -> taskmaster::task<HttpResponse>;
 
 private:

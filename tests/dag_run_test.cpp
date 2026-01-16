@@ -270,12 +270,12 @@ TEST_F(DAGRunTest, ComplexDAGReadyTasks) {
 }
 
 TEST_F(DAGRunTest, TriggerTypeToString) {
-  EXPECT_EQ(trigger_type_to_string(TriggerType::Manual), "manual");
-  EXPECT_EQ(trigger_type_to_string(TriggerType::Schedule), "schedule");
+  EXPECT_EQ(to_string_view(TriggerType::Manual), "manual");
+  EXPECT_EQ(to_string_view(TriggerType::Schedule), "schedule");
 }
 
 TEST_F(DAGRunTest, StringToTriggerType) {
-  EXPECT_EQ(string_to_trigger_type("manual"), TriggerType::Manual);
-  EXPECT_EQ(string_to_trigger_type("schedule"), TriggerType::Schedule);
-  EXPECT_EQ(string_to_trigger_type("unknown"), TriggerType::Manual);
+  EXPECT_EQ(parse<TriggerType>("manual"), TriggerType::Manual);
+  EXPECT_EQ(parse<TriggerType>("schedule"), TriggerType::Schedule);
+  EXPECT_EQ(parse<TriggerType>("unknown"), TriggerType::Manual);
 }

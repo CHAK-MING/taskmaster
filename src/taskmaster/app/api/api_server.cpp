@@ -35,7 +35,7 @@ auto current_timestamp() -> std::string {
   return buf;
 }
 
-auto timestamp_to_iso(int64_t timestamp_ms) -> std::string {
+auto format_iso(int64_t timestamp_ms) -> std::string {
   if (timestamp_ms == 0)
     return "";
   auto tp =
@@ -48,7 +48,7 @@ auto timestamp_to_iso(int64_t timestamp_ms) -> std::string {
   return buf;
 }
 
-auto dag_info_to_json(const DAGInfo& dag_info) -> json {
+auto to_json(const DAGInfo& dag_info) -> json {
   auto tasks = dag_info.tasks 
       | std::views::transform([](const auto& t) { return t.task_id.str(); })
       | std::ranges::to<std::vector<std::string>>();
@@ -62,14 +62,14 @@ auto dag_info_to_json(const DAGInfo& dag_info) -> json {
   };
 }
 
-auto run_to_json(const Persistence::RunHistoryEntry& run) -> json {
+auto to_json(const Persistence::RunHistoryEntry& run) -> json {
   return {
       {"dag_run_id", run.dag_run_id.str()},
       {"dag_id", run.dag_id.str()},
       {"state", dag_run_state_name(run.state)},
-      {"trigger_type", trigger_type_to_string(run.trigger_type)},
-      {"started_at", timestamp_to_iso(run.started_at)},
-      {"finished_at", timestamp_to_iso(run.finished_at)},
+      {"trigger_type", to_string_view(run.trigger_type)},
+      {"started_at", format_iso(run.started_at)},
+      {"finished_at", format_iso(run.finished_at)},
   };
 }
 
@@ -121,7 +121,7 @@ struct ApiServer::Impl {
     router.get("/api/dags", [this](const HttpRequest&) -> task<HttpResponse> {
       json dags = json::array();
       for (const auto& dag_info : app_.dag_manager().list_dags()) {
-        dags.push_back(dag_info_to_json(dag_info));
+        dags.push_back(to_json(dag_info));
       }
       co_return json_response({{"dags", dags}});
     });
@@ -136,7 +136,7 @@ struct ApiServer::Impl {
                  if (!dag_result) {
                    co_return error_response(404, "DAG not found");
                  }
-                 co_return json_response(dag_info_to_json(*dag_result));
+                 co_return json_response(to_json(*dag_result));
                });
 
     router.get("/api/dags/{dag_id}/tasks",
@@ -210,7 +210,7 @@ struct ApiServer::Impl {
       }
       json runs = json::array();
       for (const auto& run : *runs_result) {
-        runs.push_back(run_to_json(run));
+        runs.push_back(to_json(run));
       }
       co_return json_response({{"runs", runs}});
     });
@@ -230,7 +230,7 @@ struct ApiServer::Impl {
                  if (!run_result) {
                    co_return error_response(404, "Run not found");
                  }
-                 co_return json_response(run_to_json(*run_result));
+                 co_return json_response(to_json(*run_result));
                });
 
     router.get("/api/dags/{dag_id}/history",
@@ -253,8 +253,8 @@ struct ApiServer::Impl {
                    runs.push_back({
                        {"dag_run_id", run.dag_run_id.str()},
                        {"state", dag_run_state_name(run.state)},
-                       {"started_at", timestamp_to_iso(run.started_at)},
-                       {"finished_at", timestamp_to_iso(run.finished_at)},
+                       {"started_at", format_iso(run.started_at)},
+                       {"finished_at", format_iso(run.finished_at)},
                    });
                  }
                  co_return json_response({{"runs", runs}});
@@ -279,7 +279,7 @@ struct ApiServer::Impl {
                  json logs = json::array();
                  for (const auto& log : *logs_result) {
                    logs.push_back({
-                       {"timestamp", timestamp_to_iso(log.timestamp)},
+                       {"timestamp", format_iso(log.timestamp)},
                        {"level", log.level},
                        {"stream", log.stream},
                        {"message", log.message},
@@ -376,10 +376,10 @@ struct ApiServer::Impl {
                        {"state", task_state_name(t.state)},
                        {"attempt", t.attempt},
                        {"exit_code", t.exit_code},
-                       {"started_at", timestamp_to_iso(
+                       {"started_at", format_iso(
                            std::chrono::duration_cast<std::chrono::milliseconds>(
                                t.started_at.time_since_epoch()).count())},
-                       {"finished_at", timestamp_to_iso(
+                       {"finished_at", format_iso(
                            std::chrono::duration_cast<std::chrono::milliseconds>(
                                t.finished_at.time_since_epoch()).count())},
                        {"error", t.error_message},
