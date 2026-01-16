@@ -17,6 +17,7 @@ namespace taskmaster {
 using shard_id = unsigned;
 using io::kInvalidShard;
 using io::kWakeEventToken;
+using io::kMsgRingWakeToken;
 using io::kCqeFMore;
 using io::CompletionData;
 using io::IoRequest;
@@ -44,6 +45,9 @@ public:
   }
   [[nodiscard]] auto ctx() noexcept -> io::IoContext& {
     return ctx_;
+  }
+  [[nodiscard]] auto ring_fd() const noexcept -> int {
+    return ctx_.ring_fd();
   }
   [[nodiscard]] auto memory_resource() noexcept -> std::pmr::memory_resource* {
     return &pool_;

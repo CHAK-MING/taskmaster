@@ -74,6 +74,7 @@ public:
 
   [[nodiscard]] auto valid() const noexcept -> bool { return initialized_; }
   [[nodiscard]] auto stopped() const noexcept -> bool { return stopped_; }
+  [[nodiscard]] auto ring_fd() const noexcept -> int { return ring_.ring_fd; }
 
   auto stop() noexcept -> void { stopped_ = true; }
   auto restart() noexcept -> void { stopped_ = false; }
@@ -149,6 +150,12 @@ public:
       case IoOpType::Nop:
         io_uring_prep_nop(sqe);
         break;
+
+      case IoOpType::MsgRing:
+        io_uring_prep_msg_ring(sqe, req.fd, 0, req.msg_ring_data, 0);
+        sqe->flags |= IOSQE_CQE_SKIP_SUCCESS;
+        io_uring_sqe_set_data(sqe, nullptr);
+        return true;
     }
 
     io_uring_sqe_set_data(sqe, req.data);
@@ -433,6 +440,10 @@ auto IoContext::setup_wake_poll(int fd) -> void {
 
 auto IoContext::impl() noexcept -> IoContextImpl* {
   return impl_.get();
+}
+
+auto IoContext::ring_fd() const noexcept -> int {
+  return impl_ ? impl_->ring_fd() : -1;
 }
 
 auto IoContext::set_completion_tracker(TrackerCallback track,

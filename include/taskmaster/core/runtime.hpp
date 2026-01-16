@@ -59,6 +59,7 @@ public:
 
   auto schedule_on(shard_id target, std::coroutine_handle<> handle) -> void;
   auto schedule_external(std::coroutine_handle<> handle) -> void;
+  auto schedule_external_batch(std::span<std::coroutine_handle<>> handles) -> void;
 
   [[nodiscard]] auto shard_count() const noexcept -> unsigned {
     return num_shards_;

@@ -146,23 +146,19 @@ endif()
 
 # Google Benchmark (tests only)
 if(TASKMASTER_ENABLE_TESTS)
-    find_package(benchmark QUIET)
-    if(NOT benchmark_FOUND)
-        message(STATUS "Google Benchmark not found, fetching from GitHub...")
-        FetchContent_Declare(
-            benchmark
-            GIT_REPOSITORY https://github.com/google/benchmark.git
-            GIT_TAG v1.8.3
-            GIT_SHALLOW TRUE
-            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
-            SYSTEM
-        )
-        set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-        set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
-        FetchContent_MakeAvailable(benchmark)
-    else()
-        message(STATUS "Found system benchmark: ${benchmark_VERSION}")
-    endif()
+    message(STATUS "Fetching Google Benchmark from GitHub (Release build)...")
+    FetchContent_Declare(
+        benchmark
+        GIT_REPOSITORY https://github.com/google/benchmark.git
+        GIT_TAG v1.9.1
+        GIT_SHALLOW TRUE
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SYSTEM
+    )
+    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(benchmark)
 endif()
 
 function(taskmaster_configure_target target_name)

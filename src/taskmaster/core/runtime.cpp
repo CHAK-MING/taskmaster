@@ -2,6 +2,9 @@
 
 #include "taskmaster/core/constants.hpp"
 
+#include <bitset>
+#include <liburing.h>
+
 namespace taskmaster {
 
 namespace {
@@ -170,6 +173,10 @@ auto Runtime::process_completions(Shard& shard) -> bool {
       return;
     }
 
+    if (raw_data == reinterpret_cast<void*>(kMsgRingWakeToken)) {
+      return;
+    }
+
     if (raw_data != nullptr) {
       auto* data = static_cast<CompletionData*>(raw_data);
       shard.untrack_io_data(data);
@@ -258,12 +265,38 @@ auto Runtime::schedule_external(std::coroutine_handle<> handle) -> void {
   if (num_shards_ <= 1) {
     target = 0;
   } else {
-    // Reserve shard0 for control-plane actors (e.g. Engine).
     target = static_cast<shard_id>(
                  std::hash<void*>{}(handle.address()) % (num_shards_ - 1)) +
              1;
   }
   schedule_on(target, handle);
+}
+
+auto Runtime::schedule_external_batch(std::span<std::coroutine_handle<>> handles) -> void {
+  if (handles.empty()) return;
+  
+  std::bitset<64> shards_to_wake;
+  
+  for (auto handle : handles) {
+    if (!handle || handle.done()) continue;
+    
+    shard_id target = 0;
+    if (num_shards_ > 1) {
+      target = static_cast<shard_id>(
+                   std::hash<void*>{}(handle.address()) % (num_shards_ - 1)) + 1;
+    }
+    
+    while (!shards_[target]->schedule_remote(handle)) {
+      std::this_thread::yield();
+    }
+    shards_to_wake.set(target);
+  }
+  
+  for (size_t i = 0; i < num_shards_; ++i) {
+    if (shards_to_wake.test(i)) {
+      wake_shard(static_cast<shard_id>(i));
+    }
+  }
 }
 
 auto Runtime::submit_to(shard_id target, std::coroutine_handle<> handle)
@@ -287,8 +320,29 @@ auto Runtime::wake_shard(shard_id id) -> void {
   if (id >= num_shards_)
     return;
 
-  // Only signal if the shard is sleeping to avoid excessive syscalls
-  if (shards_[id]->is_sleeping()) {
+  if (!shards_[id]->is_sleeping())
+    return;
+
+  auto current = detail::current_shard_id;
+  if (current == kInvalidShard || current == id) {
+    shards_[id]->wake_event().signal();
+    return;
+  }
+
+  // Use io_uring msg_ring for zero-syscall cross-shard wakeup
+  int target_ring_fd = shards_[id]->ring_fd();
+  if (target_ring_fd < 0) {
+    shards_[id]->wake_event().signal();
+    return;
+  }
+
+  auto& src_ctx = shards_[current]->ctx();
+  io::IoRequest req{
+      .op = io::IoOpType::MsgRing,
+      .fd = target_ring_fd,
+      .msg_ring_data = kMsgRingWakeToken,
+  };
+  if (!src_ctx.prepare(req)) {
     shards_[id]->wake_event().signal();
   }
 }

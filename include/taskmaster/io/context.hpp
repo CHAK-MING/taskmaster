@@ -22,6 +22,7 @@ class IoContextImpl;
 inline constexpr unsigned kInvalidShard = ~0u;
 inline constexpr std::uint32_t kDefaultQueueDepth = 256;
 inline constexpr std::uintptr_t kWakeEventToken = 0x1;
+inline constexpr std::uintptr_t kMsgRingWakeToken = 0x2;
 inline constexpr std::uint32_t kCqeFMore = (1U << 1);
 
 namespace ops {
@@ -96,7 +97,8 @@ enum class IoOpType : std::uint8_t {
   Timeout,
   Close,
   Cancel,
-  Nop
+  Nop,
+  MsgRing
 };
 
 struct alignas(8) KernelTimespec {
@@ -138,6 +140,7 @@ struct IoRequest {
   KernelTimespec* ts_ptr{nullptr};
   bool has_link_timeout{false};
   std::uint64_t cancel_user_data{0};
+  std::uint64_t msg_ring_data{0};
 };
 
 template <typename Callback>
@@ -332,6 +335,9 @@ public:
 
   /// Get implementation (for template methods)
   [[nodiscard]] auto impl() noexcept -> IoContextImpl*;
+
+  /// Get io_uring ring fd (for msg_ring cross-shard wakeup)
+  [[nodiscard]] auto ring_fd() const noexcept -> int;
 
   using TrackerCallback = std::move_only_function<void(CompletionData*)>;
   auto set_completion_tracker(TrackerCallback track,
