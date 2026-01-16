@@ -1,10 +1,13 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, lazy, Suspense, useMemo } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { DAGFlow } from "@/components/DAGFlow";
+import { Skeleton } from "@/components/ui/skeleton";
+
+const DAGFlow = lazy(() => import("@/components/DAGFlow").then(m => ({ default: m.DAGFlow })));
+
 import {
     Select,
     SelectContent,
@@ -69,9 +72,9 @@ export default function DAGDetail() {
     const [taskDefinitions, setTaskDefinitions] = useState<TaskDefinition[]>([]);
     const [dagRuns, setDagRuns] = useState<DAGRun[]>([]);
     const [selectedRun, setSelectedRun] = useState<DAGRun | null>(null);
-    const [runLogs, setRunLogs] = useState<Map<string, LogEntry[]>>(new Map());
-    const [runXCom, setRunXCom] = useState<Map<string, { [taskId: string]: XComValue }>>(new Map());
-    const [runTaskInstances, setRunTaskInstances] = useState<Map<string, TaskRunRecord[]>>(new Map());
+    const [runLogs, setRunLogs] = useState<Map<string, LogEntry[]>>(() => new Map());
+    const [runXCom, setRunXCom] = useState<Map<string, { [taskId: string]: XComValue }>>(() => new Map());
+    const [runTaskInstances, setRunTaskInstances] = useState<Map<string, TaskRunRecord[]>>(() => new Map());
     const [triggering, setTriggering] = useState(false);
     const [loadingLogs, setLoadingLogs] = useState(false);
 
@@ -81,21 +84,21 @@ export default function DAGDetail() {
             const data = await getDAG(id);
             setDagInfo(data);
 
-            const taskDefs: TaskDefinition[] = [];
-            for (const taskId of data.tasks || []) {
+            const taskPromises = (data.tasks || []).map(async (taskId) => {
                 try {
                     const taskData = await getTask(id, taskId);
-                    taskDefs.push({ ...taskData, dagId: id });
+                    return { ...taskData, dagId: id };
                 } catch {
-                    taskDefs.push({
+                    return {
                         task_id: taskId,
                         name: taskId,
                         command: "",
                         dependencies: [],
                         dagId: id,
-                    });
+                    };
                 }
-            }
+            });
+            const taskDefs = await Promise.all(taskPromises);
             setTaskDefinitions(taskDefs);
         } catch (error) {
             toast.error("获取 DAG 详情失败", {
@@ -131,53 +134,71 @@ export default function DAGDetail() {
 
     const fetchLogsForRun = useCallback(async (runId: string) => {
         if (taskDefinitions.length === 0) return;
-        if (runLogs.has(runId)) return;
+        
+        setRunLogs(prev => {
+            if (prev.has(runId)) return prev;
+            return prev;
+        });
 
         setLoadingLogs(true);
         const allLogs: LogEntry[] = [];
-        for (const taskDef of taskDefinitions) {
+        const logPromises = taskDefinitions.map(async (taskDef) => {
             try {
                 const logsData = await getTaskLogs(runId, taskDef.task_id);
-                logsData.forEach((log) => {
+                return logsData.map((log) => {
                     const timestamp = typeof log.timestamp === 'number'
                         ? new Date(log.timestamp).toISOString().replace('T', ' ').slice(0, 19)
                         : String(log.timestamp);
-                    allLogs.push({
+                    return {
                         timestamp,
                         level: log.level.toUpperCase() as LogEntry["level"],
                         message: `[${taskDef.task_id}] ${log.message}`,
                         stream: log.stream as LogEntry["stream"],
                         taskId: taskDef.task_id,
-                    });
+                    };
                 });
             } catch {
-                // ignore
+                return [];
             }
-        }
+        });
+        
+        const logResults = await Promise.all(logPromises);
+        logResults.forEach(logs => allLogs.push(...logs));
         allLogs.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+        
         setRunLogs(prev => new Map(prev).set(runId, allLogs));
         setLoadingLogs(false);
-    }, [taskDefinitions, runLogs]);
+    }, [taskDefinitions]);
 
     const fetchXComForRun = useCallback(async (runId: string) => {
-        if (runXCom.has(runId)) return;
         try {
             const data = await getRunXCom(runId);
-            setRunXCom(prev => new Map(prev).set(runId, data.xcom));
+            setRunXCom(prev => {
+                if (prev.has(runId)) return prev;
+                return new Map(prev).set(runId, data.xcom);
+            });
         } catch {
-            setRunXCom(prev => new Map(prev).set(runId, {}));
+            setRunXCom(prev => {
+                if (prev.has(runId)) return prev;
+                return new Map(prev).set(runId, {});
+            });
         }
-    }, [runXCom]);
+    }, []);
 
     const fetchTaskInstancesForRun = useCallback(async (runId: string) => {
-        if (runTaskInstances.has(runId)) return;
         try {
             const tasks = await getRunTasks(runId);
-            setRunTaskInstances(prev => new Map(prev).set(runId, tasks));
+            setRunTaskInstances(prev => {
+                if (prev.has(runId)) return prev;
+                return new Map(prev).set(runId, tasks);
+            });
         } catch {
-            setRunTaskInstances(prev => new Map(prev).set(runId, []));
+            setRunTaskInstances(prev => {
+                if (prev.has(runId)) return prev;
+                return new Map(prev).set(runId, []);
+            });
         }
-    }, [runTaskInstances]);
+    }, []);
 
     useEffect(() => {
         fetchDAGData();
@@ -261,11 +282,15 @@ export default function DAGDetail() {
     };
 
     const currentTaskInstances = selectedRun ? runTaskInstances.get(selectedRun.id) || [] : [];
+    const taskInstanceById = useMemo(
+        () => new Map(currentTaskInstances.map(t => [t.task_id, t])),
+        [currentTaskInstances]
+    );
 
-    const flowTasks = taskDefinitions.map((td) => {
+    const flowTasks = useMemo(() => taskDefinitions.map((td) => {
         let status: "pending" | "running" | "success" | "failed" = "pending";
         if (selectedRun) {
-            const taskInstance = currentTaskInstances.find(t => t.task_id === td.task_id);
+            const taskInstance = taskInstanceById.get(td.task_id);
             if (taskInstance) {
                 const taskState = taskInstance.state;
                 if (taskState === "success") status = "success";
@@ -284,7 +309,7 @@ export default function DAGDetail() {
             executor: "shell" as const,
             logs: [],
         };
-    });
+    }), [taskDefinitions, selectedRun, taskInstanceById]);
 
     const getLogLevelClass = (level: string) => {
         switch (level) {
@@ -441,11 +466,13 @@ export default function DAGDetail() {
                             </div>
                         </CardHeader>
                         <CardContent className="p-0">
-                            <DAGFlow
-                                tasks={flowTasks}
-                                dependencies={taskDependencies}
-                                className="border-0 rounded-t-none"
-                            />
+                            <Suspense fallback={<Skeleton className="h-[400px] w-full" />}>
+                                <DAGFlow
+                                    tasks={flowTasks}
+                                    dependencies={taskDependencies}
+                                    className="border-0 rounded-t-none"
+                                />
+                            </Suspense>
                         </CardContent>
                     </Card>
                 </TabsContent>
