@@ -6,6 +6,7 @@
 #include <chrono>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace taskmaster {
 
@@ -18,6 +19,12 @@ public:
   [[nodiscard]] auto
   next_after(std::chrono::system_clock::time_point after) const
       -> std::chrono::system_clock::time_point;
+
+  [[nodiscard]] auto
+  all_between(std::chrono::system_clock::time_point start,
+              std::chrono::system_clock::time_point end,
+              size_t max_count = 1000) const
+      -> std::vector<std::chrono::system_clock::time_point>;
 
   [[nodiscard]] auto raw() const noexcept -> std::string_view {
     return raw_;

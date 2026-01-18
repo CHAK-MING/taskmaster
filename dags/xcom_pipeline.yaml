@@ -1,0 +1,34 @@
+name: XCom Pipeline
+description: Demonstrates cross-task communication with XCom
+
+tasks:
+  - id: generate_data
+    name: Generate Data
+    command: echo '{"records":1000,"source":"api","timestamp":"2024-01-15T10:00:00Z"}'
+    xcom_push:
+      - key: metadata
+        source: json
+
+  - id: process
+    name: Process Data
+    command: echo "Processing $RECORD_COUNT records from $DATA_SOURCE"
+    dependencies: [generate_data]
+    xcom_pull:
+      - key: metadata
+        from: generate_data
+        env: RECORD_COUNT
+        json_path: records
+      - key: metadata
+        from: generate_data
+        env: DATA_SOURCE
+        json_path: source
+
+  - id: report
+    name: Generate Report
+    command: echo "Report complete for $RECORD_COUNT records"
+    dependencies: [process]
+    xcom_pull:
+      - key: metadata
+        from: generate_data
+        env: RECORD_COUNT
+        json_path: records

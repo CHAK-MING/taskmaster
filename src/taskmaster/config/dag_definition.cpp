@@ -7,6 +7,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 #include <unordered_set>
 #include <format>
@@ -85,6 +86,8 @@ struct convert<taskmaster::TaskConfig> {
     t.max_retries = taskmaster::yaml_get_or(node, "max_retries", 3);
     t.trigger_rule = taskmaster::parse<taskmaster::TriggerRule>(
         taskmaster::yaml_get_or<std::string>(node, "trigger_rule", "all_success"));
+    t.is_branch = taskmaster::yaml_get_or(node, "is_branch", false);
+    t.branch_xcom_key = taskmaster::yaml_get_or<std::string>(node, "branch_xcom_key", "branch");
 
     if (auto push = node["xcom_push"]) {
       t.xcom_push = push.as<std::vector<taskmaster::XComPushConfig>>();
@@ -107,6 +110,27 @@ struct convert<taskmaster::DAGDefinition> {
     d.name = taskmaster::yaml_get_or<std::string>(node, "name", "");
     d.description = taskmaster::yaml_get_or<std::string>(node, "description", "");
     d.cron = taskmaster::yaml_get_or<std::string>(node, "cron", "");
+    d.catchup = taskmaster::yaml_get_or(node, "catchup", false);
+
+    if (auto start_date_node = node["start_date"]) {
+      auto date_str = start_date_node.as<std::string>();
+      std::tm tm = {};
+      std::istringstream ss(date_str);
+      ss >> std::get_time(&tm, "%Y-%m-%d");
+      if (!ss.fail()) {
+        d.start_date = std::chrono::system_clock::from_time_t(timegm(&tm));
+      }
+    }
+
+    if (auto end_date_node = node["end_date"]) {
+      auto date_str = end_date_node.as<std::string>();
+      std::tm tm = {};
+      std::istringstream ss(date_str);
+      ss >> std::get_time(&tm, "%Y-%m-%d");
+      if (!ss.fail()) {
+        d.end_date = std::chrono::system_clock::from_time_t(timegm(&tm));
+      }
+    }
 
     if (auto tasks = node["tasks"]) {
       d.tasks = tasks.as<std::vector<taskmaster::TaskConfig>>();

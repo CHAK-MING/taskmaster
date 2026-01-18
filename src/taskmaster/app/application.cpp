@@ -5,7 +5,6 @@
 #include "taskmaster/app/services/execution_service.hpp"
 #include "taskmaster/app/services/persistence_service.hpp"
 #include "taskmaster/app/services/scheduler_service.hpp"
-#include "taskmaster/config/config_watcher.hpp"
 #include "taskmaster/config/dag_definition.hpp"
 #include "taskmaster/config/dag_file_loader.hpp"
 #include "taskmaster/core/constants.hpp"
@@ -292,16 +291,20 @@ auto Application::setup_callbacks() -> void {
 
   execution_->set_callbacks(std::move(callbacks));
 
-  scheduler_->set_on_dag_trigger([this](const DAGId& dag_id) {
-    log::info("Cron triggered DAG: {}", dag_id);
-    if (!trigger_dag_by_id(dag_id, TriggerType::Schedule)) {
+  scheduler_->set_on_dag_trigger([this](const DAGId& dag_id,
+                                         std::chrono::system_clock::time_point execution_date) {
+    log::info("Cron triggered DAG: {} for execution_date: {}", dag_id,
+              std::chrono::duration_cast<std::chrono::seconds>(
+                  execution_date.time_since_epoch()).count());
+    if (!trigger_dag_by_id(dag_id, TriggerType::Schedule, execution_date)) {
       log::error("Failed to trigger scheduled DAG: {}", dag_id);
     }
   });
 }
 
 auto Application::trigger_dag_by_id(DAGId dag_id,
-                                    TriggerType trigger) -> std::optional<DAGRunId> {
+                                    TriggerType trigger,
+                                    std::optional<std::chrono::system_clock::time_point> execution_date) -> std::optional<DAGRunId> {
   auto info = dag_manager_.get_dag(dag_id);
   if (!info) {
     log::error("DAG {} not found", dag_id);
@@ -332,6 +335,9 @@ auto Application::trigger_dag_by_id(DAGId dag_id,
   run->set_scheduled_at(now);
   run->set_started_at(now);
   run->set_trigger_type(trigger);
+  if (execution_date) {
+    run->set_execution_date(*execution_date);
+  }
 
   for (const auto& t : info->tasks) {
     NodeIndex idx = graph->get_index(t.task_id);

@@ -23,9 +23,9 @@ class Runtime;
 // External calls communicate via lock-free event queue.
 class Engine {
 public:
-  using DAGTriggerCallback =
-      std::move_only_function<void(const DAGId&)>;
   using TimePoint = std::chrono::system_clock::time_point;
+  using DAGTriggerCallback =
+      std::move_only_function<void(const DAGId&, TimePoint execution_date)>;
 
   explicit Engine(Runtime& runtime);
   ~Engine();

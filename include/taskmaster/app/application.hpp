@@ -55,7 +55,8 @@ public:
 
   // DAG operations
   [[nodiscard]] auto trigger_dag_by_id(DAGId dag_id,
-                         TriggerType trigger = TriggerType::Manual) -> std::optional<DAGRunId>;
+                         TriggerType trigger = TriggerType::Manual,
+                         std::optional<std::chrono::system_clock::time_point> execution_date = std::nullopt) -> std::optional<DAGRunId>;
   auto wait_for_completion(int timeout_ms = 60000) -> void;
   [[nodiscard]] auto has_active_runs() const -> bool;
   [[nodiscard]] auto get_run_state(DAGRunId dag_run_id) const -> std::optional<DAGRunState>;

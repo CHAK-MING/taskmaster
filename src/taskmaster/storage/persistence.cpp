@@ -1053,4 +1053,37 @@ auto Persistence::delete_run_xcoms(DAGRunId dag_run_id) -> Result<void> {
              : fail(Error::DatabaseQueryFailed);
 }
 
+auto Persistence::get_last_execution_date(DAGId dag_id) const
+    -> Result<std::optional<std::chrono::system_clock::time_point>> {
+  const char* sql = R"(
+    SELECT MAX(execution_date) FROM dag_runs WHERE dag_id = ?
+  )";
+
+  auto stmt = prepare(sql);
+  if (!stmt) return fail(Error::DatabaseQueryFailed);
+
+  auto raw_stmt = *stmt;
+  auto rc = sqlite3_bind_text(raw_stmt, 1, dag_id.value().data(),
+                              static_cast<int>(dag_id.value().size()),
+                              SQLITE_STATIC);
+  if (rc != SQLITE_OK) {
+    return fail(Error::DatabaseQueryFailed);
+  }
+
+  rc = sqlite3_step(raw_stmt);
+  if (rc == SQLITE_ROW) {
+    if (sqlite3_column_type(raw_stmt, 0) == SQLITE_NULL) {
+      return std::nullopt;
+    }
+    auto timestamp = sqlite3_column_int64(raw_stmt, 0);
+    return from_timestamp(timestamp);
+  }
+  
+  if (rc == SQLITE_DONE) {
+    return std::nullopt;
+  }
+
+  return fail(Error::DatabaseQueryFailed);
+}
+
 }  // namespace taskmaster

@@ -110,6 +110,9 @@ public:
   [[nodiscard]] auto get_dag(DAGId dag_id) const -> Result<DAGInfo>;
   [[nodiscard]] auto list_dags() const -> Result<std::vector<DAGInfo>>;
 
+  [[nodiscard]] auto get_last_execution_date(DAGId dag_id) const
+      -> Result<std::optional<std::chrono::system_clock::time_point>>;
+
   // Task persistence (within DAG)
   [[nodiscard]] auto save_task(DAGId dag_id, const TaskConfig& task)
       -> Result<void>;

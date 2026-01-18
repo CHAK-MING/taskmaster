@@ -29,6 +29,9 @@ struct ExecutionInfo {
   TaskId task_id;
   std::string name;
   std::optional<CronExpr> cron_expr;
+  std::optional<std::chrono::system_clock::time_point> start_date;
+  std::optional<std::chrono::system_clock::time_point> end_date;
+  bool catchup{false};
 };
 
 struct TaskInstance {

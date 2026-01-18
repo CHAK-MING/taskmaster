@@ -16,6 +16,7 @@ namespace taskmaster {
 enum class ExecutorType : std::uint8_t {
   Shell,
   Docker,
+  Sensor,
 };
 
 enum class ImagePullPolicy : std::uint8_t {
@@ -65,6 +66,7 @@ private:
   ExecutorTypeRegistry() {
     register_type(ExecutorType::Shell, "shell");
     register_type(ExecutorType::Docker, "docker");
+    register_type(ExecutorType::Sensor, "sensor");
   }
 
   std::flat_map<ExecutorType, std::string_view> type_to_name_;
@@ -114,7 +116,23 @@ struct DockerExecutorConfig {
   ImagePullPolicy pull_policy{ImagePullPolicy::Never};
 };
 
-using ExecutorConfig = std::variant<ShellExecutorConfig, DockerExecutorConfig>;
+enum class SensorType : std::uint8_t {
+  File,
+  Http,
+  Command,
+};
+
+struct SensorExecutorConfig {
+  SensorType type{SensorType::File};
+  std::string target;
+  std::chrono::seconds poke_interval{std::chrono::seconds(30)};
+  std::chrono::seconds timeout{std::chrono::seconds(3600)};
+  bool soft_fail{false};
+  int expected_status{200};
+  std::string http_method{"GET"};
+};
+
+using ExecutorConfig = std::variant<ShellExecutorConfig, DockerExecutorConfig, SensorExecutorConfig>;
 
 struct ExecutorResult {
   int exit_code{0};
@@ -168,6 +186,9 @@ class Runtime;
     -> std::unique_ptr<IExecutor>;
 
 [[nodiscard]] auto create_docker_executor(Runtime& rt)
+    -> std::unique_ptr<IExecutor>;
+
+[[nodiscard]] auto create_sensor_executor(Runtime& rt)
     -> std::unique_ptr<IExecutor>;
 
 class ExecutorAwaiter {

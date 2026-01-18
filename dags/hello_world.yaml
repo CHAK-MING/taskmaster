@@ -1,0 +1,12 @@
+name: Hello World
+description: Simple DAG to verify TaskMaster is working
+
+tasks:
+  - id: greet
+    name: Say Hello
+    command: echo "Hello from TaskMaster! Current time is $(date)"
+
+  - id: complete
+    name: Done
+    command: echo "DAG completed successfully"
+    dependencies: [greet]

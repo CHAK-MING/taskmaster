@@ -11,7 +11,7 @@
 
 namespace taskmaster {
 
-auto DAG::add_node(TaskId task_id, TriggerRule rule) -> NodeIndex {
+auto DAG::add_node(TaskId task_id, TriggerRule rule, bool is_branch) -> NodeIndex {
   auto it = key_to_idx_.find(task_id);
   if (it != key_to_idx_.end()) {
     return it->second;
@@ -20,6 +20,7 @@ auto DAG::add_node(TaskId task_id, TriggerRule rule) -> NodeIndex {
   NodeIndex idx = static_cast<NodeIndex>(nodes_.size());
   Node node;
   node.trigger_rule = rule;
+  node.is_branch = is_branch;
   nodes_.push_back(std::move(node));
   keys_.emplace_back(task_id);
   key_to_idx_.emplace(task_id, idx);
@@ -194,6 +195,13 @@ auto DAG::get_trigger_rule(NodeIndex idx) const noexcept -> TriggerRule {
     return TriggerRule::AllSuccess;
   }
   return nodes_[idx].trigger_rule;
+}
+
+auto DAG::is_branch_task(NodeIndex idx) const noexcept -> bool {
+  if (idx >= nodes_.size()) {
+    return false;
+  }
+  return nodes_[idx].is_branch;
 }
 
 auto DAG::clear() -> void {

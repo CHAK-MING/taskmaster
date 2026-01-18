@@ -1,0 +1,42 @@
+name: Trigger Rules Demo
+description: Demonstrates all trigger rule types
+
+tasks:
+  - id: start
+    name: Start
+    command: echo "Starting workflow"
+
+  - id: task_success
+    name: Successful Task
+    command: echo "This task succeeds"
+    dependencies: [start]
+
+  - id: task_fail
+    name: Failing Task
+    command: exit 1
+    dependencies: [start]
+    max_retries: 0
+
+  - id: on_all_done
+    name: Run When All Done
+    command: echo "Running because all upstream tasks completed (success or fail)"
+    dependencies: [task_success, task_fail]
+    trigger_rule: all_done
+
+  - id: on_one_success
+    name: Run On One Success
+    command: echo "Running because at least one upstream succeeded"
+    dependencies: [task_success, task_fail]
+    trigger_rule: one_success
+
+  - id: on_one_failed
+    name: Run On One Failed
+    command: echo "Running because at least one upstream failed"
+    dependencies: [task_success, task_fail]
+    trigger_rule: one_failed
+
+  - id: cleanup
+    name: Cleanup
+    command: echo "Cleanup complete"
+    dependencies: [on_all_done, on_one_success, on_one_failed]
+    trigger_rule: all_done

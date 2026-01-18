@@ -16,7 +16,7 @@ namespace taskmaster {
 
 class DAGManager;
 
-using DAGTriggerCallback = std::move_only_function<void(const DAGId&)>;
+using DAGTriggerCallback = std::move_only_function<void(const DAGId&, std::chrono::system_clock::time_point)>;
 
 class SchedulerService {
 public:

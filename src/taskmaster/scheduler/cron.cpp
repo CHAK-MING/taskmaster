@@ -357,4 +357,23 @@ auto CronExpr::next_after(std::chrono::system_clock::time_point after) const
   return std::chrono::system_clock::time_point::max();
 }
 
+auto CronExpr::all_between(std::chrono::system_clock::time_point start,
+                           std::chrono::system_clock::time_point end,
+                           size_t max_count) const
+    -> std::vector<std::chrono::system_clock::time_point> {
+  std::vector<std::chrono::system_clock::time_point> result;
+  result.reserve(std::min(max_count, size_t{64}));
+
+  auto current = start - std::chrono::minutes(1);
+  while (result.size() < max_count) {
+    current = next_after(current);
+    if (current >= end || current == std::chrono::system_clock::time_point::max()) {
+      break;
+    }
+    result.push_back(current);
+  }
+
+  return result;
+}
+
 }  // namespace taskmaster

@@ -263,3 +263,87 @@ TEST_F(CronTest, NextAfterMonday) {
   EXPECT_EQ(tm.tm_hour, 0);
   EXPECT_EQ(tm.tm_min, 0);
 }
+
+TEST_F(CronTest, AllBetween_HourlyForOneDay) {
+  auto cron = CronExpr::parse("@hourly");
+  ASSERT_TRUE(cron.has_value());
+
+  auto start = std::chrono::system_clock::from_time_t(1704067200);
+  auto end = std::chrono::system_clock::from_time_t(1704153600);
+
+  auto times = cron->all_between(start, end);
+
+  EXPECT_EQ(times.size(), 24);
+  for (size_t i = 1; i < times.size(); ++i) {
+    EXPECT_EQ(times[i] - times[i-1], std::chrono::hours(1));
+  }
+}
+
+TEST_F(CronTest, AllBetween_EveryFiveMinutesForOneHour) {
+  auto cron = CronExpr::parse("*/5 * * * *");
+  ASSERT_TRUE(cron.has_value());
+
+  auto start = std::chrono::system_clock::from_time_t(1704067200);
+  auto end = std::chrono::system_clock::from_time_t(1704070800);
+
+  auto times = cron->all_between(start, end);
+
+  EXPECT_EQ(times.size(), 12);
+  for (size_t i = 1; i < times.size(); ++i) {
+    EXPECT_EQ(times[i] - times[i-1], std::chrono::minutes(5));
+  }
+}
+
+TEST_F(CronTest, AllBetween_DailyForOneWeek) {
+  auto cron = CronExpr::parse("@daily");
+  ASSERT_TRUE(cron.has_value());
+
+  auto start = std::chrono::system_clock::from_time_t(1704067200);
+  auto end = std::chrono::system_clock::from_time_t(1704672000);
+
+  auto times = cron->all_between(start, end);
+
+  EXPECT_EQ(times.size(), 7);
+  for (size_t i = 1; i < times.size(); ++i) {
+    EXPECT_EQ(times[i] - times[i-1], std::chrono::hours(24));
+  }
+}
+
+TEST_F(CronTest, AllBetween_EmptyWhenNoMatchesInRange) {
+  auto cron = CronExpr::parse("0 0 15 * *");
+  ASSERT_TRUE(cron.has_value());
+
+  auto start = std::chrono::system_clock::from_time_t(1704067200);
+  auto end = std::chrono::system_clock::from_time_t(1704153600);
+
+  auto times = cron->all_between(start, end);
+
+  EXPECT_TRUE(times.empty());
+}
+
+TEST_F(CronTest, AllBetween_RespectsMaxCount) {
+  auto cron = CronExpr::parse("* * * * *");
+  ASSERT_TRUE(cron.has_value());
+
+  auto start = std::chrono::system_clock::from_time_t(1704067200);
+  auto end = std::chrono::system_clock::from_time_t(1704153600);
+
+  auto times = cron->all_between(start, end, 10);
+
+  EXPECT_EQ(times.size(), 10);
+}
+
+TEST_F(CronTest, AllBetween_ExcludesEndBoundary) {
+  auto cron = CronExpr::parse("@hourly");
+  ASSERT_TRUE(cron.has_value());
+
+  auto start = std::chrono::system_clock::from_time_t(1704063600);
+  auto end = std::chrono::system_clock::from_time_t(1704067200);
+
+  auto times = cron->all_between(start, end);
+
+  EXPECT_FALSE(times.empty());
+  for (const auto& t : times) {
+    EXPECT_LT(t, end);
+  }
+}

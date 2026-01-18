@@ -75,7 +75,17 @@ struct DockerTaskConfig {
   ImagePullPolicy pull_policy{ImagePullPolicy::Never};
 };
 
-using ExecutorTaskConfig = std::variant<ShellTaskConfig, DockerTaskConfig>;
+struct SensorTaskConfig {
+  SensorType type{SensorType::File};
+  std::string target;
+  std::chrono::seconds poke_interval{std::chrono::seconds(30)};
+  std::chrono::seconds sensor_timeout{std::chrono::seconds(3600)};
+  bool soft_fail{false};
+  int expected_status{200};
+  std::string http_method{"GET"};
+};
+
+using ExecutorTaskConfig = std::variant<ShellTaskConfig, DockerTaskConfig, SensorTaskConfig>;
 
 struct TaskConfig {
   TaskId task_id;
@@ -89,6 +99,8 @@ struct TaskConfig {
   std::chrono::seconds retry_interval{std::chrono::seconds(60)};
   int max_retries{3};
   TriggerRule trigger_rule{TriggerRule::AllSuccess};
+  bool is_branch{false};
+  std::string branch_xcom_key{"branch"};
 
   std::vector<XComPushConfig> xcom_push;
   std::vector<XComPullConfig> xcom_pull;

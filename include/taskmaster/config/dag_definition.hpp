@@ -3,6 +3,8 @@
 #include "taskmaster/config/task_config.hpp"
 #include "taskmaster/core/error.hpp"
 
+#include <chrono>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -12,6 +14,9 @@ struct DAGDefinition {
   std::string name;
   std::string description;
   std::string cron;
+  std::optional<std::chrono::system_clock::time_point> start_date;
+  std::optional<std::chrono::system_clock::time_point> end_date;
+  bool catchup{false};
   std::vector<TaskConfig> tasks;
   std::string source_file;
 };

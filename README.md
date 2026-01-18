@@ -2,18 +2,23 @@
 
 [中文文档](README_CN.md)
 
-A high-performance DAG task scheduler built with modern C++23.
+A high-performance DAG workflow orchestrator built with modern C++23, inspired by Apache Airflow.
 
 ![TaskMaster UI](image/web-ui.png)
 
 ## Features
 
-- DAG-based task dependencies
-- Cron scheduling with standard expressions
-- **XCom (Cross-Communication)** - Pass data between tasks
-- Web UI with DAG visualization (React Flow)
-- REST API for monitoring and control
-- SQLite persistence with crash recovery
+- **DAG Workflows** - Define task dependencies with YAML
+- **Trigger Rules** - Airflow-style conditional execution (all_success, all_failed, one_success, etc.)
+- **Sensors** - Poll for conditions before proceeding (file existence, HTTP endpoints, commands)
+- **Branching** - Conditional task execution based on XCom values
+- **Catchup** - Automatic backfill of missed scheduled runs
+- **XCom** - Cross-task communication with template variables
+- **Scheduling** - Cron expressions with start/end date boundaries
+- **Executors** - Shell, Docker, and Sensor execution modes
+- **Web UI** - Real-time DAG visualization with React Flow
+- **REST API** - Full control and monitoring
+- **Persistence** - SQLite with crash recovery
 
 ## Quick Start
 
@@ -27,81 +32,185 @@ cmake --build build -j
 ### Run
 
 ```bash
-# Start scheduler and API server
 ./build/bin/taskmaster serve -c system_config.yaml
-
-# Access Web UI at http://localhost:8888
+# Web UI: http://localhost:8888
 ```
 
 ### Build Web UI (Optional)
 
 ```bash
-cd web-ui
-npm install && npm run build
+cd web-ui && npm install && npm run build
 ```
 
-## CLI Reference
+## DAG Configuration
 
-### Commands
+DAG files in `dags/` directory. Filename becomes DAG ID (e.g., `etl.yaml` → `etl`).
 
-#### `serve` - Start TaskMaster service
+### Basic Structure
 
-```bash
-taskmaster serve -c system_config.yaml
+```yaml
+name: ETL Pipeline
+description: Daily data processing
+cron: "0 2 * * *"
+start_date: "2024-01-01"
+catchup: true
+
+tasks:
+  - id: extract
+    command: ./extract.sh --date {{ds}}
+    
+  - id: transform
+    command: ./transform.sh
+    dependencies: [extract]
+    trigger_rule: all_success
+    
+  - id: load
+    command: ./load.sh
+    dependencies: [transform]
 ```
 
-Starts the scheduler and API server. Requires `-c, --config` for system configuration.
+### Scheduling Fields
 
-#### `run` - Trigger a DAG run
+| Field | Description |
+|-------|-------------|
+| `cron` | Cron expression for automatic scheduling |
+| `start_date` | Earliest date to schedule runs (YYYY-MM-DD) |
+| `end_date` | Latest date to schedule runs (YYYY-MM-DD) |
+| `catchup` | If true, backfill all missed runs since start_date |
 
-```bash
-taskmaster run --db taskmaster.db <dag_id>
+### Task Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | Unique task identifier |
+| `command` | string | Command to execute (supports template variables) |
+| `executor` | string | `shell` (default), `docker`, or `sensor` |
+| `dependencies` | array | Task IDs this task depends on |
+| `trigger_rule` | string | When to run based on upstream states |
+| `is_branch` | bool | If true, XCom output determines which downstream tasks run |
+| `timeout` | int | Timeout in seconds (default: 300) |
+| `max_retries` | int | Retry attempts on failure (default: 3) |
+
+### Trigger Rules
+
+| Rule | Description |
+|------|-------------|
+| `all_success` | Run when all upstream tasks succeed (default) |
+| `all_failed` | Run when all upstream tasks fail |
+| `all_done` | Run when all upstream tasks complete (success or fail) |
+| `one_success` | Run when at least one upstream succeeds |
+| `one_failed` | Run when at least one upstream fails |
+| `none_failed` | Run if no upstream task failed (skipped allowed) |
+| `none_skipped` | Run if no upstream task was skipped |
+
+### Template Variables
+
+Available in `command` field:
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| `{{ds}}` | 2024-01-15 | Execution date (YYYY-MM-DD) |
+| `{{ds_nodash}}` | 20240115 | Execution date without dashes |
+| `{{execution_date}}` | 2024-01-15T00:00:00Z | Full ISO timestamp |
+| `{{dag_id}}` | etl_pipeline | DAG identifier |
+| `{{task_id}}` | extract | Current task identifier |
+| `{{run_id}}` | etl_pipeline_20240115 | DAG run identifier |
+
+### Branching
+
+A branch task returns a JSON array of task IDs to execute:
+
+```yaml
+tasks:
+  - id: check_data
+    command: |
+      if [ -f /data/large.csv ]; then
+        echo '["process_large"]'
+      else
+        echo '["process_small"]'
+      fi
+    is_branch: true
+    xcom_push:
+      - key: branch
+        source: json
+
+  - id: process_large
+    command: ./process_large.sh
+    dependencies: [check_data]
+
+  - id: process_small
+    command: ./process_small.sh
+    dependencies: [check_data]
 ```
 
-Checks if DAG exists in database. To actually trigger, use the API endpoint.
+### Sensors
 
-#### `list` - List all DAGs
+Sensors poll until a condition is met:
 
-```bash
-taskmaster list --db taskmaster.db
+```yaml
+tasks:
+  - id: wait_for_file
+    executor: sensor
+    sensor_type: file
+    sensor_path: /data/input.csv
+    sensor_interval: 30
+    timeout: 3600
+
+  - id: wait_for_api
+    executor: sensor
+    sensor_type: http
+    sensor_url: http://api.example.com/ready
+    sensor_expected_status: 200
+
+  - id: wait_for_db
+    executor: sensor
+    sensor_type: command
+    command: pg_isready -h localhost
 ```
 
-Lists all DAGs stored in the database.
+| Sensor Type | Required Fields |
+|-------------|-----------------|
+| `file` | `sensor_path` |
+| `http` | `sensor_url`, `sensor_expected_status` |
+| `command` | `command` (exit 0 = ready) |
 
-#### `validate` - Validate DAG files
+### XCom
 
-```bash
-taskmaster validate -c system_config.yaml
+Pass data between tasks:
+
+```yaml
+tasks:
+  - id: producer
+    command: echo '{"count": 42, "status": "ok"}'
+    xcom_push:
+      - key: result
+        source: json
+
+  - id: consumer
+    command: echo "Processing $COUNT items"
+    dependencies: [producer]
+    xcom_pull:
+      - key: result
+        from: producer
+        env: COUNT
+        json_path: count
 ```
 
-Validates DAG YAML files in the configured directory.
+**Push sources:** `stdout`, `stderr`, `exit_code`, `json`
 
-#### `status` - Show DAG run history
+### Docker Executor
 
-```bash
-taskmaster status --db taskmaster.db <dag_id>
-taskmaster status --db taskmaster.db <dag_id> --run <run_id>
-```
-
-Shows run history for a DAG or details of a specific run.
-
-## Project Structure
-
-```
-TaskMaster/
-├── system_config.yaml    # System configuration
-├── dags/                 # DAG definition files
-│   ├── simple.yaml       # Simple example DAG
-│   ├── monitoring.yaml   # System monitoring DAG
-│   ├── xcom_example.yaml # XCom data pipeline example
-│   └── docker_example.yaml # Docker executor example
-├── build/bin/taskmaster  # Compiled binary
-└── web-ui/               # React frontend
+```yaml
+tasks:
+  - id: python_task
+    executor: docker
+    docker_image: python:3.11
+    command: python -c "print('Hello from Docker')"
 ```
 
 ## System Configuration
 
-The `system_config.yaml` file configures the scheduler, storage, and API:
+`system_config.yaml`:
 
 ```yaml
 scheduler:
@@ -122,142 +231,14 @@ dag_source:
   scan_interval_sec: 60
 ```
 
-### Config Fields
+## CLI Commands
 
-| Field | Description |
-|-------|-------------|
-| `scheduler.log_level` | Logging level (debug, info, warn, error) |
-| `scheduler.tick_interval_ms` | Scheduler tick interval in milliseconds |
-| `scheduler.max_concurrency` | Maximum concurrent task executions |
-| `storage.db_file` | SQLite database path |
-| `api.enabled` | Enable/disable REST API and Web UI |
-| `api.host` | API bind address |
-| `api.port` | API port |
-| `dag_source.directory` | Directory containing DAG YAML files |
-| `dag_source.scan_interval_sec` | Hot-reload interval for DAG changes |
-
-## DAG Configuration
-
-DAG files are placed in the `dags/` directory. **Filename becomes the DAG ID** (e.g., `simple.yaml` → DAG ID: `simple`).
-
-### DAG File Structure
-
-```yaml
-name: My DAG Name
-description: Optional description
-cron: "0 2 * * *"  # Optional: enables auto-scheduling
-tasks:
-  - id: task1
-    name: Task One
-    command: echo '{"status": "ok", "count": 42}'
-    xcom_push:
-      - key: result
-        source: json
-  - id: task2
-    name: Task Two
-    command: echo "Received $DATA"
-    dependencies: [task1]
-    xcom_pull:
-      - key: result
-        from: task1
-        env: DATA
-```
-
-### DAG Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Display name |
-| `description` | string | Description (optional) |
-| `cron` | string | Cron expression (optional, enables auto-scheduling) |
-| `tasks` | array | Task definitions (required) |
-
-**Note:** If `cron` is present, DAG runs automatically on schedule. Without `cron`, DAG is manual-only (trigger via API or CLI).
-
-### Task Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string | Unique task identifier (required) |
-| `name` | string | Display name (optional) |
-| `command` | string | Shell command to execute (required) |
-| `executor` | string | Executor type: `shell` (default) or `docker` |
-| `docker_image` | string | Docker image (required when executor is `docker`) |
-| `docker_socket` | string | Docker socket path (default: `/var/run/docker.sock`) |
-| `dependencies` | array | List of task IDs this task depends on |
-| `timeout` | int | Timeout in seconds (default: 300) |
-| `max_retries` | int | Max retries on failure (default: 3) |
-| `retry_interval` | int | Seconds to wait between retries (default: 60) |
-| `xcom_push` | array | XCom values to extract from task output |
-| `xcom_pull` | array | XCom values to inject as environment variables |
-
-### Example DAGs
-
-See the `dags/` directory for examples:
-
-- **simple.yaml** - Basic two-task DAG that runs every minute
-- **monitoring.yaml** - System health checks (disk, API, database) with metrics collection
-- **xcom_example.yaml** - Data pipeline demonstrating XCom for passing data between tasks
-- **docker_example.yaml** - Docker executor demo with mixed shell/container tasks
-
-## XCom (Cross-Communication)
-
-XCom enables data passing between tasks in a DAG. Common use cases:
-
-- **ETL pipelines**: Pass record counts, file paths, or batch IDs between extract/transform/load stages
-- **Dynamic workflows**: Let upstream tasks determine parameters for downstream tasks
-- **Result aggregation**: Collect outputs from multiple tasks for a final summary
-
-Producer tasks push values extracted from their output; consumer tasks pull them as environment variables.
-
-### Push Configuration (`xcom_push`)
-
-Extract values from task output:
-
-```yaml
-xcom_push:
-  - key: result           # Key name for this value
-    source: stdout        # stdout, stderr, exit_code, or json
-    json_path: data.id    # Optional: extract from JSON (e.g., "items[0].name")
-    regex: "ID: (\\d+)"   # Optional: extract via regex
-    regex_group: 1        # Which capture group (default: 0)
-```
-
-| Source | Description |
-|--------|-------------|
-| `stdout` | Capture stdout as string (default) |
-| `stderr` | Capture stderr as string |
-| `exit_code` | Capture exit code as integer |
-| `json` | Parse stdout as JSON |
-
-### Pull Configuration (`xcom_pull`)
-
-Inject values as environment variables:
-
-```yaml
-xcom_pull:
-  - key: result           # Key to retrieve
-    from: producer_task   # Source task ID
-    env: MY_DATA          # Environment variable name
-```
-
-### Example
-
-```yaml
-tasks:
-  - id: producer
-    command: echo '{"count": 42}'
-    xcom_push:
-      - key: data
-        source: json
-
-  - id: consumer
-    command: echo "Received $COUNT items"
-    dependencies: [producer]
-    xcom_pull:
-      - key: data
-        from: producer
-        env: COUNT
+```bash
+taskmaster serve -c config.yaml    # Start service
+taskmaster run --db db.sqlite dag  # Check DAG exists
+taskmaster list --db db.sqlite     # List all DAGs
+taskmaster validate -c config.yaml # Validate DAG files
+taskmaster status --db db.sqlite dag [--run id]  # Show history
 ```
 
 ## REST API
@@ -265,13 +246,12 @@ tasks:
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/health` | Health check |
-| GET | `/api/status` | System status (DAG count, active runs) |
-| GET | `/api/dags` | List all DAGs |
-| GET | `/api/dags/:id` | Get DAG details |
-| GET | `/api/dags/:id/tasks/:taskId` | Get task details |
-| POST | `/api/dags/:id/trigger` | Trigger DAG run |
-| GET | `/api/history` | List run history |
-| GET | `/api/runs/:runId/tasks/:taskId/logs` | Get task logs |
+| GET | `/api/status` | System status |
+| GET | `/api/dags` | List DAGs |
+| GET | `/api/dags/:id` | DAG details |
+| POST | `/api/dags/:id/trigger` | Trigger run |
+| GET | `/api/history` | Run history |
+| GET | `/api/runs/:runId/tasks/:taskId/logs` | Task logs |
 
 ## Requirements
 

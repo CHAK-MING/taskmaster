@@ -117,8 +117,11 @@ auto Engine::tick() -> void {
       continue;
 
     if (on_dag_trigger_) {
-      log::info("Cron triggered DAG: {}", task_it->second.dag_id);
-      on_dag_trigger_(task_it->second.dag_id);
+      auto execution_date = it->first;
+      log::info("Cron triggered DAG: {} for execution_date: {}", task_it->second.dag_id,
+                std::chrono::duration_cast<std::chrono::seconds>(
+                    execution_date.time_since_epoch()).count());
+      on_dag_trigger_(task_it->second.dag_id, execution_date);
     }
 
     if (task_it->second.cron_expr.has_value()) {
@@ -194,12 +197,46 @@ auto Engine::handle_event(const AddTaskEvent& e) -> void {
   tasks_.emplace(id, e.exec_info);
 
   if(e.exec_info.cron_expr.has_value()) {
-      auto next_time =
-          e.exec_info.cron_expr.value().next_after(std::chrono::system_clock::now());
+    auto now = std::chrono::system_clock::now();
+    const auto& cron = e.exec_info.cron_expr.value();
+    
+    TimePoint end_boundary = now;
+    if (e.exec_info.end_date.has_value()) {
+      end_boundary = std::min(now, *e.exec_info.end_date);
+    }
+
+    if (e.exec_info.catchup && e.exec_info.start_date.has_value()) {
+      auto backfill_times = cron.all_between(*e.exec_info.start_date, end_boundary);
+      
+      if (!backfill_times.empty()) {
+        log::info("DAG {} catchup: scheduling {} backfill runs", 
+                  e.exec_info.dag_id, backfill_times.size());
+        
+        for (const auto& backfill_time : backfill_times) {
+          schedule_.emplace(backfill_time, id);
+        }
+        
+        auto first_it = schedule_.lower_bound(backfill_times.front());
+        if (first_it != schedule_.end() && first_it->second == id) {
+          task_schedule_[id] = first_it;
+        }
+      }
+    }
+
+    auto next_time = cron.next_after(now);
+    
+    if (e.exec_info.end_date.has_value() && next_time > *e.exec_info.end_date) {
+      if (task_schedule_.find(id) == task_schedule_.end()) {
+        log::info("DAG {} not scheduled: next run time exceeds end_date", e.exec_info.dag_id);
+        return;
+      }
+    } else {
       schedule_task(id, next_time);
-      log::info("DAG : {}, Task added: {}, scheduled at: {}", e.exec_info.dag_id, e.exec_info.task_id,
-                std::chrono::duration_cast<std::chrono::seconds>(
-                    next_time.time_since_epoch()).count());
+    }
+    
+    log::info("DAG : {}, Task added: {}, next scheduled at: {}", e.exec_info.dag_id, e.exec_info.task_id,
+              std::chrono::duration_cast<std::chrono::seconds>(
+                  next_time.time_since_epoch()).count());
   }
 
 }

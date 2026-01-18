@@ -5,3 +5,6 @@ docs/*
 
 .vscode
 build
+build-asan
+
+.cache

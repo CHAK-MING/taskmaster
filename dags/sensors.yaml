@@ -1,0 +1,35 @@
+name: Sensor Example
+description: Demonstrates sensor tasks that wait for conditions
+
+tasks:
+  - id: wait_for_file
+    name: Wait for Input File
+    executor: sensor
+    sensor_type: file
+    sensor_path: /tmp/taskmaster_input.txt
+    sensor_interval: 5
+    timeout: 60
+    command: "true"
+
+  - id: process_file
+    name: Process Input
+    command: echo "Processing file content"
+    dependencies: [wait_for_file]
+
+  - id: check_service
+    name: Check External Service
+    executor: sensor
+    sensor_type: command
+    command: "[ -f /tmp/service_ready ] && exit 0 || exit 1"
+    sensor_interval: 3
+    timeout: 30
+
+  - id: call_service
+    name: Call Service
+    command: echo "Service is ready, making API call"
+    dependencies: [check_service]
+
+  - id: complete
+    name: All Done
+    command: echo "All sensors passed, workflow complete"
+    dependencies: [process_file, call_service]

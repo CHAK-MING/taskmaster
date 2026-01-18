@@ -1,0 +1,30 @@
+name: Daily ETL
+description: Scheduled data pipeline with template variables
+cron: "0 2 * * *"
+start_date: "2024-01-01"
+catchup: false
+
+tasks:
+  - id: extract
+    name: Extract Data
+    command: echo "Extracting data for {{ds}} (run {{run_id}})"
+
+  - id: validate
+    name: Validate Data
+    command: echo "Validating extracted data for {{ds_nodash}}"
+    dependencies: [extract]
+
+  - id: transform
+    name: Transform Data
+    command: echo "Transforming data for DAG {{dag_id}}, task {{task_id}}"
+    dependencies: [validate]
+
+  - id: load
+    name: Load to Warehouse
+    command: echo "Loading transformed data at {{execution_date}}"
+    dependencies: [transform]
+
+  - id: notify
+    name: Send Notification
+    command: echo "ETL complete for {{ds}}"
+    dependencies: [load]

@@ -89,6 +89,8 @@ public:
   auto mark_task_started(NodeIndex task_idx, const InstanceId& instance_id)
       -> void;
   auto mark_task_completed(NodeIndex task_idx, int exit_code) -> void;
+  auto mark_task_completed_with_branch(NodeIndex task_idx, int exit_code,
+                                       std::span<const TaskId> selected_branches) -> void;
   auto mark_task_failed(NodeIndex task_idx, std::string_view error,
                         int max_retries, int exit_code = 0) -> void;
   auto mark_task_skipped(NodeIndex task_idx) -> void;

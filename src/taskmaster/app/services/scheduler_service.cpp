@@ -17,9 +17,10 @@ SchedulerService::SchedulerService(Runtime& runtime)
 
 auto SchedulerService::set_on_dag_trigger(DAGTriggerCallback callback) -> void {
   on_dag_trigger_ = std::move(callback);
-  engine_.set_on_dag_trigger([this](const DAGId& dag_id) {
+  engine_.set_on_dag_trigger([this](const DAGId& dag_id, 
+                                     std::chrono::system_clock::time_point execution_date) {
     if (on_dag_trigger_) {
-      on_dag_trigger_(dag_id);
+      on_dag_trigger_(dag_id, execution_date);
     }
   });
 }

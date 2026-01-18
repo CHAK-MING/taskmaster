@@ -81,6 +81,7 @@ auto create_composite_executor(Runtime& rt) -> std::unique_ptr<IExecutor> {
   auto composite = std::make_unique<CompositeExecutor>();
   composite->register_executor(ExecutorType::Shell, create_shell_executor(rt));
   composite->register_executor(ExecutorType::Docker, create_docker_executor(rt));
+  composite->register_executor(ExecutorType::Sensor, create_sensor_executor(rt));
   return composite;
 }
 

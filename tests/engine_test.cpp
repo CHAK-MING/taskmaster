@@ -132,7 +132,9 @@ TEST_F(EngineTest, SetOnDagTriggerCallback) {
 
   std::atomic<bool> callback_set = false;
   engine_->set_on_dag_trigger(
-      [&callback_set](const DAGId&) { callback_set.store(true); });
+      [&callback_set](const DAGId&, std::chrono::system_clock::time_point) { 
+        callback_set.store(true); 
+      });
 
   EXPECT_FALSE(callback_set.load());
 }

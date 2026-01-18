@@ -7,6 +7,7 @@
 
 
 #include <flat_map>
+#include <optional>
 #include <ranges>
 #include <shared_mutex>
 #include <string>
@@ -23,6 +24,9 @@ struct DAGInfo {
   std::string description;
   std::string cron;
   int max_concurrent_runs{1};
+  std::optional<std::chrono::system_clock::time_point> start_date;
+  std::optional<std::chrono::system_clock::time_point> end_date;
+  bool catchup{false};
   std::chrono::system_clock::time_point created_at;
   std::chrono::system_clock::time_point updated_at;
   std::vector<TaskConfig> tasks;

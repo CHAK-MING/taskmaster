@@ -2,7 +2,9 @@
 
 #include "taskmaster/config/task_config.hpp"
 
+#include <algorithm>
 #include <ranges>
+#include <span>
 
 namespace taskmaster {
 
@@ -100,6 +102,45 @@ auto DAGRun::mark_task_completed(NodeIndex task_idx, int exit_code) -> void {
   info.state = TaskState::Success;
   info.exit_code = exit_code;
   info.finished_at = std::chrono::system_clock::now();
+
+  propagate_terminal_to_downstream(task_idx);
+  update_state();
+}
+
+auto DAGRun::mark_task_completed_with_branch(
+    NodeIndex task_idx, int exit_code,
+    std::span<const TaskId> selected_branches) -> void {
+  if (task_idx >= dag_.size()) {
+    return;
+  }
+
+  running_mask_.reset(task_idx);
+  completed_mask_.set(task_idx);
+  --running_count_;
+  ++completed_count_;
+
+  auto& info = task_info_[task_idx];
+  info.state = TaskState::Success;
+  info.exit_code = exit_code;
+  info.finished_at = std::chrono::system_clock::now();
+
+  if (dag_.is_branch_task(task_idx) && !selected_branches.empty()) {
+    for (NodeIndex dep : dag_.get_dependents_view(task_idx)) {
+      if (ready_mask_.test(dep) || running_mask_.test(dep) ||
+          completed_mask_.test(dep) || failed_mask_.test(dep) ||
+          skipped_mask_.test(dep)) {
+        continue;
+      }
+
+      TaskId dep_task_id = dag_.get_key(dep);
+      bool is_selected = std::ranges::find(selected_branches, dep_task_id) !=
+                         selected_branches.end();
+
+      if (!is_selected) {
+        mark_task_skipped(dep);
+      }
+    }
+  }
 
   propagate_terminal_to_downstream(task_idx);
   update_state();

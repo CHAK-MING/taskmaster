@@ -44,6 +44,7 @@ add_library(taskmaster_lib
     src/taskmaster/executor/shell_executor.cpp
     src/taskmaster/executor/noop_executor.cpp
     src/taskmaster/executor/docker_executor.cpp
+    src/taskmaster/executor/sensor_executor.cpp
     src/taskmaster/executor/composite_executor.cpp
     src/taskmaster/executor/config_builder.cpp
     src/taskmaster/app/application.cpp
