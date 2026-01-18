@@ -71,9 +71,57 @@ auto XComExtractor::get_source_text(const ExecutorResult& result,
     case XComSource::ExitCode:
       return std::to_string(result.exit_code);
     case XComSource::Json:
-      return result.stdout_output;
+      return extract_json_from_output(result.stdout_output);
   }
   return {};
+}
+
+auto XComExtractor::extract_json_from_output(std::string_view output)
+    -> std::string {
+  // Strategy: Find valid JSON in mixed log+JSON output (e.g., "Data size: 42\n[\"large_path\"]")
+  // Try: 1) entire output, 2) last line starting with [{, 3) first line starting with [{
+  
+  auto parsed = nlohmann::json::parse(output, nullptr, false);
+  if (!parsed.is_discarded()) {
+    return std::string(output);
+  }
+  
+  auto pos = output.rfind('\n');
+  while (pos != std::string_view::npos) {
+    auto line_start = pos + 1;
+    if (line_start < output.size()) {
+      auto line = output.substr(line_start);
+      while (!line.empty() && (line.back() == '\n' || line.back() == '\r' || 
+                               line.back() == ' ' || line.back() == '\t')) {
+        line.remove_suffix(1);
+      }
+      if (!line.empty() && (line.front() == '[' || line.front() == '{')) {
+        auto test = nlohmann::json::parse(line, nullptr, false);
+        if (!test.is_discarded()) {
+          return std::string(line);
+        }
+      }
+    }
+    if (pos == 0) break;
+    pos = output.rfind('\n', pos - 1);
+  }
+  
+  auto first_newline = output.find('\n');
+  auto first_line = (first_newline != std::string_view::npos) 
+                    ? output.substr(0, first_newline) 
+                    : output;
+  while (!first_line.empty() && (first_line.back() == '\r' || 
+                                  first_line.back() == ' ' || first_line.back() == '\t')) {
+    first_line.remove_suffix(1);
+  }
+  if (!first_line.empty() && (first_line.front() == '[' || first_line.front() == '{')) {
+    auto test = nlohmann::json::parse(first_line, nullptr, false);
+    if (!test.is_discarded()) {
+      return std::string(first_line);
+    }
+  }
+  
+  return std::string(output);
 }
 
 auto XComExtractor::apply_regex(std::string_view text,

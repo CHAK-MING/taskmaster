@@ -38,6 +38,9 @@ class XComExtractor {
   [[nodiscard]] auto apply_json_path(const nlohmann::json& json,
                                      std::string_view path)
       -> Result<nlohmann::json>;
+
+  [[nodiscard]] static auto extract_json_from_output(std::string_view output)
+      -> std::string;
 };
 
 }  // namespace taskmaster

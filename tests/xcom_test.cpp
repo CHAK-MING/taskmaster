@@ -145,5 +145,42 @@ TEST_F(XComExtractorTest, JsonPathWithArrayIndex) {
   EXPECT_EQ((*extracted)[0].value, 2);
 }
 
+TEST_F(XComExtractorTest, ExtractJsonFromMixedOutput_LastLine) {
+  ExecutorResult result{
+      .exit_code = 0,
+      .stdout_output = "Data size: 42\n[\"large_path\"]"
+  };
+  std::vector<XComPushConfig> configs{{.key = "branch", .source = XComSource::Json}};
+
+  auto extracted = extractor_.extract(result, configs);
+  ASSERT_TRUE(extracted);
+  EXPECT_EQ((*extracted)[0].value.size(), 1);
+  EXPECT_EQ((*extracted)[0].value[0], "large_path");
+}
+
+TEST_F(XComExtractorTest, ExtractJsonFromMixedOutput_FirstLine) {
+  ExecutorResult result{
+      .exit_code = 0,
+      .stdout_output = "[\"small_path\"]\nProcessing complete"
+  };
+  std::vector<XComPushConfig> configs{{.key = "branch", .source = XComSource::Json}};
+
+  auto extracted = extractor_.extract(result, configs);
+  ASSERT_TRUE(extracted);
+  EXPECT_EQ((*extracted)[0].value[0], "small_path");
+}
+
+TEST_F(XComExtractorTest, ExtractJsonFromMixedOutput_MultipleLogLines) {
+  ExecutorResult result{
+      .exit_code = 0,
+      .stdout_output = "Starting process\nSize: 100\nStatus: OK\n{\"result\": \"success\"}"
+  };
+  std::vector<XComPushConfig> configs{{.key = "data", .source = XComSource::Json}};
+
+  auto extracted = extractor_.extract(result, configs);
+  ASSERT_TRUE(extracted);
+  EXPECT_EQ((*extracted)[0].value["result"], "success");
+}
+
 }  // namespace
 }  // namespace taskmaster
