@@ -316,40 +316,53 @@ auto ExecutionService::on_task_success(const DAGRunId& dag_run_id, NodeIndex idx
 auto ExecutionService::on_task_failure(const DAGRunId& dag_run_id, NodeIndex idx,
                                         const std::string& error, int exit_code) -> bool {
   log::info("on_task_failure: dag_run_id={} idx={} err='{}'", dag_run_id, idx, error);
-  std::scoped_lock lock(mu_);
-  auto it = runs_.find(dag_run_id);
-  if (it == runs_.end())
-    return false;
-
-  auto& run = *it->second;
-
-  int max_retries = 3;
-  if (callbacks_.get_max_retries) {
-    max_retries = callbacks_.get_max_retries(dag_run_id, idx);
-  }
-
-  run.mark_task_failed(idx, error, max_retries, exit_code);
-
+  
   bool needs_retry = false;
-  if (auto info = run.get_task_info(idx)) {
-    needs_retry = (info->state == TaskState::Pending);
-  }
+  bool run_complete = false;
+  
+  {
+    std::scoped_lock lock(mu_);
+    auto it = runs_.find(dag_run_id);
+    if (it == runs_.end())
+      return false;
 
-  for (const auto& info : run.all_task_info()) {
-    if ((info.state == TaskState::Failed ||
-         info.state == TaskState::UpstreamFailed ||
-         info.state == TaskState::Pending) &&
-        callbacks_.on_persist_task) {
-      callbacks_.on_persist_task(dag_run_id, info);
+    auto& run = *it->second;
+
+    int max_retries = 3;
+    if (callbacks_.get_max_retries) {
+      max_retries = callbacks_.get_max_retries(dag_run_id, idx);
+    }
+
+    run.mark_task_failed(idx, error, max_retries, exit_code);
+
+    if (auto info = run.get_task_info(idx)) {
+      needs_retry = (info->state == TaskState::Pending);
+    }
+
+    for (const auto& info : run.all_task_info()) {
+      if ((info.state == TaskState::Failed ||
+           info.state == TaskState::UpstreamFailed ||
+           info.state == TaskState::Pending) &&
+          callbacks_.on_persist_task) {
+        callbacks_.on_persist_task(dag_run_id, info);
+      }
+    }
+
+    if (run.is_complete()) {
+      on_run_complete(run, dag_run_id);
+      runs_.erase(it);
+      run_cfgs_.erase(dag_run_id);
+      done_cv_.notify_all();
+      run_complete = true;
     }
   }
 
-  if (run.is_complete()) {
-    on_run_complete(run, dag_run_id);
-    runs_.erase(it);
-    run_cfgs_.erase(dag_run_id);
-    done_cv_.notify_all();
+  if (run_complete) {
     return false;
+  }
+
+  if (!needs_retry) {
+    dispatch(dag_run_id);
   }
 
   return needs_retry;
