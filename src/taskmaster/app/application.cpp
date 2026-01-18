@@ -353,8 +353,17 @@ auto Application::trigger_dag_by_id(DAGId dag_id,
     }
   }
 
+  // Reorder task_configs by NodeIndex (matching ExecutorConfigBuilder)
+  std::vector<TaskConfig> indexed_task_cfgs(info->tasks.size());
+  for (const auto& task : info->tasks) {
+    NodeIndex idx = graph->get_index(task.task_id);
+    if (idx != kInvalidNode && idx < indexed_task_cfgs.size()) {
+      indexed_task_cfgs[idx] = task;
+    }
+  }
+
   execution_->start_run(dag_run_id, std::move(run), std::move(cfgs),
-                        info->tasks);
+                        std::move(indexed_task_cfgs));
   log::info("DAG run {} triggered for {} ({})", dag_run_id, dag_id,
             trigger == TriggerType::Schedule ? "schedule" : "manual");
   return dag_run_id;
