@@ -1,9 +1,15 @@
 #include "taskmaster/xcom/template_resolver.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <format>
+#include <optional>
 #include <ranges>
-#include <regex>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
 
 namespace taskmaster {
 
@@ -29,79 +35,216 @@ auto TemplateResolver::resolve_env_vars(
   return env_vars;
 }
 
+namespace {
+
+// Pre-computed date format strings for template resolution
+struct DateFormats {
+  std::string ds;         // YYYY-MM-DD
+  std::string ds_nodash;  // YYYYMMDD
+  std::string ts;         // YYYY-MM-DDTHH:MM:SS
+  std::string ts_nodash;  // YYYYMMDDTHHMMSS
+  bool valid{false};
+};
+
+auto compute_date_formats(std::chrono::system_clock::time_point execution_date)
+    -> DateFormats {
+  if (execution_date == std::chrono::system_clock::time_point{}) {
+    return {};
+  }
+
+  auto const time_t_val = std::chrono::system_clock::to_time_t(execution_date);
+  std::tm tm_val{};
+  gmtime_r(&time_t_val, &tm_val);
+
+  return DateFormats{
+      .ds = std::format("{:04d}-{:02d}-{:02d}", tm_val.tm_year + 1900,
+                        tm_val.tm_mon + 1, tm_val.tm_mday),
+      .ds_nodash = std::format("{:04d}{:02d}{:02d}", tm_val.tm_year + 1900,
+                               tm_val.tm_mon + 1, tm_val.tm_mday),
+      .ts = std::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}",
+                        tm_val.tm_year + 1900, tm_val.tm_mon + 1,
+                        tm_val.tm_mday, tm_val.tm_hour, tm_val.tm_min,
+                        tm_val.tm_sec),
+      .ts_nodash = std::format("{:04d}{:02d}{:02d}T{:02d}{:02d}{:02d}",
+                               tm_val.tm_year + 1900, tm_val.tm_mon + 1,
+                               tm_val.tm_mday, tm_val.tm_hour, tm_val.tm_min,
+                               tm_val.tm_sec),
+      .valid = true,
+  };
+}
+
+// Trim leading/trailing whitespace from a string_view
+auto trim(std::string_view sv) -> std::string_view {
+  while (!sv.empty() && std::isspace(static_cast<unsigned char>(sv.front()))) {
+    sv.remove_prefix(1);
+  }
+  while (!sv.empty() && std::isspace(static_cast<unsigned char>(sv.back()))) {
+    sv.remove_suffix(1);
+  }
+  return sv;
+}
+
+// Parse XCom token: "xcom.task_id.key" -> (task_id, key)
+// Returns nullopt if not a valid xcom token
+auto parse_xcom_token(std::string_view token)
+    -> std::optional<std::pair<std::string_view, std::string_view>> {
+  constexpr std::string_view prefix = "xcom.";
+  if (!token.starts_with(prefix)) {
+    return std::nullopt;
+  }
+  
+  auto rest = token.substr(prefix.size());
+  auto dot_pos = rest.find('.');
+  if (dot_pos == std::string_view::npos || dot_pos == 0 ||
+      dot_pos == rest.size() - 1) {
+    return std::nullopt;
+  }
+  
+  return std::pair{rest.substr(0, dot_pos), rest.substr(dot_pos + 1)};
+}
+
+// Find closing }} using char-by-char scan (O(n) guaranteed)
+// Returns npos if not found
+auto find_closing_braces(std::string_view tmpl, size_t start) -> size_t {
+  for (size_t i = start; i + 1 < tmpl.size(); ++i) {
+    if (tmpl[i] == '}' && tmpl[i + 1] == '}') {
+      return i;
+    }
+  }
+  return std::string_view::npos;
+}
+
+}  // namespace
+
 auto TemplateResolver::resolve_template(
     std::string_view tmpl,
     const TemplateContext& ctx,
     [[maybe_unused]] const std::vector<XComPullConfig>& pulls)
     -> Result<std::string> {
   
-  auto result = resolve_date_variables(tmpl, ctx);
-
-  static const std::regex xcom_pattern(R"(\{\{\s*xcom\.([^.]+)\.([^\}\s]+)\s*\}\})");
-
-  std::string::const_iterator search_start = result.cbegin();
-  std::smatch match;
-  std::string output;
-  size_t last_pos = 0;
-
-  while (std::regex_search(search_start, result.cend(), match, xcom_pattern)) {
-    size_t match_pos = static_cast<size_t>(match.position()) +
-                       static_cast<size_t>(search_start - result.cbegin());
-
-    output.append(result, last_pos, match_pos - last_pos);
-
-    TaskId task_id{match[1].str()};
-    std::string key = match[2].str();
-
-    auto xcom_result = persistence_.get_xcom(ctx.dag_run_id, task_id, key);
-    if (!xcom_result) {
-      return std::unexpected(xcom_result.error());
-    }
-
-    output.append(stringify(*xcom_result));
-
-    last_pos = match_pos + match.length();
-    search_start = result.cbegin() + static_cast<std::ptrdiff_t>(last_pos);
+  if (tmpl.empty()) {
+    return std::string{};
   }
 
-  output.append(result, last_pos, result.size() - last_pos);
-
+  // Pre-compute date formats once
+  auto const date_fmts = compute_date_formats(ctx.execution_date);
+  
+  // XCom cache: "task_id\0key" -> value (avoids repeated DB queries)
+  std::unordered_map<std::string, std::string> xcom_cache;
+  
+  std::string output;
+  output.reserve(tmpl.size() * 2);  // Conservative estimate
+  
+  size_t pos = 0;
+  while (pos < tmpl.size()) {
+    // Check for escape sequence: \{{ -> {{
+    if (pos + 2 < tmpl.size() && tmpl[pos] == '\\' && 
+        tmpl[pos + 1] == '{' && tmpl[pos + 2] == '{') {
+      output.append("{{");
+      pos += 3;
+      continue;
+    }
+    
+    // Check for template start: {{
+    if (pos + 1 < tmpl.size() && tmpl[pos] == '{' && tmpl[pos + 1] == '{') {
+      // Find closing }} using O(n) char-by-char scan
+      auto close_pos = find_closing_braces(tmpl, pos + 2);
+      if (close_pos == std::string_view::npos) {
+        // Unclosed {{ - leave as literal
+        output.append("{{");
+        pos += 2;
+        continue;
+      }
+      
+      // Extract and trim the token
+      auto token = trim(tmpl.substr(pos + 2, close_pos - pos - 2));
+      bool replaced = false;
+      
+      // Try date variables first (most common)
+      if (date_fmts.valid) {
+        if (token == "ds") {
+          output.append(date_fmts.ds);
+          replaced = true;
+        } else if (token == "ds_nodash") {
+          output.append(date_fmts.ds_nodash);
+          replaced = true;
+        } else if (token == "ts") {
+          output.append(date_fmts.ts);
+          replaced = true;
+        } else if (token == "ts_nodash") {
+          output.append(date_fmts.ts_nodash);
+          replaced = true;
+        }
+      }
+      
+      // Try XCom lookup
+      if (!replaced) {
+        if (auto xcom_parts = parse_xcom_token(token)) {
+          auto const& [task_str, key_str] = *xcom_parts;
+          
+          // Build cache key: "task_id\0key"
+          std::string cache_key;
+          cache_key.reserve(task_str.size() + 1 + key_str.size());
+          cache_key.append(task_str);
+          cache_key.push_back('\0');
+          cache_key.append(key_str);
+          
+          // Check cache first
+          auto cache_it = xcom_cache.find(cache_key);
+          if (cache_it != xcom_cache.end()) {
+            output.append(cache_it->second);
+            replaced = true;
+          } else {
+            // Query DB and cache result
+            TaskId task_id{std::string(task_str)};
+            std::string key{key_str};
+            
+            auto xcom_result = persistence_.get_xcom(ctx.dag_run_id, task_id, key);
+            if (!xcom_result) {
+              return std::unexpected(xcom_result.error());
+            }
+            
+            auto value = stringify(*xcom_result);
+            output.append(value);
+            xcom_cache[std::move(cache_key)] = std::move(value);
+            replaced = true;
+          }
+        }
+      }
+      
+      if (replaced) {
+        pos = close_pos + 2;
+      } else {
+        // Unknown token - leave as literal
+        output.append(tmpl.substr(pos, close_pos + 2 - pos));
+        pos = close_pos + 2;
+      }
+      continue;
+    }
+    
+    // Regular character - copy to output
+    output.push_back(tmpl[pos]);
+    ++pos;
+  }
+  
   return output;
 }
 
 auto TemplateResolver::resolve_date_variables(std::string_view tmpl,
                                               const TemplateContext& ctx)
     -> std::string {
-  std::string result(tmpl);
+  // This method is now only used internally or for backwards compatibility
+  // The main resolve_template now handles date variables in a single pass
   
   if (ctx.execution_date == std::chrono::system_clock::time_point{}) {
-    return result;
+    return std::string(tmpl);
   }
 
-  auto const time_t_val = std::chrono::system_clock::to_time_t(ctx.execution_date);
-  std::tm tm_val{};
-  gmtime_r(&time_t_val, &tm_val);
+  auto const date_fmts = compute_date_formats(ctx.execution_date);
+  
+  std::string result(tmpl);
 
-  auto const ds = std::format("{:04d}-{:02d}-{:02d}", 
-      tm_val.tm_year + 1900, tm_val.tm_mon + 1, tm_val.tm_mday);
-  auto const ds_nodash = std::format("{:04d}{:02d}{:02d}",
-      tm_val.tm_year + 1900, tm_val.tm_mon + 1, tm_val.tm_mday);
-  auto const ts = std::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}",
-      tm_val.tm_year + 1900, tm_val.tm_mon + 1, tm_val.tm_mday,
-      tm_val.tm_hour, tm_val.tm_min, tm_val.tm_sec);
-  auto const ts_nodash = std::format("{:04d}{:02d}{:02d}T{:02d}{:02d}{:02d}",
-      tm_val.tm_year + 1900, tm_val.tm_mon + 1, tm_val.tm_mday,
-      tm_val.tm_hour, tm_val.tm_min, tm_val.tm_sec);
-
-  static const std::array<std::pair<std::string_view, std::string_view>, 4> 
-      patterns_order{{
-        {"{{ts_nodash}}", {}},
-        {"{{ds_nodash}}", {}},
-        {"{{ts}}", {}},
-        {"{{ds}}", {}},
-      }};
-
-  auto replace_all = [](std::string& str, std::string_view from, 
+  auto replace_all = [](std::string& str, std::string_view from,
                         std::string_view to) {
     size_t pos = 0;
     while ((pos = str.find(from, pos)) != std::string::npos) {
@@ -110,10 +253,10 @@ auto TemplateResolver::resolve_date_variables(std::string_view tmpl,
     }
   };
 
-  replace_all(result, "{{ts_nodash}}", ts_nodash);
-  replace_all(result, "{{ds_nodash}}", ds_nodash);
-  replace_all(result, "{{ts}}", ts);
-  replace_all(result, "{{ds}}", ds);
+  replace_all(result, "{{ts_nodash}}", date_fmts.ts_nodash);
+  replace_all(result, "{{ds_nodash}}", date_fmts.ds_nodash);
+  replace_all(result, "{{ts}}", date_fmts.ts);
+  replace_all(result, "{{ds}}", date_fmts.ds);
 
   return result;
 }
