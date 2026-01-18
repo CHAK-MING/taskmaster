@@ -16,6 +16,7 @@ enum class TaskState : std::uint8_t {
   Failed,
   UpstreamFailed,
   Retrying,
+  Skipped,
 };
 
 struct RetryPolicy {

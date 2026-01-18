@@ -4,7 +4,6 @@
 #include "taskmaster/storage/persistence.hpp"
 #include "taskmaster/util/id.hpp"
 #include "taskmaster/util/log.hpp"
-#include "taskmaster/util/util.hpp"
 
 #include <algorithm>
 #include <mutex>
@@ -290,7 +289,7 @@ auto DAGManager::build_dag_graph(DAGId dag_id) const -> Result<DAG> {
   DAG dag;
 
   for (const auto& task : dag_info->tasks) {
-    dag.add_node(task.task_id);
+    dag.add_node(task.task_id, task.trigger_rule);
   }
 
   for (const auto& task : dag_info->tasks) {

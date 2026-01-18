@@ -27,7 +27,8 @@ export type TaskState =
     | "success"
     | "failed"
     | "upstream_failed"
-    | "retrying";
+    | "retrying"
+    | "skipped";
 
 export const taskStatusLabels: Record<TaskState, string> = {
     pending: "等待中",
@@ -37,6 +38,7 @@ export const taskStatusLabels: Record<TaskState, string> = {
     failed: "失败",
     upstream_failed: "上游失败",
     retrying: "重试中",
+    skipped: "已跳过",
 };
 
 export const taskStatusColors: Record<TaskState, string> = {
@@ -47,6 +49,7 @@ export const taskStatusColors: Record<TaskState, string> = {
     failed: "bg-destructive/10 text-destructive border-destructive/30",
     upstream_failed: "bg-orange-500/10 text-orange-600 border-orange-500/30",
     retrying: "bg-warning/10 text-warning border-warning/30",
+    skipped: "bg-slate-500/10 text-slate-500 border-slate-500/30",
 };
 
 export interface LogEntry {

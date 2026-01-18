@@ -17,13 +17,14 @@ inline constexpr std::array<std::string_view, 3> kDagRunStateNames = {
     "failed",
 };
 
-inline constexpr std::array<std::string_view, 6> kTaskStateNames = {
+inline constexpr std::array<std::string_view, 7> kTaskStateNames = {
     "pending",
     "running",
     "success",
     "failed",
     "upstream_failed",
     "retrying",
+    "skipped",
 };
 
 inline constexpr std::array<std::string_view, 2> kTriggerTypeNames = {

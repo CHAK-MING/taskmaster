@@ -29,6 +29,20 @@
       }
     },
     {
+      "name": "asan",
+      "displayName": "AddressSanitizer",
+      "description": "Debug build with ASan for memory leak detection",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "TASKMASTER_ENABLE_TESTS": "ON",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address -fno-omit-frame-pointer -g",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address"
+      }
+    },
+    {
       "name": "release",
       "displayName": "Release (No Tests)",
       "description": "Optimized release build without tests",
@@ -49,6 +63,11 @@
     {
       "name": "debug",
       "configurePreset": "debug",
+      "jobs": 0
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
       "jobs": 0
     },
     {

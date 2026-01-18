@@ -83,6 +83,8 @@ struct convert<taskmaster::TaskConfig> {
     t.timeout = std::chrono::seconds(taskmaster::yaml_get_or(node, "timeout", 300));
     t.retry_interval = std::chrono::seconds(taskmaster::yaml_get_or(node, "retry_interval", 60));
     t.max_retries = taskmaster::yaml_get_or(node, "max_retries", 3);
+    t.trigger_rule = taskmaster::parse<taskmaster::TriggerRule>(
+        taskmaster::yaml_get_or<std::string>(node, "trigger_rule", "all_success"));
 
     if (auto push = node["xcom_push"]) {
       t.xcom_push = push.as<std::vector<taskmaster::XComPushConfig>>();

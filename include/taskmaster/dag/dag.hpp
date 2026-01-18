@@ -1,5 +1,6 @@
 #pragma once
 
+#include "taskmaster/config/task_config.hpp"
 #include "taskmaster/core/error.hpp"
 #include "taskmaster/util/id.hpp"
 
@@ -16,7 +17,7 @@ inline constexpr NodeIndex kInvalidNode = UINT32_MAX;
 
 class DAG {
 public:
-  auto add_node(TaskId task_id) -> NodeIndex;
+  auto add_node(TaskId task_id, TriggerRule rule = TriggerRule::AllSuccess) -> NodeIndex;
   [[nodiscard]] auto add_edge(TaskId from, TaskId to)
       -> Result<void>;
   [[nodiscard]] auto add_edge(NodeIndex from, NodeIndex to) -> Result<void>;
@@ -36,6 +37,7 @@ public:
 
   [[nodiscard]] auto get_index(TaskId task_id) const -> NodeIndex;
   [[nodiscard]] auto get_key(NodeIndex idx) const -> TaskId;
+  [[nodiscard]] auto get_trigger_rule(NodeIndex idx) const noexcept -> TriggerRule;
 
   [[nodiscard]] auto size() const noexcept -> std::size_t {
     return nodes_.size();
@@ -53,6 +55,7 @@ private:
   struct Node {
     std::vector<NodeIndex> deps;
     std::vector<NodeIndex> dependents;
+    TriggerRule trigger_rule{TriggerRule::AllSuccess};
   };
 
   std::vector<Node> nodes_;

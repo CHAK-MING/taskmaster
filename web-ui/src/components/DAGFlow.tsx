@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 
-type FlowTaskStatus = "success" | "failed" | "running" | "pending";
+type FlowTaskStatus = "success" | "failed" | "running" | "pending" | "skipped";
 
 interface Task {
   id: string;
@@ -61,6 +61,11 @@ const statusColors: Record<FlowTaskStatus, { bg: string; border: string; text: s
     border: "hsl(38 92% 50%)",
     text: "hsl(38 92% 35%)",
   },
+  skipped: {
+    bg: "hsl(215 16% 47% / 0.15)",
+    border: "hsl(215 16% 47%)",
+    text: "hsl(215 16% 37%)",
+  },
 };
 
 const statusLabels: Record<FlowTaskStatus, string> = {
@@ -68,6 +73,7 @@ const statusLabels: Record<FlowTaskStatus, string> = {
   failed: "失败",
   running: "运行中",
   pending: "未运行",
+  skipped: "已跳过",
 };
 
 export function DAGFlow({ tasks, dependencies, className, onTaskClick }: DAGFlowProps) {

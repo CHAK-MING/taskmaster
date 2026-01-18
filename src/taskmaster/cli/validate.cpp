@@ -58,7 +58,7 @@ auto cmd_validate(const ValidateOptions& opts) -> int {
 
     DAG dag;
     for (const auto& task : def.tasks) {
-      dag.add_node(task.task_id);
+      dag.add_node(task.task_id, task.trigger_rule);
     }
 
     bool has_error = false;

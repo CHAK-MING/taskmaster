@@ -11,14 +11,16 @@
 
 namespace taskmaster {
 
-auto DAG::add_node(TaskId task_id) -> NodeIndex {
+auto DAG::add_node(TaskId task_id, TriggerRule rule) -> NodeIndex {
   auto it = key_to_idx_.find(task_id);
   if (it != key_to_idx_.end()) {
     return it->second;
   }
 
   NodeIndex idx = static_cast<NodeIndex>(nodes_.size());
-  nodes_.emplace_back();
+  Node node;
+  node.trigger_rule = rule;
+  nodes_.push_back(std::move(node));
   keys_.emplace_back(task_id);
   key_to_idx_.emplace(task_id, idx);
   return idx;
@@ -185,6 +187,13 @@ auto DAG::get_key(NodeIndex idx) const -> TaskId {
     return {};
   }
   return keys_[idx];
+}
+
+auto DAG::get_trigger_rule(NodeIndex idx) const noexcept -> TriggerRule {
+  if (idx >= nodes_.size()) {
+    return TriggerRule::AllSuccess;
+  }
+  return nodes_[idx].trigger_rule;
 }
 
 auto DAG::clear() -> void {

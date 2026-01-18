@@ -111,7 +111,7 @@ export interface RunRecord {
 
 export interface TaskRunRecord {
     task_id: string;
-    state: 'pending' | 'scheduled' | 'running' | 'success' | 'failed' | 'upstream_failed' | 'retrying';
+    state: 'pending' | 'scheduled' | 'running' | 'success' | 'failed' | 'upstream_failed' | 'retrying' | 'skipped';
     attempt: number;
     started_at: string;
     finished_at: string;

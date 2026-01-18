@@ -91,6 +91,7 @@ public:
   auto mark_task_completed(NodeIndex task_idx, int exit_code) -> void;
   auto mark_task_failed(NodeIndex task_idx, std::string_view error,
                         int max_retries, int exit_code = 0) -> void;
+  auto mark_task_skipped(NodeIndex task_idx) -> void;
 
   auto set_instance_id(NodeIndex task_idx, const InstanceId& instance_id)
       -> void;
@@ -139,9 +140,10 @@ private:
   DAGRun(DAGRunPrivateTag, DAGRunId dag_run_id, const DAG& dag);
   
   auto update_state() -> void;
-  auto update_ready_set(NodeIndex completed_task) -> void;
   auto init_ready_set() -> void;
-  auto mark_downstream_failed(NodeIndex failed_task) -> void;
+  auto propagate_terminal_to_downstream(NodeIndex terminal_task) -> void;
+  [[nodiscard]] auto should_trigger(NodeIndex task_idx) const -> bool;
+  [[nodiscard]] auto all_deps_terminal(NodeIndex task_idx) const -> bool;
 
   DAGRunId dag_run_id_;
   DAG dag_;
@@ -151,6 +153,7 @@ private:
   std::bitset<kMaxTasks> running_mask_;
   std::bitset<kMaxTasks> completed_mask_;
   std::bitset<kMaxTasks> failed_mask_;
+  std::bitset<kMaxTasks> skipped_mask_;
 
   std::flat_set<NodeIndex> ready_set_;
   size_t ready_count_{0};
@@ -162,6 +165,7 @@ private:
   std::size_t running_count_{0};
   std::size_t completed_count_{0};
   std::size_t failed_count_{0};
+  std::size_t skipped_count_{0};
 
   std::chrono::system_clock::time_point scheduled_at_{};
   std::chrono::system_clock::time_point started_at_{};

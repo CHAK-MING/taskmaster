@@ -20,6 +20,7 @@ add_executable(taskmaster_tests
   dag_test.cpp
   dag_manager_test.cpp
   dag_run_test.cpp
+  trigger_rule_test.cpp
 
   # Storage tests
   persistence_test.cpp

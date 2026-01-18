@@ -288,13 +288,14 @@ export default function DAGDetail() {
     );
 
     const flowTasks = useMemo(() => taskDefinitions.map((td) => {
-        let status: "pending" | "running" | "success" | "failed" = "pending";
+        let status: "pending" | "running" | "success" | "failed" | "skipped" = "pending";
         if (selectedRun) {
             const taskInstance = taskInstanceById.get(td.task_id);
             if (taskInstance) {
                 const taskState = taskInstance.state;
                 if (taskState === "success") status = "success";
                 else if (taskState === "failed" || taskState === "upstream_failed") status = "failed";
+                else if (taskState === "skipped") status = "skipped";
                 else if (taskState === "running" || taskState === "retrying") status = "running";
                 else if (taskState === "pending" || taskState === "scheduled") status = "pending";
             } else if (selectedRun.state === "running") {
