@@ -12,6 +12,7 @@
 #include "taskmaster/dag/dag_run.hpp"
 #include "taskmaster/storage/persistence.hpp"
 #include "taskmaster/storage/state_strings.hpp"
+#include "taskmaster/util/log.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -103,6 +104,34 @@ struct ApiServer::Impl {
     server_ = std::make_unique<HttpServer>(app_.runtime());
     ws_hub_ = std::make_unique<WebSocketHub>(app_.runtime());
     setup_routes();
+    setup_websocket();
+  }
+
+  void setup_websocket() {
+    server_->set_websocket_handler(
+        [this](int fd, std::string_view path, std::string sec_key) -> task<void> {
+          if (path != "/ws/logs") {
+            ::close(fd);
+            co_return;
+          }
+          
+          co_await http::perform_websocket_handshake(fd, std::move(sec_key));
+          
+          auto conn = std::make_shared<WebSocketConnection>(fd, app_.runtime());
+          ws_hub_->add_connection(conn);
+          
+          taskmaster::log::debug("WebSocket client connected: fd={}", fd);
+          
+          co_await conn->handle_frames([this, fd](http::WebSocketOpCode opcode, 
+                                                   std::span<const uint8_t>) {
+            if (opcode == http::WebSocketOpCode::Close) {
+              ws_hub_->remove_connection(fd);
+              taskmaster::log::info("WebSocket client disconnected: fd={}", fd);
+            }
+          });
+          
+          ws_hub_->remove_connection(fd);
+        });
   }
 
   void setup_routes() {

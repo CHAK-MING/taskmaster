@@ -18,10 +18,18 @@ namespace taskmaster::http {
 struct HttpServer::Impl {
   Runtime& runtime;
   Router router_;
+  WebSocketHandler ws_handler_;
   int listen_fd = -1;
   std::atomic<bool> running{false};
 
   explicit Impl(Runtime& rt) : runtime(rt) {
+  }
+
+  static auto is_websocket_upgrade(const HttpRequest& req) -> bool {
+    auto upgrade = req.header("upgrade");
+    auto connection = req.header("connection");
+    return upgrade && *upgrade == "websocket" && 
+           connection && connection->find("Upgrade") != std::string::npos;
   }
 
   auto handle_connection(int client_fd) -> task<void> {
@@ -44,6 +52,19 @@ struct HttpServer::Impl {
         if (req_opt) {
           auto& req = *req_opt;
           log::debug("Received {} {}", req.method, req.path);
+
+          if (is_websocket_upgrade(req)) {
+            log::debug("WebSocket upgrade request: {}", req.path);
+            if (ws_handler_) {
+              auto sec_key = req.header("sec-websocket-key");
+              if (sec_key) {
+                co_await ws_handler_(client_fd, req.path, std::string(*sec_key));
+                co_return;
+              }
+            } else {
+              log::warn("WebSocket upgrade but no handler set");
+            }
+          }
 
           auto resp = co_await router_.route(req);
           auto resp_data = resp.serialize();
@@ -101,6 +122,10 @@ HttpServer::~HttpServer() {
 
 auto HttpServer::router() -> Router& {
   return impl_->router_;
+}
+
+auto HttpServer::set_websocket_handler(WebSocketHandler handler) -> void {
+  impl_->ws_handler_ = std::move(handler);
 }
 
 auto HttpServer::start(std::string_view host, uint16_t port) -> task<void> {
