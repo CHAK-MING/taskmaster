@@ -211,7 +211,7 @@ TEST_F(DAGRunTest, TaskFailureExhaustedRetries) {
   EXPECT_EQ(run.state(), DAGRunState::Failed);
 }
 
-TEST_F(DAGRunTest, DownstreamSkippedWhenUpstreamFails) {
+TEST_F(DAGRunTest, DownstreamUpstreamFailedWhenUpstreamFails) {
   DAG dag;
   auto idx1 = dag.add_node(TaskId("task1"));
   auto idx2 = dag.add_node(TaskId("task2"));
@@ -226,7 +226,7 @@ TEST_F(DAGRunTest, DownstreamSkippedWhenUpstreamFails) {
 
   auto info2 = run.get_task_info(idx2);
   ASSERT_TRUE(info2.has_value());
-  EXPECT_EQ(info2->state, TaskState::Skipped);
+  EXPECT_EQ(info2->state, TaskState::UpstreamFailed);
 }
 
 TEST_F(DAGRunTest, ComplexDAGReadyTasks) {

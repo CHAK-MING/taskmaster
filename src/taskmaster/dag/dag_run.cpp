@@ -180,6 +180,31 @@ auto DAGRun::mark_task_skipped(NodeIndex task_idx) -> void {
   propagate_terminal_to_downstream(task_idx);
 }
 
+auto DAGRun::mark_task_upstream_failed(NodeIndex task_idx) -> void {
+  if (task_idx >= dag_.size()) {
+    return;
+  }
+  
+  if (ready_mask_.test(task_idx)) {
+    ready_mask_.reset(task_idx);
+    ready_set_.erase(task_idx);
+    --ready_count_;
+  } else if (!running_mask_.test(task_idx) && !completed_mask_.test(task_idx) &&
+             !failed_mask_.test(task_idx) && !skipped_mask_.test(task_idx)) {
+    --pending_count_;
+  }
+  
+  skipped_mask_.set(task_idx);
+  ++skipped_count_;
+  
+  auto& info = task_info_[task_idx];
+  info.state = TaskState::UpstreamFailed;
+  info.finished_at = std::chrono::system_clock::now();
+  info.error_message = "Upstream task failed";
+  
+  propagate_terminal_to_downstream(task_idx);
+}
+
 auto DAGRun::propagate_terminal_to_downstream(NodeIndex terminal_task) -> void {
   for (NodeIndex dep : dag_.get_dependents_view(terminal_task)) {
     if (ready_mask_.test(dep) || running_mask_.test(dep) || 
@@ -198,7 +223,23 @@ auto DAGRun::propagate_terminal_to_downstream(NodeIndex terminal_task) -> void {
       ++ready_count_;
       --pending_count_;
     } else {
-      mark_task_skipped(dep);
+      TriggerRule rule = dag_.get_trigger_rule(dep);
+      bool has_failed_upstream = std::ranges::any_of(
+          dag_.get_deps_view(dep),
+          [this](NodeIndex i) { 
+            if (failed_mask_.test(i)) return true;
+            if (skipped_mask_.test(i)) {
+              auto info = get_task_info(i);
+              return info && info->state == TaskState::UpstreamFailed;
+            }
+            return false;
+          });
+      
+      if (rule == TriggerRule::AllSuccess && has_failed_upstream) {
+        mark_task_upstream_failed(dep);
+      } else {
+        mark_task_skipped(dep);
+      }
     }
   }
 }
@@ -299,15 +340,23 @@ auto DAGRun::all_task_info() const -> std::vector<TaskInstanceInfo> {
 }
 
 auto DAGRun::update_state() -> void {
-  if (failed_count_ > 0 && running_count_ == 0 && pending_count_ == 0 &&
-      ready_count_ == 0) {
+  // Don't mark complete while there are tasks that could still run
+  if (ready_count_ > 0 || running_count_ > 0) {
+    return;
+  }
+
+  if (failed_count_ > 0 && pending_count_ == 0) {
     state_ = DAGRunState::Failed;
     finished_at_ = std::chrono::system_clock::now();
     return;
   }
 
-  if (completed_count_ == dag_.size()) {
-    state_ = DAGRunState::Success;
+  if (completed_count_ + skipped_count_ == dag_.size()) {
+    if (failed_count_ > 0 || skipped_count_ > 0) {
+      state_ = DAGRunState::Failed;
+    } else {
+      state_ = DAGRunState::Success;
+    }
     finished_at_ = std::chrono::system_clock::now();
   }
 }

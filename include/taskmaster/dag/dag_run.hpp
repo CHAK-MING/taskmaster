@@ -92,8 +92,9 @@ public:
   auto mark_task_completed_with_branch(NodeIndex task_idx, int exit_code,
                                        std::span<const TaskId> selected_branches) -> void;
   auto mark_task_failed(NodeIndex task_idx, std::string_view error,
-                        int max_retries, int exit_code = 0) -> void;
+                        int max_retries, int exit_code = 1) -> void;
   auto mark_task_skipped(NodeIndex task_idx) -> void;
+  auto mark_task_upstream_failed(NodeIndex task_idx) -> void;
 
   auto set_instance_id(NodeIndex task_idx, const InstanceId& instance_id)
       -> void;

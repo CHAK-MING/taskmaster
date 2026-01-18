@@ -97,8 +97,17 @@ TEST_P(TriggerRuleTest, EvaluatesCorrectly) {
   } else {
     auto info = run->get_task_info(downstream_idx);
     ASSERT_TRUE(info.has_value()) << "Task info missing for: " << tc.name;
-    EXPECT_EQ(info->state, TaskState::Skipped)
-        << "Expected downstream to be skipped for: " << tc.name;
+    
+    // AllSuccess with failed deps -> UpstreamFailed, others -> Skipped
+    bool has_failed_dep = std::ranges::any_of(tc.dep_outcomes, 
+        [](DepOutcome o) { return o == DepOutcome::Failed; });
+    TaskState expected_state = (tc.rule == TriggerRule::AllSuccess && has_failed_dep)
+        ? TaskState::UpstreamFailed 
+        : TaskState::Skipped;
+    
+    EXPECT_EQ(info->state, expected_state)
+        << "Expected downstream state " << static_cast<int>(expected_state) 
+        << " for: " << tc.name;
   }
 }
 
@@ -372,15 +381,15 @@ TEST_F(TriggerRuleEdgeCaseTest, SkipCascadesToDownstream_AllSuccess) {
   run->mark_task_started(idx1, InstanceId("i1"));
   run->mark_task_failed(idx1, "error", 0);
 
-  // task2 should be skipped (upstream failed)
+  // task2 should be UpstreamFailed (AllSuccess with failed upstream)
   auto info2 = run->get_task_info(idx2);
   ASSERT_TRUE(info2.has_value());
-  EXPECT_EQ(info2->state, TaskState::Skipped);
+  EXPECT_EQ(info2->state, TaskState::UpstreamFailed);
 
-  // task3 should cascade skip (upstream skipped)
+  // task3 should cascade UpstreamFailed (upstream marked UpstreamFailed)
   auto info3 = run->get_task_info(idx3);
   ASSERT_TRUE(info3.has_value());
-  EXPECT_EQ(info3->state, TaskState::Skipped);
+  EXPECT_EQ(info3->state, TaskState::UpstreamFailed);
 }
 
 TEST_F(TriggerRuleEdgeCaseTest, AllDone_BreaksCascade) {
@@ -398,10 +407,10 @@ TEST_F(TriggerRuleEdgeCaseTest, AllDone_BreaksCascade) {
   run->mark_task_started(idx1, InstanceId("i1"));
   run->mark_task_failed(idx1, "error", 0);
 
-  // task2 should be skipped
+  // task2 should be UpstreamFailed (AllSuccess with failed upstream)
   auto info2 = run->get_task_info(idx2);
   ASSERT_TRUE(info2.has_value());
-  EXPECT_EQ(info2->state, TaskState::Skipped);
+  EXPECT_EQ(info2->state, TaskState::UpstreamFailed);
 
   // task3 (AllDone) should be ready - breaks the cascade
   EXPECT_EQ(run->ready_count(), 1);
