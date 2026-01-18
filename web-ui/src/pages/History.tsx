@@ -133,13 +133,18 @@ export default function History() {
                                     key={run.dag_run_id}
                                     className="flex items-center justify-between p-4 rounded-lg border border-border hover:bg-accent/30 transition-colors cursor-pointer"
                                 >
-                                    <div className="flex items-center gap-4">
-                                        <DAGStatusIcon status={run.state as DAGRunState} />
-                                        <div>
-                                            <p className="font-medium">{run.dag_name || run.dag_id}</p>
-                                            <p className="text-sm text-muted-foreground">{formatTime(run.started_at)}</p>
+                                        <div className="flex items-center gap-4">
+                                            <DAGStatusIcon status={run.state as DAGRunState} />
+                                            <div>
+                                                <p className="font-medium">{run.dag_name || run.dag_id}</p>
+                                                <p className="text-sm text-muted-foreground">{formatTime(run.started_at)}</p>
+                                                {run.execution_date && (
+                                                    <p className="text-xs text-muted-foreground">
+                                                        执行日期: {run.execution_date.split('T')[0]}
+                                                    </p>
+                                                )}
+                                            </div>
                                         </div>
-                                    </div>
                                     <div className="flex items-center gap-6">
                                         <TriggerTypeBadge type={run.trigger_type} />
                                         <div className="text-right">

@@ -5,6 +5,7 @@
 #include "taskmaster/storage/persistence.hpp"
 #include "taskmaster/util/id.hpp"
 
+#include <chrono>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
@@ -12,16 +13,21 @@
 
 namespace taskmaster {
 
+struct TemplateContext {
+  DAGRunId dag_run_id;
+  std::chrono::system_clock::time_point execution_date{};
+};
+
 class TemplateResolver {
  public:
   explicit TemplateResolver(Persistence& persistence);
 
-  [[nodiscard]] auto resolve_env_vars(DAGRunId dag_run_id,
+  [[nodiscard]] auto resolve_env_vars(const TemplateContext& ctx,
                                       const std::vector<XComPullConfig>& pulls)
       -> Result<std::unordered_map<std::string, std::string>>;
 
   [[nodiscard]] auto resolve_template(std::string_view tmpl,
-                                      DAGRunId dag_run_id,
+                                      const TemplateContext& ctx,
                                       const std::vector<XComPullConfig>& pulls)
       -> Result<std::string>;
 
@@ -29,6 +35,9 @@ class TemplateResolver {
   Persistence& persistence_;
 
   [[nodiscard]] auto stringify(const nlohmann::json& value) -> std::string;
+  [[nodiscard]] auto resolve_date_variables(std::string_view tmpl,
+                                            const TemplateContext& ctx)
+      -> std::string;
 };
 
 }  // namespace taskmaster

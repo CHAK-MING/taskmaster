@@ -70,6 +70,7 @@ auto to_json(const Persistence::RunHistoryEntry& run) -> json {
       {"trigger_type", to_string_view(run.trigger_type)},
       {"started_at", format_iso(run.started_at)},
       {"finished_at", format_iso(run.finished_at)},
+      {"execution_date", format_iso(run.execution_date)},
   };
 }
 

@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace taskmaster {
@@ -35,9 +36,8 @@ enum class TriggerType : std::uint8_t {
     return "manual";
   case TriggerType::Schedule:
     return "schedule";
-  default:
-    return "manual";
   }
+  std::unreachable();
 }
 
 template <typename T>
@@ -136,6 +136,15 @@ public:
     trigger_type_ = t;
   }
 
+  [[nodiscard]] auto execution_date() const noexcept
+      -> std::chrono::system_clock::time_point {
+    return execution_date_;
+  }
+  auto set_execution_date(std::chrono::system_clock::time_point t) noexcept
+      -> void {
+    execution_date_ = t;
+  }
+
 private:
   DAGRun(DAGRunPrivateTag, DAGRunId dag_run_id, const DAG& dag);
   
@@ -170,6 +179,7 @@ private:
   std::chrono::system_clock::time_point scheduled_at_{};
   std::chrono::system_clock::time_point started_at_{};
   std::chrono::system_clock::time_point finished_at_{};
+  std::chrono::system_clock::time_point execution_date_{};
   TriggerType trigger_type_{TriggerType::Manual};
 };
 

@@ -63,6 +63,7 @@ public:
     std::int64_t scheduled_at;
     std::int64_t started_at;
     std::int64_t finished_at;
+    std::int64_t execution_date;
   };
   [[nodiscard]] auto list_run_history(std::optional<DAGId> dag_id = std::nullopt,
                                       std::size_t limit = 50) const

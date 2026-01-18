@@ -38,6 +38,7 @@ add_executable(taskmaster_tests
 
   # XCom tests
   xcom_test.cpp
+  template_resolver_test.cpp
 
   # API tests
   api_test.cpp

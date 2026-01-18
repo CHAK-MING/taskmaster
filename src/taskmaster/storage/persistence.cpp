@@ -149,7 +149,8 @@ auto Persistence::create_tables() -> Result<void> {
       trigger_type TEXT NOT NULL DEFAULT 'manual',
       scheduled_at INTEGER,
       started_at INTEGER,
-      finished_at INTEGER
+      finished_at INTEGER,
+      execution_date INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS task_instances (
@@ -242,14 +243,15 @@ auto Persistence::execute(std::string_view sql) -> Result<void> {
 
 auto Persistence::save_dag_run(const DAGRun& run) -> Result<void> {
   constexpr auto sql = R"(
-    INSERT INTO dag_runs (dag_run_id, state, trigger_type, scheduled_at, started_at, finished_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO dag_runs (dag_run_id, state, trigger_type, scheduled_at, started_at, finished_at, execution_date)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(dag_run_id) DO UPDATE SET
       state = excluded.state,
       trigger_type = excluded.trigger_type,
       scheduled_at = excluded.scheduled_at,
       started_at = excluded.started_at,
-      finished_at = excluded.finished_at;
+      finished_at = excluded.finished_at,
+      execution_date = excluded.execution_date;
   )";
 
   auto result = prepare(sql);
@@ -266,6 +268,7 @@ auto Persistence::save_dag_run(const DAGRun& run) -> Result<void> {
   sqlite3_bind_int64(stmt.get(), 4, to_timestamp(run.scheduled_at()));
   sqlite3_bind_int64(stmt.get(), 5, to_timestamp(run.started_at()));
   sqlite3_bind_int64(stmt.get(), 6, to_timestamp(run.finished_at()));
+  sqlite3_bind_int64(stmt.get(), 7, to_timestamp(run.execution_date()));
 
   return sqlite3_step(stmt.get()) == SQLITE_DONE
              ? ok()
@@ -459,12 +462,12 @@ auto Persistence::list_run_history(std::optional<DAGId> dag_id, std::size_t limi
   std::string sql;
   if (!dag_id.has_value() || dag_id->value().empty()) {
     sql = R"(
-      SELECT dag_run_id, state, trigger_type, scheduled_at, started_at, finished_at
+      SELECT dag_run_id, state, trigger_type, scheduled_at, started_at, finished_at, execution_date
       FROM dag_runs ORDER BY scheduled_at DESC LIMIT ?;
     )";
   } else {
     sql = R"(
-      SELECT dag_run_id, state, trigger_type, scheduled_at, started_at, finished_at
+      SELECT dag_run_id, state, trigger_type, scheduled_at, started_at, finished_at, execution_date
       FROM dag_runs WHERE dag_run_id LIKE ? ORDER BY scheduled_at DESC LIMIT ?;
     )";
   }
@@ -500,7 +503,8 @@ auto Persistence::list_run_history(std::optional<DAGId> dag_id, std::size_t limi
          .trigger_type = parse<TriggerType>(trigger_str),
          .scheduled_at = sqlite3_column_int64(stmt.get(), 3),
          .started_at = sqlite3_column_int64(stmt.get(), 4),
-         .finished_at = sqlite3_column_int64(stmt.get(), 5)});
+         .finished_at = sqlite3_column_int64(stmt.get(), 5),
+         .execution_date = sqlite3_column_int64(stmt.get(), 6)});
   }
   return entries;
 }
@@ -508,7 +512,7 @@ auto Persistence::list_run_history(std::optional<DAGId> dag_id, std::size_t limi
 auto Persistence::get_run_history(DAGRunId dag_run_id) const
     -> Result<RunHistoryEntry> {
   constexpr auto sql = R"(
-    SELECT dag_run_id, state, trigger_type, scheduled_at, started_at, finished_at
+    SELECT dag_run_id, state, trigger_type, scheduled_at, started_at, finished_at, execution_date
     FROM dag_runs WHERE dag_run_id = ?;
   )";
 
@@ -539,7 +543,8 @@ auto Persistence::get_run_history(DAGRunId dag_run_id) const
                          .trigger_type = parse<TriggerType>(trigger_str),
                          .scheduled_at = sqlite3_column_int64(stmt.get(), 3),
                          .started_at = sqlite3_column_int64(stmt.get(), 4),
-                         .finished_at = sqlite3_column_int64(stmt.get(), 5)};
+                         .finished_at = sqlite3_column_int64(stmt.get(), 5),
+                         .execution_date = sqlite3_column_int64(stmt.get(), 6)};
 }
 
 auto Persistence::begin_transaction() -> Result<void> {

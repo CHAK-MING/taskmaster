@@ -104,6 +104,7 @@ export interface RunRecord {
     trigger_type: 'manual' | 'schedule' | 'api';
     started_at: string;
     finished_at: string;
+    execution_date: string;
     total_tasks?: number;
     completed_tasks?: number;
     failed_tasks?: number;
