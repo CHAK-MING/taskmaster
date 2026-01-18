@@ -33,7 +33,7 @@ auto PersistenceService::persistence() -> Persistence* {
 auto PersistenceService::save_run(const DAGRun& run) -> void {
   if (!db_)
     return;
-  if (auto r = db_->save_dag_run(run); !r) {
+  if (auto r = db_->save_dag_run(run); !r.has_value()) {
     log::warn("Failed to persist run {}: {}", run.id(), r.error().message());
   }
 }
@@ -41,7 +41,7 @@ auto PersistenceService::save_run(const DAGRun& run) -> void {
 auto PersistenceService::save_task(DAGRunId dag_run_id, const TaskInstanceInfo& info) -> void {
   if (!db_)
     return;
-  if (auto r = db_->update_task_instance(dag_run_id, info); !r) {
+  if (auto r = db_->update_task_instance(dag_run_id, info); !r.has_value()) {
     if (auto r2 = db_->save_task_instance(dag_run_id, info); !r2) {
       log::warn("Failed to persist task: {}", r2.error().message());
     }
@@ -66,7 +66,7 @@ auto PersistenceService::save_xcom(DAGRunId dag_run_id,
                                    const nlohmann::json& value) -> void {
   if (!db_)
     return;
-  if (auto r = db_->save_xcom(dag_run_id, task, key, value); !r) {
+  if (auto r = db_->save_xcom(dag_run_id, task, key, value); !r.has_value()) {
     log::debug("Failed to save xcom: {}", r.error().message());
   }
 }

@@ -34,10 +34,10 @@ public:
   [[nodiscard]] explicit operator std::string() const { return value_; }
   [[nodiscard]] explicit operator std::string_view() const { return value_; }
 
-  [[nodiscard]] auto operator<=>(const TypedId&) const = default;
-  [[nodiscard]] auto operator==(const TypedId&) const -> bool = default;
-
   [[nodiscard]] auto empty() const -> bool { return value_.empty(); }
+
+  [[nodiscard]] friend auto operator<=>(const TypedId& lhs, const TypedId& rhs) = default;
+  [[nodiscard]] friend auto operator==(const TypedId& lhs, const TypedId& rhs) -> bool = default;
 
   [[nodiscard]] auto size() const -> size_t { return value_.size(); }
 

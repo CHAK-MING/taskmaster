@@ -25,7 +25,7 @@ auto ExecutionService::start_run(DAGRunId dag_run_id,
                                  std::vector<ExecutorConfig> configs,
                                  std::vector<TaskConfig> task_configs) -> void {
   {
-    std::lock_guard lock(mu_);
+    std::scoped_lock lock(mu_);
     runs_.insert_or_assign(dag_run_id.clone(), std::move(run));
     run_cfgs_.insert_or_assign(dag_run_id.clone(), std::move(configs));
     if (!task_configs.empty()) {
@@ -36,13 +36,13 @@ auto ExecutionService::start_run(DAGRunId dag_run_id,
 }
 
 auto ExecutionService::get_run(const DAGRunId& dag_run_id) -> DAGRun* {
-  std::lock_guard lock(mu_);
+  std::scoped_lock lock(mu_);
   auto it = runs_.find(dag_run_id);
   return it != runs_.end() ? it->second.get() : nullptr;
 }
 
 auto ExecutionService::has_active_runs() const -> bool {
-  std::lock_guard lock(mu_);
+  std::scoped_lock lock(mu_);
   return std::ranges::any_of(runs_ | std::views::values,
                              [](const auto& r) { return !r->is_complete(); });
 }
@@ -65,7 +65,7 @@ auto ExecutionService::dispatch(const DAGRunId& dag_run_id) -> void {
   std::vector<TaskJob> jobs;
 
   {
-    std::lock_guard lock(mu_);
+    std::scoped_lock lock(mu_);
     auto it = runs_.find(dag_run_id);
     if (it == runs_.end()) [[unlikely]] {
       log::debug("dispatch: run {} not found", dag_run_id);
@@ -121,10 +121,8 @@ auto ExecutionService::dispatch(const DAGRunId& dag_run_id) -> void {
     if (!jobs.empty() && callbacks_.on_persist_run) {
       callbacks_.on_persist_run(run);
       for (const auto& job : jobs) {
-        if (auto info = run.get_task_info(job.idx)) {
-          if (callbacks_.on_persist_task) {
-            callbacks_.on_persist_task(dag_run_id, *info);
-          }
+        if (auto info = run.get_task_info(job.idx); info && callbacks_.on_persist_task) {
+          callbacks_.on_persist_task(dag_run_id, *info);
         }
       }
     }
@@ -288,7 +286,7 @@ auto ExecutionService::on_task_success(const DAGRunId& dag_run_id, NodeIndex idx
   log::info("on_task_success: dag_run_id={} idx={}", dag_run_id, idx);
 
   {
-    std::lock_guard lock(mu_);
+    std::scoped_lock lock(mu_);
     auto it = runs_.find(dag_run_id);
     if (it == runs_.end())
       return;
@@ -296,10 +294,8 @@ auto ExecutionService::on_task_success(const DAGRunId& dag_run_id, NodeIndex idx
     auto& run = *it->second;
     run.mark_task_completed(idx, 0);
 
-    if (auto info = run.get_task_info(idx)) {
-      if (callbacks_.on_persist_task) {
-        callbacks_.on_persist_task(dag_run_id, *info);
-      }
+    if (auto info = run.get_task_info(idx); info && callbacks_.on_persist_task) {
+      callbacks_.on_persist_task(dag_run_id, *info);
     }
 
     if (run.is_complete()) {
@@ -320,7 +316,7 @@ auto ExecutionService::on_task_success(const DAGRunId& dag_run_id, NodeIndex idx
 auto ExecutionService::on_task_failure(const DAGRunId& dag_run_id, NodeIndex idx,
                                         const std::string& error, int exit_code) -> bool {
   log::info("on_task_failure: dag_run_id={} idx={} err='{}'", dag_run_id, idx, error);
-  std::lock_guard lock(mu_);
+  std::scoped_lock lock(mu_);
   auto it = runs_.find(dag_run_id);
   if (it == runs_.end())
     return false;
@@ -340,12 +336,11 @@ auto ExecutionService::on_task_failure(const DAGRunId& dag_run_id, NodeIndex idx
   }
 
   for (const auto& info : run.all_task_info()) {
-    if (info.state == TaskState::Failed ||
-        info.state == TaskState::UpstreamFailed ||
-        info.state == TaskState::Pending) {
-      if (callbacks_.on_persist_task) {
-        callbacks_.on_persist_task(dag_run_id, info);
-      }
+    if ((info.state == TaskState::Failed ||
+         info.state == TaskState::UpstreamFailed ||
+         info.state == TaskState::Pending) &&
+        callbacks_.on_persist_task) {
+      callbacks_.on_persist_task(dag_run_id, info);
     }
   }
 

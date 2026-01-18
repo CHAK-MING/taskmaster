@@ -28,14 +28,14 @@ auto cmd_serve(const ServeOptions& opts) -> int {
 
   Application app(std::move(config));
 
-  if (auto r = app.init(); !r) {
+  if (auto r = app.init(); !r.has_value()) {
     log::error("Initialization failed: {}", r.error().message());
     return 1;
   }
 
   setup_signal_handlers();
 
-  if (auto r = app.recover_from_crash(); !r) {
+  if (auto r = app.recover_from_crash(); !r.has_value()) {
     log::warn("Recovery failed: {}", r.error().message());
   }
 
@@ -46,7 +46,7 @@ auto cmd_serve(const ServeOptions& opts) -> int {
     log::info("TaskMaster starting on {}:{}...", cfg.api.host, cfg.api.port);
   }
 
-  if (auto r = app.start(); !r) {
+  if (auto r = app.start(); !r.has_value()) {
     log::error("Failed to start: {}", r.error().message());
     return 1;
   }

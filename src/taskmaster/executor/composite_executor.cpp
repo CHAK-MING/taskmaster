@@ -36,7 +36,7 @@ auto CompositeExecutor::start(ExecutorContext ctx, ExecutorRequest req,
 
   InstanceId instance_id = req.instance_id;
   {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     instance_executor_map_[instance_id] = type;
   }
 
@@ -46,7 +46,7 @@ auto CompositeExecutor::start(ExecutorContext ctx, ExecutorRequest req,
                       on_complete = std::move(original_on_complete)](
                          const InstanceId& id, ExecutorResult result) mutable {
     {
-      std::lock_guard lock(mutex_);
+      std::scoped_lock lock(mutex_);
       instance_executor_map_.erase(instance_id);
     }
     if (on_complete) {
@@ -60,7 +60,7 @@ auto CompositeExecutor::start(ExecutorContext ctx, ExecutorRequest req,
 auto CompositeExecutor::cancel(const InstanceId& instance_id) -> void {
   ExecutorType type;
   {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     auto it = instance_executor_map_.find(instance_id);
     if (it == instance_executor_map_.end()) {
       log::warn("CompositeExecutor: no executor mapping for instance {}",

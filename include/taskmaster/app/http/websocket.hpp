@@ -38,10 +38,10 @@ public:
   WebSocketConnection(const WebSocketConnection&) = delete;
   auto operator=(const WebSocketConnection&) -> WebSocketConnection& = delete;
 
-  auto send_text(std::string_view text) -> task<void>;
-  auto send_binary(std::span<const uint8_t> data) -> task<void>;
+  auto send_text(std::string text) -> task<void>;
+  auto send_binary(std::vector<uint8_t> data) -> task<void>;
   auto send_close() -> task<void>;
-  auto send_pong(std::span<const uint8_t> data) -> task<void>;
+  auto send_pong(std::vector<uint8_t> data) -> task<void>;
 
   auto handle_frames(
       std::move_only_function<void(WebSocketOpCode, std::span<const uint8_t>)> on_message)
@@ -93,7 +93,7 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 
-auto perform_websocket_handshake(int client_fd, std::string_view sec_key)
+auto perform_websocket_handshake(int client_fd, std::string sec_key)
     -> task<void>;
 
 }  // namespace taskmaster::http

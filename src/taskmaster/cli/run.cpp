@@ -9,7 +9,7 @@ namespace taskmaster::cli {
 auto cmd_run(const RunOptions& opts) -> int {
   Persistence db(opts.db_file);
 
-  if (auto r = db.open(); !r) {
+  if (auto r = db.open(); !r.has_value()) {
     std::println(stderr, "Error: Failed to open database: {}", r.error().message());
     return 1;
   }

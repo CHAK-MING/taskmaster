@@ -24,7 +24,7 @@ class TemplateResolver {
 
   [[nodiscard]] auto resolve_env_vars(const TemplateContext& ctx,
                                       const std::vector<XComPullConfig>& pulls)
-      -> Result<std::unordered_map<std::string, std::string>>;
+      -> Result<std::unordered_map<std::string, std::string, StringHash, StringEqual>>;
 
   [[nodiscard]] auto resolve_template(std::string_view tmpl,
                                       const TemplateContext& ctx,

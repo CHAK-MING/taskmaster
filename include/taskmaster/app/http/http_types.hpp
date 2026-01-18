@@ -1,5 +1,7 @@
 #pragma once
 
+#include "taskmaster/core/error.hpp"
+
 #include <cstdint>
 #include <format>
 #include <optional>
@@ -43,7 +45,7 @@ enum class HttpStatus : std::uint16_t {
   ServiceUnavailable = 503
 };
 
-using HttpHeaders = std::unordered_map<std::string, std::string>;
+using HttpHeaders = std::unordered_map<std::string, std::string, taskmaster::StringHash, taskmaster::StringEqual>;
 
 class QueryParams {
 public:
@@ -56,7 +58,7 @@ public:
   [[nodiscard]] auto size() const -> std::size_t { return params_.size(); }
 
 private:
-  std::unordered_map<std::string, std::string> params_;
+  std::unordered_map<std::string, std::string, taskmaster::StringHash, taskmaster::StringEqual> params_;
 };
 
 struct HttpRequest {
@@ -65,7 +67,7 @@ struct HttpRequest {
   std::string query_string;
   HttpHeaders headers;
   std::vector<uint8_t> body;
-  std::unordered_map<std::string, std::string> path_params;
+  std::unordered_map<std::string, std::string, taskmaster::StringHash, taskmaster::StringEqual> path_params;
 
   [[nodiscard]] auto header(std::string_view key) const
       -> std::optional<std::string>;

@@ -11,13 +11,13 @@ namespace taskmaster {
 
 namespace detail {
 
-inline constexpr std::array<std::string_view, 3> kDagRunStateNames = {
+constexpr std::array<std::string_view, 3> kDagRunStateNames = {
     "running",
     "success",
     "failed",
 };
 
-inline constexpr std::array<std::string_view, 7> kTaskStateNames = {
+constexpr std::array<std::string_view, 7> kTaskStateNames = {
     "pending",
     "running",
     "success",
@@ -27,7 +27,7 @@ inline constexpr std::array<std::string_view, 7> kTaskStateNames = {
     "skipped",
 };
 
-inline constexpr std::array<std::string_view, 2> kTriggerTypeNames = {
+constexpr std::array<std::string_view, 2> kTriggerTypeNames = {
     "manual",
     "schedule",
 };

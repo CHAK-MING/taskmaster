@@ -125,7 +125,7 @@ public:
   return detail::current_runtime->current_context();
 }
 
-[[nodiscard]] inline auto async_read(int fd, void* buf,
+[[nodiscard]] inline auto async_read(int fd, std::byte* buf,
                                      std::uint32_t len) noexcept {
   return current_io_context().async_read(fd, io::buffer(buf, len));
 }
@@ -135,7 +135,7 @@ public:
   return current_io_context().async_read(fd, io::buffer(buf));
 }
 
-[[nodiscard]] inline auto async_write(int fd, const void* buf,
+[[nodiscard]] inline auto async_write(int fd, const std::byte* buf,
                                       std::uint32_t len) noexcept {
   return current_io_context().async_write(fd, io::buffer(buf, len));
 }

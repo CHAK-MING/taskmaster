@@ -76,7 +76,7 @@ auto DAGFileLoader::scan_for_changes()
     return {updated, removed};
   }
 
-  std::unordered_map<std::string, std::filesystem::file_time_type> current_files;
+  std::unordered_map<std::string, std::filesystem::file_time_type, StringHash, StringEqual> current_files;
 
   for (const auto& entry : std::filesystem::directory_iterator(directory_)) {
     if (!entry.is_regular_file()) {

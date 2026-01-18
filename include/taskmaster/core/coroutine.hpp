@@ -48,7 +48,7 @@ template <DeferredInitializable T>
 class deferred_init {
 public:
   deferred_init() noexcept = default;
-  ~deferred_init() noexcept(std::is_nothrow_destructible_v<T>) {
+  ~deferred_init() noexcept {
     if (initialized_) {
       std::destroy_at(std::launder(reinterpret_cast<T*>(&storage_)));
     }
@@ -94,8 +94,7 @@ public:
   template <HasContinuation Promise>
   auto await_suspend(std::coroutine_handle<Promise> h) const noexcept
       -> std::coroutine_handle<> {
-    auto continuation = h.promise().continuation();
-    if (continuation) {
+    if (auto continuation = h.promise().continuation()) {
       return continuation;
     }
     return std::noop_coroutine();
@@ -283,10 +282,8 @@ struct when_all_counter {
   explicit when_all_counter(std::size_t n) noexcept : count(n) {}
 
   auto notify_complete() noexcept -> void {
-    if (count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-      if (continuation) {
-        continuation.resume();
-      }
+    if (count.fetch_sub(1, std::memory_order_acq_rel) == 1 && continuation) {
+      continuation.resume();
     }
   }
 };
@@ -333,7 +330,7 @@ public:
     [[noreturn]] auto unhandled_exception() noexcept -> void { std::terminate(); }
   };
 
-  when_all_task(handle_type h) noexcept : handle_(h) {}
+  explicit when_all_task(handle_type h) noexcept : handle_(h) {}
   when_all_task(when_all_task&& other) noexcept : handle_(std::exchange(other.handle_, nullptr)) {}
   ~when_all_task() = default;
 

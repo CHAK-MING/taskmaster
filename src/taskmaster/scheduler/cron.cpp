@@ -71,7 +71,7 @@ auto for_each_split(std::string_view s, char delim,
 auto split(std::string_view s, char delim) -> std::vector<std::string_view> {
   std::vector<std::string_view> result;
   for_each_split(s, delim,
-                 [&](std::string_view part) { result.push_back(part); });
+                 [&result](std::string_view part) { result.push_back(part); });
   return result;
 }
 

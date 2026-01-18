@@ -135,7 +135,7 @@ private:
   [[nodiscard]] auto execute(std::string_view sql) -> Result<void>;
   [[nodiscard]] auto prepare(const char* sql) const -> Result<sqlite3_stmt*>;
   [[nodiscard]] auto get_all_tasks() const
-      -> Result<std::unordered_map<std::string, std::vector<TaskConfig>>>;
+      -> Result<std::unordered_map<std::string, std::vector<TaskConfig>, StringHash, StringEqual>>;
 
   struct DbDeleter {
     void operator()(sqlite3* db) const;

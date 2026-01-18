@@ -31,7 +31,7 @@ auto run_file_sensor(SensorExecutorConfig config, InstanceId instance_id,
 
   while (std::chrono::steady_clock::now() < deadline) {
     {
-      std::lock_guard lock(*ctx->mutex);
+      std::scoped_lock lock(*ctx->mutex);
       if (ctx->cancelled->contains(std::string(instance_id.value()))) {
         ctx->cancelled->erase(std::string(instance_id.value()));
         if (sink.on_complete) {
@@ -121,7 +121,7 @@ public:
   }
 
   auto cancel(const InstanceId& instance_id) -> void override {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     cancelled_.insert(std::string(instance_id.value()));
     log::info("SensorExecutor cancel: instance_id={}", instance_id);
   }

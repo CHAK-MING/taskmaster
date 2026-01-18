@@ -26,7 +26,7 @@ auto DAGManager::find_dag(DAGId dag_id) const -> const DAGInfo* {
 }
 
 auto DAGManager::create_dag(DAGId dag_id, const DAGInfo& info) -> Result<void> {
-  std::unique_lock lock(mu_);
+  std::scoped_lock lock(mu_);
 
   if (find_dag(dag_id)) {
     return fail(Error::AlreadyExists);
@@ -70,7 +70,7 @@ auto DAGManager::list_dags() const -> std::vector<DAGInfo> {
 }
 
 auto DAGManager::delete_dag(DAGId dag_id) -> Result<void> {
-  std::unique_lock lock(mu_);
+  std::scoped_lock lock(mu_);
 
   auto* dag = find_dag(dag_id);
   if (!dag) {
@@ -92,7 +92,7 @@ auto DAGManager::delete_dag(DAGId dag_id) -> Result<void> {
 }
 
 auto DAGManager::clear_all() -> void {
-  std::unique_lock lock(mu_);
+  std::scoped_lock lock(mu_);
   dags_.clear();
 }
 
@@ -137,7 +137,7 @@ auto DAGManager::add_task(DAGId dag_id, const TaskConfig& task)
 
 auto DAGManager::update_task(DAGId dag_id, TaskId task_id,
                              const TaskConfig& task) -> Result<void> {
-  std::unique_lock lock(mu_);
+  std::scoped_lock lock(mu_);
 
   auto* dag = find_dag(dag_id);
   if (!dag) {
@@ -172,7 +172,7 @@ auto DAGManager::update_task(DAGId dag_id, TaskId task_id,
 
 auto DAGManager::delete_task(DAGId dag_id, TaskId task_id)
     -> Result<void> {
-  std::unique_lock lock(mu_);
+  std::scoped_lock lock(mu_);
 
   auto* dag = find_dag(dag_id);
   if (!dag) {
@@ -326,7 +326,7 @@ auto DAGManager::load_from_database() -> Result<void> {
     return fail(dags_result.error());
   }
 
-  std::unique_lock lock(mu_);
+  std::scoped_lock lock(mu_);
   for (auto& dag : *dags_result) {
     dag.rebuild_task_index();
     DAGId id = dag.dag_id;  // Copy before move

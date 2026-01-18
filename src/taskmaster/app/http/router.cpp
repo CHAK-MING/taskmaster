@@ -1,11 +1,16 @@
 #include "taskmaster/app/http/router.hpp"
 
+#include "taskmaster/core/error.hpp"
+
 #include <algorithm>
 #include <format>
 #include <ranges>
 #include <sstream>
 
 namespace taskmaster::http {
+
+using taskmaster::StringEqual;
+using taskmaster::StringHash;
 
 struct Router::Impl {
   struct RoutePattern {
@@ -56,14 +61,14 @@ struct Router::Impl {
 
   static auto match_route(const RoutePattern& pattern,
                           std::string_view path)
-      -> std::optional<std::unordered_map<std::string, std::string>> {
+      -> std::optional<std::unordered_map<std::string, std::string, StringHash, StringEqual>> {
     auto path_segments = split_path(path);
     
     if (path_segments.size() != pattern.segments.size()) {
       return std::nullopt;
     }
     
-    std::unordered_map<std::string, std::string> params;
+    std::unordered_map<std::string, std::string, StringHash, StringEqual> params;
     
     for (size_t i = 0; i < pattern.segments.size(); ++i) {
       if (pattern.is_param[i]) {

@@ -19,8 +19,8 @@ TemplateResolver::TemplateResolver(Persistence& persistence)
 auto TemplateResolver::resolve_env_vars(
     const TemplateContext& ctx,
     const std::vector<XComPullConfig>& pulls)
-    -> Result<std::unordered_map<std::string, std::string>> {
-  std::unordered_map<std::string, std::string> env_vars;
+    -> Result<std::unordered_map<std::string, std::string, StringHash, StringEqual>> {
+  std::unordered_map<std::string, std::string, StringHash, StringEqual> env_vars;
 
   for (const auto& pull : pulls) {
     auto xcom_result = persistence_.get_xcom(ctx.dag_run_id, pull.source_task,
@@ -130,7 +130,7 @@ auto TemplateResolver::resolve_template(
   auto const date_fmts = compute_date_formats(ctx.execution_date);
   
   // XCom cache: "task_id\0key" -> value (avoids repeated DB queries)
-  std::unordered_map<std::string, std::string> xcom_cache;
+  std::unordered_map<std::string, std::string, StringHash, StringEqual> xcom_cache;
   
   std::string output;
   output.reserve(tmpl.size() * 2);  // Conservative estimate

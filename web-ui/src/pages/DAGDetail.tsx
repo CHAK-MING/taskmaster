@@ -135,10 +135,7 @@ export default function DAGDetail() {
     const fetchLogsForRun = useCallback(async (runId: string) => {
         if (taskDefinitions.length === 0) return;
         
-        setRunLogs(prev => {
-            if (prev.has(runId)) return prev;
-            return prev;
-        });
+        if (runLogs.has(runId)) return;
 
         setLoadingLogs(true);
         const allLogs: LogEntry[] = [];

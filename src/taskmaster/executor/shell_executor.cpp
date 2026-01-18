@@ -61,10 +61,8 @@ auto finish(ExecutionSink& sink, const InstanceId& instance_id,
     close(stdout_write_fd);
     close(stderr_write_fd);
 
-    if (!working_dir.empty()) {
-      if (chdir(working_dir.c_str()) < 0) {
-        _exit(127);
-      }
+    if (!working_dir.empty() && chdir(working_dir.c_str()) < 0) {
+      _exit(127);
     }
 
     execl("/bin/sh", "sh", "-c", cmd.c_str(), nullptr);
@@ -261,12 +259,12 @@ struct ExecutionContext {
   std::unordered_map<InstanceId, pid_t>* active_processes;
 
   auto register_process(const InstanceId& id, pid_t pid) -> void {
-    std::lock_guard lock(*mutex);
+    std::scoped_lock lock(*mutex);
     (*active_processes)[id] = pid;
   }
 
   auto unregister_process(const InstanceId& id) -> void {
-    std::lock_guard lock(*mutex);
+    std::scoped_lock lock(*mutex);
     auto it = active_processes->find(id);
     if (it != active_processes->end()) {
       active_processes->erase(it);
@@ -313,7 +311,7 @@ auto execute_command(std::string cmd, std::string working_dir,
   }
 
   ctx->register_process(instance_id, pid);
-  std::experimental::scope_exit unregister{[&] { ctx->unregister_process(instance_id); }};
+  std::experimental::scope_exit unregister{[ctx, instance_id] { ctx->unregister_process(instance_id); }};
 
   auto pidfd = open_pidfd(io_ctx, pid);
 
@@ -383,7 +381,7 @@ public:
   }
 
   auto cancel(const InstanceId& instance_id) -> void override {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     auto it = active_processes_.find(instance_id);
     if (it != active_processes_.end()) {
       pid_t pid = it->second;

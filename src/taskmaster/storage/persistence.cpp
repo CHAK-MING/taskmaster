@@ -118,17 +118,17 @@ auto Persistence::open() -> Result<void> {
   db_.reset(raw_db);
 
   // PRAGMA statements may fail on some configurations, but we continue anyway
-  if (auto r = execute("PRAGMA journal_mode=WAL;"); !r) {
+  if (auto r = execute("PRAGMA journal_mode=WAL;"); !r.has_value()) {
     log::warn("Failed to set WAL mode: {}", r.error().message());
   }
-  if (auto r = execute("PRAGMA synchronous=NORMAL;"); !r) {
+  if (auto r = execute("PRAGMA synchronous=NORMAL;"); !r.has_value()) {
     log::warn("Failed to set synchronous mode: {}", r.error().message());
   }
-  if (auto r = execute("PRAGMA foreign_keys=ON;"); !r) {
+  if (auto r = execute("PRAGMA foreign_keys=ON;"); !r.has_value()) {
     log::warn("Failed to enable foreign keys: {}", r.error().message());
   }
 
-  if (auto r = create_tables(); !r) {
+  if (auto r = create_tables(); !r.has_value()) {
     close();
     return r;
   }
@@ -560,7 +560,7 @@ auto Persistence::rollback_transaction() -> Result<void> {
 }
 
 auto Persistence::save_dag(const DAGInfo& info) -> Result<void> {
-  if (auto r = begin_transaction(); !r) {
+  if (auto r = begin_transaction(); !r.has_value()) {
     return r;
   }
 
@@ -574,7 +574,7 @@ auto Persistence::save_dag(const DAGInfo& info) -> Result<void> {
 
   auto result = prepare(sql);
   if (!result) {
-    if (auto r = rollback_transaction(); !r) {
+    if (auto r = rollback_transaction(); !r.has_value()) {
       return r;
     }
     return std::unexpected(result.error());
@@ -591,14 +591,14 @@ auto Persistence::save_dag(const DAGInfo& info) -> Result<void> {
   sqlite3_bind_int64(stmt.get(), 7, to_timestamp(info.updated_at));
 
   if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
-    if (auto r = rollback_transaction(); !r) {
+    if (auto r = rollback_transaction(); !r.has_value()) {
       log::error("Failed to rollback transaction: {}", r.error().message());
       return r;
     }
     return fail(Error::DatabaseQueryFailed);
   }
 
-  if (auto r = commit_transaction(); !r) {
+  if (auto r = commit_transaction(); !r.has_value()) {
     log::error("Failed to commit transaction: {}", r.error().message());
     return r;
   }
@@ -769,7 +769,7 @@ auto Persistence::get_tasks(DAGId dag_id) const
 }
 
 auto Persistence::get_all_tasks() const
-    -> Result<std::unordered_map<std::string, std::vector<TaskConfig>>> {
+    -> Result<std::unordered_map<std::string, std::vector<TaskConfig>, StringHash, StringEqual>> {
   constexpr auto sql = R"(
     SELECT dag_id, task_id, name, command, working_dir, executor, deps, timeout, retry_interval, max_retries
     FROM dag_tasks;
@@ -780,7 +780,7 @@ auto Persistence::get_all_tasks() const
     return std::unexpected(result.error());
   Statement stmt(*result);
 
-  std::unordered_map<std::string, std::vector<TaskConfig>> tasks_by_dag;
+  std::unordered_map<std::string, std::vector<TaskConfig>, StringHash, StringEqual> tasks_by_dag;
   while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
     auto dag_id_str = col_text(stmt.get(), 0);
     auto task = parse_task_from_row(stmt.get(), 1, 2, 3, 4, 5, 6, 7, 8, 9);
@@ -797,7 +797,7 @@ auto Persistence::save_task_instances_batch(
     return ok();
   }
 
-  if (auto r = begin_transaction(); !r) {
+  if (auto r = begin_transaction(); !r.has_value()) {
     return r;
   }
 
@@ -845,7 +845,7 @@ auto Persistence::save_task_instances_batch(
     }
   }
 
-  if (auto r = commit_transaction(); !r) {
+  if (auto r = commit_transaction(); !r.has_value()) {
     log::error("Failed to commit transaction: {}", r.error().message());
     return r;
   }
@@ -946,13 +946,13 @@ auto Persistence::get_task_logs(DAGRunId dag_run_id,
 }
 
 auto Persistence::clear_all_dag_data() -> Result<void> {
-  if (auto r = begin_transaction(); !r) return r;
-  if (auto r = execute("DELETE FROM xcom_values;"); !r) return r;
-  if (auto r = execute("DELETE FROM task_logs;"); !r) return r;
-  if (auto r = execute("DELETE FROM task_instances;"); !r) return r;
-  if (auto r = execute("DELETE FROM dag_runs;"); !r) return r;
-  if (auto r = execute("DELETE FROM dag_tasks;"); !r) return r;
-  if (auto r = execute("DELETE FROM dags;"); !r) return r;
+  if (auto r = begin_transaction(); !r.has_value()) return r;
+  if (auto r = execute("DELETE FROM xcom_values;"); !r.has_value()) return r;
+  if (auto r = execute("DELETE FROM task_logs;"); !r.has_value()) return r;
+  if (auto r = execute("DELETE FROM task_instances;"); !r.has_value()) return r;
+  if (auto r = execute("DELETE FROM dag_runs;"); !r.has_value()) return r;
+  if (auto r = execute("DELETE FROM dag_tasks;"); !r.has_value()) return r;
+  if (auto r = execute("DELETE FROM dags;"); !r.has_value()) return r;
   return commit_transaction();
 }
 

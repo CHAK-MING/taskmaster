@@ -19,11 +19,11 @@ namespace taskmaster::io {
 class IoContext;
 class IoContextImpl;
 
-inline constexpr unsigned kInvalidShard = ~0u;
-inline constexpr std::uint32_t kDefaultQueueDepth = 256;
-inline constexpr std::uintptr_t kWakeEventToken = 0x1;
-inline constexpr std::uintptr_t kMsgRingWakeToken = 0x2;
-inline constexpr std::uint32_t kCqeFMore = (1U << 1);
+constexpr unsigned kInvalidShard = ~0u;
+constexpr std::uint32_t kDefaultQueueDepth = 256;
+constexpr std::uintptr_t kWakeEventToken = 0x1;
+constexpr std::uintptr_t kMsgRingWakeToken = 0x2;
+constexpr std::uint32_t kCqeFMore = (1U << 1);
 
 namespace ops {
 
@@ -310,7 +310,8 @@ public:
   auto process_completions(CompletionCallback cb) -> unsigned;
 
   /// Process completions with custom callback (template version)
-  template <CompletionHandler Callback>
+  template <typename Callback>
+    requires std::invocable<Callback&, void*, std::int32_t, std::uint32_t>
   auto process_completions(Callback&& cb) -> unsigned {
     return process_completions(CompletionCallback(std::forward<Callback>(cb)));
   }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "taskmaster/core/error.hpp"
 #include "taskmaster/util/id.hpp"
 
 #include <nlohmann/json.hpp>
@@ -53,7 +54,7 @@ struct XComRefHash {
   }
 };
 
-using XComMap = std::unordered_map<std::string, XComValue>;
+using XComMap = std::unordered_map<std::string, XComValue, StringHash, StringEqual>;
 
 class XComCache {
 public:
@@ -91,7 +92,7 @@ private:
            std::string(task_id.value()) + ":" + key;
   }
 
-  std::unordered_map<std::string, nlohmann::json> cache_;
+  std::unordered_map<std::string, nlohmann::json, StringHash, StringEqual> cache_;
 };
 
 }  // namespace taskmaster

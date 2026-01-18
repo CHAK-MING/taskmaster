@@ -37,7 +37,7 @@ public:
 
 private:
   std::filesystem::path directory_;
-  std::unordered_map<std::string, std::filesystem::file_time_type>
+  std::unordered_map<std::string, std::filesystem::file_time_type, StringHash, StringEqual>
       file_timestamps_;
   DAGLoadCallback on_dag_loaded_;
   DAGRemoveCallback on_dag_removed_;

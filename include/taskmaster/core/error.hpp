@@ -2,6 +2,7 @@
 
 #include <concepts>
 #include <expected>
+#include <functional>
 #include <string>
 #include <system_error>
 #include <type_traits>
@@ -88,7 +89,7 @@ template <typename T>
   return std::forward<T>(value);
 }
 
-[[nodiscard]] inline constexpr auto ok() -> Result<void> {
+[[nodiscard]] constexpr auto ok() -> Result<void> {
   return {};
 }
 
@@ -110,10 +111,20 @@ namespace taskmaster {
 
 struct StringHash {
   using is_transparent = void;
-  [[nodiscard]] constexpr auto operator()(std::string_view sv) const noexcept
-      -> std::size_t {
+
+  [[nodiscard]] std::size_t operator()(std::string_view sv) const noexcept {
     return std::hash<std::string_view>{}(sv);
   }
+
+  [[nodiscard]] std::size_t operator()(const std::string& s) const noexcept {
+    return std::hash<std::string_view>{}(s);
+  }
+
+  [[nodiscard]] std::size_t operator()(const char* s) const noexcept {
+    return std::hash<std::string_view>{}(s);
+  }
 };
+
+using StringEqual = std::equal_to<>;
 
 }  // namespace taskmaster

@@ -44,14 +44,14 @@ auto cmd_validate(const ValidateOptions& opts) -> int {
 
     auto def_result = DAGDefinitionLoader::load_from_file(entry.path().string());
     if (!def_result) {
-      std::println("\u2717 {}", dag_id);
+      std::println("\u{2717} {}", dag_id);
       invalid_count++;
       continue;
     }
 
     const auto& def = *def_result;
     if (def.tasks.empty()) {
-      std::println("\u2717 {} - No tasks defined", dag_id);
+      std::println("\u{2717} {} - No tasks defined", dag_id);
       invalid_count++;
       continue;
     }
@@ -64,8 +64,8 @@ auto cmd_validate(const ValidateOptions& opts) -> int {
     bool has_error = false;
     for (const auto& task : def.tasks) {
       for (const auto& dep : task.dependencies) {
-        if (auto r = dag.add_edge(dep, task.task_id); !r) {
-          std::println("\u2717 {} - Invalid dependency: {} -> {}",
+        if (auto r = dag.add_edge(dep, task.task_id); !r.has_value()) {
+          std::println("\u{2717} {} - Invalid dependency: {} -> {}",
                        dag_id, dep, task.task_id);
           has_error = true;
           break;
@@ -79,8 +79,8 @@ auto cmd_validate(const ValidateOptions& opts) -> int {
       continue;
     }
 
-    if (auto r = dag.is_valid(); !r) {
-      std::println("\u2717 {} - {}", dag_id, r.error().message());
+    if (auto r = dag.is_valid(); !r.has_value()) {
+      std::println("\u{2717} {} - {}", dag_id, r.error().message());
       invalid_count++;
       continue;
     }

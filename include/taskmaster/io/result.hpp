@@ -57,6 +57,9 @@ public:
     return "unknown error";
   }
 
+  // Bring base class overloads into scope to avoid hiding
+  using std::error_category::equivalent;
+
   [[nodiscard]] auto equivalent(int code, const std::error_condition& cond)
       const noexcept -> bool override {
     if (cond.category() == std::generic_category()) {

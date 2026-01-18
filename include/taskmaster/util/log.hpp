@@ -31,11 +31,11 @@ enum class Level : std::uint8_t {
 [[nodiscard]] constexpr auto level_color(Level level) noexcept
     -> std::string_view {
   constexpr std::string_view colors[] = {
-      "\033[90m",  // trace: gray
-      "\033[36m",  // debug: cyan
-      "\033[32m",  // info: green
-      "\033[33m",  // warn: yellow
-      "\033[31m"   // error: red
+      "\o{33}[90m",  // trace: gray
+      "\o{33}[36m",  // debug: cyan
+      "\o{33}[32m",  // info: green
+      "\o{33}[33m",  // warn: yellow
+      "\o{33}[31m"   // error: red
   };
   return colors[static_cast<std::uint8_t>(level)];
 }

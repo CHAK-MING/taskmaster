@@ -148,7 +148,7 @@ WebSocketConnection::WebSocketConnection(int fd, Runtime& runtime)
 
 WebSocketConnection::~WebSocketConnection() = default;
 
-auto WebSocketConnection::send_text(std::string_view text) -> task<void> {
+auto WebSocketConnection::send_text(std::string text) -> task<void> {
   auto& io_ctx = current_io_context();
   auto frame = encode_websocket_frame(
       WebSocketOpCode::Text,
@@ -160,7 +160,7 @@ auto WebSocketConnection::send_text(std::string_view text) -> task<void> {
   }
 }
 
-auto WebSocketConnection::send_binary(std::span<const uint8_t> data)
+auto WebSocketConnection::send_binary(std::vector<uint8_t> data)
     -> task<void> {
   auto& io_ctx = current_io_context();
   auto frame = encode_websocket_frame(WebSocketOpCode::Binary, data);
@@ -181,7 +181,7 @@ auto WebSocketConnection::send_close() -> task<void> {
   }
 }
 
-auto WebSocketConnection::send_pong(std::span<const uint8_t> data)
+auto WebSocketConnection::send_pong(std::vector<uint8_t> data)
     -> task<void> {
   auto& io_ctx = current_io_context();
   auto frame = encode_websocket_frame(WebSocketOpCode::Pong, data);
@@ -254,7 +254,7 @@ struct WebSocketHub::Impl {
 
   auto broadcast_json(const std::string& json_str,
                       const std::optional<std::string>& dag_run_id) -> void {
-    std::lock_guard lock(mu);
+    std::scoped_lock lock(mu);
     for (auto& c : connections) {
       if (!c.run_filter || !dag_run_id || *c.run_filter == *dag_run_id) {
         auto send_task = [](std::shared_ptr<WebSocketConnection> conn,
@@ -276,12 +276,12 @@ WebSocketHub::~WebSocketHub() = default;
 auto WebSocketHub::add_connection(std::shared_ptr<WebSocketConnection> conn,
                                    std::optional<std::string> run_filter)
     -> void {
-  std::lock_guard lock(impl_->mu);
+  std::scoped_lock lock(impl_->mu);
   impl_->connections.push_back({std::move(conn), std::move(run_filter)});
 }
 
 auto WebSocketHub::remove_connection(int fd) -> void {
-  std::lock_guard lock(impl_->mu);
+  std::scoped_lock lock(impl_->mu);
   std::erase_if(impl_->connections,
                 [fd](const Impl::Connection& c) { return c.conn->fd() == fd; });
 }
@@ -301,11 +301,11 @@ auto WebSocketHub::broadcast_event(const EventMessage& event) -> void {
 }
 
 auto WebSocketHub::connection_count() const -> size_t {
-  std::lock_guard lock(impl_->mu);
+  std::scoped_lock lock(impl_->mu);
   return impl_->connections.size();
 }
 
-auto perform_websocket_handshake(int client_fd, std::string_view sec_key)
+auto perform_websocket_handshake(int client_fd, std::string sec_key)
     -> task<void> {
   auto& io_ctx = current_io_context();
 

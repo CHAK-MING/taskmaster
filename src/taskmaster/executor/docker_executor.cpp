@@ -41,19 +41,19 @@ class DockerExecutionContext {
 public:
   auto register_container(const InstanceId& id, std::string container_id,
                           std::string socket_path) -> void {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     active_containers_[id] = ActiveContainer{std::move(container_id),
                                              std::move(socket_path)};
   }
 
   auto unregister_container(const InstanceId& id) -> void {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     active_containers_.erase(id);
     cancelled_instances_.erase(id);
   }
 
   auto get_container(const InstanceId& id) -> std::optional<ActiveContainer> {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     auto it = active_containers_.find(id);
     if (it != active_containers_.end()) {
       return it->second;
@@ -62,12 +62,12 @@ public:
   }
 
   auto mark_cancelled(const InstanceId& id) -> void {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     cancelled_instances_.insert(id);
   }
 
   auto is_cancelled(const InstanceId& id) -> bool {
-    std::lock_guard lock(mutex_);
+    std::scoped_lock lock(mutex_);
     return cancelled_instances_.contains(id);
   }
 
@@ -148,7 +148,7 @@ auto execute_docker_task(DockerExecutorConfig config, InstanceId instance_id,
 
   ctx->register_container(instance_id, container_id, config.docker_socket);
   std::experimental::scope_exit unregister{
-      [&] { ctx->unregister_container(instance_id); }};
+      [ctx, instance_id] { ctx->unregister_container(instance_id); }};
 
   auto start_result = co_await client->start_container(container_id);
   if (!start_result) {

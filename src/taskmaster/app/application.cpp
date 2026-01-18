@@ -76,7 +76,7 @@ auto Application::config() noexcept -> Config& {
 
 auto Application::init() -> Result<void> {
   if (persistence_ && !persistence_->is_open()) {
-    if (auto r = persistence_->open(); !r) {
+    if (auto r = persistence_->open(); !r.has_value()) {
       return fail(r.error());
     }
   }
@@ -92,7 +92,7 @@ auto Application::init() -> Result<void> {
 
 auto Application::init_db_only() -> Result<void> {
   if (persistence_ && !persistence_->is_open()) {
-    if (auto r = persistence_->open(); !r) {
+    if (auto r = persistence_->open(); !r.has_value()) {
       return fail(r.error());
     }
   }
@@ -110,7 +110,7 @@ auto Application::load_dags_from_directory(std::string_view dags_dir) -> Result<
   }
 
   if(persistence_) {
-    if(auto r = persistence_->persistence()->clear_all_dag_data(); !r) {
+    if(auto r = persistence_->persistence()->clear_all_dag_data(); !r.has_value()) {
       return fail(r.error());
     }
   }
@@ -131,7 +131,7 @@ auto Application::load_dags_from_directory(std::string_view dags_dir) -> Result<
     info.updated_at = info.created_at;
     info.rebuild_task_index();
 
-    if(auto r = validate_dag_info(info); !r) {
+    if(auto r = validate_dag_info(info); !r.has_value()) {
       return fail(r.error());
     }
 
@@ -163,7 +163,7 @@ auto Application::start() -> Result<void> {
     return ok();
 
   if (persistence_ && !persistence_->is_open()) {
-    if (auto r = persistence_->open(); !r) {
+    if (auto r = persistence_->open(); !r.has_value()) {
       running_ = false;
       return fail(r.error());
     }
@@ -373,10 +373,8 @@ auto Application::get_max_retries(DAGRunId dag_run_id, NodeIndex idx)
     -> int {
   DAGId dag_id = extract_dag_id(dag_run_id);
 
-  if (auto dag_info = dag_manager_.get_dag(dag_id)) {
-    if (idx < dag_info->tasks.size()) {
-      return dag_info->tasks[idx].max_retries;
-    }
+  if (auto dag_info = dag_manager_.get_dag(dag_id); dag_info && idx < dag_info->tasks.size()) {
+    return dag_info->tasks[idx].max_retries;
   }
 
   return 3;
@@ -386,10 +384,8 @@ auto Application::get_retry_interval(DAGRunId dag_run_id, NodeIndex idx)
     -> std::chrono::seconds {
   DAGId dag_id = extract_dag_id(dag_run_id);
 
-  if (auto dag_info = dag_manager_.get_dag(dag_id)) {
-    if (idx < dag_info->tasks.size()) {
-      return dag_info->tasks[idx].retry_interval;
-    }
+  if (auto dag_info = dag_manager_.get_dag(dag_id); dag_info && idx < dag_info->tasks.size()) {
+    return dag_info->tasks[idx].retry_interval;
   }
 
   return std::chrono::seconds(60);
@@ -545,7 +541,7 @@ auto Application::validate_dag_info(const DAGInfo& info) -> Result<void> {
 auto Application::create_dag_atomically(DAGId dag_id,
                                         const DAGInfo& info) -> Result<void> {
   if (auto result = dag_manager_.create_dag(dag_id, info); !result) {
-    if(auto r = dag_manager_.delete_dag(dag_id); !r) {
+    if(auto r = dag_manager_.delete_dag(dag_id); !r.has_value()) {
       log::error("Failed to delete DAG: {}", r.error().message());
     }
     return fail(result.error());
@@ -617,7 +613,7 @@ auto Application::handle_file_change(const std::string& filename) -> void {
         DAGId dag_id{p.stem().string()};
         
         log::info("DAG file removed: {}", filename);
-        if (auto r = dag_manager_.delete_dag(dag_id); !r) {
+        if (auto r = dag_manager_.delete_dag(dag_id); !r.has_value()) {
              log::warn("Failed to delete DAG {}: {}", dag_id, r.error().message());
         }
         scheduler_->unregister_dag(dag_id);
@@ -634,7 +630,7 @@ auto Application::handle_file_change(const std::string& filename) -> void {
         return;
     }
 
-    if (auto r = reload_single_dag(result->definition); !r) {
+    if (auto r = reload_single_dag(result->definition); !r.has_value()) {
         log::error("Failed to reload DAG from {}: {}", filename, r.error().message());
     } else {
         log::info("Successfully reloaded DAG from {}", filename);
@@ -659,17 +655,17 @@ auto Application::reload_single_dag(const DAGDefinition& def) -> Result<void> {
     info.updated_at = info.created_at;
     info.rebuild_task_index();
 
-    if(auto r = validate_dag_info(info); !r) {
+    if(auto r = validate_dag_info(info); !r.has_value()) {
       return fail(r.error());
     }
 
     if (dag_manager_.has_dag(dag_id)) {
-        if(auto r = dag_manager_.delete_dag(dag_id); !r) {
+        if(auto r = dag_manager_.delete_dag(dag_id); !r.has_value()) {
             log::warn("Failed to clean up old DAG version for reload: {}", r.error().message());
         }
     }
     
-    if (auto r = dag_manager_.create_dag(dag_id, info); !r) {
+    if (auto r = dag_manager_.create_dag(dag_id, info); !r.has_value()) {
         return fail(r.error());
     }
     

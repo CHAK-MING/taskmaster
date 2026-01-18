@@ -22,7 +22,7 @@ auto state_str(DAGRunState state) -> std::string_view {
 auto cmd_status(const StatusOptions& opts) -> int {
   Persistence db(opts.db_file);
 
-  if (auto r = db.open(); !r) {
+  if (auto r = db.open(); !r.has_value()) {
     std::println(stderr, "Error: Failed to open database: {}", r.error().message());
     return 1;
   }

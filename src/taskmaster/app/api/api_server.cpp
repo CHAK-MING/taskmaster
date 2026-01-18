@@ -15,6 +15,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <chrono>
 #include <string>
 
@@ -30,9 +31,9 @@ auto current_timestamp() -> std::string {
   auto time_t = std::chrono::system_clock::to_time_t(now);
   std::tm tm{};
   localtime_r(&time_t, &tm);
-  char buf[32];
-  std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
-  return buf;
+  std::array<char, 32> buf{};
+  std::strftime(buf.data(), buf.size(), "%Y-%m-%d %H:%M:%S", &tm);
+  return buf.data();
 }
 
 auto format_iso(int64_t timestamp_ms) -> std::string {
@@ -43,9 +44,9 @@ auto format_iso(int64_t timestamp_ms) -> std::string {
   auto time_t = std::chrono::system_clock::to_time_t(tp);
   std::tm tm{};
   gmtime_r(&time_t, &tm);
-  char buf[32];
-  std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
-  return buf;
+  std::array<char, 32> buf{};
+  std::strftime(buf.data(), buf.size(), "%Y-%m-%dT%H:%M:%SZ", &tm);
+  return buf.data();
 }
 
 auto to_json(const DAGInfo& dag_info) -> json {
