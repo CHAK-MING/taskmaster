@@ -247,7 +247,9 @@ export default function DAGDetail() {
         };
 
         return () => {
-            ws.close();
+            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+                ws.close();
+            }
             wsRef.current = null;
         };
     }, [id, fetchRunHistory, selectedRun, fetchTaskInstancesForRun]);
@@ -564,17 +566,41 @@ export default function DAGDetail() {
                             ) : Object.keys(currentXCom).length > 0 ? (
                                 <div className="space-y-4">
                                     {Object.entries(currentXCom).map(([taskId, values]) => (
-                                        <div key={taskId} className="border rounded-lg p-4">
-                                            <div className="flex items-center gap-2 mb-3">
-                                                <Badge variant="outline">{taskId}</Badge>
-                                                <span className="text-sm text-muted-foreground">
-                                                    {Object.keys(values).length} 个键值
-                                                </span>
-                                            </div>
-                                            <div className="bg-muted/50 rounded p-3 font-mono text-sm overflow-x-auto">
-                                                <pre>{JSON.stringify(values, null, 2)}</pre>
-                                            </div>
-                                        </div>
+                                        <Card key={taskId}>
+                                            <CardHeader className="pb-2">
+                                                <div className="flex items-center justify-between">
+                                                    <CardTitle className="text-base font-mono">{taskId}</CardTitle>
+                                                    <span className="text-xs text-muted-foreground">
+                                                        {Object.keys(values).length} 个变量
+                                                    </span>
+                                                </div>
+                                            </CardHeader>
+                                            <CardContent>
+                                                <div className="space-y-2">
+                                                    {Object.entries(values).map(([key, val]) => {
+                                                        const isObj = typeof val === 'object' && val !== null;
+                                                        return (
+                                                            <div key={key} className="flex items-start gap-3 py-2 border-b border-border/50 last:border-0">
+                                                                <span className="font-mono text-sm text-muted-foreground min-w-[120px]">
+                                                                    {key}
+                                                                </span>
+                                                                <div className="flex-1 min-w-0">
+                                                                    {isObj ? (
+                                                                        <pre className="text-sm bg-muted/50 p-2 rounded overflow-x-auto font-mono">
+                                                                            {JSON.stringify(val, null, 2)}
+                                                                        </pre>
+                                                                    ) : (
+                                                                        <span className="text-sm font-mono">
+                                                                            {val === null ? <span className="text-muted-foreground italic">null</span> : String(val)}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </CardContent>
+                                        </Card>
                                     ))}
                                 </div>
                             ) : (

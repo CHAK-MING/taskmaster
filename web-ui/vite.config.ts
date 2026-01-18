@@ -14,7 +14,8 @@ export default defineConfig(({ mode }) => ({
                 changeOrigin: true,
             },
             '/ws': {
-                target: 'ws://localhost:8888',
+                target: 'http://localhost:8888',
+                changeOrigin: true,
                 ws: true,
             },
         },

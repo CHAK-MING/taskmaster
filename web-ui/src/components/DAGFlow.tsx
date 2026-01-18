@@ -79,18 +79,121 @@ const statusLabels: Record<FlowTaskStatus, string> = {
 export function DAGFlow({ tasks, dependencies, className, onTaskClick }: DAGFlowProps) {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
 
-  const initialNodes: Node[] = useMemo(() => {
+  // Build adjacency lists and compute topological layers
+  const { nodePositions } = useMemo(() => {
     const nodeWidth = 180;
     const nodeHeight = 70;
-    const horizontalGap = 80;
+    const horizontalGap = 120;
     const verticalGap = 100;
-    const nodesPerRow = 3;
 
-    return tasks.map((task, index) => {
-      const row = Math.floor(index / nodesPerRow);
-      const col = index % nodesPerRow;
+    // Build dependency graph
+    const taskMap = new Map(tasks.map(t => [t.id, t]));
+    const inDegree = new Map<string, number>();
+    const children = new Map<string, string[]>();
+    const parents = new Map<string, string[]>();
+
+    // Initialize
+    for (const task of tasks) {
+      inDegree.set(task.id, 0);
+      children.set(task.id, []);
+      parents.set(task.id, []);
+    }
+
+    // Build edges from dependencies prop or task.dependsOn
+    const edges: { from: string; to: string }[] = [];
+    if (dependencies && dependencies.length > 0) {
+      edges.push(...dependencies);
+    } else {
+      for (const task of tasks) {
+        if (task.dependsOn) {
+          for (const dep of task.dependsOn) {
+            edges.push({ from: dep, to: task.id });
+          }
+        }
+      }
+    }
+
+    for (const { from, to } of edges) {
+      if (taskMap.has(from) && taskMap.has(to)) {
+        children.get(from)!.push(to);
+        parents.get(to)!.push(from);
+        inDegree.set(to, (inDegree.get(to) || 0) + 1);
+      }
+    }
+
+    // Compute layers using longest path (ensures proper DAG depth)
+    const layer = new Map<string, number>();
+    const queue: string[] = [];
+
+    // Start with nodes that have no parents
+    for (const task of tasks) {
+      if ((inDegree.get(task.id) || 0) === 0) {
+        layer.set(task.id, 0);
+        queue.push(task.id);
+      }
+    }
+
+    // BFS to compute max layer for each node
+    while (queue.length > 0) {
+      const nodeId = queue.shift()!;
+      const currentLayer = layer.get(nodeId)!;
+      for (const child of children.get(nodeId) || []) {
+        const newLayer = currentLayer + 1;
+        if (!layer.has(child) || layer.get(child)! < newLayer) {
+          layer.set(child, newLayer);
+        }
+        // Decrease in-degree and add to queue when all parents processed
+        const newDegree = (inDegree.get(child) || 1) - 1;
+        inDegree.set(child, newDegree);
+        if (newDegree === 0) {
+          queue.push(child);
+        }
+      }
+    }
+
+    // Handle disconnected nodes (no dependencies)
+    for (const task of tasks) {
+      if (!layer.has(task.id)) {
+        layer.set(task.id, 0);
+      }
+    }
+
+    // Group nodes by layer
+    const layers = new Map<number, string[]>();
+    for (const [nodeId, layerIdx] of layer) {
+      if (!layers.has(layerIdx)) {
+        layers.set(layerIdx, []);
+      }
+      layers.get(layerIdx)!.push(nodeId);
+    }
+
+    // Calculate positions
+    const positions = new Map<string, { x: number; y: number }>();
+    const maxNodesInLayer = Math.max(...Array.from(layers.values()).map(l => l.length), 1);
+
+    for (const [layerIdx, nodeIds] of layers) {
+      const layerHeight = nodeIds.length * (nodeHeight + verticalGap);
+      const totalHeight = maxNodesInLayer * (nodeHeight + verticalGap);
+      const startY = (totalHeight - layerHeight) / 2 + 50;
+
+      nodeIds.forEach((nodeId, idx) => {
+        positions.set(nodeId, {
+          x: layerIdx * (nodeWidth + horizontalGap) + 50,
+          y: startY + idx * (nodeHeight + verticalGap),
+        });
+      });
+    }
+
+    return { nodePositions: positions };
+  }, [tasks, dependencies]);
+
+  const initialNodes: Node[] = useMemo(() => {
+    const nodeWidth = 180;
+
+    return tasks.map((task) => {
       const colors = statusColors[task.status];
       const isRunning = task.status === "running";
+      const position = nodePositions.get(task.id) || { x: 50, y: 50 };
 
       return {
         id: task.id,
@@ -116,10 +219,7 @@ export function DAGFlow({ tasks, dependencies, className, onTaskClick }: DAGFlow
           ),
           task,
         },
-        position: {
-          x: col * (nodeWidth + horizontalGap) + 50,
-          y: row * (nodeHeight + verticalGap) + 50,
-        },
+        position,
         style: {
           background: "hsl(var(--card))",
           border: `2px solid ${colors.border}`,
@@ -135,10 +235,24 @@ export function DAGFlow({ tasks, dependencies, className, onTaskClick }: DAGFlow
         targetPosition: Position.Left,
       };
     });
-  }, [tasks]);
+  }, [tasks, nodePositions]);
 
   const initialEdges: Edge[] = useMemo(() => {
-    if (!dependencies) {
+    const edges: { from: string; to: string }[] = [];
+    
+    if (dependencies && dependencies.length > 0) {
+      edges.push(...dependencies);
+    } else {
+      for (const task of tasks) {
+        if (task.dependsOn) {
+          for (const dep of task.dependsOn) {
+            edges.push({ from: dep, to: task.id });
+          }
+        }
+      }
+    }
+
+    if (edges.length === 0) {
       return tasks.slice(0, -1).map((task, index) => ({
         id: `e${task.id}-${tasks[index + 1].id}`,
         source: task.id,
@@ -156,7 +270,7 @@ export function DAGFlow({ tasks, dependencies, className, onTaskClick }: DAGFlow
       }));
     }
 
-    return dependencies.map((dep) => {
+    return edges.map((dep) => {
       const targetTask = tasks.find((t) => t.id === dep.to);
       return {
         id: `e${dep.from}-${dep.to}`,
