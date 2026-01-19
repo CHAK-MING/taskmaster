@@ -107,14 +107,15 @@ auto DAGManager::add_task(DAGId dag_id, const TaskConfig& task)
     return fail(Error::AlreadyExists);
   }
 
-  if (would_create_cycle_internal(*dag, task.task_id, task.dependencies)) {
+  if (would_create_cycle_internal(*dag, task.task_id, 
+      task.dependencies | std::views::transform(&TaskDependency::task_id) | std::ranges::to<std::vector>())) {
     log::warn("Adding task {} would create a cycle in DAG {}", task.task_id, dag_id);
     return fail(Error::InvalidArgument);
   }
 
   for (const auto& dep : task.dependencies) {
-    if (!dag->find_task(dep)) {
-      log::warn("Dependency {} not found in DAG {}", dep, dag_id);
+    if (!dag->find_task(dep.task_id)) {
+      log::warn("Dependency {} not found in DAG {}", dep.task_id, dag_id);
       return fail(Error::NotFound);
     }
   }
@@ -149,7 +150,8 @@ auto DAGManager::update_task(DAGId dag_id, TaskId task_id,
     return fail(Error::NotFound);
   }
 
-  if (would_create_cycle_internal(*dag, task_id, task.dependencies)) {
+  if (would_create_cycle_internal(*dag, task_id, 
+      task.dependencies | std::views::transform(&TaskDependency::task_id) | std::ranges::to<std::vector>())) {
     return fail(Error::InvalidArgument);
   }
 
@@ -181,7 +183,7 @@ auto DAGManager::delete_task(DAGId dag_id, TaskId task_id)
 
   // Check if any task depends on this one
   for (const auto& t : dag->tasks) {
-    if (std::ranges::contains(t.dependencies, task_id)) {
+    if (std::ranges::any_of(t.dependencies, [&](const TaskDependency& d) { return d.task_id == task_id; })) {
       log::warn("Cannot delete task {} - task {} depends on it", task_id, t.task_id);
       return fail(Error::InvalidArgument);
     }
@@ -294,7 +296,7 @@ auto DAGManager::build_dag_graph(DAGId dag_id) const -> Result<DAG> {
 
   for (const auto& task : dag_info->tasks) {
     for (const auto& dep : task.dependencies) {
-      if (auto r = dag.add_edge(dep, task.task_id); !r) {
+      if (auto r = dag.add_edge(dep.task_id, task.task_id); !r) {
         return fail(r.error());
       }
     }

@@ -49,18 +49,18 @@ TEST(ShellExecutorConfigTest, DefaultConstruction_HasExpectedDefaults) {
 
   EXPECT_TRUE(config.command.empty());
   EXPECT_TRUE(config.working_dir.empty());
-  EXPECT_EQ(config.timeout, std::chrono::seconds(300));
+  EXPECT_EQ(config.execution_timeout, std::chrono::seconds(300));
 }
 
 TEST(ShellExecutorConfigTest, CustomValues_ArePreserved) {
   ShellExecutorConfig config;
   config.command = "echo hello";
   config.working_dir = "/tmp";
-  config.timeout = std::chrono::seconds(60);
+  config.execution_timeout = std::chrono::seconds(60);
 
   EXPECT_EQ(config.command, "echo hello");
   EXPECT_EQ(config.working_dir, "/tmp");
-  EXPECT_EQ(config.timeout, std::chrono::seconds(60));
+  EXPECT_EQ(config.execution_timeout, std::chrono::seconds(60));
 }
 
 class ShellExecutorTest : public ::testing::Test {
@@ -86,7 +86,7 @@ protected:
 TEST_F(ShellExecutorTest, ExecuteValidCommand_ReturnsZeroExitCode) {
   ShellExecutorConfig config;
   config.command = "echo hello";
-  config.timeout = std::chrono::seconds(5);
+  config.execution_timeout = std::chrono::seconds(5);
 
   ExecutorResult result;
   std::atomic<bool> completed{false};
@@ -117,7 +117,7 @@ TEST_F(ShellExecutorTest, ExecuteValidCommand_ReturnsZeroExitCode) {
 TEST_F(ShellExecutorTest, ExecuteFailingCommand_ReturnsNonZeroExitCode) {
   ShellExecutorConfig config;
   config.command = "exit 42";
-  config.timeout = std::chrono::seconds(5);
+  config.execution_timeout = std::chrono::seconds(5);
 
   ExecutorResult result;
   std::atomic<bool> completed{false};
@@ -148,7 +148,7 @@ TEST_F(ShellExecutorTest, ExecuteFailingCommand_ReturnsNonZeroExitCode) {
 TEST_F(ShellExecutorTest, ExecuteInvalidCommand_ReturnsError) {
   ShellExecutorConfig config;
   config.command = "nonexistent_command_12345";
-  config.timeout = std::chrono::seconds(5);
+  config.execution_timeout = std::chrono::seconds(5);
 
   ExecutorResult result;
   std::atomic<bool> completed{false};

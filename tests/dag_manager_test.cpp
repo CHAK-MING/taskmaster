@@ -195,11 +195,11 @@ TEST_F(DAGManagerTest, WouldCreateCycleSimple) {
 
   TaskConfig task2;
   task2.task_id = TaskId{"task2"};
-  task2.dependencies = {TaskId{"task1"}};
+  task2.dependencies = {TaskDependency{TaskId{"task1"}, ""}};
 
   TaskConfig task3;
   task3.task_id = TaskId{"task3"};
-  task3.dependencies = {TaskId{"task2"}};
+  task3.dependencies = {TaskDependency{TaskId{"task2"}, ""}};
 
   info.tasks = {task1, task2, task3};
   ASSERT_TRUE(dag_manager_->create_dag(dag_id, info).has_value());
@@ -218,7 +218,7 @@ TEST_F(DAGManagerTest, BuildDagGraph) {
 
   TaskConfig task2;
   task2.task_id = TaskId{"task2"};
-  task2.dependencies = {TaskId{"task1"}};
+  task2.dependencies = {TaskDependency{TaskId{"task1"}, ""}};
 
   info.tasks = {task1, task2};
   ASSERT_TRUE(dag_manager_->create_dag(dag_id, info).has_value());
@@ -308,7 +308,7 @@ TEST_F(DAGManagerTest, AddTaskWithInvalidDependencyFails) {
   task.task_id = TaskId{"task1"};
   task.name = "Task 1";
   task.command = "echo hello";
-  task.dependencies = {TaskId{"nonexistent"}};
+  task.dependencies = {TaskDependency{TaskId{"nonexistent"}, ""}};
 
   auto result = dag_manager_->add_task(dag_id, task);
   EXPECT_FALSE(result.has_value());
@@ -328,7 +328,7 @@ TEST_F(DAGManagerTest, DeleteTaskWithDependentFails) {
   task2.task_id = TaskId{"task2"};
   task2.name = "Task 2";
   task2.command = "echo 2";
-  task2.dependencies = {TaskId{"task1"}};
+  task2.dependencies = {TaskDependency{TaskId{"task1"}, ""}};
 
   info.tasks = {task1, task2};
   ASSERT_TRUE(dag_manager_->create_dag(dag_id, info).has_value());
@@ -347,11 +347,11 @@ TEST_F(DAGManagerTest, WouldCreateCycle_ThreeNodeCycle) {
 
   TaskConfig task2;
   task2.task_id = TaskId{"b"};
-  task2.dependencies = {TaskId{"a"}};
+  task2.dependencies = {TaskDependency{TaskId{"a"}, ""}};
 
   TaskConfig task3;
   task3.task_id = TaskId{"c"};
-  task3.dependencies = {TaskId{"b"}};
+  task3.dependencies = {TaskDependency{TaskId{"b"}, ""}};
 
   info.tasks = {task1, task2, task3};
   ASSERT_TRUE(dag_manager_->create_dag(dag_id, info).has_value());
@@ -370,15 +370,15 @@ TEST_F(DAGManagerTest, WouldCreateCycle_DiamondDependency) {
 
   TaskConfig left;
   left.task_id = TaskId{"left"};
-  left.dependencies = {TaskId{"start"}};
+  left.dependencies = {TaskDependency{TaskId{"start"}, ""}};
 
   TaskConfig right;
   right.task_id = TaskId{"right"};
-  right.dependencies = {TaskId{"start"}};
+  right.dependencies = {TaskDependency{TaskId{"start"}, ""}};
 
   TaskConfig end;
   end.task_id = TaskId{"end"};
-  end.dependencies = {TaskId{"left"}, TaskId{"right"}};
+  end.dependencies = {{TaskId{"left"}, ""}, {TaskId{"right"}, ""}};
 
   info.tasks = {start, left, right, end};
   ASSERT_TRUE(dag_manager_->create_dag(dag_id, info).has_value());

@@ -73,7 +73,7 @@ auto parse_task_from_row(sqlite3_stmt* stmt, int task_id_col, int name_col,
                   .dependencies = {},
                   .executor = parse<ExecutorType>(
                       executor_str.empty() ? "shell" : executor_str),
-                  .timeout = std::chrono::seconds(sqlite3_column_int(stmt, timeout_col)),
+                  .execution_timeout = std::chrono::seconds(sqlite3_column_int(stmt, timeout_col)),
                   .retry_interval = std::chrono::seconds(sqlite3_column_int(stmt, retry_interval_col)),
                   .max_retries = sqlite3_column_int(stmt, max_retries_col),
                   .xcom_push = {},
@@ -84,7 +84,12 @@ auto parse_task_from_row(sqlite3_stmt* stmt, int task_id_col, int name_col,
     if (deps_result.is_array()) {
       for (const auto& dep : deps_result) {
         if (dep.is_string()) {
-          task.dependencies.push_back(TaskId{dep.get<std::string>()});
+          task.dependencies.push_back(TaskDependency{TaskId{dep.get<std::string>()}, ""});
+        } else if (dep.is_object() && dep.contains("task")) {
+          TaskDependency td;
+          td.task_id = TaskId{dep["task"].get<std::string>()};
+          td.label = dep.value("label", "");
+          task.dependencies.push_back(td);
         }
       }
     }
@@ -707,7 +712,15 @@ auto Persistence::save_task(DAGId dag_id, const TaskConfig& task)
     return std::unexpected(result.error());
   Statement stmt(*result);
 
-  std::string deps_str = nlohmann::json(task.dependencies).dump();
+  nlohmann::json deps_json = nlohmann::json::array();
+  for (const auto& dep : task.dependencies) {
+    if (dep.label.empty()) {
+      deps_json.push_back(std::string(dep.task_id.value()));
+    } else {
+      deps_json.push_back({{"task", std::string(dep.task_id.value())}, {"label", dep.label}});
+    }
+  }
+  std::string deps_str = deps_json.dump();
   std::string executor_str(to_string_view(task.executor));
 
   sqlite3_bind_text(stmt.get(), 1, dag_id.c_str(), -1, SQLITE_TRANSIENT);
@@ -718,7 +731,7 @@ auto Persistence::save_task(DAGId dag_id, const TaskConfig& task)
                     SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt.get(), 6, executor_str.c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_bind_text(stmt.get(), 7, deps_str.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_int(stmt.get(), 8, static_cast<int>(task.timeout.count()));
+  sqlite3_bind_int(stmt.get(), 8, static_cast<int>(task.execution_timeout.count()));
   sqlite3_bind_int(stmt.get(), 9,
                    static_cast<int>(task.retry_interval.count()));
   sqlite3_bind_int(stmt.get(), 10, task.max_retries);
@@ -1056,16 +1069,17 @@ auto Persistence::delete_run_xcoms(DAGRunId dag_run_id) -> Result<void> {
 auto Persistence::get_last_execution_date(DAGId dag_id) const
     -> Result<std::optional<std::chrono::system_clock::time_point>> {
   const char* sql = R"(
-    SELECT MAX(execution_date) FROM dag_runs WHERE dag_id = ?
+    SELECT MAX(execution_date) FROM dag_runs WHERE dag_run_id LIKE ?
   )";
 
   auto stmt = prepare(sql);
   if (!stmt) return fail(Error::DatabaseQueryFailed);
 
+  std::string pattern = std::string(dag_id.value()) + "_%";
   auto raw_stmt = *stmt;
-  auto rc = sqlite3_bind_text(raw_stmt, 1, dag_id.value().data(),
-                              static_cast<int>(dag_id.value().size()),
-                              SQLITE_STATIC);
+  auto rc = sqlite3_bind_text(raw_stmt, 1, pattern.c_str(),
+                              static_cast<int>(pattern.size()),
+                              SQLITE_TRANSIENT);
   if (rc != SQLITE_OK) {
     return fail(Error::DatabaseQueryFailed);
   }
@@ -1077,6 +1091,44 @@ auto Persistence::get_last_execution_date(DAGId dag_id) const
     }
     auto timestamp = sqlite3_column_int64(raw_stmt, 0);
     return from_timestamp(timestamp);
+  }
+  
+  if (rc == SQLITE_DONE) {
+    return std::nullopt;
+  }
+
+  return fail(Error::DatabaseQueryFailed);
+}
+
+auto Persistence::get_previous_task_state(
+    DAGId dag_id, NodeIndex task_idx,
+    std::chrono::system_clock::time_point current_execution_date,
+    std::string_view current_dag_run_id) const
+    -> Result<std::optional<TaskState>> {
+  const char* sql = R"(
+    SELECT ti.state FROM task_instances ti
+    JOIN dag_runs dr ON ti.dag_run_id = dr.dag_run_id
+    WHERE dr.dag_run_id LIKE ? AND ti.task_id = ? AND dr.execution_date <= ? AND dr.dag_run_id != ?
+    ORDER BY dr.execution_date DESC, dr.dag_run_id DESC LIMIT 1
+  )";
+
+  auto stmt_result = prepare(sql);
+  if (!stmt_result) return fail(Error::DatabaseQueryFailed);
+  Statement stmt(*stmt_result);
+
+  std::string pattern = std::string(dag_id.value()) + "_%";
+  std::string task_idx_str = std::to_string(task_idx);
+  auto current_ts = to_timestamp(current_execution_date);
+
+  sqlite3_bind_text(stmt.get(), 1, pattern.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.get(), 2, task_idx_str.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt.get(), 3, current_ts);
+  sqlite3_bind_text(stmt.get(), 4, current_dag_run_id.data(), static_cast<int>(current_dag_run_id.size()), SQLITE_TRANSIENT);
+
+  auto rc = sqlite3_step(stmt.get());
+  if (rc == SQLITE_ROW) {
+    auto state_str = col_text(stmt.get(), 0);
+    return parse_task_state(state_str);
   }
   
   if (rc == SQLITE_DONE) {

@@ -79,4 +79,14 @@ auto PersistenceService::get_xcom(DAGRunId dag_run_id,
   return db_->get_xcom(dag_run_id, task, key);
 }
 
+auto PersistenceService::get_previous_task_state(
+    DAGId dag_id, NodeIndex task_idx,
+    std::chrono::system_clock::time_point current_execution_date,
+    std::string_view current_dag_run_id) const
+    -> Result<std::optional<TaskState>> {
+  if (!db_)
+    return fail(Error::NotFound);
+  return db_->get_previous_task_state(dag_id, task_idx, current_execution_date, current_dag_run_id);
+}
+
 }  // namespace taskmaster

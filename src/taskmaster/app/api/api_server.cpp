@@ -204,7 +204,11 @@ struct ApiServer::Impl {
                  }
                  json deps = json::array();
                  for (const auto& dep : task->dependencies) {
-                   deps.push_back(dep.str());
+                   if (dep.label.empty()) {
+                     deps.push_back(dep.task_id.str());
+                   } else {
+                     deps.push_back({{"task", dep.task_id.str()}, {"label", dep.label}});
+                   }
                  }
                  co_return json_response({
                      {"task_id", task->task_id.str()},

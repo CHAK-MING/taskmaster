@@ -102,7 +102,7 @@ template <>
 struct ShellExecutorConfig {
   std::string command;
   std::string working_dir;
-  std::chrono::seconds timeout{std::chrono::seconds(300)};
+  std::chrono::seconds execution_timeout{std::chrono::seconds(300)};
   std::flat_map<std::string, std::string> env;
 };
 
@@ -110,7 +110,7 @@ struct DockerExecutorConfig {
   std::string image;
   std::string command;
   std::string working_dir;
-  std::chrono::seconds timeout{std::chrono::seconds(300)};
+  std::chrono::seconds execution_timeout{std::chrono::seconds(300)};
   std::flat_map<std::string, std::string> env;
   std::string docker_socket{"/var/run/docker.sock"};
   ImagePullPolicy pull_policy{ImagePullPolicy::Never};

@@ -16,6 +16,8 @@ namespace taskmaster {
 struct TemplateContext {
   DAGRunId dag_run_id;
   std::chrono::system_clock::time_point execution_date{};
+  std::chrono::system_clock::time_point data_interval_start{};
+  std::chrono::system_clock::time_point data_interval_end{};
 };
 
 class TemplateResolver {

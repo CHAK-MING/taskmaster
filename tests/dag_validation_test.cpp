@@ -295,5 +295,186 @@ tasks: []
   EXPECT_EQ(removed.size(), 0);
 }
 
+class DefaultArgsTest : public ::testing::Test {};
+
+TEST_F(DefaultArgsTest, LoadFromString_AppliesDefaultTimeout) {
+  std::string yaml = R"(
+name: test_dag
+default_args:
+  timeout: 60
+tasks:
+  - id: task1
+    command: echo hello
+)";
+
+  auto result = DAGDefinitionLoader::load_from_string(yaml);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->tasks[0].execution_timeout, std::chrono::seconds(60));
+}
+
+TEST_F(DefaultArgsTest, LoadFromString_TaskOverridesDefault) {
+  std::string yaml = R"(
+name: test_dag
+default_args:
+  timeout: 60
+tasks:
+  - id: task1
+    command: echo hello
+    timeout: 120
+)";
+
+  auto result = DAGDefinitionLoader::load_from_string(yaml);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->tasks[0].execution_timeout, std::chrono::seconds(120));
+}
+
+TEST_F(DefaultArgsTest, LoadFromString_AppliesDefaultRetryInterval) {
+  std::string yaml = R"(
+name: test_dag
+default_args:
+  retry_interval: 30
+tasks:
+  - id: task1
+    command: echo hello
+)";
+
+  auto result = DAGDefinitionLoader::load_from_string(yaml);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->tasks[0].retry_interval, std::chrono::seconds(30));
+}
+
+TEST_F(DefaultArgsTest, LoadFromString_AppliesDefaultMaxRetries) {
+  std::string yaml = R"(
+name: test_dag
+default_args:
+  max_retries: 5
+tasks:
+  - id: task1
+    command: echo hello
+)";
+
+  auto result = DAGDefinitionLoader::load_from_string(yaml);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->tasks[0].max_retries, 5);
+}
+
+TEST_F(DefaultArgsTest, LoadFromString_AppliesDefaultTriggerRule) {
+  std::string yaml = R"(
+name: test_dag
+default_args:
+  trigger_rule: all_done
+tasks:
+  - id: task1
+    command: echo hello
+)";
+
+  auto result = DAGDefinitionLoader::load_from_string(yaml);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->tasks[0].trigger_rule, TriggerRule::AllDone);
+}
+
+TEST_F(DefaultArgsTest, LoadFromString_AppliesDependsOnPast) {
+  std::string yaml = R"(
+name: test_dag
+default_args:
+  depends_on_past: true
+tasks:
+  - id: task1
+    command: echo hello
+)";
+
+  auto result = DAGDefinitionLoader::load_from_string(yaml);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result->tasks[0].depends_on_past);
+}
+
+TEST_F(DefaultArgsTest, LoadFromString_MultipleTasksInheritDefaults) {
+  std::string yaml = R"(
+name: test_dag
+default_args:
+  timeout: 60
+  max_retries: 3
+tasks:
+  - id: task1
+    command: echo hello
+  - id: task2
+    command: echo world
+    timeout: 120
+)";
+
+  auto result = DAGDefinitionLoader::load_from_string(yaml);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->tasks.size(), 2);
+  EXPECT_EQ(result->tasks[0].execution_timeout, std::chrono::seconds(60));
+  EXPECT_EQ(result->tasks[0].max_retries, 3);
+  EXPECT_EQ(result->tasks[1].execution_timeout, std::chrono::seconds(120));
+  EXPECT_EQ(result->tasks[1].max_retries, 3);
+}
+
+class DependencyLabelTest : public ::testing::Test {};
+
+TEST_F(DependencyLabelTest, LoadFromString_ScalarFormParsesAsEmptyLabel) {
+  std::string yaml = R"(
+name: test_dag
+tasks:
+  - id: task1
+    command: echo hello
+  - id: task2
+    command: echo world
+    dependencies: [task1]
+)";
+
+  auto result = DAGDefinitionLoader::load_from_string(yaml);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->tasks[1].dependencies.size(), 1);
+  EXPECT_EQ(result->tasks[1].dependencies[0].task_id, TaskId("task1"));
+  EXPECT_TRUE(result->tasks[1].dependencies[0].label.empty());
+}
+
+TEST_F(DependencyLabelTest, LoadFromString_MapFormParsesLabel) {
+  std::string yaml = R"(
+name: test_dag
+tasks:
+  - id: task1
+    command: echo hello
+  - id: task2
+    command: echo world
+    dependencies:
+      - task: task1
+        label: success_branch
+)";
+
+  auto result = DAGDefinitionLoader::load_from_string(yaml);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->tasks[1].dependencies.size(), 1);
+  EXPECT_EQ(result->tasks[1].dependencies[0].task_id, TaskId("task1"));
+  EXPECT_EQ(result->tasks[1].dependencies[0].label, "success_branch");
+}
+
+TEST_F(DependencyLabelTest, LoadFromString_MixedFormsParse) {
+  std::string yaml = R"(
+name: test_dag
+tasks:
+  - id: task1
+    command: echo hello
+  - id: task2
+    command: echo world
+  - id: task3
+    command: echo final
+    dependencies:
+      - task1
+      - task: task2
+        label: branch_a
+)";
+
+  auto result = DAGDefinitionLoader::load_from_string(yaml);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->tasks[2].dependencies.size(), 2);
+  EXPECT_EQ(result->tasks[2].dependencies[0].task_id, TaskId("task1"));
+  EXPECT_TRUE(result->tasks[2].dependencies[0].label.empty());
+  EXPECT_EQ(result->tasks[2].dependencies[1].task_id, TaskId("task2"));
+  EXPECT_EQ(result->tasks[2].dependencies[1].label, "branch_a");
+}
+
 }
 }

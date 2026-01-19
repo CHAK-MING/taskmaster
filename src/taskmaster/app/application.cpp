@@ -289,6 +289,22 @@ auto Application::setup_callbacks() -> void {
     return get_retry_interval(dag_run_id, idx);
   };
 
+  callbacks.get_depends_on_past = [this](const DAGRunId& dag_run_id, NodeIndex idx) -> bool {
+    auto dag_id = extract_dag_id(dag_run_id);
+    auto info = dag_manager_.get_dag(dag_id);
+    if (!info || idx >= info->tasks.size()) return false;
+    return info->tasks[idx].depends_on_past;
+  };
+
+  callbacks.check_previous_task_state = [this](const DAGRunId& dag_run_id, NodeIndex idx,
+      std::chrono::system_clock::time_point execution_date,
+      std::string_view current_dag_run_id)
+      -> Result<std::optional<TaskState>> {
+    if (!persistence_) return fail(Error::NotFound);
+    auto dag_id = extract_dag_id(dag_run_id);
+    return persistence_->get_previous_task_state(dag_id, idx, execution_date, current_dag_run_id);
+  };
+
   execution_->set_callbacks(std::move(callbacks));
 
   scheduler_->set_on_dag_trigger([this](const DAGId& dag_id,
@@ -473,7 +489,7 @@ auto Application::recover_from_crash() -> Result<void> {
           ShellExecutorConfig exec;
           exec.command = task.command;
           exec.working_dir = task.working_dir;
-          exec.timeout = task.timeout;
+          exec.execution_timeout = task.execution_timeout;
           executor_cfgs.push_back(exec);
         }
 
@@ -500,7 +516,7 @@ auto Application::list_tasks() const -> void {
         deps.clear();
         for (auto [i, dep] : task.dependencies | std::views::enumerate) {
           if (i > 0) deps += ",";
-          deps += dep.value();
+          deps += dep.task_id.value();
         }
       }
       

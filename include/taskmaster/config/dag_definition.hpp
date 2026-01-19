@@ -10,6 +10,16 @@
 
 namespace taskmaster {
 
+struct TaskDefaults {
+  std::optional<std::chrono::seconds> execution_timeout;
+  std::optional<std::chrono::seconds> retry_interval;
+  std::optional<int> max_retries;
+  std::optional<TriggerRule> trigger_rule;
+  std::optional<ExecutorType> executor;
+  std::optional<std::string> working_dir;
+  std::optional<bool> depends_on_past;
+};
+
 struct DAGDefinition {
   std::string name;
   std::string description;
@@ -17,6 +27,7 @@ struct DAGDefinition {
   std::optional<std::chrono::system_clock::time_point> start_date;
   std::optional<std::chrono::system_clock::time_point> end_date;
   bool catchup{false};
+  TaskDefaults default_args;
   std::vector<TaskConfig> tasks;
   std::string source_file;
 };

@@ -64,9 +64,9 @@ auto cmd_validate(const ValidateOptions& opts) -> int {
     bool has_error = false;
     for (const auto& task : def.tasks) {
       for (const auto& dep : task.dependencies) {
-        if (auto r = dag.add_edge(dep, task.task_id); !r.has_value()) {
+        if (auto r = dag.add_edge(dep.task_id, task.task_id); !r.has_value()) {
           std::println("\u{2717} {} - Invalid dependency: {} -> {}",
-                       dag_id, dep, task.task_id);
+                       dag_id, dep.task_id, task.task_id);
           has_error = true;
           break;
         }

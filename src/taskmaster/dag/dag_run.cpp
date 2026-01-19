@@ -160,11 +160,14 @@ auto DAGRun::mark_task_skipped(NodeIndex task_idx) -> void {
     return;
   }
   
-  if (ready_mask_.test(task_idx)) {
+  if (running_mask_.test(task_idx)) {
+    running_mask_.reset(task_idx);
+    --running_count_;
+  } else if (ready_mask_.test(task_idx)) {
     ready_mask_.reset(task_idx);
     ready_set_.erase(task_idx);
     --ready_count_;
-  } else if (!running_mask_.test(task_idx) && !completed_mask_.test(task_idx) &&
+  } else if (!completed_mask_.test(task_idx) &&
              !failed_mask_.test(task_idx) && !skipped_mask_.test(task_idx)) {
     --pending_count_;
   }
@@ -178,6 +181,7 @@ auto DAGRun::mark_task_skipped(NodeIndex task_idx) -> void {
   info.error_message = "Trigger rule not satisfied";
   
   propagate_terminal_to_downstream(task_idx);
+  update_state();
 }
 
 auto DAGRun::mark_task_upstream_failed(NodeIndex task_idx) -> void {
@@ -203,6 +207,7 @@ auto DAGRun::mark_task_upstream_failed(NodeIndex task_idx) -> void {
   info.error_message = "Upstream task failed";
   
   propagate_terminal_to_downstream(task_idx);
+  update_state();
 }
 
 auto DAGRun::propagate_terminal_to_downstream(NodeIndex terminal_task) -> void {
@@ -252,6 +257,11 @@ auto DAGRun::should_trigger(NodeIndex task_idx) const -> bool {
   }
   
   TriggerRule rule = dag_.get_trigger_rule(task_idx);
+  
+  if (rule == TriggerRule::Always) {
+    return true;
+  }
+  
   auto const total = deps.size();
   
   auto const success_count = static_cast<std::size_t>(
@@ -283,6 +293,16 @@ auto DAGRun::should_trigger(NodeIndex task_idx) const -> bool {
       return failed_count == 0 && done_count == total;
     case TriggerRule::NoneSkipped:
       return skipped_count == 0 && done_count == total;
+    case TriggerRule::AllDoneMinOneSuccess:
+      return done_count == total && success_count >= 1;
+    case TriggerRule::AllSkipped:
+      return skipped_count == total;
+    case TriggerRule::OneDone:
+      return done_count >= 1;
+    case TriggerRule::NoneFailedMinOneSuccess:
+      return failed_count == 0 && success_count >= 1 && done_count == total;
+    case TriggerRule::Always:
+      return true;
   }
   
   std::unreachable();

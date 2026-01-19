@@ -148,6 +148,24 @@ public:
     execution_date_ = t;
   }
 
+  [[nodiscard]] auto data_interval_start() const noexcept
+      -> std::chrono::system_clock::time_point {
+    return data_interval_start_;
+  }
+  auto set_data_interval_start(std::chrono::system_clock::time_point t) noexcept
+      -> void {
+    data_interval_start_ = t;
+  }
+
+  [[nodiscard]] auto data_interval_end() const noexcept
+      -> std::chrono::system_clock::time_point {
+    return data_interval_end_;
+  }
+  auto set_data_interval_end(std::chrono::system_clock::time_point t) noexcept
+      -> void {
+    data_interval_end_ = t;
+  }
+
 private:
   DAGRun(DAGRunPrivateTag, DAGRunId dag_run_id, const DAG& dag);
   
@@ -183,6 +201,8 @@ private:
   std::chrono::system_clock::time_point started_at_{};
   std::chrono::system_clock::time_point finished_at_{};
   std::chrono::system_clock::time_point execution_date_{};
+  std::chrono::system_clock::time_point data_interval_start_{};
+  std::chrono::system_clock::time_point data_interval_end_{};
   TriggerType trigger_type_{TriggerType::Manual};
 };
 

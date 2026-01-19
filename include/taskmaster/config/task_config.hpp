@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <variant>
 #include <vector>
@@ -13,13 +14,18 @@
 namespace taskmaster {
 
 enum class TriggerRule : std::uint8_t {
-  AllSuccess,    // Default: all upstream tasks succeeded
-  AllFailed,     // All upstream tasks failed
-  AllDone,       // All upstream tasks completed (success or failed)
-  OneSuccess,    // At least one upstream task succeeded
-  OneFailed,     // At least one upstream task failed
-  NoneFailed,    // No upstream task failed (may have skipped)
-  NoneSkipped,   // No upstream task was skipped
+  AllSuccess,             // Default: all upstream tasks succeeded
+  AllFailed,              // All upstream tasks failed
+  AllDone,                // All upstream tasks completed (success or failed)
+  OneSuccess,             // At least one upstream task succeeded
+  OneFailed,              // At least one upstream task failed
+  NoneFailed,             // No upstream task failed (may have skipped)
+  NoneSkipped,            // No upstream task was skipped
+  AllDoneMinOneSuccess,   // All done and at least one succeeded
+  AllSkipped,             // All upstream tasks were skipped
+  OneDone,                // At least one upstream completed (success or fail)
+  NoneFailedMinOneSuccess,// None failed and at least one succeeded
+  Always,                 // Always trigger regardless of upstream states
 };
 
 [[nodiscard]] constexpr auto to_string_view(TriggerRule rule) noexcept
@@ -32,6 +38,11 @@ enum class TriggerRule : std::uint8_t {
     case TriggerRule::OneFailed: return "one_failed";
     case TriggerRule::NoneFailed: return "none_failed";
     case TriggerRule::NoneSkipped: return "none_skipped";
+    case TriggerRule::AllDoneMinOneSuccess: return "all_done_min_one_success";
+    case TriggerRule::AllSkipped: return "all_skipped";
+    case TriggerRule::OneDone: return "one_done";
+    case TriggerRule::NoneFailedMinOneSuccess: return "none_failed_min_one_success";
+    case TriggerRule::Always: return "always";
   }
   std::unreachable();
 }
@@ -48,6 +59,11 @@ template <>
   if (s == "one_failed") return TriggerRule::OneFailed;
   if (s == "none_failed") return TriggerRule::NoneFailed;
   if (s == "none_skipped") return TriggerRule::NoneSkipped;
+  if (s == "all_done_min_one_success") return TriggerRule::AllDoneMinOneSuccess;
+  if (s == "all_skipped") return TriggerRule::AllSkipped;
+  if (s == "one_done") return TriggerRule::OneDone;
+  if (s == "none_failed_min_one_success") return TriggerRule::NoneFailedMinOneSuccess;
+  if (s == "always") return TriggerRule::Always;
   return TriggerRule::AllSuccess;
 }
 
@@ -66,6 +82,20 @@ struct XComPullConfig {
   TaskId source_task;
   std::string env_var;
 };
+
+struct TaskDependency {
+  TaskId task_id;
+  std::string label;
+  
+  bool operator==(const TaskId& other) const { return task_id == other; }
+  bool operator==(const TaskDependency& other) const = default;
+};
+
+inline auto get_dep_task_ids(const std::vector<TaskDependency>& deps) {
+  return deps | std::views::transform([](const TaskDependency& d) -> const TaskId& { 
+    return d.task_id; 
+  });
+}
 
 struct ShellTaskConfig {};
 
@@ -92,15 +122,16 @@ struct TaskConfig {
   std::string name;
   std::string command;
   std::string working_dir;
-  std::vector<TaskId> dependencies;
+  std::vector<TaskDependency> dependencies;
   ExecutorType executor{ExecutorType::Shell};
   ExecutorTaskConfig executor_config{ShellTaskConfig{}};
-  std::chrono::seconds timeout{std::chrono::seconds(300)};
+  std::chrono::seconds execution_timeout{std::chrono::seconds(300)};
   std::chrono::seconds retry_interval{std::chrono::seconds(60)};
   int max_retries{3};
   TriggerRule trigger_rule{TriggerRule::AllSuccess};
   bool is_branch{false};
   std::string branch_xcom_key{"branch"};
+  bool depends_on_past{false};
 
   std::vector<XComPushConfig> xcom_push;
   std::vector<XComPullConfig> xcom_pull;

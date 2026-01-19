@@ -39,10 +39,12 @@ namespace {
 
 // Pre-computed date format strings for template resolution
 struct DateFormats {
-  std::string ds;         // YYYY-MM-DD
-  std::string ds_nodash;  // YYYYMMDD
-  std::string ts;         // YYYY-MM-DDTHH:MM:SS
-  std::string ts_nodash;  // YYYYMMDDTHHMMSS
+  std::string ds;                    // YYYY-MM-DD
+  std::string ds_nodash;             // YYYYMMDD
+  std::string ts;                    // YYYY-MM-DDTHH:MM:SS
+  std::string ts_nodash;             // YYYYMMDDTHHMMSS
+  std::string data_interval_start;   // ISO 8601
+  std::string data_interval_end;     // ISO 8601
   bool valid{false};
 };
 
@@ -69,8 +71,23 @@ auto compute_date_formats(std::chrono::system_clock::time_point execution_date)
                                tm_val.tm_year + 1900, tm_val.tm_mon + 1,
                                tm_val.tm_mday, tm_val.tm_hour, tm_val.tm_min,
                                tm_val.tm_sec),
+      .data_interval_start = {},
+      .data_interval_end = {},
       .valid = true,
   };
+}
+
+auto format_time_point(std::chrono::system_clock::time_point tp) -> std::string {
+  if (tp == std::chrono::system_clock::time_point{}) {
+    return {};
+  }
+  auto const time_t_val = std::chrono::system_clock::to_time_t(tp);
+  std::tm tm_val{};
+  gmtime_r(&time_t_val, &tm_val);
+  return std::format("{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}Z",
+                     tm_val.tm_year + 1900, tm_val.tm_mon + 1,
+                     tm_val.tm_mday, tm_val.tm_hour, tm_val.tm_min,
+                     tm_val.tm_sec);
 }
 
 // Trim leading/trailing whitespace from a string_view
@@ -127,7 +144,9 @@ auto TemplateResolver::resolve_template(
   }
 
   // Pre-compute date formats once
-  auto const date_fmts = compute_date_formats(ctx.execution_date);
+  auto date_fmts = compute_date_formats(ctx.execution_date);
+  date_fmts.data_interval_start = format_time_point(ctx.data_interval_start);
+  date_fmts.data_interval_end = format_time_point(ctx.data_interval_end);
   
   // XCom cache: "task_id\0key" -> value (avoids repeated DB queries)
   std::unordered_map<std::string, std::string, StringHash, StringEqual> xcom_cache;
@@ -173,6 +192,17 @@ auto TemplateResolver::resolve_template(
           replaced = true;
         } else if (token == "ts_nodash") {
           output.append(date_fmts.ts_nodash);
+          replaced = true;
+        }
+      }
+      
+      // Try data interval variables
+      if (!replaced) {
+        if (token == "data_interval_start" && !date_fmts.data_interval_start.empty()) {
+          output.append(date_fmts.data_interval_start);
+          replaced = true;
+        } else if (token == "data_interval_end" && !date_fmts.data_interval_end.empty()) {
+          output.append(date_fmts.data_interval_end);
           replaced = true;
         }
       }

@@ -35,7 +35,7 @@ TEST_F(DockerExecutorTest, DockerExecutorConfigDefaults) {
   EXPECT_TRUE(config.image.empty());
   EXPECT_TRUE(config.command.empty());
   EXPECT_TRUE(config.working_dir.empty());
-  EXPECT_EQ(config.timeout, std::chrono::seconds(300));
+  EXPECT_EQ(config.execution_timeout, std::chrono::seconds(300));
   EXPECT_TRUE(config.env.empty());
   EXPECT_EQ(config.docker_socket, "/var/run/docker.sock");
 }
@@ -45,7 +45,7 @@ TEST_F(DockerExecutorTest, DockerExecutorConfigCustomValues) {
       .image = "alpine:latest",
       .command = "echo hello",
       .working_dir = "/app",
-      .timeout = std::chrono::seconds(60),
+      .execution_timeout = std::chrono::seconds(60),
       .env = {{"KEY", "value"}},
       .docker_socket = "/custom/docker.sock",
   };
@@ -53,7 +53,7 @@ TEST_F(DockerExecutorTest, DockerExecutorConfigCustomValues) {
   EXPECT_EQ(config.image, "alpine:latest");
   EXPECT_EQ(config.command, "echo hello");
   EXPECT_EQ(config.working_dir, "/app");
-  EXPECT_EQ(config.timeout, std::chrono::seconds(60));
+  EXPECT_EQ(config.execution_timeout, std::chrono::seconds(60));
   EXPECT_EQ(config.env.size(), 1u);
   EXPECT_EQ(config.env["KEY"], "value");
   EXPECT_EQ(config.docker_socket, "/custom/docker.sock");
@@ -102,7 +102,7 @@ TEST_F(DockerExecutorTest, ExecutorFailsWithNonExistentSocket) {
       .image = "alpine:latest",
       .command = "echo hello",
       .working_dir = "",
-      .timeout = std::chrono::seconds(300),
+      .execution_timeout = std::chrono::seconds(300),
       .env = {},
       .docker_socket = "/tmp/nonexistent_docker_socket_test.sock",
   };

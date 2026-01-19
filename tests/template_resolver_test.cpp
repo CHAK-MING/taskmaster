@@ -339,3 +339,118 @@ TEST_F(DateTemplateEdgeCaseTest, MalformedXComToken_StaysLiteral) {
   ASSERT_TRUE(result3.has_value());
   EXPECT_EQ(*result3, "{{xcom..key}}");
 }
+
+TEST_F(DateTemplateEdgeCaseTest, DataIntervalStart_Resolves) {
+  std::tm tm{};
+  tm.tm_year = 2026 - 1900;
+  tm.tm_mon = 0;
+  tm.tm_mday = 15;
+  tm.tm_hour = 0;
+  tm.tm_min = 0;
+  tm.tm_sec = 0;
+  auto time_point = system_clock::from_time_t(timegm(&tm));
+
+  TemplateContext ctx{
+      .dag_run_id = DAGRunId("test_run"),
+      .execution_date = time_point,
+      .data_interval_start = time_point,
+  };
+
+  auto result = resolver_->resolve_template("{{data_interval_start}}", ctx, {});
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, "2026-01-15T00:00:00Z");
+}
+
+TEST_F(DateTemplateEdgeCaseTest, DataIntervalEnd_Resolves) {
+  std::tm tm_start{};
+  tm_start.tm_year = 2026 - 1900;
+  tm_start.tm_mon = 0;
+  tm_start.tm_mday = 15;
+  tm_start.tm_hour = 0;
+  auto start = system_clock::from_time_t(timegm(&tm_start));
+
+  std::tm tm_end{};
+  tm_end.tm_year = 2026 - 1900;
+  tm_end.tm_mon = 0;
+  tm_end.tm_mday = 16;
+  tm_end.tm_hour = 0;
+  auto end = system_clock::from_time_t(timegm(&tm_end));
+
+  TemplateContext ctx{
+      .dag_run_id = DAGRunId("test_run"),
+      .execution_date = start,
+      .data_interval_start = start,
+      .data_interval_end = end,
+  };
+
+  auto result = resolver_->resolve_template("{{data_interval_end}}", ctx, {});
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, "2026-01-16T00:00:00Z");
+}
+
+TEST_F(DateTemplateEdgeCaseTest, DataInterval_EmptyLeavesLiteral) {
+  std::tm tm{};
+  tm.tm_year = 2026 - 1900;
+  tm.tm_mon = 0;
+  tm.tm_mday = 15;
+  auto time_point = system_clock::from_time_t(timegm(&tm));
+
+  TemplateContext ctx{
+      .dag_run_id = DAGRunId("test_run"),
+      .execution_date = time_point,
+  };
+
+  auto result = resolver_->resolve_template("{{data_interval_start}}", ctx, {});
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, "{{data_interval_start}}");
+}
+
+TEST_F(DateTemplateEdgeCaseTest, DataInterval_MixedWithOtherVariables) {
+  std::tm tm{};
+  tm.tm_year = 2026 - 1900;
+  tm.tm_mon = 0;
+  tm.tm_mday = 15;
+  tm.tm_hour = 10;
+  tm.tm_min = 30;
+  tm.tm_sec = 0;
+  auto time_point = system_clock::from_time_t(timegm(&tm));
+
+  std::tm tm_end{};
+  tm_end.tm_year = 2026 - 1900;
+  tm_end.tm_mon = 0;
+  tm_end.tm_mday = 16;
+  tm_end.tm_hour = 10;
+  tm_end.tm_min = 30;
+  tm_end.tm_sec = 0;
+  auto end_point = system_clock::from_time_t(timegm(&tm_end));
+
+  TemplateContext ctx{
+      .dag_run_id = DAGRunId("test_run"),
+      .execution_date = time_point,
+      .data_interval_start = time_point,
+      .data_interval_end = end_point,
+  };
+
+  auto result = resolver_->resolve_template(
+      "{{ds}} {{data_interval_start}} {{data_interval_end}}", ctx, {});
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, "2026-01-15 2026-01-15T10:30:00Z 2026-01-16T10:30:00Z");
+}
+
+TEST_F(DateTemplateEdgeCaseTest, DataIntervalStart_WhitespaceTrimmed) {
+  std::tm tm{};
+  tm.tm_year = 2026 - 1900;
+  tm.tm_mon = 0;
+  tm.tm_mday = 15;
+  auto time_point = system_clock::from_time_t(timegm(&tm));
+
+  TemplateContext ctx{
+      .dag_run_id = DAGRunId("test_run"),
+      .execution_date = time_point,
+      .data_interval_start = time_point,
+  };
+
+  auto result = resolver_->resolve_template("{{  data_interval_start  }}", ctx, {});
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(*result, "2026-01-15T00:00:00Z");
+}

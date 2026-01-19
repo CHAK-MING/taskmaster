@@ -53,6 +53,53 @@ struct convert<taskmaster::XComPullConfig> {
 };
 
 template<>
+struct convert<taskmaster::TaskDefaults> {
+  static bool decode(const Node& node, taskmaster::TaskDefaults& d) {
+    if (!node.IsMap()) return false;
+    
+    if (auto v = node["timeout"]) {
+      d.execution_timeout = std::chrono::seconds(v.as<int>());
+    }
+    if (auto v = node["retry_interval"]) {
+      d.retry_interval = std::chrono::seconds(v.as<int>());
+    }
+    if (auto v = node["max_retries"]) {
+      d.max_retries = v.as<int>();
+    }
+    if (auto v = node["trigger_rule"]) {
+      d.trigger_rule = taskmaster::parse<taskmaster::TriggerRule>(v.as<std::string>());
+    }
+    if (auto v = node["executor"]) {
+      d.executor = taskmaster::parse<taskmaster::ExecutorType>(v.as<std::string>());
+    }
+    if (auto v = node["working_dir"]) {
+      d.working_dir = v.as<std::string>();
+    }
+    if (auto v = node["depends_on_past"]) {
+      d.depends_on_past = v.as<bool>();
+    }
+    return true;
+  }
+};
+
+template<>
+struct convert<taskmaster::TaskDependency> {
+  static bool decode(const Node& node, taskmaster::TaskDependency& dep) {
+    if (node.IsScalar()) {
+      dep.task_id = taskmaster::TaskId{node.as<std::string>()};
+      dep.label.clear();
+      return true;
+    }
+    if (node.IsMap()) {
+      dep.task_id = taskmaster::TaskId{taskmaster::yaml_get_or<std::string>(node, "task", "")};
+      dep.label = taskmaster::yaml_get_or<std::string>(node, "label", "");
+      return true;
+    }
+    return false;
+  }
+};
+
+template<>
 struct convert<taskmaster::TaskConfig> {
   static bool decode(const Node& node, taskmaster::TaskConfig& t) {
     if (!node.IsMap()) {
@@ -78,16 +125,17 @@ struct convert<taskmaster::TaskConfig> {
     }
 
     if (auto deps = node["dependencies"]) {
-      t.dependencies = deps.as<std::vector<taskmaster::TaskId>>();
+      t.dependencies = deps.as<std::vector<taskmaster::TaskDependency>>();
     }
 
-    t.timeout = std::chrono::seconds(taskmaster::yaml_get_or(node, "timeout", 300));
+    t.execution_timeout = std::chrono::seconds(taskmaster::yaml_get_or(node, "timeout", 300));
     t.retry_interval = std::chrono::seconds(taskmaster::yaml_get_or(node, "retry_interval", 60));
     t.max_retries = taskmaster::yaml_get_or(node, "max_retries", 3);
     t.trigger_rule = taskmaster::parse<taskmaster::TriggerRule>(
         taskmaster::yaml_get_or<std::string>(node, "trigger_rule", "all_success"));
     t.is_branch = taskmaster::yaml_get_or(node, "is_branch", false);
     t.branch_xcom_key = taskmaster::yaml_get_or<std::string>(node, "branch_xcom_key", "branch");
+    t.depends_on_past = taskmaster::yaml_get_or(node, "depends_on_past", false);
 
     if (auto push = node["xcom_push"]) {
       t.xcom_push = push.as<std::vector<taskmaster::XComPushConfig>>();
@@ -132,8 +180,36 @@ struct convert<taskmaster::DAGDefinition> {
       }
     }
 
+    if (auto defaults = node["default_args"]) {
+      d.default_args = defaults.as<taskmaster::TaskDefaults>();
+    }
+
     if (auto tasks = node["tasks"]) {
       d.tasks = tasks.as<std::vector<taskmaster::TaskConfig>>();
+      
+      for (auto& t : d.tasks) {
+        if (d.default_args.execution_timeout && t.execution_timeout == std::chrono::seconds(300)) {
+          t.execution_timeout = *d.default_args.execution_timeout;
+        }
+        if (d.default_args.retry_interval && t.retry_interval == std::chrono::seconds(60)) {
+          t.retry_interval = *d.default_args.retry_interval;
+        }
+        if (d.default_args.max_retries && t.max_retries == 3) {
+          t.max_retries = *d.default_args.max_retries;
+        }
+        if (d.default_args.trigger_rule && t.trigger_rule == taskmaster::TriggerRule::AllSuccess) {
+          t.trigger_rule = *d.default_args.trigger_rule;
+        }
+        if (d.default_args.executor && t.executor == taskmaster::ExecutorType::Shell) {
+          t.executor = *d.default_args.executor;
+        }
+        if (d.default_args.working_dir && t.working_dir.empty()) {
+          t.working_dir = *d.default_args.working_dir;
+        }
+        if (d.default_args.depends_on_past && !t.depends_on_past) {
+          t.depends_on_past = *d.default_args.depends_on_past;
+        }
+      }
     }
 
     return true;
@@ -184,14 +260,21 @@ void to_yaml(YAML::Emitter& out, const TaskConfig& t) {
   }
   to_yaml_if_not_empty(out, "working_dir", t.working_dir);
   if (!t.dependencies.empty()) {
-    out << YAML::Key << "dependencies" << YAML::Value << YAML::Flow << YAML::BeginSeq;
+    out << YAML::Key << "dependencies" << YAML::Value << YAML::BeginSeq;
     for (const auto& dep : t.dependencies) {
-      out << std::string(dep.value());
+      if (dep.label.empty()) {
+        out << std::string(dep.task_id.value());
+      } else {
+        out << YAML::Flow << YAML::BeginMap;
+        out << YAML::Key << "task" << YAML::Value << std::string(dep.task_id.value());
+        out << YAML::Key << "label" << YAML::Value << dep.label;
+        out << YAML::EndMap;
+      }
     }
     out << YAML::EndSeq;
   }
-  if (t.timeout != std::chrono::seconds(300)) {
-    to_yaml(out, "timeout", static_cast<int>(t.timeout.count()));
+  if (t.execution_timeout != std::chrono::seconds(300)) {
+    to_yaml(out, "timeout", static_cast<int>(t.execution_timeout.count()));
   }
   if (t.retry_interval != std::chrono::seconds(60)) {
     to_yaml(out, "retry_interval", static_cast<int>(t.retry_interval.count()));
@@ -263,12 +346,12 @@ auto validate_definition(const DAGDefinition& def) -> std::vector<std::string> {
       continue;
 
     for (const auto& dep : task.dependencies) {
-      if (dep == task.task_id) {
+      if (dep.task_id == task.task_id) {
         errors.push_back(
             std::format("Task '{}': self-dependency not allowed", task.task_id));
-      } else if (!task_ids.contains(dep)) {
+      } else if (!task_ids.contains(dep.task_id)) {
         errors.push_back(
-            std::format("Task '{}': dependency '{}' not found", task.task_id, dep));
+            std::format("Task '{}': dependency '{}' not found", task.task_id, dep.task_id));
       }
     }
   }

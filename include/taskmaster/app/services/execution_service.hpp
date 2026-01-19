@@ -55,6 +55,13 @@ struct ExecutionCallbacks {
       get_max_retries;
   std::move_only_function<std::chrono::seconds(const DAGRunId& dag_run_id, NodeIndex idx)>
       get_retry_interval;
+  std::move_only_function<bool(const DAGRunId& dag_run_id, NodeIndex idx)>
+      get_depends_on_past;
+  std::move_only_function<Result<std::optional<TaskState>>(
+      const DAGRunId& dag_run_id, NodeIndex idx,
+      std::chrono::system_clock::time_point execution_date,
+      std::string_view current_dag_run_id)>
+      check_previous_task_state;
 };
 
 class ExecutionService {
@@ -97,6 +104,9 @@ private:
   auto on_task_success(const DAGRunId& dag_run_id, NodeIndex idx) -> void;
   auto on_task_failure(const DAGRunId& dag_run_id, NodeIndex idx,
                        const std::string& error, int exit_code) -> bool;
+  auto on_task_skipped(const DAGRunId& dag_run_id, NodeIndex idx) -> void;
+  auto on_task_fail_immediately(const DAGRunId& dag_run_id, NodeIndex idx,
+                                const std::string& error, int exit_code) -> void;
   auto on_run_complete(DAGRun& run, const DAGRunId& dag_run_id) -> void;
 
   Runtime& runtime_;

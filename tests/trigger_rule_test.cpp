@@ -514,3 +514,208 @@ TEST_F(TriggerRuleSerializationTest, ParseUnknownDefaultsToAllSuccess) {
   EXPECT_EQ(parse<TriggerRule>(""), TriggerRule::AllSuccess);
   EXPECT_EQ(parse<TriggerRule>("invalid_rule"), TriggerRule::AllSuccess);
 }
+
+// ============================================================================
+// Test Cases: AllDoneMinOneSuccess (NEW)
+// ============================================================================
+
+INSTANTIATE_TEST_SUITE_P(
+    AllDoneMinOneSuccess, TriggerRuleTest,
+    ::testing::Values(
+        TriggerRuleTestCase{
+            "AllDoneMinOneSuccess_SuccessAndFailed",
+            TriggerRule::AllDoneMinOneSuccess,
+            {DepOutcome::Success, DepOutcome::Failed},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "AllDoneMinOneSuccess_AllSuccess",
+            TriggerRule::AllDoneMinOneSuccess,
+            {DepOutcome::Success, DepOutcome::Success},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "AllDoneMinOneSuccess_AllFailed",
+            TriggerRule::AllDoneMinOneSuccess,
+            {DepOutcome::Failed, DepOutcome::Failed},
+            ExpectedResult::Skipped},
+        TriggerRuleTestCase{
+            "AllDoneMinOneSuccess_SuccessAndSkipped",
+            TriggerRule::AllDoneMinOneSuccess,
+            {DepOutcome::Success, DepOutcome::Skipped},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "AllDoneMinOneSuccess_SkippedAndFailed",
+            TriggerRule::AllDoneMinOneSuccess,
+            {DepOutcome::Skipped, DepOutcome::Failed},
+            ExpectedResult::Skipped},
+        TriggerRuleTestCase{
+            "AllDoneMinOneSuccess_AllSkipped",
+            TriggerRule::AllDoneMinOneSuccess,
+            {DepOutcome::Skipped, DepOutcome::Skipped},
+            ExpectedResult::Skipped}),
+    [](const auto& info) { return info.param.name; });
+
+// ============================================================================
+// Test Cases: AllSkipped (NEW)
+// ============================================================================
+
+INSTANTIATE_TEST_SUITE_P(
+    AllSkipped, TriggerRuleTest,
+    ::testing::Values(
+        TriggerRuleTestCase{
+            "AllSkipped_AllSkipped",
+            TriggerRule::AllSkipped,
+            {DepOutcome::Skipped, DepOutcome::Skipped},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "AllSkipped_OneSuccess",
+            TriggerRule::AllSkipped,
+            {DepOutcome::Skipped, DepOutcome::Success},
+            ExpectedResult::Skipped},
+        TriggerRuleTestCase{
+            "AllSkipped_OneFailed",
+            TriggerRule::AllSkipped,
+            {DepOutcome::Skipped, DepOutcome::Failed},
+            ExpectedResult::Skipped},
+        TriggerRuleTestCase{
+            "AllSkipped_AllSuccess",
+            TriggerRule::AllSkipped,
+            {DepOutcome::Success, DepOutcome::Success},
+            ExpectedResult::Skipped},
+        TriggerRuleTestCase{
+            "AllSkipped_SingleSkipped",
+            TriggerRule::AllSkipped,
+            {DepOutcome::Skipped},
+            ExpectedResult::Ready}),
+    [](const auto& info) { return info.param.name; });
+
+// ============================================================================
+// Test Cases: OneDone (NEW)
+// ============================================================================
+
+INSTANTIATE_TEST_SUITE_P(
+    OneDone, TriggerRuleTest,
+    ::testing::Values(
+        TriggerRuleTestCase{
+            "OneDone_OneSuccess",
+            TriggerRule::OneDone,
+            {DepOutcome::Success, DepOutcome::Skipped},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "OneDone_OneFailed",
+            TriggerRule::OneDone,
+            {DepOutcome::Failed, DepOutcome::Skipped},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "OneDone_BothDone",
+            TriggerRule::OneDone,
+            {DepOutcome::Success, DepOutcome::Failed},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "OneDone_AllSkipped",
+            TriggerRule::OneDone,
+            {DepOutcome::Skipped, DepOutcome::Skipped},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "OneDone_SingleSuccess",
+            TriggerRule::OneDone,
+            {DepOutcome::Success},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "OneDone_SingleFailed",
+            TriggerRule::OneDone,
+            {DepOutcome::Failed},
+            ExpectedResult::Ready}),
+    [](const auto& info) { return info.param.name; });
+
+// ============================================================================
+// Test Cases: NoneFailedMinOneSuccess (NEW)
+// ============================================================================
+
+INSTANTIATE_TEST_SUITE_P(
+    NoneFailedMinOneSuccess, TriggerRuleTest,
+    ::testing::Values(
+        TriggerRuleTestCase{
+            "NoneFailedMinOneSuccess_SuccessAndSkipped",
+            TriggerRule::NoneFailedMinOneSuccess,
+            {DepOutcome::Success, DepOutcome::Skipped},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "NoneFailedMinOneSuccess_AllSuccess",
+            TriggerRule::NoneFailedMinOneSuccess,
+            {DepOutcome::Success, DepOutcome::Success},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "NoneFailedMinOneSuccess_AllSkipped",
+            TriggerRule::NoneFailedMinOneSuccess,
+            {DepOutcome::Skipped, DepOutcome::Skipped},
+            ExpectedResult::Skipped},
+        TriggerRuleTestCase{
+            "NoneFailedMinOneSuccess_SuccessAndFailed",
+            TriggerRule::NoneFailedMinOneSuccess,
+            {DepOutcome::Success, DepOutcome::Failed},
+            ExpectedResult::Skipped},
+        TriggerRuleTestCase{
+            "NoneFailedMinOneSuccess_AllFailed",
+            TriggerRule::NoneFailedMinOneSuccess,
+            {DepOutcome::Failed, DepOutcome::Failed},
+            ExpectedResult::Skipped},
+        TriggerRuleTestCase{
+            "NoneFailedMinOneSuccess_SingleSuccess",
+            TriggerRule::NoneFailedMinOneSuccess,
+            {DepOutcome::Success},
+            ExpectedResult::Ready}),
+    [](const auto& info) { return info.param.name; });
+
+// ============================================================================
+// Test Cases: Always (NEW)
+// ============================================================================
+
+INSTANTIATE_TEST_SUITE_P(
+    Always, TriggerRuleTest,
+    ::testing::Values(
+        TriggerRuleTestCase{
+            "Always_AllFailed",
+            TriggerRule::Always,
+            {DepOutcome::Failed, DepOutcome::Failed},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "Always_AllSuccess",
+            TriggerRule::Always,
+            {DepOutcome::Success, DepOutcome::Success},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "Always_AllSkipped",
+            TriggerRule::Always,
+            {DepOutcome::Skipped, DepOutcome::Skipped},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "Always_MixedStates",
+            TriggerRule::Always,
+            {DepOutcome::Success, DepOutcome::Failed, DepOutcome::Skipped},
+            ExpectedResult::Ready},
+        TriggerRuleTestCase{
+            "Always_SingleFailed",
+            TriggerRule::Always,
+            {DepOutcome::Failed},
+            ExpectedResult::Ready}),
+    [](const auto& info) { return info.param.name; });
+
+// ============================================================================
+// Serialization Tests for New Rules
+// ============================================================================
+
+TEST_F(TriggerRuleSerializationTest, ToStringView_NewRules) {
+  EXPECT_EQ(to_string_view(TriggerRule::AllDoneMinOneSuccess), "all_done_min_one_success");
+  EXPECT_EQ(to_string_view(TriggerRule::AllSkipped), "all_skipped");
+  EXPECT_EQ(to_string_view(TriggerRule::OneDone), "one_done");
+  EXPECT_EQ(to_string_view(TriggerRule::NoneFailedMinOneSuccess), "none_failed_min_one_success");
+  EXPECT_EQ(to_string_view(TriggerRule::Always), "always");
+}
+
+TEST_F(TriggerRuleSerializationTest, Parse_NewRules) {
+  EXPECT_EQ(parse<TriggerRule>("all_done_min_one_success"), TriggerRule::AllDoneMinOneSuccess);
+  EXPECT_EQ(parse<TriggerRule>("all_skipped"), TriggerRule::AllSkipped);
+  EXPECT_EQ(parse<TriggerRule>("one_done"), TriggerRule::OneDone);
+  EXPECT_EQ(parse<TriggerRule>("none_failed_min_one_success"), TriggerRule::NoneFailedMinOneSuccess);
+  EXPECT_EQ(parse<TriggerRule>("always"), TriggerRule::Always);
+}

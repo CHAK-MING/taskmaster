@@ -47,7 +47,7 @@ struct DAGInfo {
     reverse_adj_cache.clear();
     for (const auto& task : tasks) {
       for (const auto& dep : task.dependencies) {
-        reverse_adj_cache[dep].push_back(task.task_id);
+        reverse_adj_cache[dep.task_id].push_back(task.task_id);
       }
     }
     reverse_adj_dirty = false;

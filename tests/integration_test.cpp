@@ -147,7 +147,7 @@ protected:
   }
 
   auto create_task(std::string id, std::string name, std::string command,
-                   std::vector<TaskId> deps = {}) -> TaskConfig {
+                   std::vector<TaskDependency> deps = {}) -> TaskConfig {
     TaskConfig task;
     task.task_id = TaskId(std::move(id));
     task.name = std::move(name);
@@ -264,8 +264,8 @@ TEST_F(RealIntegrationTest, TaskWithDependencyChain) {
   ASSERT_TRUE(dag_result.has_value());
 
   auto task1 = create_task("task1", "Task 1", "echo 'Task 1 output'");
-  auto task2 = create_task("task2", "Task 2", "echo 'Task 2 output'", {TaskId("task1")});
-  auto task3 = create_task("task3", "Task 3", "echo 'Task 3 output'", {TaskId("task2")});
+  auto task2 = create_task("task2", "Task 2", "echo 'Task 2 output'", std::vector<TaskDependency>{{{TaskId{"task1"}, ""}}});
+  auto task3 = create_task("task3", "Task 3", "echo 'Task 3 output'", std::vector<TaskDependency>{{{TaskId{"task2"}, ""}}});
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task1).has_value());
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task2).has_value());
@@ -312,7 +312,7 @@ TEST_F(RealIntegrationTest, FailingTaskBlocksDependents) {
   task1.command = "exit 1";
   task1.max_retries = 0;
 
-  auto task2 = create_task("task2", "Task 2", "echo 'This should not run'", {TaskId("task1")});
+  auto task2 = create_task("task2", "Task 2", "echo 'This should not run'", std::vector<TaskDependency>{{{TaskId{"task1"}, ""}}});
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task1).has_value());
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task2).has_value());
@@ -363,7 +363,7 @@ TEST_F(RealIntegrationTest, TimeoutTaskFailsRun) {
   task.task_id = TaskId("timeout_task");
   task.name = "Timeout Task";
   task.command = "sleep 2";
-  task.timeout = 1s;
+  task.execution_timeout = 1s;
   task.max_retries = 0;
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task).has_value());
@@ -461,7 +461,7 @@ TEST_F(RealIntegrationTest, XComPushAndPullBetweenTasks) {
   consumer.task_id = TaskId("consumer");
   consumer.name = "Consumer";
   consumer.command = "echo \"Received: $PRODUCER_DATA\"";
-  consumer.dependencies = {TaskId("producer")};
+  consumer.dependencies = {{TaskId{"producer"}, ""}};
   consumer.xcom_pull = {{.key = "result", .source_task = TaskId("producer"), .env_var = "PRODUCER_DATA"}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, producer).has_value());
@@ -501,7 +501,7 @@ TEST_F(RealIntegrationTest, XComPullFailsGracefullyWhenKeyMissing) {
   consumer.task_id = TaskId("consumer");
   consumer.name = "Consumer";
   consumer.command = "echo \"Data: ${MISSING_DATA:-default_value}\"";
-  consumer.dependencies = {TaskId("producer")};
+  consumer.dependencies = {{TaskId{"producer"}, ""}};
   consumer.xcom_pull = {{.key = "nonexistent", .source_task = TaskId("producer"), .env_var = "MISSING_DATA"}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, producer).has_value());
@@ -537,7 +537,7 @@ TEST_F(RealIntegrationTest, XComRegexExtraction) {
   consumer.task_id = TaskId("consumer");
   consumer.name = "Consumer";
   consumer.command = "echo \"Count was: $RECORD_COUNT\"";
-  consumer.dependencies = {TaskId("producer")};
+  consumer.dependencies = {{TaskId{"producer"}, ""}};
   consumer.xcom_pull = {{.key = "count", .source_task = TaskId("producer"), .env_var = "RECORD_COUNT"}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, producer).has_value());
@@ -574,7 +574,7 @@ TEST_F(RealIntegrationTest, XComChainedTasks) {
   task2.task_id = TaskId("step2");
   task2.name = "Step 2";
   task2.command = "echo \"step2_received_${STEP1_DATA}\"";
-  task2.dependencies = {TaskId("step1")};
+  task2.dependencies = {{TaskId{"step1"}, ""}};
   task2.xcom_pull = {{.key = "data", .source_task = TaskId("step1"), .env_var = "STEP1_DATA"}};
   task2.xcom_push = {{.key = "data", .source = XComSource::Stdout}};
 
@@ -582,7 +582,7 @@ TEST_F(RealIntegrationTest, XComChainedTasks) {
   task3.task_id = TaskId("step3");
   task3.name = "Step 3";
   task3.command = "echo \"final: $STEP2_DATA\"";
-  task3.dependencies = {TaskId("step2")};
+  task3.dependencies = {{TaskId{"step2"}, ""}};
   task3.xcom_pull = {{.key = "data", .source_task = TaskId("step2"), .env_var = "STEP2_DATA"}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task1).has_value());
@@ -652,7 +652,7 @@ TEST_F(RealIntegrationTest, XComExitCodeExtraction) {
   consumer.task_id = TaskId("consumer");
   consumer.name = "Consumer";
   consumer.command = "echo \"Exit code was: $EXIT_STATUS\"";
-  consumer.dependencies = {TaskId("producer")};
+  consumer.dependencies = {{TaskId{"producer"}, ""}};
   consumer.xcom_pull = {{.key = "status", .source_task = TaskId("producer"), .env_var = "EXIT_STATUS"}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, producer).has_value());
@@ -691,7 +691,7 @@ TEST_F(RealIntegrationTest, XComJsonPathExtraction) {
   consumer.task_id = TaskId("consumer");
   consumer.name = "Consumer";
   consumer.command = "echo \"Got JSON: $JSON_DATA\"";
-  consumer.dependencies = {TaskId("producer")};
+  consumer.dependencies = {{TaskId{"producer"}, ""}};
   consumer.xcom_pull = {{.key = "full_json", .source_task = TaskId("producer"), .env_var = "JSON_DATA"}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, producer).has_value());
@@ -750,9 +750,9 @@ TEST_F(RealIntegrationTest, DiamondDependencyDAG) {
   ASSERT_TRUE(dag_result.has_value());
 
   auto root = create_task("root", "Root", "echo 'root_done'");
-  auto left = create_task("left", "Left", "echo 'left_done'", {TaskId("root")});
-  auto right = create_task("right", "Right", "echo 'right_done'", {TaskId("root")});
-  auto join = create_task("join", "Join", "echo 'join_done'", {TaskId("left"), TaskId("right")});
+  auto left = create_task("left", "Left", "echo 'left_done'", std::vector<TaskDependency>{{{TaskId{"root"}, ""}}});
+  auto right = create_task("right", "Right", "echo 'right_done'", std::vector<TaskDependency>{{{TaskId{"root"}, ""}}});
+  auto join = create_task("join", "Join", "echo 'join_done'", std::vector<TaskDependency>{{{TaskId{"left"}, ""}, {TaskId{"right"}, ""}}});
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, root).has_value());
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, left).has_value());
@@ -880,7 +880,7 @@ TEST_F(RealIntegrationTest, ConcurrentRunsWithXComIsolation) {
   consumer.task_id = TaskId("consumer");
   consumer.name = "Consumer";
   consumer.command = "echo \"Received: $PRODUCER_DATA\" && sleep 0.1";
-  consumer.dependencies = {TaskId("producer")};
+  consumer.dependencies = {{TaskId{"producer"}, ""}};
   consumer.xcom_pull = {{.key = "data", .source_task = TaskId("producer"), .env_var = "PRODUCER_DATA"}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, producer).has_value());
@@ -1140,4 +1140,204 @@ TEST_F(RealIntegrationTest, ConcurrentStressTest) {
   auto history = app_->persistence()->list_run_history(dag_id, kNumConcurrentRuns + 5);
   ASSERT_TRUE(history.has_value());
   EXPECT_GE(history->size(), static_cast<size_t>(kNumConcurrentRuns));
+}
+
+TEST_F(RealIntegrationTest, Exit100_SkipsTask) {
+  DAGId dag_id("exit100_dag");
+  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Exit 100 DAG"));
+  ASSERT_TRUE(dag_result.has_value());
+
+  auto skip_task = create_task("skip_task", "Skip Task", "exit 100");
+  skip_task.max_retries = 3;
+  ASSERT_TRUE(app_->dag_manager().add_task(dag_id, skip_task).has_value());
+
+  auto run_id = app_->trigger_dag_by_id(dag_id);
+  ASSERT_TRUE(run_id.has_value());
+  ASSERT_TRUE(wait_for_run_completion(*run_id));
+
+  auto tasks = app_->persistence()->get_task_instances(*run_id);
+  ASSERT_TRUE(tasks.has_value());
+  ASSERT_EQ(tasks->size(), 1u);
+  EXPECT_EQ(tasks->at(0).state, TaskState::Skipped);
+  EXPECT_EQ(tasks->at(0).attempt, 1);
+}
+
+TEST_F(RealIntegrationTest, Exit100_DownstreamAllDoneStillRuns) {
+  DAGId dag_id("exit100_downstream_dag");
+  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Exit 100 Downstream DAG"));
+  ASSERT_TRUE(dag_result.has_value());
+
+  auto skip_task = create_task("skip_task", "Skip Task", "exit 100");
+  ASSERT_TRUE(app_->dag_manager().add_task(dag_id, skip_task).has_value());
+
+  TaskConfig downstream;
+  downstream.task_id = TaskId("downstream");
+  downstream.name = "Downstream";
+  downstream.command = "echo 'downstream ran'";
+  downstream.dependencies = {{TaskId{"skip_task"}, ""}};
+  downstream.trigger_rule = TriggerRule::AllDone;
+  ASSERT_TRUE(app_->dag_manager().add_task(dag_id, downstream).has_value());
+
+  auto run_id = app_->trigger_dag_by_id(dag_id);
+  ASSERT_TRUE(run_id.has_value());
+  ASSERT_TRUE(wait_for_run_completion(*run_id));
+
+  auto tasks = app_->persistence()->get_task_instances(*run_id);
+  ASSERT_TRUE(tasks.has_value());
+  ASSERT_EQ(tasks->size(), 2u);
+
+  auto& skip = tasks->at(0).state == TaskState::Skipped ? tasks->at(0) : tasks->at(1);
+  auto& down = tasks->at(0).state == TaskState::Success ? tasks->at(0) : tasks->at(1);
+  EXPECT_EQ(skip.state, TaskState::Skipped);
+  EXPECT_EQ(down.state, TaskState::Success);
+}
+
+TEST_F(RealIntegrationTest, Exit101_FailsImmediately_NoRetry) {
+  DAGId dag_id("exit101_dag");
+  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Exit 101 DAG"));
+  ASSERT_TRUE(dag_result.has_value());
+
+  auto fail_task = create_task("fail_task", "Fail Task", "exit 101");
+  fail_task.max_retries = 5;
+  fail_task.retry_interval = 2s;
+  ASSERT_TRUE(app_->dag_manager().add_task(dag_id, fail_task).has_value());
+
+  auto start = std::chrono::steady_clock::now();
+  auto run_id = app_->trigger_dag_by_id(dag_id);
+  ASSERT_TRUE(run_id.has_value());
+  ASSERT_TRUE(wait_for_run_completion(*run_id));
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  auto tasks = app_->persistence()->get_task_instances(*run_id);
+  ASSERT_TRUE(tasks.has_value());
+  ASSERT_EQ(tasks->size(), 1u);
+  EXPECT_EQ(tasks->at(0).state, TaskState::Failed);
+  EXPECT_EQ(tasks->at(0).attempt, 1);
+
+  auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+  EXPECT_LT(elapsed_ms, 2000) << "Should complete quickly without retries";
+}
+
+TEST_F(RealIntegrationTest, Exit101_RegularFailureStillRetries) {
+  DAGId dag_id("exit1_retry_dag");
+  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Exit 1 Retry DAG"));
+  ASSERT_TRUE(dag_result.has_value());
+
+  auto fail_task = create_task("fail_task", "Fail Task", "exit 1");
+  fail_task.max_retries = 2;
+  fail_task.retry_interval = 1s;
+  ASSERT_TRUE(app_->dag_manager().add_task(dag_id, fail_task).has_value());
+
+  auto start = std::chrono::steady_clock::now();
+  auto run_id = app_->trigger_dag_by_id(dag_id);
+  ASSERT_TRUE(run_id.has_value());
+  ASSERT_TRUE(wait_for_run_completion(*run_id));
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  auto tasks = app_->persistence()->get_task_instances(*run_id);
+  ASSERT_TRUE(tasks.has_value());
+  ASSERT_EQ(tasks->size(), 1u);
+  EXPECT_EQ(tasks->at(0).state, TaskState::Failed);
+  EXPECT_EQ(tasks->at(0).attempt, 2);
+
+  auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+  EXPECT_GE(elapsed_ms, 1000) << "Should have at least one retry interval";
+}
+
+TEST_F(RealIntegrationTest, DependsOnPast_FirstRun_Executes) {
+  DAGId dag_id("depends_past_first_dag");
+  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Depends Past First"));
+  ASSERT_TRUE(dag_result.has_value());
+
+  auto task = create_task("task1", "Task 1", "echo 'first run'");
+  task.depends_on_past = true;
+  ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task).has_value());
+
+  auto run_id = app_->trigger_dag_by_id(dag_id);
+  ASSERT_TRUE(run_id.has_value());
+  ASSERT_TRUE(wait_for_run_completion(*run_id));
+
+  auto tasks = app_->persistence()->get_task_instances(*run_id);
+  ASSERT_TRUE(tasks.has_value());
+  ASSERT_EQ(tasks->size(), 1u);
+  EXPECT_EQ(tasks->at(0).state, TaskState::Success);
+}
+
+TEST_F(RealIntegrationTest, DependsOnPast_PreviousFailed_BlocksSecondRun) {
+  DAGId dag_id("depends_past_blocked_dag");
+  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Depends Past Blocked"));
+  ASSERT_TRUE(dag_result.has_value());
+
+  auto task = create_task("task1", "Task 1", "exit 1");
+  task.depends_on_past = true;
+  task.max_retries = 0;
+  ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task).has_value());
+
+  auto run1_id = app_->trigger_dag_by_id(dag_id);
+  ASSERT_TRUE(run1_id.has_value());
+  ASSERT_TRUE(wait_for_run_completion(*run1_id));
+
+  auto run1_tasks = app_->persistence()->get_task_instances(*run1_id);
+  ASSERT_TRUE(run1_tasks.has_value());
+  EXPECT_EQ(run1_tasks->at(0).state, TaskState::Failed);
+
+  auto run2_id = app_->trigger_dag_by_id(dag_id);
+  ASSERT_TRUE(run2_id.has_value());
+  ASSERT_TRUE(wait_for_run_completion(*run2_id));
+
+  auto run2_tasks = app_->persistence()->get_task_instances(*run2_id);
+  ASSERT_TRUE(run2_tasks.has_value());
+  EXPECT_EQ(run2_tasks->at(0).state, TaskState::Skipped);
+}
+
+TEST_F(RealIntegrationTest, DependsOnPast_PreviousSuccess_AllowsSecondRun) {
+  DAGId dag_id("depends_past_allowed_dag");
+  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Depends Past Allowed"));
+  ASSERT_TRUE(dag_result.has_value());
+
+  auto task = create_task("task1", "Task 1", "echo 'success'");
+  task.depends_on_past = true;
+  ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task).has_value());
+
+  auto run1_id = app_->trigger_dag_by_id(dag_id);
+  ASSERT_TRUE(run1_id.has_value());
+  ASSERT_TRUE(wait_for_run_completion(*run1_id));
+
+  auto run1_tasks = app_->persistence()->get_task_instances(*run1_id);
+  ASSERT_TRUE(run1_tasks.has_value());
+  EXPECT_EQ(run1_tasks->at(0).state, TaskState::Success);
+
+  auto run2_id = app_->trigger_dag_by_id(dag_id);
+  ASSERT_TRUE(run2_id.has_value());
+  ASSERT_TRUE(wait_for_run_completion(*run2_id));
+
+  auto run2_tasks = app_->persistence()->get_task_instances(*run2_id);
+  ASSERT_TRUE(run2_tasks.has_value());
+  EXPECT_EQ(run2_tasks->at(0).state, TaskState::Success);
+}
+
+TEST_F(RealIntegrationTest, DependsOnPast_PreviousSkipped_AllowsSecondRun) {
+  DAGId dag_id("depends_past_skip_allowed_dag");
+  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Depends Past Skip Allowed"));
+  ASSERT_TRUE(dag_result.has_value());
+
+  auto task = create_task("task1", "Task 1", "exit 100");
+  task.depends_on_past = true;
+  ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task).has_value());
+
+  auto run1_id = app_->trigger_dag_by_id(dag_id);
+  ASSERT_TRUE(run1_id.has_value());
+  ASSERT_TRUE(wait_for_run_completion(*run1_id));
+
+  auto run1_tasks = app_->persistence()->get_task_instances(*run1_id);
+  ASSERT_TRUE(run1_tasks.has_value());
+  EXPECT_EQ(run1_tasks->at(0).state, TaskState::Skipped);
+
+  auto run2_id = app_->trigger_dag_by_id(dag_id);
+  ASSERT_TRUE(run2_id.has_value());
+  ASSERT_TRUE(wait_for_run_completion(*run2_id));
+
+  auto run2_tasks = app_->persistence()->get_task_instances(*run2_id);
+  ASSERT_TRUE(run2_tasks.has_value());
+  EXPECT_EQ(run2_tasks->at(0).state, TaskState::Skipped);
 }

@@ -2,6 +2,7 @@
 
 #include "taskmaster/config/task_config.hpp"
 #include "taskmaster/core/runtime.hpp"
+#include "taskmaster/storage/state_strings.hpp"
 #include "taskmaster/util/log.hpp"
 #include "taskmaster/xcom/xcom_extractor.hpp"
 
@@ -63,6 +64,7 @@ auto ExecutionService::coro_count() const -> int {
 
 auto ExecutionService::dispatch(const DAGRunId& dag_run_id) -> void {
   std::vector<TaskJob> jobs;
+  std::vector<NodeIndex> depends_on_past_blocked;
 
   {
     std::scoped_lock lock(mu_);
@@ -95,6 +97,35 @@ auto ExecutionService::dispatch(const DAGRunId& dag_run_id) -> void {
         continue;
       }
 
+      bool depends_on_past = false;
+      auto tcfg_it = task_cfgs_.find(dag_run_id);
+      if (tcfg_it != task_cfgs_.end() && idx < tcfg_it->second.size()) {
+        depends_on_past = tcfg_it->second[idx].depends_on_past;
+      }
+
+      if (depends_on_past) {
+        if (!callbacks_.check_previous_task_state) {
+          log::error("dispatch: task {} has depends_on_past but no callback configured", idx);
+          depends_on_past_blocked.push_back(idx);
+          continue;
+        }
+        auto prev_state = callbacks_.check_previous_task_state(dag_run_id, idx, run.execution_date(), dag_run_id.value());
+        if (!prev_state) {
+          log::error("dispatch: task {} blocked by depends_on_past (persistence error)", idx);
+          depends_on_past_blocked.push_back(idx);
+          continue;
+        }
+        if (prev_state->has_value()) {
+          auto state = **prev_state;
+          if (state != TaskState::Success && state != TaskState::Skipped) {
+            log::info("dispatch: task {} blocked by depends_on_past (previous state: {})",
+                      idx, task_state_name(state));
+            depends_on_past_blocked.push_back(idx);
+            continue;
+          }
+        }
+      }
+
       TaskId task_id{std::string{g.get_key(idx)}};
       InstanceId inst_id = generate_instance_id(dag_run_id, task_id);
 
@@ -107,7 +138,6 @@ auto ExecutionService::dispatch(const DAGRunId& dag_run_id) -> void {
 
       std::vector<XComPushConfig> xcom_push;
       std::vector<XComPullConfig> xcom_pull;
-      auto tcfg_it = task_cfgs_.find(dag_run_id);
       if (tcfg_it != task_cfgs_.end() && idx < tcfg_it->second.size()) {
         xcom_push = tcfg_it->second[idx].xcom_push;
         xcom_pull = tcfg_it->second[idx].xcom_pull;
@@ -118,12 +148,29 @@ auto ExecutionService::dispatch(const DAGRunId& dag_run_id) -> void {
                  task_id, idx, attempt);
     }
 
+    for (NodeIndex idx : depends_on_past_blocked) {
+      run.mark_task_skipped(idx);
+    }
+
     if (!jobs.empty() && callbacks_.on_persist_run) {
       callbacks_.on_persist_run(run);
       for (const auto& job : jobs) {
         if (auto info = run.get_task_info(job.idx); info && callbacks_.on_persist_task) {
           callbacks_.on_persist_task(dag_run_id, *info);
         }
+      }
+    }
+
+    if (!depends_on_past_blocked.empty() && callbacks_.on_persist_run) {
+      for (NodeIndex idx : depends_on_past_blocked) {
+        if (auto info = run.get_task_info(idx); info && callbacks_.on_persist_task) {
+          callbacks_.on_persist_task(dag_run_id, *info);
+        }
+      }
+      callbacks_.on_persist_run(run);
+      
+      if (run.is_complete()) {
+        on_run_complete(run, dag_run_id);
       }
     }
   }
@@ -133,6 +180,11 @@ auto ExecutionService::dispatch(const DAGRunId& dag_run_id) -> void {
               job.inst_id);
     auto coro = run_task(dag_run_id, std::move(job));
     runtime_.schedule_external(coro.take());
+  }
+
+  if (!depends_on_past_blocked.empty()) {
+    auto redispatch = dispatch_after_yield(dag_run_id.clone());
+    runtime_.schedule_external(redispatch.take());
   }
 }
 
@@ -245,6 +297,30 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job) -> spawn_task 
     log::debug("run_task: calling on_task_success for {} (idx={})", job.task_id,
                job.idx);
     on_task_success(dag_run_id, job.idx);
+  } else if (result.exit_code == 100) {
+    std::string skip_msg = std::format("Task '{}' skipped (exit code 100)", job.task_id.value());
+    if (callbacks_.on_log) {
+      callbacks_.on_log(dag_run_id, job.task_id, "stdout", skip_msg);
+    }
+    if (callbacks_.on_persist_log) {
+      callbacks_.on_persist_log(dag_run_id, job.task_id, job.attempt, "INFO", skip_msg);
+    }
+    if (callbacks_.on_task_status) {
+      callbacks_.on_task_status(dag_run_id, job.task_id, "skipped");
+    }
+    on_task_skipped(dag_run_id, job.idx);
+  } else if (result.exit_code == 101) {
+    std::string fail_msg = std::format("Task '{}' failed immediately (exit code 101)", job.task_id.value());
+    if (callbacks_.on_log) {
+      callbacks_.on_log(dag_run_id, job.task_id, "stderr", fail_msg);
+    }
+    if (callbacks_.on_persist_log) {
+      callbacks_.on_persist_log(dag_run_id, job.task_id, job.attempt, "ERROR", fail_msg);
+    }
+    if (callbacks_.on_task_status) {
+      callbacks_.on_task_status(dag_run_id, job.task_id, "failed");
+    }
+    on_task_fail_immediately(dag_run_id, job.idx, result.error, result.exit_code);
   } else {
     std::string error_msg = std::format("Task '{}' failed: {}", job.task_id.value(), result.error);
     if (callbacks_.on_log) {
@@ -379,6 +455,83 @@ auto ExecutionService::on_run_complete(DAGRun& run, const DAGRunId& dag_run_id)
     callbacks_.on_run_status(dag_run_id, status);
   }
   log::info("DAG run {} {}", dag_run_id, status);
+}
+
+auto ExecutionService::on_task_skipped(const DAGRunId& dag_run_id, NodeIndex idx)
+    -> void {
+  log::info("on_task_skipped: dag_run_id={} idx={}", dag_run_id, idx);
+  
+  bool completed = false;
+  
+  {
+    std::scoped_lock lock(mu_);
+    auto it = runs_.find(dag_run_id);
+    if (it == runs_.end())
+      return;
+
+    auto& run = *it->second;
+    run.mark_task_skipped(idx);
+
+    if (auto info = run.get_task_info(idx); info && callbacks_.on_persist_task) {
+      callbacks_.on_persist_task(dag_run_id, *info);
+    }
+
+    if (run.is_complete()) {
+      on_run_complete(run, dag_run_id);
+      runs_.erase(it);
+      run_cfgs_.erase(dag_run_id);
+      completed = true;
+    }
+  }
+
+  if (completed) {
+    done_cv_.notify_all();
+  } else {
+    dispatch(dag_run_id);
+  }
+}
+
+auto ExecutionService::on_task_fail_immediately(const DAGRunId& dag_run_id,
+                                                 NodeIndex idx,
+                                                 const std::string& error,
+                                                 int exit_code) -> void {
+  log::info("on_task_fail_immediately: dag_run_id={} idx={} err='{}'", 
+            dag_run_id, idx, error);
+  
+  bool completed = false;
+  
+  {
+    std::scoped_lock lock(mu_);
+    auto it = runs_.find(dag_run_id);
+    if (it == runs_.end())
+      return;
+
+    auto& run = *it->second;
+    run.mark_task_failed(idx, error, 0, exit_code);
+
+    if (auto info = run.get_task_info(idx); info && callbacks_.on_persist_task) {
+      callbacks_.on_persist_task(dag_run_id, *info);
+    }
+
+    for (const auto& info : run.all_task_info()) {
+      if (info.state == TaskState::UpstreamFailed && callbacks_.on_persist_task) {
+        callbacks_.on_persist_task(dag_run_id, info);
+      }
+    }
+
+    if (run.is_complete()) {
+      on_run_complete(run, dag_run_id);
+      runs_.erase(it);
+      run_cfgs_.erase(dag_run_id);
+      completed = true;
+    }
+  }
+
+  if (completed) {
+    done_cv_.notify_all();
+  } else {
+    dispatch(dag_run_id);
+  }
 }
 
 }  // namespace taskmaster

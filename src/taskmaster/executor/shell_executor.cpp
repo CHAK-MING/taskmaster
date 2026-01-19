@@ -360,7 +360,7 @@ public:
         ? shell->command.substr(0, 80) + "..." 
         : shell->command;
     log::info("ShellExecutor start: instance_id={} timeout={}s cmd='{}'",
-              req.instance_id, shell->timeout.count(), cmd_preview);
+              req.instance_id, shell->execution_timeout.count(), cmd_preview);
 
     std::string cmd = shell->command;
     if (!shell->env.empty()) {
@@ -375,7 +375,7 @@ public:
       cmd = env_prefix + cmd;
     }
 
-    auto t = execute_command(std::move(cmd), shell->working_dir, shell->timeout,
+    auto t = execute_command(std::move(cmd), shell->working_dir, shell->execution_timeout,
                              req.instance_id, std::move(sink), &ctx_);
     runtime_->schedule_external(t.take());
   }

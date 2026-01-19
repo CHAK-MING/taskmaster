@@ -57,7 +57,7 @@ protected:
     task.name = std::string(task_id.value());
     task.command = "echo hello";
     task.executor = ExecutorType::Shell;
-    task.timeout = std::chrono::seconds(30);
+    task.execution_timeout = std::chrono::seconds(30);
     task.max_retries = 0;
 
     info.tasks.push_back(task);

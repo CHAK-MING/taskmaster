@@ -33,6 +33,11 @@ public:
                  std::string_view key, const nlohmann::json& value) -> void;
   [[nodiscard]] auto get_xcom(DAGRunId dag_run_id, TaskId task,
                               std::string_view key) -> Result<nlohmann::json>;
+  [[nodiscard]] auto get_previous_task_state(
+      DAGId dag_id, NodeIndex task_idx,
+      std::chrono::system_clock::time_point current_execution_date,
+      std::string_view current_dag_run_id) const
+      -> Result<std::optional<TaskState>>;
 
 private:
   std::unique_ptr<Persistence> db_;

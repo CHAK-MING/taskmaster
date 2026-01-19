@@ -18,7 +18,7 @@ TEST(ConfigTest, TaskConfigDefaults) {
   EXPECT_TRUE(task.working_dir.empty());
   EXPECT_TRUE(task.dependencies.empty());
   EXPECT_EQ(task.executor, ExecutorType::Shell);
-  EXPECT_EQ(task.timeout, std::chrono::seconds(300));
+  EXPECT_EQ(task.execution_timeout, std::chrono::seconds(300));
   EXPECT_EQ(task.retry_interval, std::chrono::seconds(60));
   EXPECT_EQ(task.max_retries, 3);
 }
@@ -26,12 +26,12 @@ TEST(ConfigTest, TaskConfigDefaults) {
 TEST(ConfigTest, TaskConfigWithDeps) {
   TaskConfig task;
 
-  task.dependencies.push_back(TaskId("dep1"));
-  task.dependencies.push_back(TaskId("dep2"));
+  task.dependencies.push_back({TaskId("dep1"), ""});
+  task.dependencies.push_back({TaskId("dep2"), ""});
 
   EXPECT_EQ(task.dependencies.size(), 2);
-  EXPECT_EQ(task.dependencies[0], TaskId("dep1"));
-  EXPECT_EQ(task.dependencies[1], TaskId("dep2"));
+  EXPECT_EQ(task.dependencies[0].task_id, TaskId("dep1"));
+  EXPECT_EQ(task.dependencies[1].task_id, TaskId("dep2"));
 }
 
 TEST(ConfigTest, TaskConfigCustomValues) {
@@ -41,7 +41,7 @@ TEST(ConfigTest, TaskConfigCustomValues) {
   task.name = "Custom Task";
   task.command = "echo custom";
   task.working_dir = "/tmp";
-  task.timeout = std::chrono::seconds(600);
+  task.execution_timeout = std::chrono::seconds(600);
   task.retry_interval = std::chrono::seconds(120);
   task.max_retries = 5;
 
@@ -49,7 +49,7 @@ TEST(ConfigTest, TaskConfigCustomValues) {
   EXPECT_EQ(task.name, "Custom Task");
   EXPECT_EQ(task.command, "echo custom");
   EXPECT_EQ(task.working_dir, "/tmp");
-  EXPECT_EQ(task.timeout, std::chrono::seconds(600));
+  EXPECT_EQ(task.execution_timeout, std::chrono::seconds(600));
   EXPECT_EQ(task.retry_interval, std::chrono::seconds(120));
   EXPECT_EQ(task.max_retries, 5);
 }

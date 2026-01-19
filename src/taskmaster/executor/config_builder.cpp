@@ -16,7 +16,7 @@ auto ExecutorConfigBuilder::build(const DAGInfo& dag_info, const DAG& graph)
           ShellExecutorConfig exec;
           exec.command = task.command;
           exec.working_dir = task.working_dir;
-          exec.timeout = task.timeout;
+          exec.execution_timeout = task.execution_timeout;
           cfgs[idx] = exec;
           break;
         }
@@ -29,7 +29,7 @@ auto ExecutorConfigBuilder::build(const DAGInfo& dag_info, const DAG& graph)
           }
           exec.command = task.command;
           exec.working_dir = task.working_dir;
-          exec.timeout = task.timeout;
+          exec.execution_timeout = task.execution_timeout;
           cfgs[idx] = exec;
           break;
         }
