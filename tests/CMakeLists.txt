@@ -32,6 +32,7 @@ add_executable(taskmaster_tests
   # Executor tests
   executor_test.cpp
   docker_executor_test.cpp
+  sensor_executor_test.cpp
 
   # HTTP/Docker client tests
   http_client_test.cpp
@@ -47,6 +48,7 @@ add_executable(taskmaster_tests
 
   # Integration tests
   integration_test.cpp
+  api_e2e_test.cpp
 )
 
 target_link_libraries(taskmaster_tests

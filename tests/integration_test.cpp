@@ -4,13 +4,13 @@
 #include "taskmaster/storage/persistence.hpp"
 #include "taskmaster/util/id.hpp"
 
+#include <arpa/inet.h>
 #include <chrono>
 #include <filesystem>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <thread>
 #include <vector>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 
 #include <unistd.h>
 
@@ -37,7 +37,7 @@ auto make_temp_path() -> std::string {
   return templ;
 }
 
-}  // namespace
+} // namespace
 
 class RealIntegrationTest : public ::testing::Test {
 protected:
@@ -80,7 +80,7 @@ protected:
     return false;
   }
 
-  auto wait_for_run_completion(const DAGRunId& run_id,
+  auto wait_for_run_completion(const DAGRunId &run_id,
                                std::chrono::milliseconds timeout = 10s)
       -> bool {
     if (!app_ || !app_->persistence()) {
@@ -113,7 +113,7 @@ protected:
     return false;
   }
 
-  auto latest_run_for_dag(const DAGId& dag_id,
+  auto latest_run_for_dag(const DAGId &dag_id,
                           std::chrono::milliseconds timeout = 2s)
       -> std::optional<Persistence::RunHistoryEntry> {
     if (!app_ || !app_->persistence()) {
@@ -156,14 +156,14 @@ protected:
     return task;
   }
 
-  [[nodiscard]] auto get_task_stdout(const DAGRunId& run_id,
-                                     const TaskId& task_id) -> std::string {
+  [[nodiscard]] auto get_task_stdout(const DAGRunId &run_id,
+                                     const TaskId &task_id) -> std::string {
     auto logs = app_->persistence()->get_task_logs(run_id, task_id);
     if (!logs.has_value()) {
       return "";
     }
     std::string result;
-    for (const auto& entry : *logs) {
+    for (const auto &entry : *logs) {
       if (entry.stream == "stdout") {
         result += entry.message;
       }
@@ -171,8 +171,8 @@ protected:
     return result;
   }
 
-  auto expect_task_stdout_contains(const DAGRunId& run_id,
-                                   const TaskId& task_id,
+  auto expect_task_stdout_contains(const DAGRunId &run_id,
+                                   const TaskId &task_id,
                                    std::string_view expected) -> void {
     auto stdout_content = get_task_stdout(run_id, task_id);
     EXPECT_TRUE(stdout_content.find(expected) != std::string::npos)
@@ -180,7 +180,7 @@ protected:
         << expected << "', but got: '" << stdout_content << "'";
   }
 
-  auto verify_task_instance(const TaskInstanceInfo& info,
+  auto verify_task_instance(const TaskInstanceInfo &info,
                             TaskState expected_state,
                             int expected_exit_code = 0) -> void {
     EXPECT_EQ(info.state, expected_state)
@@ -199,26 +199,25 @@ protected:
     }
   }
 
-  auto verify_all_tasks_successful(const DAGRunId& run_id,
+  auto verify_all_tasks_successful(const DAGRunId &run_id,
                                    size_t expected_count) -> void {
     auto tasks = app_->persistence()->get_task_instances(run_id);
     ASSERT_TRUE(tasks.has_value()) << "Failed to get task instances";
     ASSERT_EQ(tasks->size(), expected_count) << "Task count mismatch";
 
-    for (const auto& t : *tasks) {
+    for (const auto &t : *tasks) {
       verify_task_instance(t, TaskState::Success, 0);
       EXPECT_EQ(t.attempt, 1) << "Successful task should have attempt=1";
     }
   }
 
-  auto verify_xcom_value(const DAGRunId& run_id, const TaskId& task_id,
-                         const std::string& key,
-                         const nlohmann::json& expected) -> void {
+  auto verify_xcom_value(const DAGRunId &run_id, const TaskId &task_id,
+                         const std::string &key, const nlohmann::json &expected)
+      -> void {
     auto xcom = app_->persistence()->get_xcom(run_id, task_id, key);
     ASSERT_TRUE(xcom.has_value())
         << "XCom key '" << key << "' not found for task '" << task_id << "'";
-    EXPECT_EQ(*xcom, expected)
-        << "XCom value mismatch for key '" << key << "'";
+    EXPECT_EQ(*xcom, expected) << "XCom value mismatch for key '" << key << "'";
   }
 
   std::string temp_db_;
@@ -236,7 +235,8 @@ TEST_F(RealIntegrationTest, HealthCheck) {
 
 TEST_F(RealIntegrationTest, SimpleTaskSucceeds) {
   DAGId dag_id("simple_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Simple DAG"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("Simple DAG"));
   ASSERT_TRUE(dag_result.has_value()) << dag_result.error().message();
 
   auto task = create_task("simple_task", "Simple Task", "echo 'hello world'");
@@ -255,17 +255,23 @@ TEST_F(RealIntegrationTest, SimpleTaskSucceeds) {
   EXPECT_EQ(state.value(), DAGRunState::Success);
 
   verify_all_tasks_successful(entry->dag_run_id, 1);
-  expect_task_stdout_contains(entry->dag_run_id, TaskId("simple_task"), "hello world");
+  expect_task_stdout_contains(entry->dag_run_id, TaskId("simple_task"),
+                              "hello world");
 }
 
 TEST_F(RealIntegrationTest, TaskWithDependencyChain) {
   DAGId dag_id("chain_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Chain DAG"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("Chain DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
   auto task1 = create_task("task1", "Task 1", "echo 'Task 1 output'");
-  auto task2 = create_task("task2", "Task 2", "echo 'Task 2 output'", std::vector<TaskDependency>{{{TaskId{"task1"}, ""}}});
-  auto task3 = create_task("task3", "Task 3", "echo 'Task 3 output'", std::vector<TaskDependency>{{{TaskId{"task2"}, ""}}});
+  auto task2 =
+      create_task("task2", "Task 2", "echo 'Task 2 output'",
+                  std::vector<TaskDependency>{{{TaskId{"task1"}, ""}}});
+  auto task3 =
+      create_task("task3", "Task 3", "echo 'Task 3 output'",
+                  std::vector<TaskDependency>{{{TaskId{"task2"}, ""}}});
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task1).has_value());
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task2).has_value());
@@ -284,16 +290,19 @@ TEST_F(RealIntegrationTest, TaskWithDependencyChain) {
 
   verify_all_tasks_successful(entry->dag_run_id, 3);
 
-  expect_task_stdout_contains(entry->dag_run_id, TaskId("task1"), "Task 1 output");
-  expect_task_stdout_contains(entry->dag_run_id, TaskId("task2"), "Task 2 output");
-  expect_task_stdout_contains(entry->dag_run_id, TaskId("task3"), "Task 3 output");
+  expect_task_stdout_contains(entry->dag_run_id, TaskId("task1"),
+                              "Task 1 output");
+  expect_task_stdout_contains(entry->dag_run_id, TaskId("task2"),
+                              "Task 2 output");
+  expect_task_stdout_contains(entry->dag_run_id, TaskId("task3"),
+                              "Task 3 output");
 
   auto tasks = app_->persistence()->get_task_instances(entry->dag_run_id);
   ASSERT_TRUE(tasks.has_value());
   ASSERT_EQ(tasks->size(), 3u);
 
   std::vector<std::chrono::system_clock::time_point> finish_times;
-  for (const auto& t : *tasks) {
+  for (const auto &t : *tasks) {
     finish_times.push_back(t.finished_at);
   }
   std::sort(finish_times.begin(), finish_times.end());
@@ -303,7 +312,8 @@ TEST_F(RealIntegrationTest, TaskWithDependencyChain) {
 
 TEST_F(RealIntegrationTest, FailingTaskBlocksDependents) {
   DAGId dag_id("fail_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Fail DAG"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("Fail DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
   TaskConfig task1;
@@ -312,7 +322,9 @@ TEST_F(RealIntegrationTest, FailingTaskBlocksDependents) {
   task1.command = "exit 1";
   task1.max_retries = 0;
 
-  auto task2 = create_task("task2", "Task 2", "echo 'This should not run'", std::vector<TaskDependency>{{{TaskId{"task1"}, ""}}});
+  auto task2 =
+      create_task("task2", "Task 2", "echo 'This should not run'",
+                  std::vector<TaskDependency>{{{TaskId{"task1"}, ""}}});
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task1).has_value());
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task2).has_value());
@@ -334,7 +346,7 @@ TEST_F(RealIntegrationTest, FailingTaskBlocksDependents) {
 
   bool found_failed = false;
   bool found_upstream_failed = false;
-  for (const auto& t : *tasks) {
+  for (const auto &t : *tasks) {
     if (t.state == TaskState::Failed) {
       found_failed = true;
       EXPECT_EQ(t.exit_code, 1) << "Failed task should have exit_code=1";
@@ -356,7 +368,8 @@ TEST_F(RealIntegrationTest, FailingTaskBlocksDependents) {
 
 TEST_F(RealIntegrationTest, TimeoutTaskFailsRun) {
   DAGId dag_id("timeout_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Timeout DAG"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("Timeout DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
   TaskConfig task;
@@ -387,7 +400,8 @@ TEST_F(RealIntegrationTest, TimeoutTaskFailsRun) {
 
 TEST_F(RealIntegrationTest, MultipleTriggersCreateMultipleRuns) {
   DAGId dag_id("multi_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Multi Trigger DAG"));
+  auto dag_result = app_->dag_manager().create_dag(
+      dag_id, create_dag_info("Multi Trigger DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
   auto task = create_task("multi_task", "Multi Task", "echo 'Multi trigger'");
@@ -405,12 +419,13 @@ TEST_F(RealIntegrationTest, MultipleTriggersCreateMultipleRuns) {
     ASSERT_TRUE(history.has_value());
     if (history->size() >= 3) {
       bool all_done = true;
-      for (const auto& e : *history) {
+      for (const auto &e : *history) {
         auto s = app_->persistence()->get_dag_run_state(e.dag_run_id);
         ASSERT_TRUE(s.has_value());
         all_done = all_done && (s.value() != DAGRunState::Running);
       }
-      if (all_done) break;
+      if (all_done)
+        break;
     }
     std::this_thread::sleep_for(50ms);
   }
@@ -420,7 +435,7 @@ TEST_F(RealIntegrationTest, MultipleTriggersCreateMultipleRuns) {
   EXPECT_GE(history.value().size(), 3);
 
   int success_count = 0;
-  for (const auto& entry : history.value()) {
+  for (const auto &entry : history.value()) {
     if (entry.state == DAGRunState::Success) {
       success_count++;
     }
@@ -430,10 +445,12 @@ TEST_F(RealIntegrationTest, MultipleTriggersCreateMultipleRuns) {
 
 TEST_F(RealIntegrationTest, DAGLifecycle_CreateAndDelete) {
   DAGId dag_id("lifecycle_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Lifecycle DAG"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("Lifecycle DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
-  auto task = create_task("lifecycle_task", "Lifecycle Task", "echo 'Lifecycle'");
+  auto task =
+      create_task("lifecycle_task", "Lifecycle Task", "echo 'Lifecycle'");
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task).has_value());
 
   auto db_dag_result = app_->persistence()->get_dag(dag_id);
@@ -448,7 +465,8 @@ TEST_F(RealIntegrationTest, DAGLifecycle_CreateAndDelete) {
 
 TEST_F(RealIntegrationTest, XComPushAndPullBetweenTasks) {
   DAGId dag_id("xcom_test_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("XCom Test"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("XCom Test"));
   ASSERT_TRUE(dag_result.has_value()) << dag_result.error().message();
 
   TaskConfig producer;
@@ -462,7 +480,9 @@ TEST_F(RealIntegrationTest, XComPushAndPullBetweenTasks) {
   consumer.name = "Consumer";
   consumer.command = "echo \"Received: $PRODUCER_DATA\"";
   consumer.dependencies = {{TaskId{"producer"}, ""}};
-  consumer.xcom_pull = {{.key = "result", .source_task = TaskId("producer"), .env_var = "PRODUCER_DATA"}};
+  consumer.xcom_pull = {{.key = "result",
+                         .source_task = TaskId("producer"),
+                         .env_var = "PRODUCER_DATA"}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, producer).has_value());
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, consumer).has_value());
@@ -476,7 +496,8 @@ TEST_F(RealIntegrationTest, XComPushAndPullBetweenTasks) {
   ASSERT_TRUE(state.has_value());
   EXPECT_EQ(state.value(), DAGRunState::Success);
 
-  auto xcom = app_->persistence()->get_xcom(*run_id, TaskId("producer"), "result");
+  auto xcom =
+      app_->persistence()->get_xcom(*run_id, TaskId("producer"), "result");
   ASSERT_TRUE(xcom.has_value()) << "XCom 'result' should be persisted";
   EXPECT_EQ((*xcom)["value"], 42);
   EXPECT_EQ((*xcom)["message"], "hello");
@@ -489,7 +510,8 @@ TEST_F(RealIntegrationTest, XComPushAndPullBetweenTasks) {
 
 TEST_F(RealIntegrationTest, XComPullFailsGracefullyWhenKeyMissing) {
   DAGId dag_id("xcom_missing_key_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("XCom Missing Key"));
+  auto dag_result = app_->dag_manager().create_dag(
+      dag_id, create_dag_info("XCom Missing Key"));
   ASSERT_TRUE(dag_result.has_value());
 
   TaskConfig producer;
@@ -502,7 +524,9 @@ TEST_F(RealIntegrationTest, XComPullFailsGracefullyWhenKeyMissing) {
   consumer.name = "Consumer";
   consumer.command = "echo \"Data: ${MISSING_DATA:-default_value}\"";
   consumer.dependencies = {{TaskId{"producer"}, ""}};
-  consumer.xcom_pull = {{.key = "nonexistent", .source_task = TaskId("producer"), .env_var = "MISSING_DATA"}};
+  consumer.xcom_pull = {{.key = "nonexistent",
+                         .source_task = TaskId("producer"),
+                         .env_var = "MISSING_DATA"}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, producer).has_value());
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, consumer).has_value());
@@ -519,26 +543,27 @@ TEST_F(RealIntegrationTest, XComPullFailsGracefullyWhenKeyMissing) {
 
 TEST_F(RealIntegrationTest, XComRegexExtraction) {
   DAGId dag_id("xcom_regex_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("XCom Regex"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("XCom Regex"));
   ASSERT_TRUE(dag_result.has_value());
 
   TaskConfig producer;
   producer.task_id = TaskId("producer");
   producer.name = "Producer";
   producer.command = "echo 'Processed 123 records in 5 seconds'";
-  producer.xcom_push = {{
-      .key = "count",
-      .source = XComSource::Stdout,
-      .regex_pattern = R"(Processed (\d+) records)",
-      .regex_group = 1
-  }};
+  producer.xcom_push = {{.key = "count",
+                         .source = XComSource::Stdout,
+                         .regex_pattern = R"(Processed (\d+) records)",
+                         .regex_group = 1}};
 
   TaskConfig consumer;
   consumer.task_id = TaskId("consumer");
   consumer.name = "Consumer";
   consumer.command = "echo \"Count was: $RECORD_COUNT\"";
   consumer.dependencies = {{TaskId{"producer"}, ""}};
-  consumer.xcom_pull = {{.key = "count", .source_task = TaskId("producer"), .env_var = "RECORD_COUNT"}};
+  consumer.xcom_pull = {{.key = "count",
+                         .source_task = TaskId("producer"),
+                         .env_var = "RECORD_COUNT"}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, producer).has_value());
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, consumer).has_value());
@@ -552,7 +577,8 @@ TEST_F(RealIntegrationTest, XComRegexExtraction) {
   ASSERT_TRUE(state.has_value());
   EXPECT_EQ(state.value(), DAGRunState::Success);
 
-  auto xcom = app_->persistence()->get_xcom(*run_id, TaskId("producer"), "count");
+  auto xcom =
+      app_->persistence()->get_xcom(*run_id, TaskId("producer"), "count");
   ASSERT_TRUE(xcom.has_value());
   EXPECT_EQ(*xcom, "123");
 
@@ -561,7 +587,8 @@ TEST_F(RealIntegrationTest, XComRegexExtraction) {
 
 TEST_F(RealIntegrationTest, XComChainedTasks) {
   DAGId dag_id("xcom_chain_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("XCom Chain"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("XCom Chain"));
   ASSERT_TRUE(dag_result.has_value());
 
   TaskConfig task1;
@@ -575,7 +602,8 @@ TEST_F(RealIntegrationTest, XComChainedTasks) {
   task2.name = "Step 2";
   task2.command = "echo \"step2_received_${STEP1_DATA}\"";
   task2.dependencies = {{TaskId{"step1"}, ""}};
-  task2.xcom_pull = {{.key = "data", .source_task = TaskId("step1"), .env_var = "STEP1_DATA"}};
+  task2.xcom_pull = {
+      {.key = "data", .source_task = TaskId("step1"), .env_var = "STEP1_DATA"}};
   task2.xcom_push = {{.key = "data", .source = XComSource::Stdout}};
 
   TaskConfig task3;
@@ -583,7 +611,8 @@ TEST_F(RealIntegrationTest, XComChainedTasks) {
   task3.name = "Step 3";
   task3.command = "echo \"final: $STEP2_DATA\"";
   task3.dependencies = {{TaskId{"step2"}, ""}};
-  task3.xcom_pull = {{.key = "data", .source_task = TaskId("step2"), .env_var = "STEP2_DATA"}};
+  task3.xcom_pull = {
+      {.key = "data", .source_task = TaskId("step2"), .env_var = "STEP2_DATA"}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task1).has_value());
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task2).has_value());
@@ -600,11 +629,13 @@ TEST_F(RealIntegrationTest, XComChainedTasks) {
 
   auto xcom1 = app_->persistence()->get_xcom(*run_id, TaskId("step1"), "data");
   ASSERT_TRUE(xcom1.has_value());
-  EXPECT_TRUE(xcom1->get<std::string>().find("step1_output") != std::string::npos);
+  EXPECT_TRUE(xcom1->get<std::string>().find("step1_output") !=
+              std::string::npos);
 
   auto xcom2 = app_->persistence()->get_xcom(*run_id, TaskId("step2"), "data");
   ASSERT_TRUE(xcom2.has_value());
-  EXPECT_TRUE(xcom2->get<std::string>().find("step2_received") != std::string::npos);
+  EXPECT_TRUE(xcom2->get<std::string>().find("step2_received") !=
+              std::string::npos);
 
   expect_task_stdout_contains(*run_id, TaskId("step2"), "step1_output");
   expect_task_stdout_contains(*run_id, TaskId("step3"), "step2_received");
@@ -614,7 +645,8 @@ TEST_F(RealIntegrationTest, XComChainedTasks) {
 
 TEST_F(RealIntegrationTest, XComStderrExtraction) {
   DAGId dag_id("xcom_stderr_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("XCom Stderr"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("XCom Stderr"));
   ASSERT_TRUE(dag_result.has_value());
 
   TaskConfig producer;
@@ -633,13 +665,16 @@ TEST_F(RealIntegrationTest, XComStderrExtraction) {
   ASSERT_TRUE(state.has_value());
   EXPECT_EQ(state.value(), DAGRunState::Success);
 
-  auto xcom = app_->persistence()->get_xcom(*run_id, TaskId("producer"), "error");
-  ASSERT_TRUE(xcom.has_value()) << "XCom should be stored even if stderr is empty";
+  auto xcom =
+      app_->persistence()->get_xcom(*run_id, TaskId("producer"), "error");
+  ASSERT_TRUE(xcom.has_value())
+      << "XCom should be stored even if stderr is empty";
 }
 
 TEST_F(RealIntegrationTest, XComExitCodeExtraction) {
   DAGId dag_id("xcom_exitcode_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("XCom ExitCode"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("XCom ExitCode"));
   ASSERT_TRUE(dag_result.has_value());
 
   TaskConfig producer;
@@ -653,7 +688,9 @@ TEST_F(RealIntegrationTest, XComExitCodeExtraction) {
   consumer.name = "Consumer";
   consumer.command = "echo \"Exit code was: $EXIT_STATUS\"";
   consumer.dependencies = {{TaskId{"producer"}, ""}};
-  consumer.xcom_pull = {{.key = "status", .source_task = TaskId("producer"), .env_var = "EXIT_STATUS"}};
+  consumer.xcom_pull = {{.key = "status",
+                         .source_task = TaskId("producer"),
+                         .env_var = "EXIT_STATUS"}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, producer).has_value());
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, consumer).has_value());
@@ -666,7 +703,8 @@ TEST_F(RealIntegrationTest, XComExitCodeExtraction) {
   ASSERT_TRUE(state.has_value());
   EXPECT_EQ(state.value(), DAGRunState::Success);
 
-  auto xcom = app_->persistence()->get_xcom(*run_id, TaskId("producer"), "status");
+  auto xcom =
+      app_->persistence()->get_xcom(*run_id, TaskId("producer"), "status");
   ASSERT_TRUE(xcom.has_value());
   EXPECT_EQ(*xcom, 0);
 
@@ -675,24 +713,24 @@ TEST_F(RealIntegrationTest, XComExitCodeExtraction) {
 
 TEST_F(RealIntegrationTest, XComJsonPathExtraction) {
   DAGId dag_id("xcom_jsonpath_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("XCom JsonPath"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("XCom JsonPath"));
   ASSERT_TRUE(dag_result.has_value());
 
   TaskConfig producer;
   producer.task_id = TaskId("producer");
   producer.name = "Producer";
   producer.command = R"(echo '{"data": {"nested": {"value": 999}}}')";
-  producer.xcom_push = {{
-      .key = "full_json",
-      .source = XComSource::Json
-  }};
+  producer.xcom_push = {{.key = "full_json", .source = XComSource::Json}};
 
   TaskConfig consumer;
   consumer.task_id = TaskId("consumer");
   consumer.name = "Consumer";
   consumer.command = "echo \"Got JSON: $JSON_DATA\"";
   consumer.dependencies = {{TaskId{"producer"}, ""}};
-  consumer.xcom_pull = {{.key = "full_json", .source_task = TaskId("producer"), .env_var = "JSON_DATA"}};
+  consumer.xcom_pull = {{.key = "full_json",
+                         .source_task = TaskId("producer"),
+                         .env_var = "JSON_DATA"}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, producer).has_value());
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, consumer).has_value());
@@ -705,7 +743,8 @@ TEST_F(RealIntegrationTest, XComJsonPathExtraction) {
   ASSERT_TRUE(state.has_value());
   EXPECT_EQ(state.value(), DAGRunState::Success);
 
-  auto xcom = app_->persistence()->get_xcom(*run_id, TaskId("producer"), "full_json");
+  auto xcom =
+      app_->persistence()->get_xcom(*run_id, TaskId("producer"), "full_json");
   ASSERT_TRUE(xcom.has_value());
   EXPECT_TRUE(xcom->contains("data"));
   EXPECT_EQ((*xcom)["data"]["nested"]["value"], 999);
@@ -715,16 +754,14 @@ TEST_F(RealIntegrationTest, XComJsonPathExtraction) {
 
 TEST_F(RealIntegrationTest, ParallelTasksExecuteConcurrently) {
   DAGId dag_id("parallel_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Parallel DAG"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("Parallel DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
   constexpr int kParallelTasks = 5;
   for (int i = 0; i < kParallelTasks; ++i) {
-    auto task = create_task(
-        std::format("task{}", i),
-        std::format("Task {}", i),
-        std::format("echo 'parallel_task_{}'", i)
-    );
+    auto task = create_task(std::format("task{}", i), std::format("Task {}", i),
+                            std::format("echo 'parallel_task_{}'", i));
     ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task).has_value());
   }
 
@@ -746,13 +783,18 @@ TEST_F(RealIntegrationTest, ParallelTasksExecuteConcurrently) {
 
 TEST_F(RealIntegrationTest, DiamondDependencyDAG) {
   DAGId dag_id("diamond_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Diamond DAG"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("Diamond DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
   auto root = create_task("root", "Root", "echo 'root_done'");
-  auto left = create_task("left", "Left", "echo 'left_done'", std::vector<TaskDependency>{{{TaskId{"root"}, ""}}});
-  auto right = create_task("right", "Right", "echo 'right_done'", std::vector<TaskDependency>{{{TaskId{"root"}, ""}}});
-  auto join = create_task("join", "Join", "echo 'join_done'", std::vector<TaskDependency>{{{TaskId{"left"}, ""}, {TaskId{"right"}, ""}}});
+  auto left = create_task("left", "Left", "echo 'left_done'",
+                          std::vector<TaskDependency>{{{TaskId{"root"}, ""}}});
+  auto right = create_task("right", "Right", "echo 'right_done'",
+                           std::vector<TaskDependency>{{{TaskId{"root"}, ""}}});
+  auto join = create_task("join", "Join", "echo 'join_done'",
+                          std::vector<TaskDependency>{
+                              {{TaskId{"left"}, ""}, {TaskId{"right"}, ""}}});
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, root).has_value());
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, left).has_value());
@@ -772,21 +814,28 @@ TEST_F(RealIntegrationTest, DiamondDependencyDAG) {
   auto tasks = app_->persistence()->get_task_instances(*run_id);
   ASSERT_TRUE(tasks.has_value());
 
-  std::chrono::system_clock::time_point root_finish{}, left_finish{}, right_finish{}, join_start{};
-  for (const auto& t : *tasks) {
-    if (t.task_idx == 0) root_finish = t.finished_at;
-    if (t.task_idx == 1) left_finish = t.finished_at;
-    if (t.task_idx == 2) right_finish = t.finished_at;
-    if (t.task_idx == 3) join_start = t.started_at;
+  std::chrono::system_clock::time_point root_finish{}, left_finish{},
+      right_finish{}, join_start{};
+  for (const auto &t : *tasks) {
+    if (t.task_idx == 0)
+      root_finish = t.finished_at;
+    if (t.task_idx == 1)
+      left_finish = t.finished_at;
+    if (t.task_idx == 2)
+      right_finish = t.finished_at;
+    if (t.task_idx == 3)
+      join_start = t.started_at;
   }
 
   EXPECT_GE(join_start, left_finish) << "Join should start after left finishes";
-  EXPECT_GE(join_start, right_finish) << "Join should start after right finishes";
+  EXPECT_GE(join_start, right_finish)
+      << "Join should start after right finishes";
 }
 
 TEST_F(RealIntegrationTest, TaskRetryOnFailure) {
   DAGId dag_id("retry_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Retry DAG"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("Retry DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
   TaskConfig task;
@@ -810,20 +859,22 @@ TEST_F(RealIntegrationTest, TaskRetryOnFailure) {
   ASSERT_TRUE(tasks.has_value());
   ASSERT_EQ(tasks->size(), 1u);
 
-  const auto& t = tasks->front();
+  const auto &t = tasks->front();
   EXPECT_EQ(t.state, TaskState::Failed);
   EXPECT_GE(t.attempt, 2) << "Task should have retried at least once";
 }
 
 TEST_F(RealIntegrationTest, ConcurrentRunsAreIsolated) {
   DAGId dag_id("concurrent_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Concurrent DAG"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("Concurrent DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
   TaskConfig task;
   task.task_id = TaskId("producer");
   task.name = "Producer";
-  task.command = "echo \"run_marker_${TASKMASTER_RUN_ID:-unknown}\" && sleep 0.2";
+  task.command =
+      "echo \"run_marker_${TASKMASTER_RUN_ID:-unknown}\" && sleep 0.2";
   task.xcom_push = {{.key = "marker", .source = XComSource::Stdout}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task).has_value());
@@ -847,8 +898,10 @@ TEST_F(RealIntegrationTest, ConcurrentRunsAreIsolated) {
   EXPECT_EQ(state1.value(), DAGRunState::Success);
   EXPECT_EQ(state2.value(), DAGRunState::Success);
 
-  auto xcom1 = app_->persistence()->get_xcom(*run1_id, TaskId("producer"), "marker");
-  auto xcom2 = app_->persistence()->get_xcom(*run2_id, TaskId("producer"), "marker");
+  auto xcom1 =
+      app_->persistence()->get_xcom(*run1_id, TaskId("producer"), "marker");
+  auto xcom2 =
+      app_->persistence()->get_xcom(*run2_id, TaskId("producer"), "marker");
   ASSERT_TRUE(xcom1.has_value());
   ASSERT_TRUE(xcom2.has_value());
 
@@ -867,7 +920,8 @@ TEST_F(RealIntegrationTest, ConcurrentRunsAreIsolated) {
 
 TEST_F(RealIntegrationTest, ConcurrentRunsWithXComIsolation) {
   DAGId dag_id("xcom_isolation_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("XCom Isolation"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("XCom Isolation"));
   ASSERT_TRUE(dag_result.has_value());
 
   TaskConfig producer;
@@ -881,7 +935,9 @@ TEST_F(RealIntegrationTest, ConcurrentRunsWithXComIsolation) {
   consumer.name = "Consumer";
   consumer.command = "echo \"Received: $PRODUCER_DATA\" && sleep 0.1";
   consumer.dependencies = {{TaskId{"producer"}, ""}};
-  consumer.xcom_pull = {{.key = "data", .source_task = TaskId("producer"), .env_var = "PRODUCER_DATA"}};
+  consumer.xcom_pull = {{.key = "data",
+                         .source_task = TaskId("producer"),
+                         .env_var = "PRODUCER_DATA"}};
 
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, producer).has_value());
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, consumer).has_value());
@@ -896,16 +952,18 @@ TEST_F(RealIntegrationTest, ConcurrentRunsWithXComIsolation) {
     std::this_thread::sleep_for(30ms);
   }
 
-  for (const auto& run_id : run_ids) {
+  for (const auto &run_id : run_ids) {
     ASSERT_TRUE(wait_for_run_completion(run_id, 20s));
   }
 
-  for (const auto& run_id : run_ids) {
+  for (const auto &run_id : run_ids) {
     auto state = app_->persistence()->get_dag_run_state(run_id);
     ASSERT_TRUE(state.has_value());
-    EXPECT_EQ(state.value(), DAGRunState::Success) << "Run " << run_id << " failed";
+    EXPECT_EQ(state.value(), DAGRunState::Success)
+        << "Run " << run_id << " failed";
 
-    auto xcom = app_->persistence()->get_xcom(run_id, TaskId("producer"), "data");
+    auto xcom =
+        app_->persistence()->get_xcom(run_id, TaskId("producer"), "data");
     ASSERT_TRUE(xcom.has_value()) << "XCom missing for run " << run_id;
 
     auto tasks = app_->persistence()->get_task_instances(run_id);
@@ -922,69 +980,31 @@ TEST_F(RealIntegrationTest, ConcurrentRunsWithXComIsolation) {
 
 namespace {
 
-auto http_get(uint16_t port, std::string_view path) -> std::pair<int, std::string> {
-  int sock = socket(AF_INET, SOCK_STREAM, 0);
-  if (sock < 0) return {-1, ""};
-
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(port);
-  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
-
-  if (connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-    close(sock);
-    return {-1, ""};
-  }
-
-  std::string request = std::format("GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", path);
-  send(sock, request.data(), request.size(), 0);
-
-  std::string response;
-  char buffer[4096];
-  ssize_t n;
-  while ((n = recv(sock, buffer, sizeof(buffer), 0)) > 0) {
-    response.append(buffer, n);
-  }
-  close(sock);
-
-  int status_code = 0;
-  if (response.size() > 12) {
-    auto space_pos = response.find(' ');
-    if (space_pos != std::string::npos) {
-      status_code = std::stoi(response.substr(space_pos + 1, 3));
-    }
-  }
-
-  auto body_start = response.find("\r\n\r\n");
-  std::string body = (body_start != std::string::npos) 
-      ? response.substr(body_start + 4) 
-      : "";
-
-  return {status_code, body};
-}
-
-auto http_post(uint16_t port, std::string_view path, std::string_view json_body) 
+auto http_get(uint16_t port, std::string_view path)
     -> std::pair<int, std::string> {
   int sock = socket(AF_INET, SOCK_STREAM, 0);
-  if (sock < 0) return {-1, ""};
+  if (sock < 0)
+    return {-1, ""};
+
+  // Set socket timeout to prevent hanging
+  struct timeval tv;
+  tv.tv_sec = 5;
+  tv.tv_usec = 0;
+  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
   sockaddr_in addr{};
   addr.sin_family = AF_INET;
   addr.sin_port = htons(port);
   inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
 
-  if (connect(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+  if (connect(sock, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
     close(sock);
     return {-1, ""};
   }
 
   std::string request = std::format(
-      "POST {} HTTP/1.1\r\n"
-      "Host: localhost\r\n"
-      "Content-Type: application/json\r\n"
-      "Content-Length: {}\r\n"
-      "Connection: close\r\n\r\n{}",
-      path, json_body.size(), json_body);
+      "GET {} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n", path);
   send(sock, request.data(), request.size(), 0);
 
   std::string response;
@@ -1004,14 +1024,67 @@ auto http_post(uint16_t port, std::string_view path, std::string_view json_body)
   }
 
   auto body_start = response.find("\r\n\r\n");
-  std::string body = (body_start != std::string::npos) 
-      ? response.substr(body_start + 4) 
-      : "";
+  std::string body =
+      (body_start != std::string::npos) ? response.substr(body_start + 4) : "";
 
   return {status_code, body};
 }
 
-}  // namespace
+auto http_post(uint16_t port, std::string_view path, std::string_view json_body)
+    -> std::pair<int, std::string> {
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0)
+    return {-1, ""};
+
+  // Set socket timeout to prevent hanging
+  struct timeval tv;
+  tv.tv_sec = 5;
+  tv.tv_usec = 0;
+  setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(port);
+  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+  if (connect(sock, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
+    close(sock);
+    return {-1, ""};
+  }
+
+  std::string request = std::format("POST {} HTTP/1.1\r\n"
+                                    "Host: localhost\r\n"
+                                    "Content-Type: application/json\r\n"
+                                    "Content-Length: {}\r\n"
+                                    "Connection: close\r\n\r\n{}",
+                                    path, json_body.size(), json_body);
+  send(sock, request.data(), request.size(), 0);
+
+  std::string response;
+  char buffer[4096];
+  ssize_t n;
+  while ((n = recv(sock, buffer, sizeof(buffer), 0)) > 0) {
+    response.append(buffer, n);
+  }
+  close(sock);
+
+  int status_code = 0;
+  if (response.size() > 12) {
+    auto space_pos = response.find(' ');
+    if (space_pos != std::string::npos) {
+      status_code = std::stoi(response.substr(space_pos + 1, 3));
+    }
+  }
+
+  auto body_start = response.find("\r\n\r\n");
+  std::string body =
+      (body_start != std::string::npos) ? response.substr(body_start + 4) : "";
+
+  return {status_code, body};
+}
+
+} // namespace
 
 TEST_F(RealIntegrationTest, HttpApiHealthEndpoint) {
   auto port = app_->config().api.port;
@@ -1023,7 +1096,8 @@ TEST_F(RealIntegrationTest, HttpApiHealthEndpoint) {
 
 TEST_F(RealIntegrationTest, HttpApiListDags) {
   DAGId dag_id("http_test_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("HTTP Test DAG"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("HTTP Test DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
   auto task = create_task("task1", "Task 1", "echo 'test'");
@@ -1039,14 +1113,16 @@ TEST_F(RealIntegrationTest, HttpApiListDags) {
 
 TEST_F(RealIntegrationTest, HttpApiTriggerDag) {
   DAGId dag_id("http_trigger_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("HTTP Trigger DAG"));
+  auto dag_result = app_->dag_manager().create_dag(
+      dag_id, create_dag_info("HTTP Trigger DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
   auto task = create_task("task1", "Task 1", "echo 'triggered via HTTP'");
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task).has_value());
 
   auto port = app_->config().api.port;
-  auto [status, body] = http_post(port, "/api/dags/http_trigger_dag/trigger", "{}");
+  auto [status, body] =
+      http_post(port, "/api/dags/http_trigger_dag/trigger", "{}");
 
   EXPECT_TRUE(status == 200 || status == 201 || status == 202)
       << "Trigger should return success status, got: " << status;
@@ -1067,7 +1143,8 @@ TEST_F(RealIntegrationTest, HttpApiNotFoundEndpoint) {
 
 TEST_F(RealIntegrationTest, RetrySemanticsPreciseVerification) {
   DAGId dag_id("retry_precise_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Retry Precise"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("Retry Precise"));
   ASSERT_TRUE(dag_result.has_value());
 
   TaskConfig task;
@@ -1094,21 +1171,25 @@ TEST_F(RealIntegrationTest, RetrySemanticsPreciseVerification) {
   ASSERT_TRUE(tasks.has_value());
   ASSERT_EQ(tasks->size(), 1u);
 
-  const auto& t = tasks->front();
+  const auto &t = tasks->front();
   EXPECT_EQ(t.state, TaskState::Failed);
   EXPECT_EQ(t.attempt, 2) << "Should have max_retries=2 attempts total";
   EXPECT_EQ(t.exit_code, 1) << "Exit code should be 1";
 
-  auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
-  EXPECT_GE(elapsed_ms, 1000) << "Should take at least 1 second (1 retry interval)";
+  auto elapsed_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+  EXPECT_GE(elapsed_ms, 1000)
+      << "Should take at least 1 second (1 retry interval)";
 }
 
 TEST_F(RealIntegrationTest, ConcurrentStressTest) {
   DAGId dag_id("stress_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Stress DAG"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("Stress DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
-  auto task = create_task("stress_task", "Stress Task", "echo 'stress' && sleep 0.05");
+  auto task =
+      create_task("stress_task", "Stress Task", "echo 'stress' && sleep 0.05");
   ASSERT_TRUE(app_->dag_manager().add_task(dag_id, task).has_value());
 
   constexpr int kNumConcurrentRuns = 10;
@@ -1120,13 +1201,13 @@ TEST_F(RealIntegrationTest, ConcurrentStressTest) {
     run_ids.push_back(*run_id);
   }
 
-  for (const auto& run_id : run_ids) {
-    ASSERT_TRUE(wait_for_run_completion(run_id, 30s)) 
+  for (const auto &run_id : run_ids) {
+    ASSERT_TRUE(wait_for_run_completion(run_id, 30s))
         << "Run " << run_id << " did not complete";
   }
 
   int success_count = 0;
-  for (const auto& run_id : run_ids) {
+  for (const auto &run_id : run_ids) {
     auto state = app_->persistence()->get_dag_run_state(run_id);
     ASSERT_TRUE(state.has_value());
     if (state.value() == DAGRunState::Success) {
@@ -1137,14 +1218,16 @@ TEST_F(RealIntegrationTest, ConcurrentStressTest) {
   EXPECT_EQ(success_count, kNumConcurrentRuns)
       << "All " << kNumConcurrentRuns << " runs should succeed";
 
-  auto history = app_->persistence()->list_run_history(dag_id, kNumConcurrentRuns + 5);
+  auto history =
+      app_->persistence()->list_run_history(dag_id, kNumConcurrentRuns + 5);
   ASSERT_TRUE(history.has_value());
   EXPECT_GE(history->size(), static_cast<size_t>(kNumConcurrentRuns));
 }
 
 TEST_F(RealIntegrationTest, Exit100_SkipsTask) {
   DAGId dag_id("exit100_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Exit 100 DAG"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("Exit 100 DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
   auto skip_task = create_task("skip_task", "Skip Task", "exit 100");
@@ -1164,7 +1247,8 @@ TEST_F(RealIntegrationTest, Exit100_SkipsTask) {
 
 TEST_F(RealIntegrationTest, Exit100_DownstreamAllDoneStillRuns) {
   DAGId dag_id("exit100_downstream_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Exit 100 Downstream DAG"));
+  auto dag_result = app_->dag_manager().create_dag(
+      dag_id, create_dag_info("Exit 100 Downstream DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
   auto skip_task = create_task("skip_task", "Skip Task", "exit 100");
@@ -1186,15 +1270,18 @@ TEST_F(RealIntegrationTest, Exit100_DownstreamAllDoneStillRuns) {
   ASSERT_TRUE(tasks.has_value());
   ASSERT_EQ(tasks->size(), 2u);
 
-  auto& skip = tasks->at(0).state == TaskState::Skipped ? tasks->at(0) : tasks->at(1);
-  auto& down = tasks->at(0).state == TaskState::Success ? tasks->at(0) : tasks->at(1);
+  auto &skip =
+      tasks->at(0).state == TaskState::Skipped ? tasks->at(0) : tasks->at(1);
+  auto &down =
+      tasks->at(0).state == TaskState::Success ? tasks->at(0) : tasks->at(1);
   EXPECT_EQ(skip.state, TaskState::Skipped);
   EXPECT_EQ(down.state, TaskState::Success);
 }
 
 TEST_F(RealIntegrationTest, Exit101_FailsImmediately_NoRetry) {
   DAGId dag_id("exit101_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Exit 101 DAG"));
+  auto dag_result =
+      app_->dag_manager().create_dag(dag_id, create_dag_info("Exit 101 DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
   auto fail_task = create_task("fail_task", "Fail Task", "exit 101");
@@ -1214,13 +1301,15 @@ TEST_F(RealIntegrationTest, Exit101_FailsImmediately_NoRetry) {
   EXPECT_EQ(tasks->at(0).state, TaskState::Failed);
   EXPECT_EQ(tasks->at(0).attempt, 1);
 
-  auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+  auto elapsed_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
   EXPECT_LT(elapsed_ms, 2000) << "Should complete quickly without retries";
 }
 
 TEST_F(RealIntegrationTest, Exit101_RegularFailureStillRetries) {
   DAGId dag_id("exit1_retry_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Exit 1 Retry DAG"));
+  auto dag_result = app_->dag_manager().create_dag(
+      dag_id, create_dag_info("Exit 1 Retry DAG"));
   ASSERT_TRUE(dag_result.has_value());
 
   auto fail_task = create_task("fail_task", "Fail Task", "exit 1");
@@ -1240,13 +1329,15 @@ TEST_F(RealIntegrationTest, Exit101_RegularFailureStillRetries) {
   EXPECT_EQ(tasks->at(0).state, TaskState::Failed);
   EXPECT_EQ(tasks->at(0).attempt, 2);
 
-  auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+  auto elapsed_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
   EXPECT_GE(elapsed_ms, 1000) << "Should have at least one retry interval";
 }
 
 TEST_F(RealIntegrationTest, DependsOnPast_FirstRun_Executes) {
   DAGId dag_id("depends_past_first_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Depends Past First"));
+  auto dag_result = app_->dag_manager().create_dag(
+      dag_id, create_dag_info("Depends Past First"));
   ASSERT_TRUE(dag_result.has_value());
 
   auto task = create_task("task1", "Task 1", "echo 'first run'");
@@ -1265,7 +1356,8 @@ TEST_F(RealIntegrationTest, DependsOnPast_FirstRun_Executes) {
 
 TEST_F(RealIntegrationTest, DependsOnPast_PreviousFailed_BlocksSecondRun) {
   DAGId dag_id("depends_past_blocked_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Depends Past Blocked"));
+  auto dag_result = app_->dag_manager().create_dag(
+      dag_id, create_dag_info("Depends Past Blocked"));
   ASSERT_TRUE(dag_result.has_value());
 
   auto task = create_task("task1", "Task 1", "exit 1");
@@ -1292,7 +1384,8 @@ TEST_F(RealIntegrationTest, DependsOnPast_PreviousFailed_BlocksSecondRun) {
 
 TEST_F(RealIntegrationTest, DependsOnPast_PreviousSuccess_AllowsSecondRun) {
   DAGId dag_id("depends_past_allowed_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Depends Past Allowed"));
+  auto dag_result = app_->dag_manager().create_dag(
+      dag_id, create_dag_info("Depends Past Allowed"));
   ASSERT_TRUE(dag_result.has_value());
 
   auto task = create_task("task1", "Task 1", "echo 'success'");
@@ -1318,7 +1411,8 @@ TEST_F(RealIntegrationTest, DependsOnPast_PreviousSuccess_AllowsSecondRun) {
 
 TEST_F(RealIntegrationTest, DependsOnPast_PreviousSkipped_AllowsSecondRun) {
   DAGId dag_id("depends_past_skip_allowed_dag");
-  auto dag_result = app_->dag_manager().create_dag(dag_id, create_dag_info("Depends Past Skip Allowed"));
+  auto dag_result = app_->dag_manager().create_dag(
+      dag_id, create_dag_info("Depends Past Skip Allowed"));
   ASSERT_TRUE(dag_result.has_value());
 
   auto task = create_task("task1", "Task 1", "exit 100");
