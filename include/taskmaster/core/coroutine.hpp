@@ -269,9 +269,7 @@ inline auto task_promise<void>::get_return_object() noexcept -> task<void> {
 
 using spawn_task = task<void>;
 
-// ============================================================================
 // when_all: Concurrently await multiple tasks
-// ============================================================================
 
 namespace detail {
 

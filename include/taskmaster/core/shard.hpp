@@ -1,8 +1,8 @@
 #pragma once
 
+#include "taskmaster/core/lockfree_queue.hpp"
 #include "taskmaster/io/async_fd.hpp"
 #include "taskmaster/io/context.hpp"
-#include "taskmaster/core/lockfree_queue.hpp"
 
 #include <array>
 #include <atomic>
@@ -15,41 +15,33 @@
 namespace taskmaster {
 
 using shard_id = unsigned;
-using io::kInvalidShard;
-using io::kWakeEventToken;
-using io::kMsgRingWakeToken;
-using io::kCqeFMore;
 using io::CompletionData;
-using io::IoRequest;
 using io::IoOpType;
+using io::IoRequest;
+using io::kCqeFMore;
 using io::KernelTimespec;
+using io::kInvalidShard;
+using io::kMsgRingWakeToken;
+using io::kWakeEventToken;
 
 class Shard {
 public:
-  static constexpr std::size_t kArenaSize = 64 * 1024;  // 64KB per shard
+  static constexpr std::size_t kArenaSize = 64 * 1024; // 64KB per shard
 
   explicit Shard(shard_id id);
   ~Shard();
 
-  Shard(const Shard&) = delete;
-  Shard& operator=(const Shard&) = delete;
+  Shard(const Shard &) = delete;
+  Shard &operator=(const Shard &) = delete;
 
-  [[nodiscard]] auto id() const noexcept -> shard_id {
-    return id_;
-  }
-  [[nodiscard]] auto wake_fd() const noexcept -> int {
-    return wake_fd_.fd();
-  }
-  [[nodiscard]] auto wake_event() noexcept -> io::AsyncEventFd& {
+  [[nodiscard]] auto id() const noexcept -> shard_id { return id_; }
+  [[nodiscard]] auto wake_fd() const noexcept -> int { return wake_fd_.fd(); }
+  [[nodiscard]] auto wake_event() noexcept -> io::AsyncEventFd & {
     return wake_fd_;
   }
-  [[nodiscard]] auto ctx() noexcept -> io::IoContext& {
-    return ctx_;
-  }
-  [[nodiscard]] auto ring_fd() const noexcept -> int {
-    return ctx_.ring_fd();
-  }
-  [[nodiscard]] auto memory_resource() noexcept -> std::pmr::memory_resource* {
+  [[nodiscard]] auto ctx() noexcept -> io::IoContext & { return ctx_; }
+  [[nodiscard]] auto ring_fd() const noexcept -> int { return ctx_.ring_fd(); }
+  [[nodiscard]] auto memory_resource() noexcept -> std::pmr::memory_resource * {
     return &pool_;
   }
 
@@ -66,8 +58,8 @@ public:
   [[nodiscard]] auto is_sleeping() const noexcept -> bool;
   auto set_sleeping(bool v) noexcept -> void;
 
-  auto track_io_data(CompletionData* data) -> void;
-  auto untrack_io_data(CompletionData* data) -> void;
+  auto track_io_data(CompletionData *data) -> void;
+  auto untrack_io_data(CompletionData *data) -> void;
 
 private:
   shard_id id_;
@@ -83,14 +75,14 @@ private:
   std::deque<std::coroutine_handle<>> local_queue_;
   // Reusable buffer for batch processing to avoid allocation
   std::deque<std::coroutine_handle<>> batch_buffer_;
-  
+
   // Align remote queue to cache line to prevent false sharing
   alignas(64) BoundedMPSCQueue<std::coroutine_handle<>> remote_queue_{4096};
-  
+
   std::deque<IoRequest> io_queue_;
-  std::unordered_set<CompletionData*> pending_io_;
+  std::unordered_set<CompletionData *> pending_io_;
 
   alignas(64) std::atomic<bool> sleeping_{false};
 };
 
-}  // namespace taskmaster
+} // namespace taskmaster

@@ -221,7 +221,7 @@ auto Runtime::wait_for_work(Shard& shard) -> void {
   }
 
   (void)shard.ctx().submit(true);
-  shard.ctx().wait(std::chrono::milliseconds(1000));
+  shard.ctx().wait(std::chrono::milliseconds(-1));  // Wait indefinitely until woken
 }
 
 auto Runtime::schedule(std::coroutine_handle<> handle) noexcept -> void {
