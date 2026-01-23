@@ -185,8 +185,8 @@ export async function getRunTasks(runId: string): Promise<TaskRunRecord[]> {
 }
 
 export function connectLogsWebSocket(onMessage: (data: unknown) => void): WebSocket {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${protocol}//${window.location.host}/ws/logs`);
+  const protocol = globalThis.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${protocol}//${globalThis.location.host}/ws/logs`);
 
     ws.onmessage = (event) => {
         try {

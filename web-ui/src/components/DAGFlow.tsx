@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, useEffect } from "react";
 import ReactFlow, {
   Node,
   Edge,
@@ -292,6 +292,14 @@ export function DAGFlow({ tasks, dependencies, className, onTaskClick }: DAGFlow
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+
+  useEffect(() => {
+    setNodes(initialNodes);
+  }, [initialNodes, setNodes]);
+
+  useEffect(() => {
+    setEdges(initialEdges);
+  }, [initialEdges, setEdges]);
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     const task = node.data.task as Task;

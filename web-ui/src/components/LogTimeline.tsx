@@ -2,12 +2,13 @@ import { cn } from "@/lib/utils";
 import { LogEntry } from "@/types/dag";
 
 interface LogTimelineProps {
-    logs: LogEntry[];
-    className?: string;
+    readonly logs: LogEntry[];
+    readonly className?: string;
 }
 
 function parseTaskFromMessage(message: string): { taskId: string | null; content: string } {
-    const match = message.match(/^\[([^\]]+)\]\s*(.*)$/);
+    const re = /^\[([^\]]+)\]\s*(.*)$/;
+    const match = re.exec(message);
     if (match) {
         return { taskId: match[1], content: match[2] };
     }
@@ -53,7 +54,7 @@ export function LogTimeline({ logs, className }: LogTimelineProps) {
 
                     return (
                         <div
-                            key={index}
+                            key={`${log.timestamp}-${log.stream ?? ""}-${log.message}`}
                             className="relative flex items-start gap-3 py-1 pl-1 hover:bg-muted/20 rounded transition-colors"
                         >
                             <div className="relative flex-shrink-0 w-3 flex items-center justify-center z-10 mt-1">

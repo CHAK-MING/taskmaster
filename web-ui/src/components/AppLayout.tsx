@@ -13,9 +13,9 @@ import {
 import { Button } from "@/components/ui/button";
 
 interface AppLayoutProps {
-    children: ReactNode;
-    title?: string;
-    subtitle?: string;
+    readonly children: ReactNode;
+    readonly title?: string;
+    readonly subtitle?: string;
 }
 
 interface Notification {
@@ -29,8 +29,8 @@ export function AppLayout({ children, title, subtitle }: AppLayoutProps) {
     const [notifications, setNotifications] = useState<Notification[]>([]);
 
     useEffect(() => {
-        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const wsUrl = `${protocol}//${window.location.host}/ws/logs`;
+        const protocol = globalThis.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = `${protocol}//${globalThis.location.host}/ws/logs`;
         const ws = new WebSocket(wsUrl);
 
         ws.onmessage = (event) => {

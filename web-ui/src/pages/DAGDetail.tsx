@@ -124,13 +124,21 @@ export default function DAGDetail() {
                 tasksTotal: taskCount,
             }));
             setDagRuns(runs);
-            if (runs.length > 0 && !selectedRun) {
-                setSelectedRun(runs[0]);
+            if (runs.length == 0) {
+                setSelectedRun(null);
+            } else {
+                // Keep selection stable, but refresh its fields (e.g. state)
+                // when the run list is refreshed.
+                setSelectedRun(prev => {
+                    if (!prev) return runs[0];
+                    const updated = runs.find(r => r.id === prev.id);
+                    return updated || prev;
+                });
             }
         } catch {
             // ignore
         }
-    }, [id, selectedRun, taskDefinitions.length, dagInfo?.tasks?.length]);
+    }, [id, taskDefinitions.length, dagInfo?.tasks?.length]);
 
     const fetchLogsForRun = useCallback(async (runId: string) => {
         if (taskDefinitions.length === 0) return;
@@ -186,12 +194,12 @@ export default function DAGDetail() {
         try {
             const tasks = await getRunTasks(runId);
             setRunTaskInstances(prev => {
-                if (prev.has(runId)) return prev;
+                // Always refresh: task states change over time and the flow graph
+                // depends on up-to-date run task instances.
                 return new Map(prev).set(runId, tasks);
             });
         } catch {
             setRunTaskInstances(prev => {
-                if (prev.has(runId)) return prev;
                 return new Map(prev).set(runId, []);
             });
         }
@@ -216,12 +224,33 @@ export default function DAGDetail() {
     }, [selectedRun, taskDefinitions, fetchLogsForRun, fetchXComForRun, fetchTaskInstancesForRun]);
 
     const wsRef = useRef<WebSocket | null>(null);
+    const selectedRunRef = useRef<typeof selectedRun>(null);
+    const fetchRunHistoryRef = useRef(fetchRunHistory);
+    const fetchTaskInstancesForRunRef = useRef(fetchTaskInstancesForRun);
+
+    useEffect(() => {
+        selectedRunRef.current = selectedRun;
+    }, [selectedRun]);
+
+    useEffect(() => {
+        fetchRunHistoryRef.current = fetchRunHistory;
+    }, [fetchRunHistory]);
+
+    useEffect(() => {
+        fetchTaskInstancesForRunRef.current = fetchTaskInstancesForRun;
+    }, [fetchTaskInstancesForRun]);
 
     useEffect(() => {
         if (!id) return;
 
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws/logs`;
+        // Avoid churn: this websocket should be long-lived for the page.
+        if (wsRef.current?.readyState === WebSocket.OPEN ||
+            wsRef.current?.readyState === WebSocket.CONNECTING) {
+            return;
+        }
+
+        const protocol = globalThis.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${globalThis.location.host}/ws/logs`;
 
         const ws = new WebSocket(wsUrl);
         wsRef.current = ws;
@@ -236,23 +265,34 @@ export default function DAGDetail() {
                     if (dagId !== id) return;
 
                     if (eventType === "task_status_changed" || eventType === "dag_run_completed") {
-                        fetchRunHistory();
-                        if (selectedRun) {
-                            fetchTaskInstancesForRun(selectedRun.id);
+                        fetchRunHistoryRef.current();
+                        const run = selectedRunRef.current;
+                        if (run) {
+                            fetchTaskInstancesForRunRef.current(run.id);
                         }
                     }
                 }
             } catch {
+                // ignore
+            }
+        };
+
+        ws.onclose = () => {
+            if (wsRef.current === ws) {
+                wsRef.current = null;
             }
         };
 
         return () => {
-            if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-                ws.close();
+            if (wsRef.current === ws) {
+                wsRef.current = null;
             }
-            wsRef.current = null;
+            // Close the websocket to avoid leaking connections.
+            // Note: This may produce "closed before established" console warnings
+            // in development (StrictMode), but it's consistent with other pages.
+            ws.close();
         };
-    }, [id, fetchRunHistory, selectedRun, fetchTaskInstancesForRun]);
+    }, [id]);
 
     const taskDependencies = taskDefinitions.flatMap((task) =>
         task.dependencies.map((dep) => ({ from: dep, to: task.task_id }))

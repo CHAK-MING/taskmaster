@@ -28,13 +28,13 @@ type EventHandler = (data: TaskStatusChangedData | DAGRunCompletedData) => void;
 
 export class WebSocketManager {
   private ws: WebSocket | null = null;
-  private handlers: Map<WebSocketEventType, Set<EventHandler>> = new Map();
+  private readonly handlers: Map<WebSocketEventType, Set<EventHandler>> = new Map();
   private reconnectTimer: number | null = null;
-  private url: string;
+  private readonly url: string;
 
   constructor() {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    this.url = `${protocol}//${window.location.host}/ws`;
+    const protocol = globalThis.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    this.url = `${protocol}//${globalThis.location.host}/ws/logs`;
   }
 
   connect(): void {
@@ -77,7 +77,7 @@ export class WebSocketManager {
   private scheduleReconnect(): void {
     if (this.reconnectTimer) return;
     
-    this.reconnectTimer = window.setTimeout(() => {
+    this.reconnectTimer = globalThis.setTimeout(() => {
       this.connect();
     }, 3000);
   }

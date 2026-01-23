@@ -88,8 +88,8 @@ export default function Logs() {
     }, [isPaused]);
 
     useEffect(() => {
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws/logs`;
+        const protocol = globalThis.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${globalThis.location.host}/ws/logs`;
 
         function getReconnectDelay(): number {
             // Exponential backoff: 1s, 2s, 4s, 8s, 16s, max 30s
