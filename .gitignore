@@ -8,3 +8,4 @@ build
 build-asan
 
 .cache
+*.db
