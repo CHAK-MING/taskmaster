@@ -113,6 +113,9 @@ public:
   [[nodiscard]] auto get_last_execution_date(DAGId dag_id) const
       -> Result<std::optional<std::chrono::system_clock::time_point>>;
 
+  [[nodiscard]] auto has_dag_run(DAGId dag_id, std::chrono::system_clock::time_point execution_date) const
+      -> Result<bool>;
+
   // Get previous run's task state for depends_on_past feature
   [[nodiscard]] auto get_previous_task_state(
       DAGId dag_id, NodeIndex task_idx,

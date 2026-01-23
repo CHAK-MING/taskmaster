@@ -1100,6 +1100,24 @@ auto Persistence::get_last_execution_date(DAGId dag_id) const
   return fail(Error::DatabaseQueryFailed);
 }
 
+auto Persistence::has_dag_run(DAGId dag_id,
+                              std::chrono::system_clock::time_point execution_date) const
+    -> Result<bool> {
+  constexpr auto sql =
+      "SELECT 1 FROM dag_runs WHERE dag_run_id LIKE ? AND execution_date = ? LIMIT 1;";
+
+  auto result = prepare(sql);
+  if (!result)
+    return std::unexpected(result.error());
+  Statement stmt(*result);
+
+  std::string pattern = std::string(dag_id.value()) + "_%";
+  sqlite3_bind_text(stmt.get(), 1, pattern.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt.get(), 2, to_timestamp(execution_date));
+
+  return sqlite3_step(stmt.get()) == SQLITE_ROW;
+}
+
 auto Persistence::get_previous_task_state(
     DAGId dag_id, NodeIndex task_idx,
     std::chrono::system_clock::time_point current_execution_date,
