@@ -1,5 +1,5 @@
 scheduler:
-  log_level: info
+  log_level: debug
   tick_interval_ms: 1000
   max_concurrency: 10
 

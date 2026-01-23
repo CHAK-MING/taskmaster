@@ -1,12 +1,13 @@
 #pragma once
 
-#include <cstdint>
+#include <optional>
 #include <string>
 
 namespace taskmaster::cli {
 
 struct ServeOptions {
   std::string config_file;
+  std::optional<std::string> log_file;
   bool no_api{false};
   bool daemon{false};
 };
@@ -30,10 +31,10 @@ struct StatusOptions {
   std::string dag_run_id;
 };
 
-[[nodiscard]] auto cmd_serve(const ServeOptions& opts) -> int;
-[[nodiscard]] auto cmd_run(const RunOptions& opts) -> int;
-[[nodiscard]] auto cmd_list(const ListOptions& opts) -> int;
-[[nodiscard]] auto cmd_validate(const ValidateOptions& opts) -> int;
-[[nodiscard]] auto cmd_status(const StatusOptions& opts) -> int;
+[[nodiscard]] auto cmd_serve(const ServeOptions &opts) -> int;
+[[nodiscard]] auto cmd_run(const RunOptions &opts) -> int;
+[[nodiscard]] auto cmd_list(const ListOptions &opts) -> int;
+[[nodiscard]] auto cmd_validate(const ValidateOptions &opts) -> int;
+[[nodiscard]] auto cmd_status(const StatusOptions &opts) -> int;
 
-}  // namespace taskmaster::cli
+} // namespace taskmaster::cli

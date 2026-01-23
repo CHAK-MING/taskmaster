@@ -1,30 +1,45 @@
+#include "taskmaster/app/application.hpp"
 #include "taskmaster/cli/commands.hpp"
-#include "taskmaster/storage/persistence.hpp"
-#include "taskmaster/dag/dag_manager.hpp"
+#include "taskmaster/util/log.hpp"
 
 #include <print>
 
 namespace taskmaster::cli {
 
-auto cmd_run(const RunOptions& opts) -> int {
-  Persistence db(opts.db_file);
+auto cmd_run(const RunOptions &opts) -> int {
+  log::set_level("info");
+  log::start();
 
-  if (auto r = db.open(); !r.has_value()) {
-    std::println(stderr, "Error: Failed to open database: {}", r.error().message());
+  Application app(opts.db_file);
+
+  if (auto r = app.init_db_only(); !r.has_value()) {
+    std::println(stderr, "Error: {}", r.error().message());
+    log::stop();
     return 1;
   }
 
-  auto dag_result = db.get_dag(DAGId{opts.dag_id});
-  if (!dag_result) {
-    std::println(stderr, "Error: DAG not found: {}", opts.dag_id);
+  if (auto r = app.start(); !r.has_value()) {
+    std::println(stderr, "Error: {}", r.error().message());
+    log::stop();
     return 1;
   }
 
-  std::println("DAG '{}' found.", opts.dag_id);
-  std::println("To trigger this DAG:");
-  std::println("  1. Start server: taskmaster serve -c system_config.yaml");
-  std::println("  2. Then run:     curl -X POST http://localhost:8888/api/dags/{}/trigger", opts.dag_id);
+  auto run_id = app.trigger_dag_by_id(DAGId{opts.dag_id}, TriggerType::Manual);
+  if (!run_id) {
+    std::println(stderr, "Error: Failed to trigger DAG '{}'", opts.dag_id);
+    app.stop();
+    log::stop();
+    return 1;
+  }
+
+  std::println("DAG '{}' triggered, run_id: {}", opts.dag_id, run_id->str());
+
+  app.wait_for_completion();
+  app.stop();
+  log::stop();
+
+  std::println("DAG run completed.");
   return 0;
 }
 
-}
+} // namespace taskmaster::cli
