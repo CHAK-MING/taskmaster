@@ -16,19 +16,22 @@ namespace taskmaster {
 
 class DAGManager;
 
-using DAGTriggerCallback = std::move_only_function<void(const DAGId&, std::chrono::system_clock::time_point)>;
+  using DAGTriggerCallback = std::move_only_function<void(const DAGId&, std::chrono::system_clock::time_point)>;
+  using CheckExistsCallback = Engine::CheckExistsCallback;
 
-class SchedulerService {
-public:
-  explicit SchedulerService(Runtime& runtime);
-  ~SchedulerService() = default;
+  class SchedulerService {
+  public:
+    explicit SchedulerService(Runtime& runtime);
+    ~SchedulerService() = default;
 
-  SchedulerService(const SchedulerService&) = delete;
-  auto operator=(const SchedulerService&) -> SchedulerService& = delete;
+    SchedulerService(const SchedulerService&) = delete;
+    auto operator=(const SchedulerService&) -> SchedulerService& = delete;
 
-  auto set_on_dag_trigger(DAGTriggerCallback callback) -> void;
+    auto set_on_dag_trigger(DAGTriggerCallback callback) -> void;
+    auto set_check_exists_callback(CheckExistsCallback callback) -> void;
 
-  auto register_dag(DAGId dag_id, const DAGInfo& dag_info) -> void;
+    auto register_dag(DAGId dag_id, const DAGInfo& dag_info) -> void;
+
   auto unregister_dag(DAGId dag_id) -> void;
 
   auto start() -> void;

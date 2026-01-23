@@ -25,6 +25,10 @@ auto SchedulerService::set_on_dag_trigger(DAGTriggerCallback callback) -> void {
   });
 }
 
+auto SchedulerService::set_check_exists_callback(CheckExistsCallback callback) -> void {
+  engine_.set_check_exists_callback(std::move(callback));
+}
+
 auto SchedulerService::register_dag(DAGId dag_id, const DAGInfo& dag_info)
     -> void {
   if (dag_info.cron.empty()) {
@@ -37,21 +41,16 @@ auto SchedulerService::register_dag(DAGId dag_id, const DAGInfo& dag_info)
     return;
   }
 
-  auto root_tasks = dag_info.tasks | std::views::filter(
-      [](const auto& t) { return t.dependencies.empty(); });
+  TaskId schedule_task_id{"__schedule__"};
 
-  auto it = std::ranges::begin(root_tasks);
-  if (it == std::ranges::end(root_tasks)) {
-    log::warn("DAG {} has no root tasks to register", dag_id);
-    return;
-  }
-
-  const auto& task = *it;
   ExecutionInfo info{
       .dag_id = dag_id,
-      .task_id = task.task_id,
-      .name = task.name,
+      .task_id = schedule_task_id,
+      .name = dag_info.name,
       .cron_expr = std::make_optional(*cron_expr),
+      .start_date = dag_info.start_date,
+      .end_date = dag_info.end_date,
+      .catchup = dag_info.catchup,
   };
 
   if (!engine_.add_task(std::move(info))) {
@@ -59,9 +58,9 @@ auto SchedulerService::register_dag(DAGId dag_id, const DAGInfo& dag_info)
     return;
   }
 
-  log::info("Registered DAG schedule: {} (root task: {}) with cron: {}",
-            dag_id, task.task_id, dag_info.cron);
-  registered_root_tasks_[dag_id] = task.task_id;
+  log::info("Registered DAG schedule: {} with cron: {}",
+            dag_id, dag_info.cron);
+  registered_root_tasks_[dag_id] = schedule_task_id;
 }
 
 auto SchedulerService::unregister_dag(DAGId dag_id) -> void {

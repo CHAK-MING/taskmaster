@@ -26,6 +26,8 @@ public:
   using TimePoint = std::chrono::system_clock::time_point;
   using DAGTriggerCallback =
       std::move_only_function<void(const DAGId&, TimePoint execution_date)>;
+  using CheckExistsCallback =
+      std::move_only_function<bool(const DAGId&, TimePoint execution_date)>;
 
   explicit Engine(Runtime& runtime);
   ~Engine();
@@ -43,6 +45,7 @@ public:
   [[nodiscard]] auto remove_task(DAGId dag_id, TaskId task_id) -> bool;
 
   auto set_on_dag_trigger(DAGTriggerCallback cb) -> void;
+  auto set_check_exists_callback(CheckExistsCallback cb) -> void;
 
 private:
   auto run_loop() -> spawn_task;
@@ -70,6 +73,7 @@ private:
       task_schedule_;
 
   DAGTriggerCallback on_dag_trigger_;
+  CheckExistsCallback check_exists_;
 };
 
 }  // namespace taskmaster

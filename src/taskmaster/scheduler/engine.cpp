@@ -126,8 +126,13 @@ auto Engine::tick() -> void {
 
     if (task_it->second.cron_expr.has_value()) {
       auto next_time = task_it->second.cron_expr->next_after(now);
-      schedule_task(id, next_time);
-      log::debug("DAG {} rescheduled for next cron time", task_it->second.dag_id);
+      
+      if (task_it->second.end_date.has_value() && next_time > *task_it->second.end_date) {
+        log::info("DAG {} finished: next run time exceeds end_date", task_it->second.dag_id);
+      } else {
+        schedule_task(id, next_time);
+        log::debug("DAG {} rescheduled for next cron time", task_it->second.dag_id);
+      }
     }
   }
 }
@@ -188,6 +193,10 @@ auto Engine::set_on_dag_trigger(DAGTriggerCallback cb) -> void {
   on_dag_trigger_ = std::move(cb);
 }
 
+auto Engine::set_check_exists_callback(CheckExistsCallback cb) -> void {
+  check_exists_ = std::move(cb);
+}
+
 auto Engine::handle_event(const AddTaskEvent& e) -> void {
   auto id = generate_dag_task_id(e.exec_info.dag_id, e.exec_info.task_id);
 
@@ -213,12 +222,10 @@ auto Engine::handle_event(const AddTaskEvent& e) -> void {
                   e.exec_info.dag_id, backfill_times.size());
         
         for (const auto& backfill_time : backfill_times) {
+          if (check_exists_ && check_exists_(e.exec_info.dag_id, backfill_time)) {
+            continue;
+          }
           schedule_.emplace(backfill_time, id);
-        }
-        
-        auto first_it = schedule_.lower_bound(backfill_times.front());
-        if (first_it != schedule_.end() && first_it->second == id) {
-          task_schedule_[id] = first_it;
         }
       }
     }
