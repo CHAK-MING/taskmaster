@@ -1,7 +1,8 @@
 name: Trigger Rules Demo
-description: Demonstrates all trigger rule types
+description: Demonstrates all 12 trigger rule types
 
 tasks:
+  # Root tasks - one succeeds, one fails, one gets skipped
   - id: start
     name: Start
     command: echo "Starting workflow"
@@ -17,26 +18,79 @@ tasks:
     dependencies: [start]
     max_retries: 0
 
+  # Basic trigger rules
+  - id: on_all_success
+    name: all_success (default)
+    command: echo "All upstream succeeded"
+    dependencies: [task_success]
+    trigger_rule: all_success
+
+  - id: on_all_failed
+    name: all_failed
+    command: echo "All upstream failed"
+    dependencies: [task_fail]
+    trigger_rule: all_failed
+
   - id: on_all_done
-    name: Run When All Done
-    command: echo "Running because all upstream tasks completed (success or fail)"
+    name: all_done
+    command: echo "All upstream completed (success or fail)"
     dependencies: [task_success, task_fail]
     trigger_rule: all_done
 
   - id: on_one_success
-    name: Run On One Success
-    command: echo "Running because at least one upstream succeeded"
+    name: one_success
+    command: echo "At least one upstream succeeded"
     dependencies: [task_success, task_fail]
     trigger_rule: one_success
 
   - id: on_one_failed
-    name: Run On One Failed
-    command: echo "Running because at least one upstream failed"
+    name: one_failed
+    command: echo "At least one upstream failed"
     dependencies: [task_success, task_fail]
     trigger_rule: one_failed
 
+  - id: on_one_done
+    name: one_done
+    command: echo "At least one upstream completed"
+    dependencies: [task_success, task_fail]
+    trigger_rule: one_done
+
+  # Skip-aware trigger rules
+  - id: on_none_failed
+    name: none_failed
+    command: echo "No upstream failed (skipped allowed)"
+    dependencies: [task_success, on_all_success]
+    trigger_rule: none_failed
+
+  - id: on_none_skipped
+    name: none_skipped
+    command: echo "No upstream was skipped"
+    dependencies: [task_success, task_fail]
+    trigger_rule: none_skipped
+
+  # Combined trigger rules
+  - id: on_all_done_min_one_success
+    name: all_done_min_one_success
+    command: echo "All done AND at least one succeeded"
+    dependencies: [task_success, task_fail]
+    trigger_rule: all_done_min_one_success
+
+  - id: on_none_failed_min_one_success
+    name: none_failed_min_one_success
+    command: echo "None failed AND at least one succeeded"
+    dependencies: [task_success, on_all_success]
+    trigger_rule: none_failed_min_one_success
+
+  # Special trigger rules
+  - id: on_always
+    name: always
+    command: echo "Always runs regardless of upstream state"
+    dependencies: [task_success, task_fail]
+    trigger_rule: always
+
+  # Cleanup
   - id: cleanup
     name: Cleanup
     command: echo "Cleanup complete"
-    dependencies: [on_all_done, on_one_success, on_one_failed]
+    dependencies: [on_all_done, on_one_success, on_one_failed, on_always]
     trigger_rule: all_done

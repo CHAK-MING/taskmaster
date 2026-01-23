@@ -1,7 +1,8 @@
 name: Sensor Example
-description: Demonstrates sensor tasks that wait for conditions
+description: Demonstrates all sensor types (file, http, command)
 
 tasks:
+  # File Sensor - waits for a file to exist
   - id: wait_for_file
     name: Wait for Input File
     executor: sensor
@@ -13,9 +14,26 @@ tasks:
 
   - id: process_file
     name: Process Input
-    command: echo "Processing file content"
+    command: echo "Processing file content from /tmp/taskmaster_input.txt"
     dependencies: [wait_for_file]
 
+  # HTTP Sensor - waits for an HTTP endpoint to return expected status
+  - id: wait_for_api
+    name: Wait for API Ready
+    executor: sensor
+    sensor_type: http
+    sensor_url: http://localhost:8080/health
+    sensor_expected_status: 200
+    sensor_interval: 5
+    timeout: 60
+    command: "true"
+
+  - id: call_api
+    name: Call API
+    command: echo "API is ready, making request"
+    dependencies: [wait_for_api]
+
+  # Command Sensor - waits for a command to exit with 0
   - id: check_service
     name: Check External Service
     executor: sensor
@@ -26,10 +44,11 @@ tasks:
 
   - id: call_service
     name: Call Service
-    command: echo "Service is ready, making API call"
+    command: echo "Service is ready"
     dependencies: [check_service]
 
   - id: complete
     name: All Done
     command: echo "All sensors passed, workflow complete"
-    dependencies: [process_file, call_service]
+    dependencies: [process_file, call_api, call_service]
+    trigger_rule: all_done
