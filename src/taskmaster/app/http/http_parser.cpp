@@ -1,5 +1,7 @@
 #include "taskmaster/app/http/http_parser.hpp"
 
+#include "taskmaster/util/log.hpp"
+
 #include <cstring>
 
 namespace taskmaster::http {
@@ -13,10 +15,10 @@ struct HttpRequestParser::Impl {
   std::string current_header_value;
   bool in_header_field = false;
 
-  static auto on_url(llhttp_t* parser, const char* at, size_t length) -> int {
-    auto* impl = static_cast<Impl*>(parser->data);
+  static auto on_url(llhttp_t *parser, const char *at, size_t length) -> int {
+    auto *impl = static_cast<Impl *>(parser->data);
     std::string_view url(at, length);
-    
+
     auto query_pos = url.find('?');
     if (query_pos != std::string_view::npos) {
       impl->current_request.path.append(url.substr(0, query_pos));
@@ -27,9 +29,9 @@ struct HttpRequestParser::Impl {
     return 0;
   }
 
-  static auto on_header_field(llhttp_t* parser, const char* at, size_t length)
+  static auto on_header_field(llhttp_t *parser, const char *at, size_t length)
       -> int {
-    auto* impl = static_cast<Impl*>(parser->data);
+    auto *impl = static_cast<Impl *>(parser->data);
     if (!impl->in_header_field && !impl->current_header_field.empty()) {
       impl->current_request.headers[impl->current_header_field] =
           impl->current_header_value;
@@ -41,16 +43,16 @@ struct HttpRequestParser::Impl {
     return 0;
   }
 
-  static auto on_header_value(llhttp_t* parser, const char* at, size_t length)
+  static auto on_header_value(llhttp_t *parser, const char *at, size_t length)
       -> int {
-    auto* impl = static_cast<Impl*>(parser->data);
+    auto *impl = static_cast<Impl *>(parser->data);
     impl->current_header_value.append(at, length);
     impl->in_header_field = false;
     return 0;
   }
 
-  static auto on_headers_complete(llhttp_t* parser) -> int {
-    auto* impl = static_cast<Impl*>(parser->data);
+  static auto on_headers_complete(llhttp_t *parser) -> int {
+    auto *impl = static_cast<Impl *>(parser->data);
     if (!impl->current_header_field.empty()) {
       impl->current_request.headers[impl->current_header_field] =
           impl->current_header_value;
@@ -59,42 +61,42 @@ struct HttpRequestParser::Impl {
     }
 
     switch (llhttp_get_method(&impl->parser)) {
-      case HTTP_GET:
-        impl->current_request.method = HttpMethod::GET;
-        break;
-      case HTTP_POST:
-        impl->current_request.method = HttpMethod::POST;
-        break;
-      case HTTP_PUT:
-        impl->current_request.method = HttpMethod::PUT;
-        break;
-      case HTTP_DELETE:
-        impl->current_request.method = HttpMethod::DELETE;
-        break;
-      case HTTP_PATCH:
-        impl->current_request.method = HttpMethod::PATCH;
-        break;
-      case HTTP_OPTIONS:
-        impl->current_request.method = HttpMethod::OPTIONS;
-        break;
-      case HTTP_HEAD:
-        impl->current_request.method = HttpMethod::HEAD;
-        break;
-      default:
-        impl->current_request.method = HttpMethod::GET;
+    case HTTP_GET:
+      impl->current_request.method = HttpMethod::GET;
+      break;
+    case HTTP_POST:
+      impl->current_request.method = HttpMethod::POST;
+      break;
+    case HTTP_PUT:
+      impl->current_request.method = HttpMethod::PUT;
+      break;
+    case HTTP_DELETE:
+      impl->current_request.method = HttpMethod::DELETE;
+      break;
+    case HTTP_PATCH:
+      impl->current_request.method = HttpMethod::PATCH;
+      break;
+    case HTTP_OPTIONS:
+      impl->current_request.method = HttpMethod::OPTIONS;
+      break;
+    case HTTP_HEAD:
+      impl->current_request.method = HttpMethod::HEAD;
+      break;
+    default:
+      impl->current_request.method = HttpMethod::GET;
     }
     return 0;
   }
 
-  static auto on_body(llhttp_t* parser, const char* at, size_t length) -> int {
-    auto* impl = static_cast<Impl*>(parser->data);
+  static auto on_body(llhttp_t *parser, const char *at, size_t length) -> int {
+    auto *impl = static_cast<Impl *>(parser->data);
     impl->current_request.body.insert(impl->current_request.body.end(), at,
                                       at + length);
     return 0;
   }
 
-  static auto on_message_complete(llhttp_t* parser) -> int {
-    auto* impl = static_cast<Impl*>(parser->data);
+  static auto on_message_complete(llhttp_t *parser) -> int {
+    auto *impl = static_cast<Impl *>(parser->data);
     impl->request_complete = true;
     return 0;
   }
@@ -118,9 +120,13 @@ HttpRequestParser::~HttpRequestParser() = default;
 auto HttpRequestParser::parse(std::span<const uint8_t> data)
     -> std::optional<HttpRequest> {
   enum llhttp_errno err = llhttp_execute(
-      &impl_->parser, reinterpret_cast<const char*>(data.data()), data.size());
+      &impl_->parser, reinterpret_cast<const char *>(data.data()), data.size());
 
   if (err != HPE_OK && err != HPE_PAUSED_UPGRADE) {
+    const char *reason = llhttp_get_error_reason(&impl_->parser);
+    log::warn("HTTP request parse error: {} (reason: {})",
+              llhttp_errno_name(err), reason ? reason : "");
+    reset();
     return std::nullopt;
   }
 
@@ -152,9 +158,9 @@ struct HttpResponseParser::Impl {
   std::string current_header_value;
   bool in_header_field = false;
 
-  static auto on_header_field(llhttp_t* parser, const char* at, size_t length)
+  static auto on_header_field(llhttp_t *parser, const char *at, size_t length)
       -> int {
-    auto* impl = static_cast<Impl*>(parser->data);
+    auto *impl = static_cast<Impl *>(parser->data);
     if (!impl->in_header_field && !impl->current_header_field.empty()) {
       impl->current_response.headers[impl->current_header_field] =
           impl->current_header_value;
@@ -166,16 +172,16 @@ struct HttpResponseParser::Impl {
     return 0;
   }
 
-  static auto on_header_value(llhttp_t* parser, const char* at, size_t length)
+  static auto on_header_value(llhttp_t *parser, const char *at, size_t length)
       -> int {
-    auto* impl = static_cast<Impl*>(parser->data);
+    auto *impl = static_cast<Impl *>(parser->data);
     impl->current_header_value.append(at, length);
     impl->in_header_field = false;
     return 0;
   }
 
-  static auto on_headers_complete(llhttp_t* parser) -> int {
-    auto* impl = static_cast<Impl*>(parser->data);
+  static auto on_headers_complete(llhttp_t *parser) -> int {
+    auto *impl = static_cast<Impl *>(parser->data);
     if (!impl->current_header_field.empty()) {
       impl->current_response.headers[impl->current_header_field] =
           impl->current_header_value;
@@ -188,15 +194,15 @@ struct HttpResponseParser::Impl {
     return 0;
   }
 
-  static auto on_body(llhttp_t* parser, const char* at, size_t length) -> int {
-    auto* impl = static_cast<Impl*>(parser->data);
+  static auto on_body(llhttp_t *parser, const char *at, size_t length) -> int {
+    auto *impl = static_cast<Impl *>(parser->data);
     impl->current_response.body.insert(impl->current_response.body.end(), at,
                                        at + length);
     return 0;
   }
 
-  static auto on_message_complete(llhttp_t* parser) -> int {
-    auto* impl = static_cast<Impl*>(parser->data);
+  static auto on_message_complete(llhttp_t *parser) -> int {
+    auto *impl = static_cast<Impl *>(parser->data);
     impl->response_complete = true;
     return 0;
   }
@@ -219,9 +225,13 @@ HttpResponseParser::~HttpResponseParser() = default;
 auto HttpResponseParser::parse(std::span<const uint8_t> data)
     -> std::optional<HttpResponse> {
   enum llhttp_errno err = llhttp_execute(
-      &impl_->parser, reinterpret_cast<const char*>(data.data()), data.size());
+      &impl_->parser, reinterpret_cast<const char *>(data.data()), data.size());
 
   if (err != HPE_OK) {
+    const char *reason = llhttp_get_error_reason(&impl_->parser);
+    log::warn("HTTP response parse error: {} (reason: {})",
+              llhttp_errno_name(err), reason ? reason : "");
+    reset();
     return std::nullopt;
   }
 
@@ -244,4 +254,4 @@ auto HttpResponseParser::reset() -> void {
   impl_->parser.data = impl_.get();
 }
 
-}  // namespace taskmaster::http
+} // namespace taskmaster::http

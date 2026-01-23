@@ -2,6 +2,7 @@
 
 #include "taskmaster/app/http/router.hpp"
 #include "taskmaster/core/runtime.hpp"
+#include "taskmaster/io/async_fd.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -10,7 +11,7 @@
 
 namespace taskmaster::http {
 
-using WebSocketHandler = std::function<task<void>(int fd, std::string_view path, std::string sec_key)>;
+using WebSocketHandler = std::function<task<void>(io::AsyncFd fd, std::string_view path, std::string sec_key)>;
 
 class HttpServer {
 public:

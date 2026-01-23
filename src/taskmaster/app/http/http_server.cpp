@@ -16,83 +16,102 @@
 namespace taskmaster::http {
 
 struct HttpServer::Impl {
-  Runtime& runtime;
+  Runtime &runtime;
   Router router_;
   WebSocketHandler ws_handler_;
   int listen_fd = -1;
   std::atomic<bool> running{false};
 
-  explicit Impl(Runtime& rt) : runtime(rt) {
-  }
+  explicit Impl(Runtime &rt) : runtime(rt) {}
 
-  static auto is_websocket_upgrade(const HttpRequest& req) -> bool {
+  static auto is_websocket_upgrade(const HttpRequest &req) -> bool {
     auto upgrade = req.header("upgrade");
     auto connection = req.header("connection");
-    return upgrade && *upgrade == "websocket" && 
-           connection && connection->find("Upgrade") != std::string::npos;
+    return upgrade && *upgrade == "websocket" && connection &&
+           connection->find("Upgrade") != std::string::npos;
   }
 
-  auto handle_connection(int client_fd) -> task<void> {
-    auto& io_ctx = current_io_context();
+  auto handle_connection(io::AsyncFd client_fd) -> task<void> {
     HttpRequestParser request_parser;
+
+    client_fd.rebind(current_io_context());
+    log::info("HTTP connection start: fd={}", client_fd.fd());
 
     try {
       std::vector<uint8_t> buffer(8192);
       while (true) {
-        auto result = co_await io_ctx.async_read(client_fd, io::buffer(buffer));
+        auto result = co_await client_fd.async_read(io::buffer(buffer));
         if (!result) {
+          log::warn("HTTP read failed: fd={} err={}", client_fd.fd(),
+                    result.error.message());
           break;
         }
-        
+
         if (result.bytes_transferred == 0) {
           break;
         }
 
-        auto req_opt = request_parser.parse(std::span{buffer.data(), result.bytes_transferred});
-        if (req_opt) {
-          auto& req = *req_opt;
-          log::debug("Received {} {}", req.method, req.path);
-
-          if (is_websocket_upgrade(req)) {
-            log::debug("WebSocket upgrade request: {}", req.path);
-            if (ws_handler_) {
-              auto sec_key = req.header("sec-websocket-key");
-              if (sec_key) {
-                co_await ws_handler_(client_fd, req.path, std::string(*sec_key));
-                co_return;
-              }
-            } else {
-              log::warn("WebSocket upgrade but no handler set");
-            }
+        auto req_opt = request_parser.parse(
+            std::span{buffer.data(), result.bytes_transferred});
+        if (!req_opt) {
+          log::warn("HTTP parse failed: fd={} bytes={} (sending 400)",
+                    client_fd.fd(), result.bytes_transferred);
+          auto bad = HttpResponse::bad_request();
+          auto bad_data = bad.serialize();
+          auto bad_write_result =
+              co_await client_fd.async_write(io::buffer(bad_data));
+          if (!bad_write_result) {
+            log::debug("HTTP 400 write failed: fd={} err={}", client_fd.fd(),
+                       bad_write_result.error.message());
           }
-
-          auto resp = co_await router_.route(req);
-          auto resp_data = resp.serialize();
-
-          auto write_result =
-              co_await io_ctx.async_write(client_fd, io::buffer(resp_data));
-
-          if (!write_result) {
-            break;
-          }
-
-          auto connection = req.header("Connection");
-          if (connection && *connection == "close") {
-            break;
-          }
-
-          request_parser.reset();
+          break;
         }
+
+        auto &req = *req_opt;
+        log::info("HTTP request: {} {} (fd={})", req.method, req.path,
+                  client_fd.fd());
+
+        if (is_websocket_upgrade(req)) {
+          log::debug("WebSocket upgrade request: {}", req.path);
+          if (ws_handler_) {
+            auto sec_key = req.header("sec-websocket-key");
+            if (sec_key) {
+              co_await ws_handler_(std::move(client_fd), req.path, std::string(*sec_key));
+              co_return;
+            }
+          } else {
+            log::warn("WebSocket upgrade but no handler set");
+          }
+        }
+
+        auto resp = co_await router_.route(req);
+        auto resp_data = resp.serialize();
+
+        auto write_result =
+            co_await client_fd.async_write(io::buffer(resp_data));
+
+        if (!write_result) {
+          log::warn("HTTP write failed: fd={} err={}", client_fd.fd(),
+                    write_result.error.message());
+          break;
+        }
+
+        auto connection = req.header("Connection");
+        if (connection && *connection == "close") {
+          break;
+        }
+
+        request_parser.reset();
       }
-    } catch (const std::exception& e) {
+    } catch (const std::exception &e) {
       log::error("Exception in connection handler: {}", e.what());
     }
 
-    ::close(client_fd);
+    log::info("HTTP connection close: fd={}", client_fd.fd());
   }
 
   auto accept_loop(int listen_fd) -> task<void> {
-    auto& io_ctx = current_io_context();
+    auto &io_ctx = current_io_context();
 
     while (running) {
       auto result = co_await io_ctx.async_accept(listen_fd);
@@ -104,25 +123,21 @@ struct HttpServer::Impl {
         break;
       }
 
-      int client_fd = static_cast<int>(result.bytes_transferred);
-      log::debug("Accepted connection: fd={}", client_fd);
+      int raw_fd = static_cast<int>(result.bytes_transferred);
+      auto client_fd = io::AsyncFd::from_raw(io_ctx, raw_fd, io::Ownership::Owned);
+      log::debug("Accepted connection: fd={}", raw_fd);
 
-      runtime.schedule(handle_connection(client_fd).take());
+      runtime.schedule(handle_connection(std::move(client_fd)).take());
     }
   }
 };
 
-HttpServer::HttpServer(Runtime& runtime)
-    : impl_(std::make_unique<Impl>(runtime)) {
-}
+HttpServer::HttpServer(Runtime &runtime)
+    : impl_(std::make_unique<Impl>(runtime)) {}
 
-HttpServer::~HttpServer() {
-  stop();
-}
+HttpServer::~HttpServer() { stop(); }
 
-auto HttpServer::router() -> Router& {
-  return impl_->router_;
-}
+auto HttpServer::router() -> Router & { return impl_->router_; }
 
 auto HttpServer::set_websocket_handler(WebSocketHandler handler) -> void {
   impl_->ws_handler_ = std::move(handler);
@@ -143,7 +158,7 @@ auto HttpServer::start(std::string_view host, uint16_t port) -> task<void> {
   addr.sin_port = htons(port);
   ::inet_pton(AF_INET, host.data(), &addr.sin_addr);
 
-  if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+  if (::bind(fd, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
     log::error("Failed to bind to {}:{}", host, port);
     ::close(fd);
     co_return;
@@ -171,8 +186,6 @@ auto HttpServer::stop() -> void {
   }
 }
 
-auto HttpServer::is_running() const -> bool {
-  return impl_->running;
-}
+auto HttpServer::is_running() const -> bool { return impl_->running; }
 
-}  // namespace taskmaster::http
+} // namespace taskmaster::http
