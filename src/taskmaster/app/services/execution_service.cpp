@@ -3,6 +3,7 @@
 #include "taskmaster/config/task_config.hpp"
 #include "taskmaster/core/runtime.hpp"
 #include "taskmaster/storage/state_strings.hpp"
+#include "taskmaster/util/id.hpp"
 #include "taskmaster/util/log.hpp"
 #include "taskmaster/xcom/xcom_extractor.hpp"
 
@@ -16,6 +17,26 @@ ExecutionService::ExecutionService(Runtime& runtime, IExecutor& executor)
     : runtime_(runtime), executor_(executor) {}
 
 ExecutionService::~ExecutionService() = default;
+
+auto ExecutionService::set_max_concurrency(int max_concurrency) -> void {
+  max_concurrency_ = max_concurrency;
+}
+
+auto ExecutionService::dispatch_pending() -> void {
+  std::vector<DAGRunId> active_ids;
+  {
+    std::scoped_lock lock(mu_);
+    for (const auto& [id, run] : runs_) {
+      if (!run->is_complete()) {
+        active_ids.push_back(id);
+      }
+    }
+  }
+  for (const auto& id : active_ids) {
+    if (running_tasks_ >= max_concurrency_) break;
+    dispatch(id);
+  }
+}
 
 auto ExecutionService::set_callbacks(ExecutionCallbacks callbacks) -> void {
   callbacks_ = std::move(callbacks);
@@ -92,6 +113,11 @@ auto ExecutionService::dispatch(const DAGRunId& dag_run_id) -> void {
     }
 
     for (NodeIndex idx : ready) {
+      if (running_tasks_ >= max_concurrency_) {
+        log::debug("Max concurrency reached ({}/{})", running_tasks_.load(), max_concurrency_);
+        break;
+      }
+
       if (idx >= task_cfgs.size()) [[unlikely]] {
         log::error("Config not found for task {}", idx);
         continue;
@@ -144,6 +170,7 @@ auto ExecutionService::dispatch(const DAGRunId& dag_run_id) -> void {
       }
 
       jobs.push_back({idx, task_id, inst_id, cfg_it->second[idx], std::move(xcom_push), std::move(xcom_pull), attempt});
+      running_tasks_++;
       log::debug("dispatch: scheduled task {} (idx={}, attempt={})",
                  task_id, idx, attempt);
     }
@@ -217,6 +244,24 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job) -> spawn_task 
     callbacks_.on_task_status(dag_run_id, job.task_id, "running");
   }
 
+  // Simple template substitution for ShellExecutor
+  if (auto* shell_cfg = std::get_if<ShellExecutorConfig>(&job.cfg)) {
+    std::string& cmd = shell_cfg->command;
+    auto replace_all = [&](std::string_view key, std::string_view value) {
+      size_t pos = 0;
+      while ((pos = cmd.find(key, pos)) != std::string::npos) {
+        cmd.replace(pos, key.length(), value);
+        pos += value.length();
+      }
+    };
+
+    auto dag_id = extract_dag_id(dag_run_id);
+    replace_all("{{dag_id}}", dag_id.value());
+    replace_all("{{task_id}}", job.task_id.value());
+    replace_all("{{run_id}}", dag_run_id.value());
+    replace_all("{{dag_run_id}}", dag_run_id.value());
+  }
+
   if (!job.xcom_pull.empty() && callbacks_.get_xcom) {
     auto* shell_cfg = std::get_if<ShellExecutorConfig>(&job.cfg);
     if (shell_cfg) {
@@ -248,6 +293,7 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job) -> spawn_task 
 
   auto result = co_await execute_async(runtime_, executor_, job.inst_id,
                                          job.cfg);
+  running_tasks_--;
   log::info("run_task: completed dag_run_id={} task={} inst_id={} exit_code={} err='{}'",
             dag_run_id, job.task_id, job.inst_id, result.exit_code, result.error);
 
@@ -368,10 +414,47 @@ auto ExecutionService::on_task_success(const DAGRunId& dag_run_id, NodeIndex idx
       return;
 
     auto& run = *it->second;
-    run.mark_task_completed(idx, 0);
+    
+    bool is_branch = false;
+    std::string branch_key = "branch";
+    {
+      auto tcfg_it = task_cfgs_.find(dag_run_id);
+      if (tcfg_it != task_cfgs_.end() && idx < tcfg_it->second.size()) {
+        is_branch = tcfg_it->second[idx].is_branch;
+        branch_key = tcfg_it->second[idx].branch_xcom_key;
+      }
+    }
+
+    if (is_branch && callbacks_.get_xcom) {
+      auto xcom = callbacks_.get_xcom(dag_run_id, 
+          TaskId{std::string(run.dag().get_key(idx))}, branch_key);
+      std::vector<TaskId> selected;
+      if (xcom && xcom->is_array()) {
+        for (const auto& item : *xcom) {
+          if (item.is_string()) {
+            selected.push_back(TaskId{item.get<std::string>()});
+          }
+        }
+      }
+      run.mark_task_completed_with_branch(idx, 0, selected);
+    } else {
+      run.mark_task_completed(idx, 0);
+    }
 
     if (auto info = run.get_task_info(idx); info && callbacks_.on_persist_task) {
       callbacks_.on_persist_task(dag_run_id, *info);
+    }
+
+    if (is_branch && callbacks_.on_persist_task) {
+      for (const auto& info : run.all_task_info()) {
+        if (info.state == TaskState::Skipped || info.state == TaskState::UpstreamFailed) {
+          callbacks_.on_persist_task(dag_run_id, info);
+          if (callbacks_.on_task_status) {
+            TaskId tid{std::string(run.dag().get_key(info.task_idx))};
+            callbacks_.on_task_status(dag_run_id, tid, task_state_name(info.state));
+          }
+        }
+      }
     }
 
     if (run.is_complete()) {
@@ -385,7 +468,7 @@ auto ExecutionService::on_task_success(const DAGRunId& dag_run_id, NodeIndex idx
   if (completed) {
     done_cv_.notify_all();
   } else {
-    dispatch(dag_run_id);
+    dispatch_pending();
   }
 }
 
@@ -438,7 +521,7 @@ auto ExecutionService::on_task_failure(const DAGRunId& dag_run_id, NodeIndex idx
   }
 
   if (!needs_retry) {
-    dispatch(dag_run_id);
+    dispatch_pending();
   }
 
   return needs_retry;
@@ -487,7 +570,7 @@ auto ExecutionService::on_task_skipped(const DAGRunId& dag_run_id, NodeIndex idx
   if (completed) {
     done_cv_.notify_all();
   } else {
-    dispatch(dag_run_id);
+    dispatch_pending();
   }
 }
 
@@ -530,7 +613,7 @@ auto ExecutionService::on_task_fail_immediately(const DAGRunId& dag_run_id,
   if (completed) {
     done_cv_.notify_all();
   } else {
-    dispatch(dag_run_id);
+    dispatch_pending();
   }
 }
 

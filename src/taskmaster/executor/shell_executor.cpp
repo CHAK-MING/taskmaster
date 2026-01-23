@@ -138,7 +138,7 @@ auto perform_read_posix(int fd, std::span<char> buffer, std::chrono::millisecond
   return ReadChunkResult{.bytes = n};
 }
 
-auto read_output(io::AsyncFd& fd, std::chrono::seconds timeout,
+auto read_output(io::AsyncFd fd, std::chrono::seconds timeout,
                  std::chrono::steady_clock::time_point start)
     -> task<ReadOutputResult> {
   ReadOutputResult out;
@@ -200,7 +200,7 @@ auto read_output(io::AsyncFd& fd, std::chrono::seconds timeout,
 
 
 
-auto wait_process(io::AsyncFd& pidfd, pid_t pid, bool timed_out) -> task<int> {
+auto wait_process(io::AsyncFd pidfd, pid_t pid, bool timed_out) -> task<int> {
   if (timed_out) {
     kill(-pid, SIGKILL);
   }
@@ -237,10 +237,10 @@ auto wait_process(io::AsyncFd& pidfd, pid_t pid, bool timed_out) -> task<int> {
   return io::AsyncFd::from_raw(ctx, pidfd, io::Ownership::Owned);
 }
 
-auto wait_for_exit(io::AsyncFd& pidfd, pid_t pid, bool timed_out)
+auto wait_for_exit(io::AsyncFd pidfd, pid_t pid, bool timed_out)
     -> task<int> {
   if (pidfd.is_open() && pidfd.has_context() && pidfd.context().valid()) {
-    co_return co_await wait_process(pidfd, pid, timed_out);
+    co_return co_await wait_process(std::move(pidfd), pid, timed_out);
   }
 
   if (timed_out) {
@@ -316,13 +316,12 @@ auto execute_command(std::string cmd, std::string working_dir,
   auto pidfd = open_pidfd(io_ctx, pid);
 
   auto [stdout_result, stderr_result] = co_await when_all(
-      read_output(stdout_pipe.read_end, timeout, start),
-      read_output(stderr_pipe.read_end, timeout, start)
-  );
+      read_output(std::move(stdout_pipe.read_end), timeout, start),
+      read_output(std::move(stderr_pipe.read_end), timeout, start));
   
   bool timed_out = stdout_result.timed_out || stderr_result.timed_out;
 
-  int exit_code = co_await wait_for_exit(pidfd, pid, timed_out);
+  int exit_code = co_await wait_for_exit(std::move(pidfd), pid, timed_out);
 
   result.exit_code = exit_code;
   result.stdout_output = std::move(stdout_result.output);

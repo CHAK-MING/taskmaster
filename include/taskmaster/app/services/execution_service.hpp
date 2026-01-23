@@ -86,6 +86,8 @@ public:
 
   [[nodiscard]] auto coro_count() const -> int;
 
+  auto set_max_concurrency(int max_concurrency) -> void;
+
 private:
   struct TaskJob {
     NodeIndex idx;
@@ -98,6 +100,7 @@ private:
   };
 
   auto dispatch(const DAGRunId& dag_run_id) -> void;
+  auto dispatch_pending() -> void;
   auto dispatch_after_yield(DAGRunId dag_run_id) -> spawn_task;
   auto dispatch_after_delay(DAGRunId dag_run_id, std::chrono::seconds delay) -> spawn_task;
   auto run_task(DAGRunId dag_run_id, TaskJob job) -> spawn_task;
@@ -120,6 +123,8 @@ private:
   mutable std::mutex mu_;
   std::atomic<int> coro_count_{0};
   std::condition_variable done_cv_;
+  std::atomic<int> running_tasks_{0};
+  int max_concurrency_{100};
 };
 
 }  // namespace taskmaster

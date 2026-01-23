@@ -19,6 +19,8 @@ auto CompositeExecutor::start(ExecutorContext ctx, ExecutorRequest req,
     type = ExecutorType::Shell;
   } else if (std::holds_alternative<DockerExecutorConfig>(req.config)) {
     type = ExecutorType::Docker;
+  } else if (std::holds_alternative<SensorExecutorConfig>(req.config)) {
+    type = ExecutorType::Sensor;
   }
 
   auto it = executors_.find(type);
@@ -44,7 +46,7 @@ auto CompositeExecutor::start(ExecutorContext ctx, ExecutorRequest req,
   auto original_on_complete = std::move(sink.on_complete);
   sink.on_complete = [this, instance_id,
                       on_complete = std::move(original_on_complete)](
-                         const InstanceId& id, ExecutorResult result) mutable {
+                         const InstanceId &id, ExecutorResult result) mutable {
     {
       std::scoped_lock lock(mutex_);
       instance_executor_map_.erase(instance_id);
@@ -57,7 +59,7 @@ auto CompositeExecutor::start(ExecutorContext ctx, ExecutorRequest req,
   it->second->start(ctx, std::move(req), std::move(sink));
 }
 
-auto CompositeExecutor::cancel(const InstanceId& instance_id) -> void {
+auto CompositeExecutor::cancel(const InstanceId &instance_id) -> void {
   ExecutorType type;
   {
     std::scoped_lock lock(mutex_);
@@ -77,12 +79,14 @@ auto CompositeExecutor::cancel(const InstanceId& instance_id) -> void {
   }
 }
 
-auto create_composite_executor(Runtime& rt) -> std::unique_ptr<IExecutor> {
+auto create_composite_executor(Runtime &rt) -> std::unique_ptr<IExecutor> {
   auto composite = std::make_unique<CompositeExecutor>();
   composite->register_executor(ExecutorType::Shell, create_shell_executor(rt));
-  composite->register_executor(ExecutorType::Docker, create_docker_executor(rt));
-  composite->register_executor(ExecutorType::Sensor, create_sensor_executor(rt));
+  composite->register_executor(ExecutorType::Docker,
+                               create_docker_executor(rt));
+  composite->register_executor(ExecutorType::Sensor,
+                               create_sensor_executor(rt));
   return composite;
 }
 
-}  // namespace taskmaster
+} // namespace taskmaster
