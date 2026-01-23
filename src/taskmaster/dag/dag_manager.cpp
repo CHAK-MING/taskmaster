@@ -291,7 +291,7 @@ auto DAGManager::build_dag_graph(DAGId dag_id) const -> Result<DAG> {
   DAG dag;
 
   for (const auto& task : dag_info->tasks) {
-    dag.add_node(task.task_id, task.trigger_rule);
+    dag.add_node(task.task_id, task.trigger_rule, task.is_branch);
   }
 
   for (const auto& task : dag_info->tasks) {

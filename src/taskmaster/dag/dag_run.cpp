@@ -372,11 +372,8 @@ auto DAGRun::update_state() -> void {
   }
 
   if (completed_count_ + skipped_count_ == dag_.size()) {
-    if (failed_count_ > 0 || skipped_count_ > 0) {
-      state_ = DAGRunState::Failed;
-    } else {
-      state_ = DAGRunState::Success;
-    }
+    // Skipped tasks (soft_fail sensors, branching) should not fail the run.
+    state_ = (failed_count_ > 0) ? DAGRunState::Failed : DAGRunState::Success;
     finished_at_ = std::chrono::system_clock::now();
   }
 }
