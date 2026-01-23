@@ -1,6 +1,7 @@
 #pragma once
 
 #include "taskmaster/core/runtime.hpp"
+#include "taskmaster/io/async_fd.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -32,7 +33,7 @@ struct WebSocketFrame {
 
 class WebSocketConnection {
 public:
-  explicit WebSocketConnection(int fd, Runtime& runtime);
+  explicit WebSocketConnection(io::AsyncFd fd, Runtime& runtime);
   ~WebSocketConnection();
 
   WebSocketConnection(const WebSocketConnection&) = delete;
@@ -93,7 +94,7 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 
-auto perform_websocket_handshake(int client_fd, std::string sec_key)
+auto perform_websocket_handshake(io::AsyncFd& client_fd, std::string sec_key)
     -> task<void>;
 
 }  // namespace taskmaster::http

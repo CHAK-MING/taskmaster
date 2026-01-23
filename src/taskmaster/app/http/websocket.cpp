@@ -135,26 +135,25 @@ auto parse_websocket_frame(std::span<const uint8_t> data)
 }  // namespace
 
 struct WebSocketConnection::Impl {
-  int fd;
+  io::AsyncFd fd;
   Runtime& runtime;
 
-  Impl(int fd_, Runtime& rt) : fd(fd_), runtime(rt) {
+  Impl(io::AsyncFd fd_, Runtime& rt) : fd(std::move(fd_)), runtime(rt) {
   }
 };
 
-WebSocketConnection::WebSocketConnection(int fd, Runtime& runtime)
-    : impl_(std::make_unique<Impl>(fd, runtime)) {
+WebSocketConnection::WebSocketConnection(io::AsyncFd fd, Runtime& runtime)
+    : impl_(std::make_unique<Impl>(std::move(fd), runtime)) {
 }
 
 WebSocketConnection::~WebSocketConnection() = default;
 
 auto WebSocketConnection::send_text(std::string text) -> task<void> {
-  auto& io_ctx = current_io_context();
   auto frame = encode_websocket_frame(
       WebSocketOpCode::Text,
       std::span{reinterpret_cast<const uint8_t*>(text.data()), text.size()});
 
-  auto result = co_await io_ctx.async_write(impl_->fd, io::buffer(frame));
+  auto result = co_await impl_->fd.async_write(io::buffer(frame));
   if (!result) {
     log::debug("WebSocket send_text failed");
   }
@@ -162,20 +161,18 @@ auto WebSocketConnection::send_text(std::string text) -> task<void> {
 
 auto WebSocketConnection::send_binary(std::vector<uint8_t> data)
     -> task<void> {
-  auto& io_ctx = current_io_context();
   auto frame = encode_websocket_frame(WebSocketOpCode::Binary, data);
 
-  auto result = co_await io_ctx.async_write(impl_->fd, io::buffer(frame));
+  auto result = co_await impl_->fd.async_write(io::buffer(frame));
   if (!result) {
     log::debug("WebSocket send_binary failed");
   }
 }
 
 auto WebSocketConnection::send_close() -> task<void> {
-  auto& io_ctx = current_io_context();
   auto frame = encode_websocket_frame(WebSocketOpCode::Close, {});
 
-  auto result = co_await io_ctx.async_write(impl_->fd, io::buffer(frame));
+  auto result = co_await impl_->fd.async_write(io::buffer(frame));
   if (!result) {
     log::debug("WebSocket send_close failed");
   }
@@ -183,10 +180,9 @@ auto WebSocketConnection::send_close() -> task<void> {
 
 auto WebSocketConnection::send_pong(std::vector<uint8_t> data)
     -> task<void> {
-  auto& io_ctx = current_io_context();
   auto frame = encode_websocket_frame(WebSocketOpCode::Pong, data);
 
-  auto result = co_await io_ctx.async_write(impl_->fd, io::buffer(frame));
+  auto result = co_await impl_->fd.async_write(io::buffer(frame));
   if (!result) {
     log::debug("WebSocket send_pong failed");
   }
@@ -195,12 +191,11 @@ auto WebSocketConnection::send_pong(std::vector<uint8_t> data)
 auto WebSocketConnection::handle_frames(
     std::move_only_function<void(WebSocketOpCode, std::span<const uint8_t>)> on_message)
     -> task<void> {
-  auto& io_ctx = current_io_context();
   std::vector<uint8_t> buffer(8192);
 
   while (true) {
     auto read_result =
-        co_await io_ctx.async_read(impl_->fd, io::buffer(buffer));
+        co_await impl_->fd.async_read(io::buffer(buffer));
 
     if (!read_result || read_result.bytes_transferred == 0) {
       break;
@@ -236,7 +231,7 @@ auto WebSocketConnection::handle_frames(
 }
 
 auto WebSocketConnection::fd() const -> int {
-  return impl_->fd;
+  return impl_->fd.fd();
 }
 
 struct WebSocketHub::Impl {
@@ -305,10 +300,8 @@ auto WebSocketHub::connection_count() const -> size_t {
   return impl_->connections.size();
 }
 
-auto perform_websocket_handshake(int client_fd, std::string sec_key)
+auto perform_websocket_handshake(io::AsyncFd& client_fd, std::string sec_key)
     -> task<void> {
-  auto& io_ctx = current_io_context();
-
   auto accept_key = create_websocket_accept_key(sec_key);
 
   std::string response = std::format(
@@ -320,7 +313,7 @@ auto perform_websocket_handshake(int client_fd, std::string sec_key)
       accept_key);
 
   std::vector<uint8_t> response_data(response.begin(), response.end());
-  auto result = co_await io_ctx.async_write(client_fd, io::buffer(response_data));
+  auto result = co_await client_fd.async_write(io::buffer(response_data));
 
   if (!result) {
     log::error("WebSocket handshake write failed");
