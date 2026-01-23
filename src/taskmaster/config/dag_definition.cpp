@@ -120,6 +120,50 @@ struct convert<taskmaster::TaskConfig> {
       docker_cfg.pull_policy = taskmaster::parse<taskmaster::ImagePullPolicy>(
           taskmaster::yaml_get_or<std::string>(node, "pull_policy", "never"));
       t.executor_config = docker_cfg;
+    } else if (t.executor == taskmaster::ExecutorType::Sensor) {
+      taskmaster::SensorTaskConfig sensor_cfg;
+
+      auto sensor_type = taskmaster::yaml_get_or<std::string>(node, "sensor_type", "file");
+      if (sensor_type == "http" || sensor_type == "Http" || sensor_type == "HTTP") {
+        sensor_cfg.type = taskmaster::SensorType::Http;
+      } else if (sensor_type == "command" || sensor_type == "Command") {
+        sensor_cfg.type = taskmaster::SensorType::Command;
+      } else {
+        sensor_cfg.type = taskmaster::SensorType::File;
+      }
+
+      // Target
+      sensor_cfg.target = taskmaster::yaml_get_or<std::string>(node, "sensor_target", "");
+      if (sensor_cfg.target.empty()) {
+        if (sensor_cfg.type == taskmaster::SensorType::File) {
+          sensor_cfg.target = taskmaster::yaml_get_or<std::string>(node, "sensor_path", "");
+        } else if (sensor_cfg.type == taskmaster::SensorType::Http) {
+          sensor_cfg.target = taskmaster::yaml_get_or<std::string>(node, "sensor_url", "");
+        } else {
+          sensor_cfg.target = taskmaster::yaml_get_or<std::string>(node, "sensor_command", "");
+          if (sensor_cfg.target.empty()) {
+            // Backward-compatible: reuse `command` as the command sensor target.
+            sensor_cfg.target = t.command;
+          }
+        }
+      }
+
+      // Timings
+      sensor_cfg.poke_interval = std::chrono::seconds(
+          taskmaster::yaml_get_or(node, "sensor_interval", static_cast<int>(sensor_cfg.poke_interval.count())));
+
+      if (auto v = node["sensor_timeout"]) {
+        sensor_cfg.sensor_timeout = std::chrono::seconds(v.as<int>());
+      } else if (auto v = node["timeout"]) {
+        // For sensor tasks, many examples use `timeout` as the sensor timeout.
+        sensor_cfg.sensor_timeout = std::chrono::seconds(v.as<int>());
+      }
+
+      sensor_cfg.soft_fail = taskmaster::yaml_get_or(node, "soft_fail", sensor_cfg.soft_fail);
+      sensor_cfg.expected_status = taskmaster::yaml_get_or(node, "sensor_expected_status", sensor_cfg.expected_status);
+      sensor_cfg.http_method = taskmaster::yaml_get_or<std::string>(node, "sensor_http_method", sensor_cfg.http_method);
+
+      t.executor_config = sensor_cfg;
     } else {
       t.executor_config = taskmaster::ShellTaskConfig{};
     }
