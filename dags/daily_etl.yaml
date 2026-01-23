@@ -1,7 +1,7 @@
 name: Daily ETL
 description: Scheduled data pipeline with template variables
 cron: "0 2 * * *"
-start_date: "2026-01-020"
+start_date: "2026-01-20"
 catchup: false
 
 tasks:
