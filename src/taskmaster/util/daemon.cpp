@@ -16,18 +16,23 @@ void signal_handler(int) {
   g_shutdown_requested.store(true, std::memory_order_release);
   g_shutdown_requested.notify_one();
 }
-}
+} // namespace
 
 auto daemonize() -> bool {
   pid_t pid = fork();
-  if (pid < 0) return false;
-  if (pid > 0) std::exit(0);
+  if (pid < 0)
+    return false;
+  if (pid > 0)
+    std::exit(0);
 
-  if (setsid() < 0) return false;
+  if (setsid() < 0)
+    return false;
 
   pid = fork();
-  if (pid < 0) return false;
-  if (pid > 0) std::exit(0);
+  if (pid < 0)
+    return false;
+  if (pid > 0)
+    std::exit(0);
 
   close(STDIN_FILENO);
   close(STDOUT_FILENO);
@@ -38,10 +43,11 @@ auto daemonize() -> bool {
 void setup_signal_handlers() {
   std::signal(SIGINT, signal_handler);
   std::signal(SIGTERM, signal_handler);
+  std::signal(SIGPIPE, SIG_IGN);
 }
 
 void wait_for_shutdown() {
   g_shutdown_requested.wait(false, std::memory_order_acquire);
 }
 
-}  // namespace taskmaster
+} // namespace taskmaster
