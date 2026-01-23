@@ -9,9 +9,7 @@
 
 namespace taskmaster::io {
 
-// ============================================================================
 // AsyncFd Implementation
-// ============================================================================
 
 auto AsyncFd::read_all(std::size_t max_size) -> task<IoExpected<std::string>> {
   std::string result;
@@ -43,9 +41,7 @@ auto AsyncFd::write_all(ConstBuffer buffer) -> task<IoResult> {
   co_return io_success(total);
 }
 
-// ============================================================================
 // AsyncPipe Implementation
-// ============================================================================
 
 auto AsyncPipe::create(IoContext& ctx) -> IoExpected<AsyncPipe> {
   int fds[2];
@@ -67,9 +63,7 @@ auto AsyncPipe::create(IoContext& ctx, int flags) -> IoExpected<AsyncPipe> {
       AsyncFd::from_raw(ctx, fds[1], Ownership::Owned)};
 }
 
-// ============================================================================
 // AsyncEventFd Implementation
-// ============================================================================
 
 auto AsyncEventFd::create(IoContext& ctx, unsigned int initval, int flags)
     -> IoExpected<AsyncEventFd> {

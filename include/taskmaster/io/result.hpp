@@ -8,9 +8,7 @@
 
 namespace taskmaster::io {
 
-// ============================================================================
 // I/O Error Codes
-// ============================================================================
 
 enum class IoError {
   Success = 0,
@@ -96,9 +94,7 @@ public:
 /// Convert errno to IoError
 [[nodiscard]] auto from_errno(int err) noexcept -> std::error_code;
 
-// ============================================================================
 // I/O Result Types
-// ============================================================================
 
 /// Result of an I/O operation
 struct IoResult {
@@ -130,9 +126,7 @@ struct IoResult {
 template <typename T>
 using IoExpected = std::expected<T, std::error_code>;
 
-// ============================================================================
 // Factory Functions
-// ============================================================================
 
 /// Create successful IoResult
 [[nodiscard]] constexpr auto io_success(std::size_t bytes = 0) noexcept

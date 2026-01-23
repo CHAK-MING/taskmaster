@@ -10,9 +10,7 @@
 
 namespace taskmaster::io {
 
-// ============================================================================
 // Buffer Concepts - Compile-time constraints for buffer types
-// ============================================================================
 
 /// Concept for types that can be used as mutable buffers
 template <typename T>
@@ -29,9 +27,7 @@ concept ConstBufferSequence = requires(const T& t) {
   { std::size(t) } -> std::convertible_to<std::size_t>;
 };
 
-// ============================================================================
 // Buffer Views - Type-safe buffer representations
-// ============================================================================
 
 /// Mutable buffer view (for reading into)
 class MutableBuffer {
@@ -132,9 +128,7 @@ private:
   std::size_t size_ = 0;
 };
 
-// ============================================================================
 // Buffer Factory Functions
-// ============================================================================
 
 /// Create mutable buffer from container
 template <MutableBufferSequence T>
