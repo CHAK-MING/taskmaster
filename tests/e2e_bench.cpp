@@ -11,11 +11,12 @@ namespace {
 
 using namespace taskmaster;
 
-void BM_E2E_TaskScheduling(benchmark::State& state) {
+void BM_E2E_TaskScheduling(benchmark::State &state) {
   const int num_tasks = static_cast<int>(state.range(0));
 
   const InstanceId instance_id{"0"};
-  const ExecutorConfig config = ShellExecutorConfig{.command = "true", .working_dir = ""};
+  const ExecutorConfig config =
+      ShellExecutorConfig{.command = "true", .working_dir = ""};
 
   Runtime runtime(16);
   runtime.start();
@@ -30,7 +31,7 @@ void BM_E2E_TaskScheduling(benchmark::State& state) {
       req.config = config;
 
       ExecutionSink sink;
-      sink.on_complete = [&](const InstanceId&, ExecutorResult) {
+      sink.on_complete = [&](const InstanceId &, ExecutorResult) {
         completion_latch.count_down();
       };
 
@@ -52,8 +53,9 @@ BENCHMARK(BM_E2E_TaskScheduling)
     ->Arg(100000)
     ->Unit(benchmark::kMillisecond);
 
-void BM_E2E_TaskLatency(benchmark::State& state) {
-  const ExecutorConfig config = ShellExecutorConfig{.command = "true", .working_dir = ""};
+void BM_E2E_TaskLatency(benchmark::State &state) {
+  const ExecutorConfig config =
+      ShellExecutorConfig{.command = "true", .working_dir = ""};
 
   Runtime runtime(16);
   runtime.start();
@@ -67,7 +69,7 @@ void BM_E2E_TaskLatency(benchmark::State& state) {
     req.config = config;
 
     ExecutionSink sink;
-    sink.on_complete = [&](const InstanceId&, ExecutorResult) {
+    sink.on_complete = [&](const InstanceId &, ExecutorResult) {
       done.count_down();
     };
 
@@ -82,35 +84,32 @@ void BM_E2E_TaskLatency(benchmark::State& state) {
 
 BENCHMARK(BM_E2E_TaskLatency)->Unit(benchmark::kNanosecond);
 
-void BM_E2E_TaskScheduling_Batch(benchmark::State& state) {
+void BM_E2E_TaskScheduling_Batch(benchmark::State &state) {
   const int num_tasks = static_cast<int>(state.range(0));
 
   Runtime runtime(16);
   runtime.start();
 
   for (auto _ : state) {
-    std::atomic<int> completed{0};
+    std::latch completion_latch(num_tasks);
     std::vector<task<void>> tasks;
     tasks.reserve(num_tasks);
 
     for (int i = 0; i < num_tasks; ++i) {
-      tasks.push_back([](std::atomic<int>& counter) -> task<void> {
+      tasks.push_back([](std::latch &latch) -> task<void> {
         co_await async_yield();
-        counter.fetch_add(1, std::memory_order_relaxed);
-      }(completed));
+        latch.count_down();
+      }(completion_latch));
     }
 
     std::vector<std::coroutine_handle<>> handles;
     handles.reserve(num_tasks);
-    for (auto& t : tasks) {
+    for (auto &t : tasks) {
       handles.push_back(t.take());
     }
 
     runtime.schedule_external_batch(handles);
-    
-    while (completed.load(std::memory_order_acquire) < num_tasks) {
-      std::this_thread::yield();
-    }
+    completion_latch.wait();
   }
 
   runtime.stop();
@@ -125,4 +124,4 @@ BENCHMARK(BM_E2E_TaskScheduling_Batch)
     ->Arg(100000)
     ->Unit(benchmark::kMillisecond);
 
-}  // namespace
+} // namespace

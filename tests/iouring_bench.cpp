@@ -11,7 +11,7 @@ namespace {
 
 // ---- io_uring NOP throughput ----
 
-void BM_IoUring_NOP(benchmark::State& state) {
+void BM_IoUring_NOP(benchmark::State &state) {
   io_uring ring{};
   if (io_uring_queue_init(256, &ring, 0) < 0) {
     state.SkipWithError("io_uring_queue_init failed");
@@ -19,11 +19,11 @@ void BM_IoUring_NOP(benchmark::State& state) {
   }
 
   for (auto _ : state) {
-    io_uring_sqe* sqe = io_uring_get_sqe(&ring);
+    io_uring_sqe *sqe = io_uring_get_sqe(&ring);
     io_uring_prep_nop(sqe);
     io_uring_submit(&ring);
 
-    io_uring_cqe* cqe = nullptr;
+    io_uring_cqe *cqe = nullptr;
     io_uring_wait_cqe(&ring, &cqe);
     io_uring_cqe_seen(&ring, cqe);
   }
@@ -33,23 +33,24 @@ void BM_IoUring_NOP(benchmark::State& state) {
 }
 BENCHMARK(BM_IoUring_NOP);
 
-void BM_IoUring_NOP_Batched(benchmark::State& state) {
+void BM_IoUring_NOP_Batched(benchmark::State &state) {
   const int batch_size = static_cast<int>(state.range(0));
   io_uring ring{};
-  if (io_uring_queue_init(static_cast<unsigned>(batch_size * 2), &ring, 0) < 0) {
+  if (io_uring_queue_init(static_cast<unsigned>(batch_size * 2), &ring, 0) <
+      0) {
     state.SkipWithError("io_uring_queue_init failed");
     return;
   }
 
   for (auto _ : state) {
     for (int i = 0; i < batch_size; ++i) {
-      io_uring_sqe* sqe = io_uring_get_sqe(&ring);
+      io_uring_sqe *sqe = io_uring_get_sqe(&ring);
       io_uring_prep_nop(sqe);
     }
     io_uring_submit(&ring);
 
     for (int i = 0; i < batch_size; ++i) {
-      io_uring_cqe* cqe = nullptr;
+      io_uring_cqe *cqe = nullptr;
       io_uring_wait_cqe(&ring, &cqe);
       io_uring_cqe_seen(&ring, cqe);
     }
@@ -62,7 +63,7 @@ BENCHMARK(BM_IoUring_NOP_Batched)->Arg(8)->Arg(32)->Arg(128);
 
 // ---- io_uring vs epoll: eventfd notification ----
 
-void BM_IoUring_EventFd_Read(benchmark::State& state) {
+void BM_IoUring_EventFd_Read(benchmark::State &state) {
   io_uring ring{};
   if (io_uring_queue_init(32, &ring, 0) < 0) {
     state.SkipWithError("io_uring_queue_init failed");
@@ -82,11 +83,11 @@ void BM_IoUring_EventFd_Read(benchmark::State& state) {
   for (auto _ : state) {
     ::write(efd, &write_val, sizeof(write_val));
 
-    io_uring_sqe* sqe = io_uring_get_sqe(&ring);
+    io_uring_sqe *sqe = io_uring_get_sqe(&ring);
     io_uring_prep_read(sqe, efd, &read_buf, sizeof(read_buf), 0);
     io_uring_submit(&ring);
 
-    io_uring_cqe* cqe = nullptr;
+    io_uring_cqe *cqe = nullptr;
     io_uring_wait_cqe(&ring, &cqe);
     benchmark::DoNotOptimize(read_buf);
     io_uring_cqe_seen(&ring, cqe);
@@ -98,7 +99,62 @@ void BM_IoUring_EventFd_Read(benchmark::State& state) {
 }
 BENCHMARK(BM_IoUring_EventFd_Read);
 
-void BM_Epoll_EventFd_Read(benchmark::State& state) {
+// ---- Fixed File Registration: eventfd ----
+
+void BM_IoUring_EventFd_Read_FixedFile(benchmark::State &state) {
+  io_uring ring{};
+  if (io_uring_queue_init(32, &ring, 0) < 0) {
+    state.SkipWithError("io_uring_queue_init failed");
+    return;
+  }
+
+  // Register file table with 1 slot
+  if (io_uring_register_files_sparse(&ring, 1) < 0) {
+    io_uring_queue_exit(&ring);
+    state.SkipWithError("io_uring_register_files_sparse failed");
+    return;
+  }
+
+  int efd = eventfd(0, EFD_NONBLOCK);
+  if (efd < 0) {
+    io_uring_queue_exit(&ring);
+    state.SkipWithError("eventfd failed");
+    return;
+  }
+
+  // Register the eventfd at index 0
+  if (io_uring_register_files_update(&ring, 0, &efd, 1) < 0) {
+    close(efd);
+    io_uring_queue_exit(&ring);
+    state.SkipWithError("io_uring_register_files_update failed");
+    return;
+  }
+
+  constexpr int kFixedIdx = 0;
+  uint64_t write_val = 1;
+  uint64_t read_buf = 0;
+
+  for (auto _ : state) {
+    ::write(efd, &write_val, sizeof(write_val));
+
+    io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+    io_uring_prep_read(sqe, kFixedIdx, &read_buf, sizeof(read_buf), 0);
+    sqe->flags |= IOSQE_FIXED_FILE;
+    io_uring_submit(&ring);
+
+    io_uring_cqe *cqe = nullptr;
+    io_uring_wait_cqe(&ring, &cqe);
+    benchmark::DoNotOptimize(read_buf);
+    io_uring_cqe_seen(&ring, cqe);
+  }
+
+  close(efd);
+  io_uring_queue_exit(&ring);
+  state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_IoUring_EventFd_Read_FixedFile);
+
+void BM_Epoll_EventFd_Read(benchmark::State &state) {
   int epfd = epoll_create1(0);
   if (epfd < 0) {
     state.SkipWithError("epoll_create1 failed");
@@ -136,7 +192,7 @@ BENCHMARK(BM_Epoll_EventFd_Read);
 
 // ---- io_uring vs epoll: pipe throughput ----
 
-void BM_IoUring_Pipe_Throughput(benchmark::State& state) {
+void BM_IoUring_Pipe_Throughput(benchmark::State &state) {
   io_uring ring{};
   if (io_uring_queue_init(32, &ring, 0) < 0) {
     state.SkipWithError("io_uring_queue_init failed");
@@ -158,11 +214,11 @@ void BM_IoUring_Pipe_Throughput(benchmark::State& state) {
   int64_t bytes_transferred = 0;
 
   for (auto _ : state) {
-    io_uring_sqe* sqe = io_uring_get_sqe(&ring);
+    io_uring_sqe *sqe = io_uring_get_sqe(&ring);
     io_uring_prep_write(sqe, pipefd[1], write_buf.data(), kBufSize, 0);
     io_uring_submit(&ring);
 
-    io_uring_cqe* cqe = nullptr;
+    io_uring_cqe *cqe = nullptr;
     io_uring_wait_cqe(&ring, &cqe);
     io_uring_cqe_seen(&ring, cqe);
 
@@ -184,7 +240,78 @@ void BM_IoUring_Pipe_Throughput(benchmark::State& state) {
 }
 BENCHMARK(BM_IoUring_Pipe_Throughput);
 
-void BM_Epoll_Pipe_Throughput(benchmark::State& state) {
+// ---- Fixed File Registration: pipe throughput ----
+
+void BM_IoUring_Pipe_Throughput_FixedFile(benchmark::State &state) {
+  io_uring ring{};
+  if (io_uring_queue_init(32, &ring, 0) < 0) {
+    state.SkipWithError("io_uring_queue_init failed");
+    return;
+  }
+
+  // Register file table with 2 slots (read + write end)
+  if (io_uring_register_files_sparse(&ring, 2) < 0) {
+    io_uring_queue_exit(&ring);
+    state.SkipWithError("io_uring_register_files_sparse failed");
+    return;
+  }
+
+  int pipefd[2];
+  if (pipe(pipefd) < 0) {
+    io_uring_queue_exit(&ring);
+    state.SkipWithError("pipe failed");
+    return;
+  }
+
+  // Register both pipe ends
+  if (io_uring_register_files_update(&ring, 0, &pipefd[0], 1) < 0 ||
+      io_uring_register_files_update(&ring, 1, &pipefd[1], 1) < 0) {
+    close(pipefd[0]);
+    close(pipefd[1]);
+    io_uring_queue_exit(&ring);
+    state.SkipWithError("io_uring_register_files_update failed");
+    return;
+  }
+
+  constexpr int kReadIdx = 0;
+  constexpr int kWriteIdx = 1;
+  constexpr size_t kBufSize = 4096;
+  std::array<char, kBufSize> write_buf{};
+  std::array<char, kBufSize> read_buf{};
+  std::fill(write_buf.begin(), write_buf.end(), 'x');
+
+  int64_t bytes_transferred = 0;
+
+  for (auto _ : state) {
+    io_uring_sqe *sqe = io_uring_get_sqe(&ring);
+    io_uring_prep_write(sqe, kWriteIdx, write_buf.data(), kBufSize, 0);
+    sqe->flags |= IOSQE_FIXED_FILE;
+    io_uring_submit(&ring);
+
+    io_uring_cqe *cqe = nullptr;
+    io_uring_wait_cqe(&ring, &cqe);
+    io_uring_cqe_seen(&ring, cqe);
+
+    sqe = io_uring_get_sqe(&ring);
+    io_uring_prep_read(sqe, kReadIdx, read_buf.data(), kBufSize, 0);
+    sqe->flags |= IOSQE_FIXED_FILE;
+    io_uring_submit(&ring);
+
+    io_uring_wait_cqe(&ring, &cqe);
+    bytes_transferred += cqe->res;
+    io_uring_cqe_seen(&ring, cqe);
+  }
+
+  close(pipefd[0]);
+  close(pipefd[1]);
+  io_uring_queue_exit(&ring);
+
+  state.SetBytesProcessed(bytes_transferred);
+  state.SetItemsProcessed(state.iterations());
+}
+BENCHMARK(BM_IoUring_Pipe_Throughput_FixedFile);
+
+void BM_Epoll_Pipe_Throughput(benchmark::State &state) {
   int epfd = epoll_create1(0);
   if (epfd < 0) {
     state.SkipWithError("epoll_create1 failed");
@@ -229,7 +356,7 @@ BENCHMARK(BM_Epoll_Pipe_Throughput);
 
 // ---- io_uring linked operations (SQE chaining) ----
 
-void BM_IoUring_Linked_WriteRead(benchmark::State& state) {
+void BM_IoUring_Linked_WriteRead(benchmark::State &state) {
   io_uring ring{};
   if (io_uring_queue_init(32, &ring, 0) < 0) {
     state.SkipWithError("io_uring_queue_init failed");
@@ -248,16 +375,16 @@ void BM_IoUring_Linked_WriteRead(benchmark::State& state) {
   std::array<char, kBufSize> read_buf{};
 
   for (auto _ : state) {
-    io_uring_sqe* sqe1 = io_uring_get_sqe(&ring);
+    io_uring_sqe *sqe1 = io_uring_get_sqe(&ring);
     io_uring_prep_write(sqe1, pipefd[1], write_buf.data(), kBufSize, 0);
     sqe1->flags |= IOSQE_IO_LINK;
 
-    io_uring_sqe* sqe2 = io_uring_get_sqe(&ring);
+    io_uring_sqe *sqe2 = io_uring_get_sqe(&ring);
     io_uring_prep_read(sqe2, pipefd[0], read_buf.data(), kBufSize, 0);
 
     io_uring_submit(&ring);
 
-    io_uring_cqe* cqe = nullptr;
+    io_uring_cqe *cqe = nullptr;
     io_uring_wait_cqe(&ring, &cqe);
     io_uring_cqe_seen(&ring, cqe);
     io_uring_wait_cqe(&ring, &cqe);
@@ -273,7 +400,7 @@ BENCHMARK(BM_IoUring_Linked_WriteRead);
 
 // ---- Baseline: raw syscall overhead ----
 
-void BM_Syscall_Read_EventFd(benchmark::State& state) {
+void BM_Syscall_Read_EventFd(benchmark::State &state) {
   int efd = eventfd(0, EFD_NONBLOCK | EFD_SEMAPHORE);
   if (efd < 0) {
     state.SkipWithError("eventfd failed");
@@ -294,4 +421,4 @@ void BM_Syscall_Read_EventFd(benchmark::State& state) {
 }
 BENCHMARK(BM_Syscall_Read_EventFd);
 
-}  // namespace
+} // namespace
