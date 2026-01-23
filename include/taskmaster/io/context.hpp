@@ -11,8 +11,6 @@
 #include <memory>
 #include <memory_resource>
 #include <span>
-#include <unordered_set>
-#include <mutex>
 
 namespace taskmaster::io {
 
@@ -57,7 +55,7 @@ struct Accept {
 
 struct Connect {
   int fd;
-  const void* addr;
+  const void *addr;
   std::uint32_t addrlen;
 };
 
@@ -70,7 +68,7 @@ struct Timeout {
 };
 
 struct Cancel {
-  void* operation_data;
+  void *operation_data;
 };
 
 struct Poll {
@@ -86,7 +84,7 @@ struct PollTimeout {
 
 struct Nop {};
 
-}  // namespace ops
+} // namespace ops
 
 enum class IoOpType : std::uint8_t {
   Read,
@@ -110,9 +108,9 @@ struct CompletionData {
   std::coroutine_handle<> continuation{};
   std::int32_t result{0};
   std::uint32_t flags{0};
-  IoContext* context{nullptr};
+  IoContext *context{nullptr};
   unsigned owner_shard{kInvalidShard};
-  KernelTimespec ts{};  // For timeout storage
+  KernelTimespec ts{}; // For timeout storage
   bool completed{false};
   bool cancelled{false};
 };
@@ -130,14 +128,14 @@ struct PollResult {
 
 struct IoRequest {
   IoOpType op{IoOpType::Nop};
-  CompletionData* data{nullptr};
+  CompletionData *data{nullptr};
   int fd{-1};
-  void* buf{nullptr};
+  void *buf{nullptr};
   std::uint32_t len{0};
   std::uint64_t offset{0};
   std::uint32_t poll_mask{0};
   KernelTimespec ts{};
-  KernelTimespec* ts_ptr{nullptr};
+  KernelTimespec *ts_ptr{nullptr};
   bool has_link_timeout{false};
   std::uint64_t cancel_user_data{0};
   std::uint64_t msg_ring_data{0};
@@ -145,18 +143,16 @@ struct IoRequest {
 
 template <typename Callback>
 concept CompletionHandler =
-    std::invocable<Callback, void*, std::int32_t, std::uint32_t>;
+    std::invocable<Callback, void *, std::int32_t, std::uint32_t>;
 
 /// Base awaitable for all I/O operations
-template <typename Operation>
-class IoAwaitable {
+template <typename Operation> class IoAwaitable {
 public:
-  IoAwaitable(IoContext& ctx, Operation op) noexcept
+  IoAwaitable(IoContext &ctx, Operation op) noexcept
       : context_(&ctx), operation_(std::move(op)) {}
 
-  IoAwaitable(IoAwaitable&& other) noexcept
-      : context_(other.context_),
-        operation_(std::move(other.operation_)),
+  IoAwaitable(IoAwaitable &&other) noexcept
+      : context_(other.context_), operation_(std::move(other.operation_)),
         data_(other.data_) {
     other.context_ = nullptr;
     other.data_ = nullptr;
@@ -164,12 +160,12 @@ public:
 
   ~IoAwaitable();
 
-  IoAwaitable& operator=(IoAwaitable&&) = delete;
-  IoAwaitable(const IoAwaitable&) = delete;
-  IoAwaitable& operator=(const IoAwaitable&) = delete;
+  IoAwaitable &operator=(IoAwaitable &&) = delete;
+  IoAwaitable(const IoAwaitable &) = delete;
+  IoAwaitable &operator=(const IoAwaitable &) = delete;
 
   [[nodiscard]] auto await_ready() const noexcept -> bool {
-    return false;  // Always suspend to submit to io_uring
+    return false; // Always suspend to submit to io_uring
   }
 
   auto await_suspend(std::coroutine_handle<> h) noexcept -> void;
@@ -180,80 +176,77 @@ private:
   auto cleanup_on_destroy() noexcept -> void;
 
 protected:
-  IoContext* context_;
+  IoContext *context_;
   Operation operation_;
-  CompletionData* data_{nullptr};
+  CompletionData *data_{nullptr};
 };
 
 /// Specialized awaitable for timeout operations (returns void)
 class TimeoutAwaitable {
 public:
-  TimeoutAwaitable(IoContext& ctx, std::chrono::nanoseconds duration) noexcept;
+  TimeoutAwaitable(IoContext &ctx, std::chrono::nanoseconds duration) noexcept;
 
-  TimeoutAwaitable(TimeoutAwaitable&& other) noexcept;
+  TimeoutAwaitable(TimeoutAwaitable &&other) noexcept;
   ~TimeoutAwaitable();
 
-  TimeoutAwaitable& operator=(TimeoutAwaitable&&) = delete;
-  TimeoutAwaitable(const TimeoutAwaitable&) = delete;
-  TimeoutAwaitable& operator=(const TimeoutAwaitable&) = delete;
+  TimeoutAwaitable &operator=(TimeoutAwaitable &&) = delete;
+  TimeoutAwaitable(const TimeoutAwaitable &) = delete;
+  TimeoutAwaitable &operator=(const TimeoutAwaitable &) = delete;
 
   [[nodiscard]] auto await_ready() const noexcept -> bool { return false; }
   auto await_suspend(std::coroutine_handle<> h) noexcept -> void;
   auto await_resume() noexcept -> void;
 
 private:
-  IoContext* context_;
+  IoContext *context_;
   std::chrono::nanoseconds duration_;
-  CompletionData* data_{nullptr};
+  CompletionData *data_{nullptr};
 };
 
 /// Specialized awaitable for poll with timeout (returns PollResult)
 class PollTimeoutAwaitable {
 public:
-  PollTimeoutAwaitable(IoContext& ctx, int fd, std::uint32_t events,
+  PollTimeoutAwaitable(IoContext &ctx, int fd, std::uint32_t events,
                        std::chrono::milliseconds timeout) noexcept
       : context_(&ctx), fd_(fd), events_(events), timeout_(timeout) {}
 
-  PollTimeoutAwaitable(PollTimeoutAwaitable&& other) noexcept
-      : context_(other.context_),
-        fd_(other.fd_),
-        events_(other.events_),
-        timeout_(other.timeout_),
-        data_(other.data_) {
+  PollTimeoutAwaitable(PollTimeoutAwaitable &&other) noexcept
+      : context_(other.context_), fd_(other.fd_), events_(other.events_),
+        timeout_(other.timeout_), data_(other.data_) {
     other.context_ = nullptr;
     other.data_ = nullptr;
   }
 
   ~PollTimeoutAwaitable();
 
-  PollTimeoutAwaitable& operator=(PollTimeoutAwaitable&&) = delete;
-  PollTimeoutAwaitable(const PollTimeoutAwaitable&) = delete;
-  PollTimeoutAwaitable& operator=(const PollTimeoutAwaitable&) = delete;
+  PollTimeoutAwaitable &operator=(PollTimeoutAwaitable &&) = delete;
+  PollTimeoutAwaitable(const PollTimeoutAwaitable &) = delete;
+  PollTimeoutAwaitable &operator=(const PollTimeoutAwaitable &) = delete;
 
   [[nodiscard]] auto await_ready() const noexcept -> bool { return false; }
   auto await_suspend(std::coroutine_handle<> h) noexcept -> void;
   [[nodiscard]] auto await_resume() noexcept -> PollResult;
 
 private:
-  IoContext* context_;
+  IoContext *context_;
   int fd_;
   std::uint32_t events_;
   std::chrono::milliseconds timeout_;
-  CompletionData* data_{nullptr};
+  CompletionData *data_{nullptr};
 };
 
 class IoContext {
 public:
   /// Create IoContext with specified queue depth and optional memory resource
   explicit IoContext(std::uint32_t queue_depth = kDefaultQueueDepth,
-                     std::pmr::memory_resource* mr = nullptr);
+                     std::pmr::memory_resource *mr = nullptr);
   ~IoContext();
 
   // Non-copyable, non-movable
-  IoContext(const IoContext&) = delete;
-  IoContext& operator=(const IoContext&) = delete;
-  IoContext(IoContext&&) = delete;
-  IoContext& operator=(IoContext&&) = delete;
+  IoContext(const IoContext &) = delete;
+  IoContext &operator=(const IoContext &) = delete;
+  IoContext(IoContext &&) = delete;
+  IoContext &operator=(IoContext &&) = delete;
 
   /// Check if context is valid
   [[nodiscard]] auto valid() const noexcept -> bool;
@@ -272,7 +265,7 @@ public:
   [[nodiscard]] auto async_accept(int listen_fd) -> IoAwaitable<ops::Accept>;
 
   /// Async connect to address
-  [[nodiscard]] auto async_connect(int fd, const void* addr,
+  [[nodiscard]] auto async_connect(int fd, const void *addr,
                                    std::uint32_t addrlen)
       -> IoAwaitable<ops::Connect>;
 
@@ -292,13 +285,13 @@ public:
                                         std::chrono::milliseconds timeout)
       -> PollTimeoutAwaitable;
 
-      /// Prepare an I/O request
-  [[nodiscard]] auto prepare(const IoRequest& req) -> bool;
+  /// Prepare an I/O request
+  [[nodiscard]] auto prepare(const IoRequest &req) -> bool;
 
   /// Submit pending operations
   [[nodiscard]] auto submit(bool force = false) -> int;
 
-  /// Wait for completions with timeout
+  /// Wait for completions (timeout < 0 means wait indefinitely until woken)
   auto wait(std::chrono::milliseconds timeout) -> void;
 
   /// Setup multi-shot poll on fd (for wake eventfd)
@@ -306,13 +299,13 @@ public:
 
   /// Process completions with custom callback (type-erased)
   using CompletionCallback =
-      std::move_only_function<void(void*, std::int32_t, std::uint32_t)>;
+      std::move_only_function<void(void *, std::int32_t, std::uint32_t)>;
   auto process_completions(CompletionCallback cb) -> unsigned;
 
   /// Process completions with custom callback (template version)
   template <typename Callback>
-    requires std::invocable<Callback&, void*, std::int32_t, std::uint32_t>
-  auto process_completions(Callback&& cb) -> unsigned {
+    requires std::invocable<Callback &, void *, std::int32_t, std::uint32_t>
+  auto process_completions(Callback &&cb) -> unsigned {
     return process_completions(CompletionCallback(std::forward<Callback>(cb)));
   }
 
@@ -335,78 +328,96 @@ public:
   auto restart() -> void;
 
   /// Get implementation (for template methods)
-  [[nodiscard]] auto impl() noexcept -> IoContextImpl*;
+  [[nodiscard]] auto impl() noexcept -> IoContextImpl *;
 
   /// Get io_uring ring fd (for msg_ring cross-shard wakeup)
   [[nodiscard]] auto ring_fd() const noexcept -> int;
 
-  using TrackerCallback = std::move_only_function<void(CompletionData*)>;
-  auto set_completion_tracker(TrackerCallback track,
-                              TrackerCallback untrack) -> void;
-  auto track_completion(CompletionData* data) noexcept -> void;
-  auto untrack_completion(CompletionData* data) noexcept -> void;
-  auto cleanup_completion_data(CompletionData* data) noexcept -> void;
+  using TrackerCallback = std::move_only_function<void(CompletionData *)>;
+  auto set_completion_tracker(TrackerCallback track, TrackerCallback untrack)
+      -> void;
+  auto track_completion(CompletionData *data) noexcept -> void;
+  auto untrack_completion(CompletionData *data) noexcept -> void;
+  auto cleanup_completion_data(CompletionData *data) noexcept -> void;
 
-  [[nodiscard]] inline auto allocate_completion() -> CompletionData* {
-    void* mem = memory_resource_->allocate(sizeof(CompletionData), alignof(CompletionData));
+  [[nodiscard]] inline auto allocate_completion() -> CompletionData * {
+    void *mem = memory_resource_->allocate(sizeof(CompletionData),
+                                           alignof(CompletionData));
     return new (mem) CompletionData{};
   }
-  
-  inline auto deallocate_completion(CompletionData* data) noexcept -> void {
-    if (!data) return;
+
+  inline auto deallocate_completion(CompletionData *data) noexcept -> void {
+    if (!data)
+      return;
     data->~CompletionData();
-    memory_resource_->deallocate(data, sizeof(CompletionData), alignof(CompletionData));
+    memory_resource_->deallocate(data, sizeof(CompletionData),
+                                 alignof(CompletionData));
+  }
+
+  /// Allocate a registered buffer (returns nullptr if pool exhausted)
+  [[nodiscard]] auto allocate_registered_buffer() noexcept -> MutableBuffer;
+
+  /// Deallocate a registered buffer back to the pool
+  auto deallocate_registered_buffer(void *ptr) noexcept -> void;
+
+  /// Check if registered buffers are enabled
+  [[nodiscard]] auto registered_buffers_enabled() const noexcept -> bool;
+
+  /// Get the size of each registered buffer
+  [[nodiscard]] static constexpr auto registered_buffer_size() noexcept
+      -> std::size_t {
+    return 4096;
   }
 
   // Internal submission methods - used by IoAwaitable
-  auto submit_read(CompletionData* data, int fd, MutableBuffer buffer,
+  auto submit_read(CompletionData *data, int fd, MutableBuffer buffer,
                    std::uint64_t offset) -> void;
-  auto submit_write(CompletionData* data, int fd, ConstBuffer buffer,
-                     std::uint64_t offset) -> void;
-  auto submit_accept(CompletionData* data, int fd) -> void;
-  auto submit_connect(CompletionData* data, int fd, const void* addr,
+  auto submit_write(CompletionData *data, int fd, ConstBuffer buffer,
+                    std::uint64_t offset) -> void;
+  auto submit_accept(CompletionData *data, int fd) -> void;
+  auto submit_connect(CompletionData *data, int fd, const void *addr,
                       std::uint32_t addrlen) -> void;
-  auto submit_close(CompletionData* data, int fd) -> void;
-  auto submit_timeout(CompletionData* data, std::chrono::nanoseconds duration)
+  auto submit_close(CompletionData *data, int fd) -> void;
+  auto submit_timeout(CompletionData *data, std::chrono::nanoseconds duration)
       -> void;
-  auto submit_poll(CompletionData* data, int fd, std::uint32_t events) -> void;
-  auto submit_poll_timeout(CompletionData* data, int fd, std::uint32_t events,
+  auto submit_poll(CompletionData *data, int fd, std::uint32_t events) -> void;
+  auto submit_poll_timeout(CompletionData *data, int fd, std::uint32_t events,
                            std::chrono::milliseconds timeout) -> void;
-  auto submit_cancel(void* operation_data) -> void;
+  auto submit_cancel(void *operation_data) -> void;
 
 private:
   std::unique_ptr<IoContextImpl> impl_;
   TrackerCallback track_cb_;
   TrackerCallback untrack_cb_;
-  std::pmr::memory_resource* memory_resource_{nullptr};
+  std::pmr::memory_resource *memory_resource_{nullptr};
 };
 
 /// Create async read awaitable
 template <MutableBufferSequence Buffer>
-[[nodiscard]] auto async_read(IoContext& ctx, int fd, Buffer& buffer,
+[[nodiscard]] auto async_read(IoContext &ctx, int fd, Buffer &buffer,
                               std::uint64_t offset = 0) {
   return ctx.async_read(fd, io::buffer(buffer), offset);
 }
 
 /// Create async write awaitable
 template <ConstBufferSequence Buffer>
-[[nodiscard]] auto async_write(IoContext& ctx, int fd, const Buffer& buffer,
+[[nodiscard]] auto async_write(IoContext &ctx, int fd, const Buffer &buffer,
                                std::uint64_t offset = 0) {
   return ctx.async_write(fd, io::buffer(buffer), offset);
 }
 
 /// Async sleep for duration
-[[nodiscard]] inline auto async_sleep(IoContext& ctx,
+[[nodiscard]] inline auto async_sleep(IoContext &ctx,
                                       std::chrono::nanoseconds duration) {
   return ctx.async_timeout(duration);
 }
 
 /// Async sleep with chrono duration
 template <typename Rep, typename Period>
-[[nodiscard]] auto async_sleep(IoContext& ctx,
+[[nodiscard]] auto async_sleep(IoContext &ctx,
                                std::chrono::duration<Rep, Period> duration) {
   return ctx.async_timeout(
       std::chrono::duration_cast<std::chrono::nanoseconds>(duration));
 }
 
-}  // namespace taskmaster::io
+} // namespace taskmaster::io
