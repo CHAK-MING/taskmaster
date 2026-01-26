@@ -1,4 +1,5 @@
 #include "taskmaster/app/http/http_client.hpp"
+#include "taskmaster/app/http/http_parser.hpp"
 
 #include "taskmaster/util/log.hpp"
 
@@ -10,7 +11,6 @@
 #include <unistd.h>
 
 #include <cstring>
-#include <format>
 
 namespace taskmaster::http {
 

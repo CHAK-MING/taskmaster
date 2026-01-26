@@ -3,6 +3,7 @@
 #include "taskmaster/core/coroutine.hpp"
 #include "taskmaster/core/lockfree_queue.hpp"
 #include "taskmaster/io/stream.hpp"
+#include "taskmaster/io/timer_fd.hpp"
 #include "taskmaster/scheduler/event_queue.hpp"
 #include "taskmaster/scheduler/task.hpp"
 #include "taskmaster/util/id.hpp"
@@ -17,6 +18,7 @@
 namespace taskmaster {
 
 class Runtime;
+class Persistence;
 
 // Single-threaded event loop scheduler.
 // All state mutations happen on the Engine shard in Runtime.
@@ -29,7 +31,7 @@ public:
   using CheckExistsCallback =
       std::move_only_function<bool(const DAGId&, TimePoint execution_date)>;
 
-  explicit Engine(Runtime& runtime);
+  explicit Engine(Runtime& runtime, Persistence* persistence = nullptr);
   ~Engine();
 
   Engine(const Engine&) = delete;
@@ -37,6 +39,7 @@ public:
 
   auto start() -> void;
   auto stop() -> void;
+  auto run_loop() -> void;
   [[nodiscard]] auto is_running() const noexcept -> bool {
     return running_.load();
   }
@@ -48,7 +51,6 @@ public:
   auto set_check_exists_callback(CheckExistsCallback cb) -> void;
 
 private:
-  auto run_loop() -> spawn_task;
   auto process_events() -> void;
   auto tick() -> void;
   auto get_next_run_time() const -> TimePoint;
@@ -62,8 +64,9 @@ private:
 
   alignas(kCacheLineSize) std::atomic<bool> running_{false};
   alignas(kCacheLineSize) std::atomic<bool> stopped_{true};
-  Runtime* runtime_{nullptr};
+  alignas(kCacheLineSize) std::atomic<bool> loop_active_{false};
   io::EventFd wake_fd_;
+  io::TimerFd timer_fd_;
   EventQueue events_;
 
   // Accessed only in event loop thread
@@ -74,6 +77,7 @@ private:
 
   DAGTriggerCallback on_dag_trigger_;
   CheckExistsCallback check_exists_;
+  Persistence* persistence_;
 };
 
 }  // namespace taskmaster

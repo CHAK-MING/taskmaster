@@ -28,7 +28,31 @@ namespace {
 constexpr auto kServerStartupTimeout = std::chrono::milliseconds(2000);
 constexpr auto kServerShutdownDelay = std::chrono::milliseconds(200);
 constexpr auto kPollInterval = std::chrono::milliseconds(50);
-constexpr uint16_t kBaseApiTestPort = 19500;
+
+auto pick_unused_tcp_port() -> uint16_t {
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) return 0;
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = 0;
+  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+  if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    close(sock);
+    return 0;
+  }
+
+  socklen_t len = sizeof(addr);
+  if (getsockname(sock, reinterpret_cast<sockaddr*>(&addr), &len) < 0) {
+    close(sock);
+    return 0;
+  }
+
+  uint16_t port = ntohs(addr.sin_port);
+  close(sock);
+  return port;
+}
 
 auto make_temp_path(const std::string& prefix = "taskmaster_test_") -> std::string {
   std::string templ = "/tmp/" + prefix + "XXXXXX";
@@ -157,15 +181,24 @@ protected:
     temp_db_ = make_temp_path("taskmaster_db_");
     temp_dags_dir_ = make_temp_dir("taskmaster_dags_");
 
-    app_ = std::make_unique<Application>(temp_db_);
-    auto& cfg = app_->config();
-    cfg.api.enabled = true;
-    cfg.api.port = next_port_++;
-    cfg.dag_source.mode = DAGSourceMode::File;
-    cfg.dag_source.directory = temp_dags_dir_;
-    cfg.dag_source.scan_interval_sec = 1;
+    for (int i = 0; i < 5; ++i) {
+        app_ = std::make_unique<Application>(temp_db_);
+        auto& cfg = app_->config();
+        cfg.api.enabled = true;
+        cfg.api.port = pick_unused_tcp_port();
+        cfg.dag_source.mode = DAGSourceMode::File;
+        cfg.dag_source.directory = temp_dags_dir_;
+        cfg.dag_source.scan_interval_sec = 1;
 
-    ASSERT_TRUE(app_->start().has_value());
+        if (app_->start().has_value()) {
+            break;
+        }
+        app_.reset();
+        std::this_thread::sleep_for(100ms);
+    }
+    
+    ASSERT_TRUE(app_ != nullptr) << "Failed to create app";
+    ASSERT_TRUE(app_->is_running()) << "Failed to start app after retries";
     ASSERT_TRUE(wait_for_server_ready());
   }
 
@@ -253,8 +286,6 @@ protected:
   std::string temp_db_;
   std::string temp_dags_dir_;
   std::unique_ptr<Application> app_;
-
-  static inline std::atomic<uint16_t> next_port_{kBaseApiTestPort};
 };
 
 TEST_F(ApiE2ETest, SensorsHappyPath) {
@@ -556,16 +587,24 @@ tasks:
   app_.reset();
 
   // Create new app instance reusing same DB and DAGs
-  app_ = std::make_unique<Application>(temp_db_);
-  auto& cfg = app_->config();
-  cfg.api.enabled = true;
-  cfg.api.port = next_port_++;
-  cfg.dag_source.mode = DAGSourceMode::File;
-  cfg.dag_source.directory = temp_dags_dir_;
-  cfg.dag_source.scan_interval_sec = 1;
+  for (int i = 0; i < 5; ++i) {
+      app_ = std::make_unique<Application>(temp_db_);
+      auto& cfg = app_->config();
+      cfg.api.enabled = true;
+      cfg.api.port = pick_unused_tcp_port();
+      cfg.dag_source.mode = DAGSourceMode::File;
+      cfg.dag_source.directory = temp_dags_dir_;
+      cfg.dag_source.scan_interval_sec = 1;
+      
+      if (app_->init().has_value() && app_->start().has_value()) {
+          break;
+      }
+      app_.reset();
+      std::this_thread::sleep_for(100ms);
+  }
   
-  ASSERT_TRUE(app_->init().has_value());
-  ASSERT_TRUE(app_->start().has_value());
+  ASSERT_TRUE(app_ != nullptr);
+  ASSERT_TRUE(app_->is_running());
   ASSERT_TRUE(wait_for_server_ready());
 
   ASSERT_TRUE(wait_for_dag_registration("dedupe_dag"));
@@ -584,19 +623,27 @@ TEST_F(ApiE2ETest, MaxConcurrencyEnforced) {
   app_->stop();
   app_.reset();
 
-  Config config;
-  config.storage.db_file = temp_db_;
-  config.scheduler.max_concurrency = 1;
-  config.api.enabled = true;
-  config.api.port = next_port_++;
-  config.dag_source.mode = DAGSourceMode::File;
-  config.dag_source.directory = temp_dags_dir_;
-  config.dag_source.scan_interval_sec = 1;
+  for (int i = 0; i < 5; ++i) {
+      Config config;
+      config.storage.db_file = temp_db_;
+      config.scheduler.max_concurrency = 1;
+      config.api.enabled = true;
+      config.api.port = pick_unused_tcp_port();
+      config.dag_source.mode = DAGSourceMode::File;
+      config.dag_source.directory = temp_dags_dir_;
+      config.dag_source.scan_interval_sec = 1;
 
-  app_ = std::make_unique<Application>(std::move(config));
+      app_ = std::make_unique<Application>(std::move(config));
 
-  ASSERT_TRUE(app_->init().has_value());
-  ASSERT_TRUE(app_->start().has_value());
+      if (app_->init().has_value() && app_->start().has_value()) {
+          break;
+      }
+      app_.reset();
+      std::this_thread::sleep_for(100ms);
+  }
+
+  ASSERT_TRUE(app_ != nullptr);
+  ASSERT_TRUE(app_->is_running());
   ASSERT_TRUE(wait_for_server_ready());
 
 

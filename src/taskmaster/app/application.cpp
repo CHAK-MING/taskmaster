@@ -29,7 +29,7 @@ namespace taskmaster {
 Application::Application()
     : executor_(create_composite_executor(runtime_)),
       events_(std::make_unique<EventService>()),
-      scheduler_(std::make_unique<SchedulerService>(runtime_)),
+      scheduler_(std::make_unique<SchedulerService>(runtime_, nullptr)),
       execution_(std::make_unique<ExecutionService>(runtime_, *executor_)) {
   execution_->set_max_concurrency(config_.scheduler.max_concurrency);
   setup_callbacks();
@@ -39,7 +39,8 @@ Application::Application(std::string_view db_path)
     : executor_(create_composite_executor(runtime_)),
       persistence_(std::make_unique<PersistenceService>(db_path)),
       events_(std::make_unique<EventService>()),
-      scheduler_(std::make_unique<SchedulerService>(runtime_)),
+      scheduler_(std::make_unique<SchedulerService>(
+          runtime_, persistence_ ? persistence_->persistence() : nullptr)),
       execution_(std::make_unique<ExecutionService>(runtime_, *executor_)) {
   dag_manager_.set_persistence(persistence_->persistence());
   execution_->set_max_concurrency(config_.scheduler.max_concurrency);
@@ -52,7 +53,8 @@ Application::Application(Config config)
       persistence_(
           std::make_unique<PersistenceService>(config_.storage.db_file)),
       events_(std::make_unique<EventService>()),
-      scheduler_(std::make_unique<SchedulerService>(runtime_)),
+      scheduler_(std::make_unique<SchedulerService>(
+          runtime_, persistence_ ? persistence_->persistence() : nullptr)),
       execution_(std::make_unique<ExecutionService>(runtime_, *executor_)) {
   dag_manager_.set_persistence(persistence_->persistence());
   execution_->set_max_concurrency(config_.scheduler.max_concurrency);
@@ -107,13 +109,6 @@ auto Application::load_dags_from_directory(std::string_view dags_dir)
   }
   if (dags_result->empty()) {
     return ok(false);
-  }
-
-  if (persistence_) {
-    if (auto r = persistence_->persistence()->clear_all_dag_data();
-        !r.has_value()) {
-      return fail(r.error());
-    }
   }
 
   dag_manager_.clear_all();
@@ -346,6 +341,7 @@ auto Application::trigger_dag_by_id(
     std::optional<std::chrono::system_clock::time_point> execution_date)
     -> std::optional<DAGRunId> {
   auto info = dag_manager_.get_dag(dag_id);
+
   if (!info) {
     log::error("DAG {} not found", dag_id);
     return std::nullopt;
@@ -408,6 +404,7 @@ auto Application::trigger_dag_by_id(
             trigger == TriggerType::Schedule ? "schedule" : "manual");
   return dag_run_id;
 }
+
 
 auto Application::wait_for_completion(int timeout_ms) -> void {
   if (execution_)

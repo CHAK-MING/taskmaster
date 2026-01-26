@@ -1,27 +1,24 @@
 #pragma once
 
-#include "taskmaster/config/task_config.hpp"
-#include "taskmaster/core/error.hpp"
 #include "taskmaster/dag/dag_manager.hpp"
 #include "taskmaster/executor/executor.hpp"
 #include "taskmaster/scheduler/engine.hpp"
-#include "taskmaster/config/config.hpp"
 
 #include <functional>
-#include <string_view>
 #include <unordered_map>
-#include <vector>
+#include <thread>
 
 namespace taskmaster {
 
 class DAGManager;
+class Persistence;
 
   using DAGTriggerCallback = std::move_only_function<void(const DAGId&, std::chrono::system_clock::time_point)>;
   using CheckExistsCallback = Engine::CheckExistsCallback;
 
   class SchedulerService {
   public:
-    explicit SchedulerService(Runtime& runtime);
+    explicit SchedulerService(Runtime& runtime, Persistence* persistence = nullptr);
     ~SchedulerService() = default;
 
     SchedulerService(const SchedulerService&) = delete;
@@ -41,7 +38,9 @@ class DAGManager;
   [[nodiscard]] auto engine() -> Engine&;
 
 private:
+  Runtime& runtime_;
   Engine engine_;
+  std::jthread thread_;
   DAGTriggerCallback on_dag_trigger_;
   std::unordered_map<DAGId, TaskId> registered_root_tasks_;
 };

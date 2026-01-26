@@ -8,28 +8,28 @@
 namespace taskmaster {
 
 namespace {
-  template <typename F>
-  concept ShardVisitor = std::invocable<F, unsigned>;
+template <typename F>
+concept ShardVisitor = std::invocable<F, unsigned>;
 
-  template <typename F>
-  concept ShardPairVisitor = std::invocable<F, unsigned, unsigned>;
+template <typename F>
+concept ShardPairVisitor = std::invocable<F, unsigned, unsigned>;
 
-  template <ShardVisitor Fn>
-  auto for_each_shard(unsigned num_shards, Fn&& fn) -> void {
-    for (auto i : std::views::iota(0u, num_shards)) {
-      fn(i);
-    }
+template <ShardVisitor Fn>
+auto for_each_shard(unsigned num_shards, Fn &&fn) -> void {
+  for (auto i : std::views::iota(0u, num_shards)) {
+    fn(i);
   }
+}
 
-  template <ShardPairVisitor Fn>
-  auto for_each_shard_pair(unsigned num_shards, Fn&& fn) -> void {
-    for (auto from : std::views::iota(0u, num_shards)) {
-      for (auto to : std::views::iota(0u, num_shards)) {
-        fn(from, to);
-      }
+template <ShardPairVisitor Fn>
+auto for_each_shard_pair(unsigned num_shards, Fn &&fn) -> void {
+  for (auto from : std::views::iota(0u, num_shards)) {
+    for (auto to : std::views::iota(0u, num_shards)) {
+      fn(from, to);
     }
   }
 }
+} // namespace
 
 Runtime::Runtime(unsigned num_shards) {
   if (num_shards == 0) {
@@ -54,9 +54,7 @@ Runtime::Runtime(unsigned num_shards) {
   });
 }
 
-Runtime::~Runtime() {
-  stop();
-}
+Runtime::~Runtime() { stop(); }
 
 auto Runtime::start() -> void {
   if (running_.exchange(true))
@@ -92,7 +90,7 @@ auto Runtime::stop() -> void {
     }
   });
 
-  for (auto& shard : shards_) {
+  for (auto &shard : shards_) {
     shard->drain_pending();
   }
 }
@@ -105,7 +103,7 @@ auto Runtime::current_shard() const noexcept -> shard_id {
   return detail::current_shard_id;
 }
 
-auto Runtime::current_context() noexcept -> io::IoContext& {
+auto Runtime::current_context() noexcept -> io::IoContext & {
   return shards_[current_shard()]->ctx();
 }
 
@@ -113,7 +111,7 @@ auto Runtime::run_shard(shard_id id) -> void {
   detail::current_shard_id = id;
   detail::current_runtime = this;
 
-  auto& shard = *shards_[id];
+  auto &shard = *shards_[id];
   shard.ctx().setup_wake_poll(shard.wake_fd());
 
   while (!stop_requested_.load(std::memory_order_acquire)) {
@@ -162,56 +160,58 @@ auto Runtime::process_smp_messages(shard_id id) -> bool {
   return did_work;
 }
 
-auto Runtime::process_completions(Shard& shard) -> bool {
-  unsigned count = shard.ctx().process_completions([&](void* raw_data, int res,
-                                                        unsigned flags) {
-    if (raw_data == reinterpret_cast<void*>(kWakeEventToken)) {
-      shard.wake_event().consume();
-      if (!(flags & kCqeFMore)) {
-        shard.ctx().setup_wake_poll(shard.wake_fd());
-      }
-      return;
-    }
+auto Runtime::process_completions(Shard &shard) -> bool {
+  unsigned count = shard.ctx().process_completions(
+      [&](void *raw_data, int res, unsigned flags) {
+        if (raw_data == reinterpret_cast<void *>(kWakeEventToken)) {
+          shard.wake_event().consume();
+          if (!(flags & kCqeFMore)) {
+            shard.ctx().setup_wake_poll(shard.wake_fd());
+          }
+          return;
+        }
 
-    if (raw_data == reinterpret_cast<void*>(kMsgRingWakeToken)) {
-      return;
-    }
+        if (raw_data == reinterpret_cast<void *>(kMsgRingWakeToken)) {
+          return;
+        }
 
-    if (raw_data != nullptr) {
-      auto* data = static_cast<CompletionData*>(raw_data);
-      shard.untrack_io_data(data);
-      data->result = res;
-      data->flags = flags;
-      data->completed = true;
+        if (raw_data != nullptr) {
+          auto *data = static_cast<CompletionData *>(raw_data);
+          shard.untrack_io_data(data);
+          data->result = res;
+          data->flags = flags;
+          data->completed = true;
 
-      if (!data->continuation) {
-        delete data;
-        return;
-      }
+          if (!data->continuation) {
+            delete data;
+            return;
+          }
 
-      auto handle = data->continuation;
-      if (!handle) {
-        return;
-      }
+          auto handle = data->continuation;
+          if (!handle) {
+            return;
+          }
 
-      if (handle.done()) {
-        handle.destroy();
-        return;
-      }
+          if (handle.done()) {
+            handle.destroy();
+            return;
+          }
 
-      // Avoid resuming inline from the completion callback to prevent re-entrancy.
-      if (data->owner_shard == shard.id() || data->owner_shard == kInvalidShard) {
-        shard.schedule_next(handle);
-      } else {
-        submit_to(data->owner_shard, handle);
-      }
-    }
-  });
+          // Avoid resuming inline from the completion callback to prevent
+          // re-entrancy.
+          if (data->owner_shard == shard.id() ||
+              data->owner_shard == kInvalidShard) {
+            shard.schedule_next(handle);
+          } else {
+            submit_to(data->owner_shard, handle);
+          }
+        }
+      });
 
   return count > 0;
 }
 
-auto Runtime::wait_for_work(Shard& shard) -> void {
+auto Runtime::wait_for_work(Shard &shard) -> void {
   if (shard.has_work())
     return;
 
@@ -221,7 +221,8 @@ auto Runtime::wait_for_work(Shard& shard) -> void {
   }
 
   (void)shard.ctx().submit(true);
-  shard.ctx().wait(std::chrono::milliseconds(-1));  // Wait indefinitely until woken
+  shard.ctx().wait(
+      std::chrono::milliseconds(-1)); // Wait indefinitely until woken
 }
 
 auto Runtime::schedule(std::coroutine_handle<> handle) noexcept -> void {
@@ -262,39 +263,42 @@ auto Runtime::schedule_on(shard_id target, std::coroutine_handle<> handle)
 
 auto Runtime::schedule_external(std::coroutine_handle<> handle) -> void {
   auto target = shard_id{0};
-  if (num_shards_ <= 1) {
-    target = 0;
-  } else {
-    target = static_cast<shard_id>(
-                 std::hash<void*>{}(handle.address()) % (num_shards_ - 1)) +
-             1;
+  if (num_shards_ > 1) {
+    target = static_cast<shard_id>(std::hash<void *>{}(handle.address()) %
+                                   num_shards_);
   }
   schedule_on(target, handle);
 }
 
-auto Runtime::schedule_external_batch(std::span<std::coroutine_handle<>> handles) -> void {
-  if (handles.empty()) return;
-  
-  std::bitset<64> shards_to_wake;
-  
+auto Runtime::schedule_external_batch(
+    std::span<std::coroutine_handle<>> handles) -> void {
+  if (handles.empty())
+    return;
+
+  std::bitset<64> shards_woken;
+
   for (auto handle : handles) {
-    if (!handle || handle.done()) continue;
-    
+    if (!handle || handle.done())
+      continue;
+
     shard_id target = 0;
     if (num_shards_ > 1) {
-      target = static_cast<shard_id>(
-                   std::hash<void*>{}(handle.address()) % (num_shards_ - 1)) + 1;
+      target = static_cast<shard_id>(std::hash<void *>{}(handle.address()) %
+                                     num_shards_);
     }
-    
+
+    // Wake early so the shard can drain its remote queue while we enqueue.
+    if (!shards_woken.test(target)) {
+      wake_shard(target);
+      shards_woken.set(target);
+    }
+
     while (!shards_[target]->schedule_remote(handle)) {
+      // IMPORTANT: The target shard may be sleeping; if its remote queue is
+      // full and we only wake after enqueueing the whole batch, we can
+      // deadlock.
+      wake_shard(target);
       std::this_thread::yield();
-    }
-    shards_to_wake.set(target);
-  }
-  
-  for (size_t i = 0; i < num_shards_; ++i) {
-    if (shards_to_wake.test(i)) {
-      wake_shard(static_cast<shard_id>(i));
     }
   }
 }
@@ -302,7 +306,8 @@ auto Runtime::schedule_external_batch(std::span<std::coroutine_handle<>> handles
 auto Runtime::submit_to(shard_id target, std::coroutine_handle<> handle)
     -> void {
   if (target == detail::current_shard_id) {
-    if (!handle) return;
+    if (!handle)
+      return;
     if (handle.done()) {
       handle.destroy();
       return;
@@ -336,7 +341,7 @@ auto Runtime::wake_shard(shard_id id) -> void {
     return;
   }
 
-  auto& src_ctx = shards_[current]->ctx();
+  auto &src_ctx = shards_[current]->ctx();
   io::IoRequest req{
       .op = io::IoOpType::MsgRing,
       .fd = target_ring_fd,
@@ -347,4 +352,4 @@ auto Runtime::wake_shard(shard_id id) -> void {
   }
 }
 
-}  // namespace taskmaster
+} // namespace taskmaster

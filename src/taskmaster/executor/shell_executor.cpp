@@ -1,6 +1,3 @@
-#include "taskmaster/core/coroutine.hpp"
-#include "taskmaster/core/error.hpp"
-#include "taskmaster/core/runtime.hpp"
 #include "taskmaster/executor/executor.hpp"
 #include "taskmaster/io/async_fd.hpp"
 #include "taskmaster/io/context.hpp"
@@ -11,7 +8,6 @@
 
 #include <array>
 #include <cerrno>
-#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <experimental/scope>

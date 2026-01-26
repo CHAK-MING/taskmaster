@@ -1,7 +1,6 @@
 #include "taskmaster/app/http/http_server.hpp"
 
 #include "taskmaster/app/http/http_parser.hpp"
-#include "taskmaster/core/error.hpp"
 #include "taskmaster/io/context.hpp"
 #include "taskmaster/util/log.hpp"
 
@@ -35,7 +34,7 @@ struct HttpServer::Impl {
     HttpRequestParser request_parser;
 
     client_fd.rebind(current_io_context());
-    log::info("HTTP connection start: fd={}", client_fd.fd());
+    log::debug("HTTP connection start: fd={}", client_fd.fd());
 
     try {
       std::vector<uint8_t> buffer(8192);
@@ -68,7 +67,7 @@ struct HttpServer::Impl {
         }
 
         auto &req = *req_opt;
-        log::info("HTTP request: {} {} (fd={})", req.method, req.path,
+        log::debug("HTTP request: {} {} (fd={})", req.method, req.path,
                   client_fd.fd());
 
         if (is_websocket_upgrade(req)) {
@@ -107,7 +106,7 @@ struct HttpServer::Impl {
       log::error("Exception in connection handler: {}", e.what());
     }
 
-    log::info("HTTP connection close: fd={}", client_fd.fd());
+    log::debug("HTTP connection close: fd={}", client_fd.fd());
   }
 
   auto accept_loop(int listen_fd) -> task<void> {

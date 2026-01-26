@@ -1,24 +1,23 @@
 #include "taskmaster/app/services/scheduler_service.hpp"
 
-#include "taskmaster/config/dag_definition.hpp"
 #include "taskmaster/dag/dag_manager.hpp"
 #include "taskmaster/scheduler/cron.hpp"
-#include "taskmaster/scheduler/task.hpp"
 #include "taskmaster/util/log.hpp"
 
 #include <optional>
-#include <ranges>
 
 namespace taskmaster {
 
-SchedulerService::SchedulerService(Runtime& runtime)
-    : engine_(runtime) {
+SchedulerService::SchedulerService(Runtime& runtime, Persistence* persistence)
+    : runtime_(runtime), engine_(runtime, persistence) {
 }
 
 auto SchedulerService::set_on_dag_trigger(DAGTriggerCallback callback) -> void {
   on_dag_trigger_ = std::move(callback);
   engine_.set_on_dag_trigger([this](const DAGId& dag_id, 
                                      std::chrono::system_clock::time_point execution_date) {
+    if (!on_dag_trigger_) return;
+
     if (on_dag_trigger_) {
       on_dag_trigger_(dag_id, execution_date);
     }
@@ -79,10 +78,14 @@ auto SchedulerService::unregister_dag(DAGId dag_id) -> void {
 
 auto SchedulerService::start() -> void {
   engine_.start();
+  thread_ = std::jthread([this] { engine_.run_loop(); });
 }
 
 auto SchedulerService::stop() -> void {
   engine_.stop();
+  if (thread_.joinable()) {
+    thread_.join();
+  }
 }
 
 auto SchedulerService::is_running() const -> bool {

@@ -64,6 +64,7 @@ TEST_F(EngineTest, BasicInitialization) {
 
 TEST_F(EngineTest, StartStop) {
   engine_->start();
+  std::jthread runner([this] { engine_->run_loop(); });
   EXPECT_TRUE(engine_->is_running());
 
   engine_->stop();
@@ -118,6 +119,7 @@ TEST_F(EngineTest, RunningFlag) {
   EXPECT_FALSE(engine_->is_running());
 
   engine_->start();
+  std::jthread runner([this] { engine_->run_loop(); });
   EXPECT_TRUE(engine_->is_running());
 
   std::this_thread::sleep_for(kPollInterval);

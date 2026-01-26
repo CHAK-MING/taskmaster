@@ -1,15 +1,16 @@
 #include "taskmaster/storage/persistence.hpp"
 
 #include "taskmaster/dag/dag_manager.hpp"
-#include "taskmaster/dag/dag_run.hpp"
 #include "taskmaster/storage/state_strings.hpp"
-#include "taskmaster/util/id.hpp"
 #include "taskmaster/util/log.hpp"
 
 #include <nlohmann/json.hpp>
 #include <sqlite3.h>
 
-#include <utility>
+#include <charconv>
+#include <chrono>
+#include <string>
+#include <vector>
 
 namespace taskmaster {
 
@@ -229,6 +230,11 @@ auto Persistence::create_tables() -> Result<void> {
 
     CREATE INDEX IF NOT EXISTS idx_xcom_run_task
       ON xcom_values(dag_run_id, task_id);
+
+    CREATE TABLE IF NOT EXISTS dag_watermarks (
+      dag_id TEXT PRIMARY KEY,
+      last_scheduled_at INTEGER NOT NULL
+    );
   )";
 
   return execute(sql);
@@ -1100,6 +1106,12 @@ auto Persistence::get_last_execution_date(DAGId dag_id) const
   return fail(Error::DatabaseQueryFailed);
 }
 
+auto Persistence::run_exists(const DAGId& dag_id,
+                             const std::chrono::system_clock::time_point& execution_time) const -> bool {
+  auto result = has_dag_run(dag_id, execution_time);
+  return result.value_or(false);
+}
+
 auto Persistence::has_dag_run(DAGId dag_id,
                               std::chrono::system_clock::time_point execution_date) const
     -> Result<bool> {
@@ -1154,6 +1166,47 @@ auto Persistence::get_previous_task_state(
   }
 
   return fail(Error::DatabaseQueryFailed);
+}
+
+auto Persistence::save_watermark(DAGId dag_id,
+                                 std::chrono::system_clock::time_point timestamp)
+    -> Result<void> {
+  constexpr auto sql = R"(
+    INSERT INTO dag_watermarks (dag_id, last_scheduled_at)
+    VALUES (?, ?)
+    ON CONFLICT(dag_id) DO UPDATE SET
+      last_scheduled_at = excluded.last_scheduled_at;
+  )";
+
+  auto result = prepare(sql);
+  if (!result)
+    return std::unexpected(result.error());
+  Statement stmt(*result);
+
+  sqlite3_bind_text(stmt.get(), 1, dag_id.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt.get(), 2, to_timestamp(timestamp));
+
+  return sqlite3_step(stmt.get()) == SQLITE_DONE
+             ? ok()
+             : fail(Error::DatabaseQueryFailed);
+}
+
+auto Persistence::get_watermark(DAGId dag_id) const
+    -> Result<std::optional<std::chrono::system_clock::time_point>> {
+  constexpr auto sql =
+      "SELECT last_scheduled_at FROM dag_watermarks WHERE dag_id = ?;";
+
+  auto result = prepare(sql);
+  if (!result)
+    return std::unexpected(result.error());
+  Statement stmt(*result);
+
+  sqlite3_bind_text(stmt.get(), 1, dag_id.c_str(), -1, SQLITE_TRANSIENT);
+
+  if (sqlite3_step(stmt.get()) != SQLITE_ROW)
+    return std::nullopt;
+
+  return from_timestamp(sqlite3_column_int64(stmt.get(), 0));
 }
 
 }  // namespace taskmaster

@@ -25,7 +25,31 @@ namespace {
 constexpr auto kServerStartupTimeout = std::chrono::milliseconds(2000);
 constexpr auto kServerShutdownDelay = std::chrono::milliseconds(200);
 constexpr auto kPollInterval = std::chrono::milliseconds(20);
-constexpr uint16_t kBaseIntegrationTestPort = 19000;
+
+auto pick_unused_tcp_port() -> uint16_t {
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) return 0;
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = 0;
+  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+  if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    close(sock);
+    return 0;
+  }
+
+  socklen_t len = sizeof(addr);
+  if (getsockname(sock, reinterpret_cast<sockaddr*>(&addr), &len) < 0) {
+    close(sock);
+    return 0;
+  }
+
+  uint16_t port = ntohs(addr.sin_port);
+  close(sock);
+  return port;
+}
 
 auto make_temp_path() -> std::string {
   std::string templ = "/tmp/taskmaster_test_XXXXXX";
@@ -44,12 +68,39 @@ protected:
   void SetUp() override {
     temp_db_ = make_temp_path();
 
-    app_ = std::make_unique<Application>(temp_db_);
-    app_->config().api.port = next_port_++;
-    api_server_ = std::make_unique<ApiServer>(*app_);
+    for (int i = 0; i < 5; ++i) {
+        app_ = std::make_unique<Application>(temp_db_);
+        app_->config().api.port = pick_unused_tcp_port();
+        
+        if (!app_->start().has_value()) {
+             app_.reset();
+             continue;
+        }
 
-    ASSERT_TRUE(app_->start().has_value());
-    api_server_->start();
+        api_server_ = std::make_unique<ApiServer>(*app_);
+        api_server_->start();
+        
+        bool started = false;
+        for (int j = 0; j < 10; ++j) {
+            if (api_server_->is_running()) {
+                started = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        
+        if (started && app_->is_running()) {
+            break;
+        }
+        
+        if (api_server_) api_server_->stop();
+        api_server_.reset();
+        if (app_) app_->stop();
+        app_.reset();
+    }
+
+    ASSERT_TRUE(app_ != nullptr);
+    ASSERT_TRUE(api_server_ != nullptr);
     ASSERT_TRUE(wait_for_server_ready());
   }
 
@@ -223,9 +274,6 @@ protected:
   std::string temp_db_;
   std::unique_ptr<Application> app_;
   std::unique_ptr<ApiServer> api_server_;
-
-private:
-  static inline std::atomic<uint16_t> next_port_{kBaseIntegrationTestPort};
 };
 
 TEST_F(RealIntegrationTest, HealthCheck) {

@@ -1,6 +1,5 @@
 #include "taskmaster/app/services/persistence_service.hpp"
 
-#include "taskmaster/dag/dag_run.hpp"
 #include "taskmaster/util/log.hpp"
 
 namespace taskmaster {

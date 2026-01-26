@@ -15,6 +15,7 @@ add_executable(taskmaster_tests
   # Scheduler tests
   engine_test.cpp
   cron_test.cpp
+  scheduler/recovery_test.cpp
 
   # DAG tests
   dag_test.cpp
@@ -25,6 +26,7 @@ add_executable(taskmaster_tests
 
   # Storage tests
   persistence_test.cpp
+  storage/watermark_test.cpp
   config_test.cpp
   config_watcher_test.cpp
   dag_validation_test.cpp

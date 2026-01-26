@@ -19,7 +19,31 @@ namespace {
 
 constexpr auto kServerStartupDelay = std::chrono::milliseconds(100);
 constexpr auto kServerShutdownDelay = std::chrono::milliseconds(100);
-constexpr uint16_t kBaseTestPort = 18080;
+
+auto pick_unused_tcp_port() -> uint16_t {
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) return 0;
+
+  sockaddr_in addr{};
+  addr.sin_family = AF_INET;
+  addr.sin_port = 0;
+  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+  if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    close(sock);
+    return 0;
+  }
+
+  socklen_t len = sizeof(addr);
+  if (getsockname(sock, reinterpret_cast<sockaddr*>(&addr), &len) < 0) {
+    close(sock);
+    return 0;
+  }
+
+  uint16_t port = ntohs(addr.sin_port);
+  close(sock);
+  return port;
+}
 
 }  // namespace
 
@@ -72,36 +96,38 @@ protected:
 class APIServerTest : public APITest {
 protected:
   void SetUp() override {
-    APITest::SetUp();
-    assign_unique_port();
-    start_application();
-    start_server();
+    for (int i = 0; i < 5; ++i) {
+      app_ = std::make_unique<Application>();
+      app_->config().api.port = pick_unused_tcp_port();
+      server_ = std::make_unique<ApiServer>(*app_);
+
+      if (app_->start().has_value()) {
+        server_->start();
+        
+        for (int j = 0; j < 10; ++j) {
+          if (server_->is_running()) break;
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+
+        if (server_->is_running()) {
+          return;
+        }
+      }
+
+      stop_server();
+      if (app_) app_->stop();
+      server_.reset();
+      app_.reset();
+    }
+    FAIL() << "Failed to start server after retries";
   }
 
   void TearDown() override {
     stop_server();
-    stop_application();
-    APITest::TearDown();
-  }
-
-  void assign_unique_port() {
-    app_->config().api.port = next_port_++;
-  }
-
-  void start_application() {
-    auto result = app_->start();
-    ASSERT_TRUE(result.has_value()) << "Failed to start application";
-  }
-
-  void stop_application() {
     if (app_ && app_->is_running()) {
       app_->stop();
     }
-  }
-
-  void start_server() {
-    server_->start();
-    std::this_thread::sleep_for(kServerStartupDelay);
+    APITest::TearDown();
   }
 
   void stop_server() {
@@ -110,9 +136,6 @@ protected:
       std::this_thread::sleep_for(kServerShutdownDelay);
     }
   }
-
-private:
-  static inline std::atomic<uint16_t> next_port_{kBaseTestPort};
 };
 
 TEST_F(APITest, InitialServerState_IsNotRunning) {

@@ -14,11 +14,11 @@ A high-performance DAG workflow orchestrator built with modern C++23, inspired b
 - **Branching** - Conditional task execution based on XCom values
 - **Catchup** - Automatic backfill of missed scheduled runs
 - **XCom** - Cross-task communication with template variables
-- **Scheduling** - Cron expressions with start/end date boundaries
+- **Scheduling** - Drift-proof Cron scheduling using Monotonic Clock
 - **Executors** - Shell, Docker, and Sensor execution modes
 - **Web UI** - Real-time DAG visualization with React Flow
 - **REST API** - Full control and monitoring
-- **Persistence** - SQLite with crash recovery
+- **Persistence** - SQLite with watermark-based crash recovery (At-Least-Once)
 
 ## Quick Start
 

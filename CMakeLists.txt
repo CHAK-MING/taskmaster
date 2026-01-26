@@ -34,6 +34,7 @@ add_library(taskmaster_lib
     src/taskmaster/core/runtime.cpp
     src/taskmaster/io/context.cpp
     src/taskmaster/io/async_fd.cpp
+    src/taskmaster/io/timer_fd.cpp
     src/taskmaster/scheduler/cron.cpp
     src/taskmaster/scheduler/engine.cpp
     src/taskmaster/dag/dag.cpp

@@ -113,8 +113,17 @@ public:
   [[nodiscard]] auto get_last_execution_date(DAGId dag_id) const
       -> Result<std::optional<std::chrono::system_clock::time_point>>;
 
+  [[nodiscard]] auto run_exists(const DAGId& dag_id, const std::chrono::system_clock::time_point& execution_time) const -> bool;
+
   [[nodiscard]] auto has_dag_run(DAGId dag_id, std::chrono::system_clock::time_point execution_date) const
       -> Result<bool>;
+
+  // Watermark persistence (for scheduling catch-up)
+  [[nodiscard]] auto save_watermark(DAGId dag_id,
+                                    std::chrono::system_clock::time_point timestamp)
+      -> Result<void>;
+  [[nodiscard]] auto get_watermark(DAGId dag_id) const
+      -> Result<std::optional<std::chrono::system_clock::time_point>>;
 
   // Get previous run's task state for depends_on_past feature
   [[nodiscard]] auto get_previous_task_state(

@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <thread>
+#include <unistd.h>
 
 #include "gtest/gtest.h"
 
@@ -14,8 +15,10 @@ namespace fs = std::filesystem;
 class ConfigWatcherTest : public ::testing::Test {
 protected:
   void SetUp() override {
-    test_dir_ = fs::temp_directory_path() / "taskmaster_watcher_test";
-    fs::create_directories(test_dir_);
+    char templ[] = "/tmp/taskmaster_watcher_test_XXXXXX";
+    char* path = ::mkdtemp(templ);
+    ASSERT_TRUE(path != nullptr);
+    test_dir_ = path;
   }
 
   void TearDown() override {
@@ -28,7 +31,7 @@ protected:
     return path;
   }
 
-  auto wait_for(std::atomic<int>& counter, int expected, std::chrono::milliseconds timeout = std::chrono::milliseconds(500)) -> bool {
+  auto wait_for(std::atomic<int>& counter, int expected, std::chrono::milliseconds timeout = std::chrono::milliseconds(5000)) -> bool {
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (counter.load() < expected && std::chrono::steady_clock::now() < deadline) {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));

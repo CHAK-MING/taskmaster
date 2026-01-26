@@ -2,21 +2,32 @@
 
 #include "taskmaster/core/runtime.hpp"
 #include "taskmaster/scheduler/task.hpp"
+#include "taskmaster/storage/persistence.hpp"
 #include "taskmaster/util/id.hpp"
 #include "taskmaster/util/log.hpp"
-#include "taskmaster/util/util.hpp"
 
+#include <poll.h>
+#include <cerrno>
+#include <cstring>
 #include <chrono>
 
 namespace taskmaster {
 
-Engine::Engine(Runtime& runtime) : runtime_(&runtime) {
+Engine::Engine(Runtime& /*runtime*/, Persistence* persistence)
+    : persistence_(persistence) {
   auto created = io::EventFd::create(0, EFD_NONBLOCK);
   if (!created) {
     log::error("Failed to create engine eventfd: {}", created.error().message());
     return;
   }
   wake_fd_ = std::move(*created);
+
+  auto timer_created = io::TimerFd::create();
+  if (!timer_created) {
+    log::error("Failed to create engine timerfd: {}", timer_created.error().message());
+    return;
+  }
+  timer_fd_ = std::move(*timer_created);
 }
 
 Engine::~Engine() {
@@ -27,36 +38,39 @@ auto Engine::start() -> void {
   if (running_.exchange(true))
     return;
 
-  if (runtime_ == nullptr) {
-    log::error("Engine cannot start: Runtime not set");
-    running_.store(false);
-    return;
-  }
-
-  if (!wake_fd_) {
-    log::error("Engine cannot start: wake eventfd is not available");
+  if (!wake_fd_ || !timer_fd_) {
+    log::error("Engine cannot start: wake eventfd or timerfd is not available");
     running_.store(false);
     return;
   }
 
   stopped_.store(false);
-  auto t = run_loop();
-  runtime_->schedule_on(0, t.take());
   log::info("Engine started");
 }
 
 auto Engine::stop() -> void {
   if (!running_.exchange(false))
     return;
-  events_.push_blocking(ShutdownEvent{});
-  notify();
 
-  stopped_.wait(false, std::memory_order_acquire);
+  if (loop_active_.load(std::memory_order_acquire)) {
+    events_.push_blocking(ShutdownEvent{});
+    notify();
+
+    stopped_.wait(false, std::memory_order_acquire);
+  } else {
+    stopped_.store(true, std::memory_order_release);
+    stopped_.notify_all();
+  }
 }
 
-auto Engine::run_loop() -> spawn_task {
-  auto& io_ctx = current_io_context();
-  auto wake = io::AsyncFd::borrow(io_ctx, wake_fd_.fd());
+auto Engine::run_loop() -> void {
+  loop_active_.store(true, std::memory_order_release);
+
+  struct pollfd pfd[2];
+  pfd[0].fd = wake_fd_.fd();
+  pfd[0].events = POLLIN;
+  pfd[1].fd = timer_fd_.fd();
+  pfd[1].events = POLLIN;
 
   while (running_.load(std::memory_order_relaxed)) {
     process_events();
@@ -67,30 +81,37 @@ auto Engine::run_loop() -> spawn_task {
     tick();
 
     auto next_time = get_next_run_time();
-    auto now = std::chrono::system_clock::now();
-
-    auto timeout = std::chrono::milliseconds(60000);
+    
     if (next_time != TimePoint::max()) {
-      auto delay = std::chrono::duration_cast<std::chrono::milliseconds>(
-          next_time - now);
-      if (delay.count() < 0) {
-        delay = std::chrono::milliseconds{0};
+      auto now = std::chrono::system_clock::now();
+      auto delay = next_time - now;
+      if (delay < std::chrono::milliseconds(0)) {
+        delay = std::chrono::milliseconds(0);
       }
-      timeout = delay;
+      
+      auto steady_now = std::chrono::steady_clock::now();
+      timer_fd_.set_absolute(steady_now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(delay));
+    } else {
+      timer_fd_.unset();
     }
 
-    auto poll_result = co_await wake.async_poll_timeout(POLLIN, timeout);
-    if (poll_result.ready) {
-      (void)wake_fd_.consume();
-    } else if (poll_result.error) {
-      log::warn("Engine wake poll error: {}", poll_result.error.message());
+    int ret = ::poll(pfd, 2, -1);
+    if (ret > 0) {
+      if (pfd[0].revents & POLLIN) {
+        (void)wake_fd_.consume();
+      }
+      if (pfd[1].revents & POLLIN) {
+        (void)timer_fd_.consume();
+      }
+    } else if (ret < 0 && errno != EINTR) {
+      log::warn("Engine wake poll error: {}", std::strerror(errno));
     }
   }
 
+  loop_active_.store(false, std::memory_order_release);
   stopped_.store(true, std::memory_order_release);
   stopped_.notify_one();
   log::info("Engine stopped");
-  co_return;
 }
 
 auto Engine::process_events() -> void {
@@ -122,6 +143,14 @@ auto Engine::tick() -> void {
                 std::chrono::duration_cast<std::chrono::seconds>(
                     execution_date.time_since_epoch()).count());
       on_dag_trigger_(task_it->second.dag_id, execution_date);
+
+      if (persistence_) {
+        if (auto r = persistence_->save_watermark(task_it->second.dag_id, execution_date);
+            !r.has_value()) {
+          log::error("Failed to save watermark for DAG {}: {}",
+                     task_it->second.dag_id, r.error().message());
+        }
+      }
     }
 
     if (task_it->second.cron_expr.has_value()) {
@@ -205,45 +234,85 @@ auto Engine::handle_event(const AddTaskEvent& e) -> void {
 
   tasks_.emplace(id, e.exec_info);
 
-  if(e.exec_info.cron_expr.has_value()) {
+  if (e.exec_info.cron_expr.has_value()) {
     auto now = std::chrono::system_clock::now();
     const auto& cron = e.exec_info.cron_expr.value();
-    
-    TimePoint end_boundary = now;
-    if (e.exec_info.end_date.has_value()) {
-      end_boundary = std::min(now, *e.exec_info.end_date);
+
+    TimePoint baseline_time = now;
+    if (e.exec_info.start_date.has_value()) {
+      baseline_time = *e.exec_info.start_date;
     }
 
-    if (e.exec_info.catchup && e.exec_info.start_date.has_value()) {
-      auto backfill_times = cron.all_between(*e.exec_info.start_date, end_boundary);
-      
-      if (!backfill_times.empty()) {
-        log::info("DAG {} catchup: scheduling {} backfill runs", 
-                  e.exec_info.dag_id, backfill_times.size());
-        
-        for (const auto& backfill_time : backfill_times) {
-          if (check_exists_ && check_exists_(e.exec_info.dag_id, backfill_time)) {
-            continue;
-          }
-          schedule_.emplace(backfill_time, id);
-        }
+    if (persistence_) {
+      auto watermark = persistence_->get_watermark(e.exec_info.dag_id);
+      if (watermark.has_value() && watermark.value().has_value()) {
+        baseline_time = *watermark.value();
       }
     }
 
-    auto next_time = cron.next_after(now);
-    
+    TimePoint effective_baseline = baseline_time;
+
+    if (e.exec_info.catchup) {
+      auto next_run = cron.next_after(effective_baseline);
+      while (next_run <= now) {
+        if (e.exec_info.end_date.has_value() &&
+            next_run > *e.exec_info.end_date) {
+          break;
+        }
+
+        bool exists = false;
+        if (persistence_) {
+          exists = persistence_->run_exists(e.exec_info.dag_id, next_run);
+        } else if (check_exists_) {
+          exists = check_exists_(e.exec_info.dag_id, next_run);
+        }
+
+        if (exists) {
+          // Already exists
+        } else {
+          // Trigger catchup run immediately without scheduling to avoid
+          // rescheduling logic in tick()
+          if (on_dag_trigger_) {
+            log::info("Catchup triggering DAG: {} for execution_date: {}",
+                      e.exec_info.dag_id,
+                      std::chrono::duration_cast<std::chrono::seconds>(
+                          next_run.time_since_epoch())
+                          .count());
+            on_dag_trigger_(e.exec_info.dag_id, next_run);
+
+            if (persistence_) {
+              if (auto r = persistence_->save_watermark(e.exec_info.dag_id,
+                                                        next_run);
+                  !r.has_value()) {
+                log::error("Failed to save watermark for DAG {}: {}",
+                           e.exec_info.dag_id, r.error().message());
+              }
+            }
+          }
+        }
+
+        effective_baseline = next_run;
+        next_run = cron.next_after(effective_baseline);
+      }
+    }
+
+    auto next_time = cron.next_after(std::max(effective_baseline, now));
+
     if (e.exec_info.end_date.has_value() && next_time > *e.exec_info.end_date) {
       if (task_schedule_.find(id) == task_schedule_.end()) {
-        log::info("DAG {} not scheduled: next run time exceeds end_date", e.exec_info.dag_id);
+        log::info("DAG {} not scheduled: next run time exceeds end_date",
+                  e.exec_info.dag_id);
         return;
       }
     } else {
       schedule_task(id, next_time);
     }
-    
-    log::info("DAG : {}, Task added: {}, next scheduled at: {}", e.exec_info.dag_id, e.exec_info.task_id,
+
+    log::info("DAG : {}, Task added: {}, next scheduled at: {}",
+              e.exec_info.dag_id, e.exec_info.task_id,
               std::chrono::duration_cast<std::chrono::seconds>(
-                  next_time.time_since_epoch()).count());
+                  next_time.time_since_epoch())
+                  .count());
   }
 
 }
