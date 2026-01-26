@@ -21,6 +21,8 @@ auto CompositeExecutor::start(ExecutorContext ctx, ExecutorRequest req,
     type = ExecutorType::Docker;
   } else if (std::holds_alternative<SensorExecutorConfig>(req.config)) {
     type = ExecutorType::Sensor;
+  } else if (std::holds_alternative<NoopExecutorConfig>(req.config)) {
+    type = ExecutorType::Noop;
   }
 
   auto it = executors_.find(type);
@@ -86,6 +88,7 @@ auto create_composite_executor(Runtime &rt) -> std::unique_ptr<IExecutor> {
                                create_docker_executor(rt));
   composite->register_executor(ExecutorType::Sensor,
                                create_sensor_executor(rt));
+  composite->register_executor(ExecutorType::Noop, create_noop_executor(rt));
   return composite;
 }
 

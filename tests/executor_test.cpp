@@ -1,5 +1,7 @@
 #include "taskmaster/executor/executor.hpp"
 #include "taskmaster/core/runtime.hpp"
+#include "taskmaster/dag/dag_manager.hpp"
+#include "taskmaster/executor/config_builder.hpp"
 
 #include <chrono>
 #include <string_view>
@@ -29,9 +31,36 @@ TEST(ExecutorTypeRegistryTest, UnknownString_ReturnsDefaultShell) {
   EXPECT_EQ(registry.from_string("nonexistent"), ExecutorType::Shell);
 }
 
+TEST(ExecutorTypeRegistryTest, Noop_StringToType_RoundTripsToNoop) {
+  EXPECT_EQ(to_string_view(parse<ExecutorType>("noop")), "noop");
+}
+
 TEST(ExecutorTypeConversionTest, HelperFunctions_MatchRegistry) {
   EXPECT_EQ(to_string_view(ExecutorType::Shell), "shell");
   EXPECT_EQ(parse<ExecutorType>("shell"), ExecutorType::Shell);
+}
+
+TEST(ExecutorConfigBuilderTest, NoopTask_BuildsNoopExecutorConfig) {
+  DAGInfo info;
+  info.dag_id = DAGId("test");
+  info.name = "test";
+  info.created_at = std::chrono::system_clock::now();
+  info.updated_at = info.created_at;
+
+  TaskConfig task;
+  task.task_id = TaskId("t1");
+  task.command = "ignored";
+  task.executor = ExecutorType::Noop;
+  task.executor_config = NoopTaskConfig{};
+  info.tasks.push_back(task);
+  info.rebuild_task_index();
+
+  DAG graph;
+  graph.add_node(TaskId("t1"));
+
+  auto cfgs = ExecutorConfigBuilder::build(info, graph);
+  ASSERT_EQ(cfgs.size(), 1);
+  EXPECT_TRUE(std::holds_alternative<NoopExecutorConfig>(cfgs[0]));
 }
 
 TEST(ExecutorResultTest, DefaultConstruction_HasZeroValues) {

@@ -17,6 +17,7 @@ enum class ExecutorType : std::uint8_t {
   Shell,
   Docker,
   Sensor,
+  Noop,
 };
 
 enum class ImagePullPolicy : std::uint8_t {
@@ -67,6 +68,7 @@ private:
     register_type(ExecutorType::Shell, "shell");
     register_type(ExecutorType::Docker, "docker");
     register_type(ExecutorType::Sensor, "sensor");
+    register_type(ExecutorType::Noop, "noop");
   }
 
   std::flat_map<ExecutorType, std::string_view> type_to_name_;
@@ -116,6 +118,8 @@ struct DockerExecutorConfig {
   ImagePullPolicy pull_policy{ImagePullPolicy::Never};
 };
 
+struct NoopExecutorConfig {};
+
 enum class SensorType : std::uint8_t {
   File,
   Http,
@@ -132,7 +136,8 @@ struct SensorExecutorConfig {
   std::string http_method{"GET"};
 };
 
-using ExecutorConfig = std::variant<ShellExecutorConfig, DockerExecutorConfig, SensorExecutorConfig>;
+using ExecutorConfig = std::variant<ShellExecutorConfig, DockerExecutorConfig,
+                                   SensorExecutorConfig, NoopExecutorConfig>;
 
 struct ExecutorResult {
   int exit_code{0};

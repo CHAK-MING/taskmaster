@@ -99,6 +99,8 @@ inline auto get_dep_task_ids(const std::vector<TaskDependency>& deps) {
 
 struct ShellTaskConfig {};
 
+struct NoopTaskConfig {};
+
 struct DockerTaskConfig {
   std::string image;
   std::string socket{"/var/run/docker.sock"};
@@ -115,7 +117,8 @@ struct SensorTaskConfig {
   std::string http_method{"GET"};
 };
 
-using ExecutorTaskConfig = std::variant<ShellTaskConfig, DockerTaskConfig, SensorTaskConfig>;
+using ExecutorTaskConfig =
+    std::variant<ShellTaskConfig, DockerTaskConfig, SensorTaskConfig, NoopTaskConfig>;
 
 struct TaskConfig {
   TaskId task_id;

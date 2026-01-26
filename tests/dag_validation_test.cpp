@@ -1,5 +1,6 @@
 #include "taskmaster/config/dag_definition.hpp"
 #include "taskmaster/config/dag_file_loader.hpp"
+#include "taskmaster/executor/executor.hpp"
 #include "taskmaster/util/id.hpp"
 
 #include <gtest/gtest.h>
@@ -55,6 +56,21 @@ tasks:
   EXPECT_EQ(result->description, "Test DAG");
   EXPECT_EQ(result->tasks.size(), 1);
   EXPECT_EQ(result->tasks[0].task_id, TaskId("task1"));
+}
+
+TEST_F(DAGValidationTest, LoadValidDAG_AllowsNoopExecutor) {
+  std::string yaml = R"(
+name: test_dag
+tasks:
+  - id: task1
+    command: echo hello
+    executor: noop
+)";
+
+  auto result = DAGDefinitionLoader::load_from_string(yaml);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_EQ(result->tasks.size(), 1);
+  EXPECT_EQ(to_string_view(result->tasks[0].executor), "noop");
 }
 
 TEST_F(DAGValidationTest, RejectEmptyName) {

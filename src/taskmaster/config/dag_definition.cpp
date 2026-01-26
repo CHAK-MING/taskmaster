@@ -164,6 +164,8 @@ struct convert<taskmaster::TaskConfig> {
       sensor_cfg.http_method = taskmaster::yaml_get_or<std::string>(node, "sensor_http_method", sensor_cfg.http_method);
 
       t.executor_config = sensor_cfg;
+    } else if (t.executor == taskmaster::ExecutorType::Noop) {
+      t.executor_config = taskmaster::NoopTaskConfig{};
     } else {
       t.executor_config = taskmaster::ShellTaskConfig{};
     }

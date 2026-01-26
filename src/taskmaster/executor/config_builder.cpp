@@ -49,6 +49,10 @@ auto ExecutorConfigBuilder::build(const DAGInfo &dag_info, const DAG &graph)
         cfgs[idx] = exec;
         break;
       }
+      case ExecutorType::Noop: {
+        cfgs[idx] = NoopExecutorConfig{};
+        break;
+      }
       }
     }
   }

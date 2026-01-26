@@ -95,6 +95,7 @@ add_executable(taskmaster_benchmarks
 
   # Executor benchmarks
   executor_bench.cpp
+  noop_executor_bench.cpp
 
   # Interview-level comprehensive benchmarks
   interview_bench.cpp
@@ -102,7 +103,8 @@ add_executable(taskmaster_benchmarks
   # io_uring vs epoll comparison
   iouring_bench.cpp
 
-  e2e_bench.cpp
+  # Deprecated: replaced by noop_executor_bench.cpp
+  # e2e_bench.cpp
 )
 
 target_link_libraries(taskmaster_benchmarks

@@ -1,6 +1,7 @@
 #include "taskmaster/core/runtime.hpp"
 
 #include "taskmaster/core/constants.hpp"
+#include "taskmaster/util/hash.hpp"
 
 #include <bitset>
 #include <liburing.h>
@@ -264,8 +265,9 @@ auto Runtime::schedule_on(shard_id target, std::coroutine_handle<> handle)
 auto Runtime::schedule_external(std::coroutine_handle<> handle) -> void {
   auto target = shard_id{0};
   if (num_shards_ > 1) {
-    target = static_cast<shard_id>(std::hash<void *>{}(handle.address()) %
-                                   num_shards_);
+    target = static_cast<shard_id>(
+        util::murmur3_mix64(reinterpret_cast<std::uint64_t>(handle.address())) %
+        num_shards_);
   }
   schedule_on(target, handle);
 }
@@ -283,8 +285,9 @@ auto Runtime::schedule_external_batch(
 
     shard_id target = 0;
     if (num_shards_ > 1) {
-      target = static_cast<shard_id>(std::hash<void *>{}(handle.address()) %
-                                     num_shards_);
+      target = static_cast<shard_id>(
+          util::murmur3_mix64(reinterpret_cast<std::uint64_t>(handle.address())) %
+          num_shards_);
     }
 
     // Wake early so the shard can drain its remote queue while we enqueue.
