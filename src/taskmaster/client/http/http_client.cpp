@@ -1,5 +1,5 @@
-#include "taskmaster/app/http/http_client.hpp"
-#include "taskmaster/app/http/http_parser.hpp"
+#include "taskmaster/client/http/http_client.hpp"
+#include "taskmaster/client/http/http_parser.hpp"
 
 #include "taskmaster/util/log.hpp"
 

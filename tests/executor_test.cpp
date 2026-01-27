@@ -1,7 +1,7 @@
 #include "taskmaster/executor/executor.hpp"
 #include "taskmaster/core/runtime.hpp"
 #include "taskmaster/dag/dag_manager.hpp"
-#include "taskmaster/executor/config_builder.hpp"
+#include "taskmaster/app/config_builder.hpp"
 
 #include <chrono>
 #include <string_view>

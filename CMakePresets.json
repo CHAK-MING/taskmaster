@@ -43,6 +43,20 @@
       }
     },
     {
+      "name": "tsan",
+      "displayName": "ThreadSanitizer",
+      "description": "Debug build with TSan for data race detection",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "TASKMASTER_ENABLE_TESTS": "ON",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -g",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=thread"
+      }
+    },
+    {
       "name": "release",
       "displayName": "Release (No Tests)",
       "description": "Optimized release build without tests",
@@ -68,6 +82,11 @@
     {
       "name": "asan",
       "configurePreset": "asan",
+      "jobs": 0
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
       "jobs": 0
     },
     {

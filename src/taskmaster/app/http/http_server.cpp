@@ -1,6 +1,6 @@
 #include "taskmaster/app/http/http_server.hpp"
 
-#include "taskmaster/app/http/http_parser.hpp"
+#include "taskmaster/client/http/http_parser.hpp"
 #include "taskmaster/io/context.hpp"
 #include "taskmaster/util/log.hpp"
 

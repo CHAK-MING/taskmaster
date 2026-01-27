@@ -4,6 +4,7 @@
 #include "taskmaster/app/http/http_server.hpp"
 #include "taskmaster/app/http/router.hpp"
 #include "taskmaster/app/http/websocket.hpp"
+#include "taskmaster/core/blocking.hpp"
 #include "taskmaster/core/coroutine.hpp"
 #include "taskmaster/dag/dag_manager.hpp"
 #include "taskmaster/storage/persistence.hpp"

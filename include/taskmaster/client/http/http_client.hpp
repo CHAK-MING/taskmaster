@@ -1,6 +1,6 @@
 #pragma once
 
-#include "taskmaster/app/http/http_types.hpp"
+#include "taskmaster/client/http/http_types.hpp"
 #include "taskmaster/core/coroutine.hpp"
 #include "taskmaster/io/context.hpp"
 

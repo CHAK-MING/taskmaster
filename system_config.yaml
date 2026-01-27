@@ -2,6 +2,7 @@ scheduler:
   log_level: debug
   tick_interval_ms: 1000
   max_concurrency: 10
+  shards: 0
 
 storage:
   db_file: taskmaster.db

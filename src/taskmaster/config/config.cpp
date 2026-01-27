@@ -32,6 +32,7 @@ struct convert<taskmaster::SchedulerConfig> {
     s.pid_file = taskmaster::yaml_get_or<std::string>(node, "pid_file", "");
     s.tick_interval_ms = taskmaster::yaml_get_or(node, "tick_interval_ms", 1000);
     s.max_concurrency = taskmaster::yaml_get_or(node, "max_concurrency", 10);
+    s.shards = taskmaster::yaml_get_or(node, "shards", 0);
     return true;
   }
 };

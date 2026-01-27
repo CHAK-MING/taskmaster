@@ -1,8 +1,8 @@
 #include "taskmaster/core/coroutine.hpp"
 #include "taskmaster/core/error.hpp"
 #include "taskmaster/core/runtime.hpp"
-#include "taskmaster/app/http/http_client.hpp"
-#include "taskmaster/app/http/http_types.hpp"
+#include "taskmaster/client/http/http_client.hpp"
+#include "taskmaster/client/http/http_types.hpp"
 #include "taskmaster/executor/executor.hpp"
 #include "taskmaster/util/log.hpp"
 

@@ -1,4 +1,4 @@
-#include "taskmaster/executor/config_builder.hpp"
+#include "taskmaster/app/config_builder.hpp"
 
 #include "taskmaster/dag/dag_manager.hpp"
 

@@ -1,4 +1,4 @@
-#include "taskmaster/app/docker/docker_client.hpp"
+#include "taskmaster/client/docker/docker_client.hpp"
 #include "taskmaster/core/runtime.hpp"
 #include "test_utils.hpp"
 

@@ -1,6 +1,6 @@
 #include "taskmaster/executor/docker_executor.hpp"
 
-#include "taskmaster/app/docker/docker_client.hpp"
+#include "taskmaster/client/docker/docker_client.hpp"
 #include "taskmaster/core/coroutine.hpp"
 #include "taskmaster/core/runtime.hpp"
 #include "taskmaster/io/context.hpp"

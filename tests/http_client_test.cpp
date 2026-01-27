@@ -1,4 +1,4 @@
-#include "taskmaster/app/http/http_client.hpp"
+#include "taskmaster/client/http/http_client.hpp"
 #include "taskmaster/core/runtime.hpp"
 #include "test_utils.hpp"
 

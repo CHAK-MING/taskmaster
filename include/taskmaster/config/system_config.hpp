@@ -15,6 +15,7 @@ struct SchedulerConfig {
   std::string pid_file;
   int tick_interval_ms{1000};
   int max_concurrency{10};
+  int shards{0}; // 0 = auto (hardware_concurrency)
 };
 
 struct ApiConfig {

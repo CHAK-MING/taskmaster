@@ -47,20 +47,20 @@ add_library(taskmaster_lib
     src/taskmaster/executor/docker_executor.cpp
     src/taskmaster/executor/sensor_executor.cpp
     src/taskmaster/executor/composite_executor.cpp
-    src/taskmaster/executor/config_builder.cpp
+    src/taskmaster/app/config_builder.cpp
     src/taskmaster/app/application.cpp
     src/taskmaster/app/api/api_server.cpp
     src/taskmaster/app/services/execution_service.cpp
     src/taskmaster/app/services/scheduler_service.cpp
     src/taskmaster/app/services/persistence_service.cpp
     src/taskmaster/app/services/event_service.cpp
-    src/taskmaster/app/http/http_types.cpp
-    src/taskmaster/app/http/http_parser.cpp
+    src/taskmaster/client/http/http_types.cpp
+    src/taskmaster/client/http/http_parser.cpp
     src/taskmaster/app/http/router.cpp
     src/taskmaster/app/http/http_server.cpp
-    src/taskmaster/app/http/http_client.cpp
+    src/taskmaster/client/http/http_client.cpp
     src/taskmaster/app/http/websocket.cpp
-    src/taskmaster/app/docker/docker_client.cpp
+    src/taskmaster/client/docker/docker_client.cpp
     src/taskmaster/config/dag_definition.cpp
     src/taskmaster/config/dag_file_loader.cpp
     src/taskmaster/config/config_watcher.cpp

@@ -1,4 +1,5 @@
-#include "taskmaster/app/docker/docker_client.hpp"
+#include "taskmaster/client/docker/docker_client.hpp"
+#include "taskmaster/client/http/http_client.hpp"
 
 #include "taskmaster/util/log.hpp"
 
