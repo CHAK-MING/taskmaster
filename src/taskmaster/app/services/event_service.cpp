@@ -24,7 +24,7 @@ auto EventService::set_api_server(ApiServer* api) -> void {
   api_ = api;
 }
 
-auto EventService::emit_task_status(DAGRunId dag_run_id, TaskId task,
+auto EventService::emit_task_status(const DAGRunId& dag_run_id, const TaskId& task,
                                     std::string_view status) -> void {
   if (!api_)
     return;
@@ -51,7 +51,7 @@ auto EventService::emit_task_status(DAGRunId dag_run_id, TaskId task,
   api_->websocket_hub().broadcast_event(ev);
 }
 
-auto EventService::emit_run_status(DAGRunId dag_run_id,
+auto EventService::emit_run_status(const DAGRunId& dag_run_id,
                                    std::string_view status) -> void {
   if (!api_)
     return;
@@ -76,7 +76,7 @@ auto EventService::emit_run_status(DAGRunId dag_run_id,
   api_->websocket_hub().broadcast_event(ev);
 }
 
-auto EventService::emit_log(DAGRunId dag_run_id, TaskId task,
+auto EventService::emit_log(const DAGRunId& dag_run_id, const TaskId& task,
                             std::string_view stream, std::string msg) -> void {
   if (!api_)
     return;
