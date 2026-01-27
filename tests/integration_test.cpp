@@ -961,8 +961,9 @@ TEST_F(RealIntegrationTest, ConcurrentRunsAreIsolated) {
   EXPECT_EQ(tasks2->size(), 1u);
 
   if (!tasks1->empty() && !tasks2->empty()) {
-    EXPECT_NE(tasks1->front().instance_id, tasks2->front().instance_id)
-        << "Task instances should have different IDs";
+    // Verify isolation via run_rowid (instance_id is no longer persisted after schema optimization)
+    EXPECT_NE(tasks1->front().run_rowid, tasks2->front().run_rowid)
+        << "Task instances should belong to different database runs";
   }
 }
 

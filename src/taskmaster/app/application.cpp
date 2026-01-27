@@ -21,7 +21,7 @@
 #include <unistd.h>
 
 #include "taskmaster/executor/composite_executor.hpp"
-#include "taskmaster/executor/config_builder.hpp"
+#include "taskmaster/app/config_builder.hpp"
 #include "taskmaster/storage/recovery.hpp"
 
 namespace taskmaster {
@@ -49,6 +49,7 @@ Application::Application(std::string_view db_path)
 
 Application::Application(Config config)
     : config_(std::move(config)),
+      runtime_(config_.scheduler.shards),
       executor_(create_composite_executor(runtime_)),
       persistence_(
           std::make_unique<PersistenceService>(config_.storage.db_file)),
@@ -249,7 +250,7 @@ auto Application::setup_callbacks() -> void {
 
   callbacks.on_persist_run = [this](const DAGRun &run) {
     if (persistence_) {
-      persistence_->save_run(run);
+      (void)persistence_->save_run(run);
     }
   };
 
@@ -383,9 +384,40 @@ auto Application::trigger_dag_by_id(
   }
 
   if (persistence_) {
-    persistence_->save_run(*run);
-    for (const auto &ti : run->all_task_info()) {
-      persistence_->save_task(dag_run_id, ti);
+    // Batch all DB writes in a single transaction for performance
+    auto tx_result = persistence_->begin_transaction();
+    if (!tx_result) {
+      log::error("Failed to begin transaction: {}", tx_result.error().message());
+      // Fallback to individual saves without transaction
+      auto save_result = persistence_->save_run(*run);
+      if (save_result) {
+        run->set_run_rowid(*save_result);
+      }
+      for (const auto &ti : run->all_task_info()) {
+        persistence_->save_task(dag_run_id, ti);
+      }
+    } else {
+      auto save_result = persistence_->save_run(*run);
+      if (save_result) {
+        run->set_run_rowid(*save_result);
+      } else {
+        log::error("Failed to save run: {}", save_result.error().message());
+      }
+      
+      // Insert tasks individually within the transaction
+      // (avoids nested transaction issue with save_task_instances_batch)
+      for (const auto &ti : run->all_task_info()) {
+        persistence_->save_task(dag_run_id, ti);
+      }
+      
+      auto commit_result = persistence_->commit_transaction();
+      if (!commit_result) {
+        log::error("Failed to commit transaction: {}", commit_result.error().message());
+        auto rollback_result = persistence_->rollback_transaction();
+        if (!rollback_result) {
+          log::error("Failed to rollback transaction: {}", rollback_result.error().message());
+        }
+      }
     }
   }
 

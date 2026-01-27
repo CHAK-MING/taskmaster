@@ -130,6 +130,12 @@ auto Persistence::open() -> Result<void> {
   if (auto r = execute("PRAGMA synchronous=NORMAL;"); !r.has_value()) {
     log::warn("Failed to set synchronous mode: {}", r.error().message());
   }
+  if (auto r = execute("PRAGMA cache_size=-65536;"); !r.has_value()) {
+    log::warn("Failed to set cache size: {}", r.error().message());
+  }
+  if (auto r = execute("PRAGMA temp_store=MEMORY;"); !r.has_value()) {
+    log::warn("Failed to set temp store: {}", r.error().message());
+  }
   if (auto r = execute("PRAGMA foreign_keys=ON;"); !r.has_value()) {
     log::warn("Failed to enable foreign keys: {}", r.error().message());
   }
@@ -149,29 +155,44 @@ auto Persistence::close() -> void {
 
 auto Persistence::create_tables() -> Result<void> {
   const char* sql = R"(
+    -- Optimized dag_runs table: INTEGER rowid + TINYINT states
     CREATE TABLE IF NOT EXISTS dag_runs (
-      dag_run_id TEXT PRIMARY KEY,
-      state TEXT NOT NULL DEFAULT 'pending',
-      trigger_type TEXT NOT NULL DEFAULT 'manual',
+      run_rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+      dag_run_id TEXT UNIQUE NOT NULL,
+      state TINYINT NOT NULL DEFAULT 0,  -- 0=Running (initial state)
+      trigger_type TINYINT NOT NULL DEFAULT 0,  -- 0=Manual (default trigger)
       scheduled_at INTEGER,
       started_at INTEGER,
       finished_at INTEGER,
       execution_date INTEGER
     );
 
+    CREATE INDEX IF NOT EXISTS idx_dag_runs_state_scheduled
+      ON dag_runs(state, scheduled_at DESC)
+      WHERE state IN (0, 1, 2);  -- Running=0, Success=1, Failed=2
+
+    -- Index for history queries and depends_on_past logic
+    CREATE INDEX IF NOT EXISTS idx_dag_runs_execution
+      ON dag_runs(dag_run_id, execution_date DESC);
+
+    -- Optimized task_instances table: WITHOUT ROWID + TINYINT states
     CREATE TABLE IF NOT EXISTS task_instances (
-      id TEXT PRIMARY KEY,
-      dag_run_id TEXT NOT NULL,
-      task_id TEXT NOT NULL,
-      state TEXT NOT NULL DEFAULT 'pending',
+      run_rowid INTEGER NOT NULL,
+      task_idx INTEGER NOT NULL,
+      state TINYINT NOT NULL DEFAULT 0,  -- 0=Pending (initial state)
       attempt INTEGER DEFAULT 0,
       started_at INTEGER,
       finished_at INTEGER,
       exit_code INTEGER DEFAULT 0,
       error_message TEXT,
-      FOREIGN KEY (dag_run_id) REFERENCES dag_runs(dag_run_id)
-    );
+      PRIMARY KEY (run_rowid, task_idx),
+      FOREIGN KEY (run_rowid) REFERENCES dag_runs(run_rowid) ON DELETE CASCADE
+    ) WITHOUT ROWID;
 
+    CREATE INDEX IF NOT EXISTS idx_task_instances_state
+      ON task_instances(run_rowid, state);
+
+    -- Keep existing dags and dag_tasks tables unchanged for now
     CREATE TABLE IF NOT EXISTS dags (
       dag_id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -198,11 +219,6 @@ auto Persistence::create_tables() -> Result<void> {
       FOREIGN KEY (dag_id) REFERENCES dags(dag_id) ON DELETE CASCADE
     );
 
-    CREATE INDEX IF NOT EXISTS idx_task_instances_dag_run
-      ON task_instances(dag_run_id);
-    CREATE INDEX IF NOT EXISTS idx_dag_runs_state
-      ON dag_runs(state);
-
     CREATE TABLE IF NOT EXISTS task_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       dag_run_id TEXT NOT NULL,
@@ -211,11 +227,11 @@ auto Persistence::create_tables() -> Result<void> {
       timestamp INTEGER NOT NULL,
       level TEXT DEFAULT 'INFO',
       stream TEXT DEFAULT 'stdout',
-      message TEXT NOT NULL
+      message TEXT NOT NULL,
+      FOREIGN KEY (dag_run_id) REFERENCES dag_runs(dag_run_id) ON DELETE CASCADE
     );
 
-    CREATE INDEX IF NOT EXISTS idx_task_logs_run_task
-      ON task_logs(dag_run_id, task_id);
+    -- REMOVED: idx_task_logs_run_task (redundant - prefix of idx_task_logs_attempt)
     CREATE INDEX IF NOT EXISTS idx_task_logs_attempt
       ON task_logs(dag_run_id, task_id, attempt);
 
@@ -225,11 +241,11 @@ auto Persistence::create_tables() -> Result<void> {
       key TEXT NOT NULL,
       value TEXT NOT NULL,
       created_at INTEGER NOT NULL,
-      PRIMARY KEY (dag_run_id, task_id, key)
+      PRIMARY KEY (dag_run_id, task_id, key),
+      FOREIGN KEY (dag_run_id) REFERENCES dag_runs(dag_run_id) ON DELETE CASCADE
     );
 
-    CREATE INDEX IF NOT EXISTS idx_xcom_run_task
-      ON xcom_values(dag_run_id, task_id);
+    -- REMOVED: idx_xcom_run_task (redundant - prefix of PRIMARY KEY)
 
     CREATE TABLE IF NOT EXISTS dag_watermarks (
       dag_id TEXT PRIMARY KEY,
@@ -252,7 +268,7 @@ auto Persistence::execute(std::string_view sql) -> Result<void> {
   return ok();
 }
 
-auto Persistence::save_dag_run(const DAGRun& run) -> Result<void> {
+auto Persistence::save_dag_run(const DAGRun& run) -> Result<int64_t> {
   constexpr auto sql = R"(
     INSERT INTO dag_runs (dag_run_id, state, trigger_type, scheduled_at, started_at, finished_at, execution_date)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -262,31 +278,49 @@ auto Persistence::save_dag_run(const DAGRun& run) -> Result<void> {
       scheduled_at = excluded.scheduled_at,
       started_at = excluded.started_at,
       finished_at = excluded.finished_at,
-      execution_date = excluded.execution_date;
+      execution_date = excluded.execution_date
+    RETURNING run_rowid;
   )";
 
-  auto result = prepare(sql);
-  if (!result)
-    return std::unexpected(result.error());
-  Statement stmt(*result);
+  // Use cached prepared statement for performance
+  if (!save_dag_run_stmt_) {
+    auto result = prepare(sql);
+    if (!result)
+      return std::unexpected(result.error());
+    save_dag_run_stmt_ = Statement(*result);
+  }
 
-  sqlite3_bind_text(stmt.get(), 1, run.id().c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt.get(), 2, dag_run_state_name(run.state()), -1,
-                    SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt.get(), 3,
-                    std::string(to_string_view(run.trigger_type())).c_str(),
-                    -1, SQLITE_TRANSIENT);
-  sqlite3_bind_int64(stmt.get(), 4, to_timestamp(run.scheduled_at()));
-  sqlite3_bind_int64(stmt.get(), 5, to_timestamp(run.started_at()));
-  sqlite3_bind_int64(stmt.get(), 6, to_timestamp(run.finished_at()));
-  sqlite3_bind_int64(stmt.get(), 7, to_timestamp(run.execution_date()));
+  // Reset the statement for reuse
+  sqlite3_reset(save_dag_run_stmt_.get());
+  sqlite3_clear_bindings(save_dag_run_stmt_.get());
 
-  return sqlite3_step(stmt.get()) == SQLITE_DONE
-             ? ok()
-             : fail(Error::DatabaseQueryFailed);
+  sqlite3_bind_text(save_dag_run_stmt_.get(), 1, run.id().c_str(), -1, SQLITE_TRANSIENT);
+  // Use TINYINT for state (integer enum value)
+  sqlite3_bind_int(save_dag_run_stmt_.get(), 2, std::to_underlying(run.state()));
+  // Use TINYINT for trigger_type
+  sqlite3_bind_int(save_dag_run_stmt_.get(), 3, std::to_underlying(run.trigger_type()));
+  sqlite3_bind_int64(save_dag_run_stmt_.get(), 4, to_timestamp(run.scheduled_at()));
+  sqlite3_bind_int64(save_dag_run_stmt_.get(), 5, to_timestamp(run.started_at()));
+  sqlite3_bind_int64(save_dag_run_stmt_.get(), 6, to_timestamp(run.finished_at()));
+  sqlite3_bind_int64(save_dag_run_stmt_.get(), 7, to_timestamp(run.execution_date()));
+
+  int rc = sqlite3_step(save_dag_run_stmt_.get());
+  if (rc != SQLITE_ROW) {
+    log::error("Failed to save dag run {}: {}", run.id().value(), sqlite3_errmsg(db_.get()));
+    return fail(Error::DatabaseQueryFailed);
+  }
+
+  // Read the returned rowid (works for both INSERT and UPDATE)
+  int64_t rowid = sqlite3_column_int64(save_dag_run_stmt_.get(), 0);
+  
+  // CRITICAL: Reset statement after reading RETURNING result
+  // Without this, the statement remains active and blocks transaction commit
+  sqlite3_reset(save_dag_run_stmt_.get());
+  
+  return rowid;
 }
 
-auto Persistence::update_dag_run_state(DAGRunId dag_run_id,
+auto Persistence::update_dag_run_state(const DAGRunId& dag_run_id,
                                        DAGRunState state) -> Result<void> {
   constexpr auto sql = "UPDATE dag_runs SET state = ? WHERE dag_run_id = ?;";
 
@@ -295,10 +329,8 @@ auto Persistence::update_dag_run_state(DAGRunId dag_run_id,
     return std::unexpected(result.error());
   Statement stmt(*result);
 
-  std::string id_str(dag_run_id);
-  sqlite3_bind_text(stmt.get(), 1, dag_run_state_name(state), -1,
-                    SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt.get(), 2, id_str.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt.get(), 1, std::to_underlying(state));
+  sqlite3_bind_text(stmt.get(), 2, dag_run_id.c_str(), -1, SQLITE_TRANSIENT);
 
   if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
     return fail(Error::DatabaseQueryFailed);
@@ -312,51 +344,68 @@ auto Persistence::update_dag_run_state(DAGRunId dag_run_id,
   return ok();
 }
 
-auto Persistence::save_task_instance(DAGRunId dag_run_id,
+auto Persistence::save_task_instance(const DAGRunId& dag_run_id,
                                      const TaskInstanceInfo& info)
     -> Result<void> {
-  constexpr auto sql = R"(
-    INSERT INTO task_instances
-      (id, dag_run_id, task_id, state, attempt, started_at, finished_at,
-       exit_code, error_message)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-  )";
-
-  auto result = prepare(sql);
-  if (!result)
-    return std::unexpected(result.error());
-  Statement stmt(*result);
-
-  if(info.instance_id.empty()) {
-    return fail(Error::InvalidArgument);
+  // Get run_rowid if not already set in info
+  int64_t run_rowid = info.run_rowid;
+  if (run_rowid < 0) {
+    auto rowid_res = get_run_rowid(dag_run_id);
+    if (!rowid_res) return std::unexpected(rowid_res.error());
+    run_rowid = *rowid_res;
   }
 
-  sqlite3_bind_text(stmt.get(), 1, info.instance_id.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt.get(), 2, dag_run_id.c_str(), -1, SQLITE_TRANSIENT);
-  auto task_idx_str = std::to_string(info.task_idx);
-  sqlite3_bind_text(stmt.get(), 3, task_idx_str.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt.get(), 4, task_state_name(info.state), -1,
-                    SQLITE_TRANSIENT);
-  sqlite3_bind_int(stmt.get(), 5, info.attempt);
-  sqlite3_bind_int64(stmt.get(), 6, to_timestamp(info.started_at));
-  sqlite3_bind_int64(stmt.get(), 7, to_timestamp(info.finished_at));
-  sqlite3_bind_int(stmt.get(), 8, info.exit_code);
-  sqlite3_bind_text(stmt.get(), 9, info.error_message.c_str(), -1,
+  constexpr auto sql = R"(
+    INSERT INTO task_instances
+      (run_rowid, task_idx, state, attempt, started_at, finished_at,
+       exit_code, error_message)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+  )";
+
+  // Use cached prepared statement (NOTE: This is the SAME as save_task_instance_stmt_)
+  // We reuse the batch insert statement since the SQL is identical
+  if (!save_task_instance_stmt_) {
+    auto result = prepare(sql);
+    if (!result)
+      return std::unexpected(result.error());
+    save_task_instance_stmt_ = Statement(*result);
+  }
+
+  // Reset the statement for reuse
+  sqlite3_reset(save_task_instance_stmt_.get());
+  sqlite3_clear_bindings(save_task_instance_stmt_.get());
+
+  sqlite3_bind_int64(save_task_instance_stmt_.get(), 1, run_rowid);
+  sqlite3_bind_int(save_task_instance_stmt_.get(), 2, static_cast<int>(info.task_idx));
+  sqlite3_bind_int(save_task_instance_stmt_.get(), 3, std::to_underlying(info.state));
+  sqlite3_bind_int(save_task_instance_stmt_.get(), 4, info.attempt);
+  sqlite3_bind_int64(save_task_instance_stmt_.get(), 5, to_timestamp(info.started_at));
+  sqlite3_bind_int64(save_task_instance_stmt_.get(), 6, to_timestamp(info.finished_at));
+  sqlite3_bind_int(save_task_instance_stmt_.get(), 7, info.exit_code);
+  sqlite3_bind_text(save_task_instance_stmt_.get(), 8, info.error_message.c_str(), -1,
                     SQLITE_TRANSIENT);
 
-  return sqlite3_step(stmt.get()) == SQLITE_DONE
+  return sqlite3_step(save_task_instance_stmt_.get()) == SQLITE_DONE
              ? ok()
              : fail(Error::DatabaseQueryFailed);
 }
 
-auto Persistence::update_task_instance(DAGRunId dag_run_id,
+auto Persistence::update_task_instance(const DAGRunId& dag_run_id,
                                        const TaskInstanceInfo& info)
     -> Result<void> {
+  // Get run_rowid if not already set in info
+  int64_t run_rowid = info.run_rowid;
+  if (run_rowid < 0) {
+    auto rowid_res = get_run_rowid(dag_run_id);
+    if (!rowid_res) return std::unexpected(rowid_res.error());
+    run_rowid = *rowid_res;
+  }
+
   constexpr auto sql = R"(
     UPDATE task_instances SET
-      id = ?, state = ?, attempt = ?, started_at = ?, finished_at = ?,
+      state = ?, attempt = ?, started_at = ?, finished_at = ?,
       exit_code = ?, error_message = ?
-    WHERE dag_run_id = ? AND task_id = ?;
+    WHERE run_rowid = ? AND task_idx = ?;
   )";
 
   auto result = prepare(sql);
@@ -364,22 +413,15 @@ auto Persistence::update_task_instance(DAGRunId dag_run_id,
     return std::unexpected(result.error());
   Statement stmt(*result);
 
-  if (info.instance_id.empty()) {
-    return fail(Error::InvalidArgument);
-  }
-
-  sqlite3_bind_text(stmt.get(), 1, info.instance_id.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt.get(), 2, task_state_name(info.state), -1,
+  sqlite3_bind_int(stmt.get(), 1, std::to_underlying(info.state));
+  sqlite3_bind_int(stmt.get(), 2, info.attempt);
+  sqlite3_bind_int64(stmt.get(), 3, to_timestamp(info.started_at));
+  sqlite3_bind_int64(stmt.get(), 4, to_timestamp(info.finished_at));
+  sqlite3_bind_int(stmt.get(), 5, info.exit_code);
+  sqlite3_bind_text(stmt.get(), 6, info.error_message.c_str(), -1,
                     SQLITE_TRANSIENT);
-  sqlite3_bind_int(stmt.get(), 3, info.attempt);
-  sqlite3_bind_int64(stmt.get(), 4, to_timestamp(info.started_at));
-  sqlite3_bind_int64(stmt.get(), 5, to_timestamp(info.finished_at));
-  sqlite3_bind_int(stmt.get(), 6, info.exit_code);
-  sqlite3_bind_text(stmt.get(), 7, info.error_message.c_str(), -1,
-                    SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt.get(), 8, dag_run_id.c_str(), -1, SQLITE_TRANSIENT);
-  auto task_idx_str = std::to_string(info.task_idx);
-  sqlite3_bind_text(stmt.get(), 9, task_idx_str.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt.get(), 7, run_rowid);
+  sqlite3_bind_int(stmt.get(), 8, static_cast<int>(info.task_idx));
 
   if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
     return fail(Error::DatabaseQueryFailed);
@@ -393,7 +435,7 @@ auto Persistence::update_task_instance(DAGRunId dag_run_id,
   return ok();
 }
 
-auto Persistence::get_dag_run_state(DAGRunId dag_run_id) const
+auto Persistence::get_dag_run_state(const DAGRunId& dag_run_id) const
     -> Result<DAGRunState> {
   constexpr auto sql = "SELECT state FROM dag_runs WHERE dag_run_id = ?;";
 
@@ -406,13 +448,33 @@ auto Persistence::get_dag_run_state(DAGRunId dag_run_id) const
 
   if (sqlite3_step(stmt.get()) != SQLITE_ROW)
     return fail(Error::NotFound);
-  return parse_dag_run_state(col_text(stmt.get(), 0));
+  
+  int state_int = sqlite3_column_int(stmt.get(), 0);
+  return static_cast<DAGRunState>(state_int);
+}
+
+auto Persistence::get_run_rowid(const DAGRunId& dag_run_id) const -> Result<int64_t> {
+  constexpr auto sql = "SELECT run_rowid FROM dag_runs WHERE dag_run_id = ?;";
+
+  auto result = prepare(sql);
+  if (!result)
+    return std::unexpected(result.error());
+  Statement stmt(*result);
+
+  sqlite3_bind_text(stmt.get(), 1, dag_run_id.c_str(), -1, SQLITE_TRANSIENT);
+
+  if (sqlite3_step(stmt.get()) != SQLITE_ROW)
+    return fail(Error::NotFound);
+  
+  return sqlite3_column_int64(stmt.get(), 0);
 }
 
 auto Persistence::get_incomplete_dag_runs() const
     -> Result<std::vector<DAGRunId>> {
+  // State is now TINYINT: 0=Running, 1=Success, 2=Failed
+  // We only want incomplete runs (Running state = 0)
   constexpr auto sql =
-      "SELECT dag_run_id FROM dag_runs WHERE state IN ('pending', 'running');";
+      "SELECT dag_run_id FROM dag_runs WHERE state = 0;";
 
   auto result = prepare(sql);
   if (!result)
@@ -428,12 +490,23 @@ auto Persistence::get_incomplete_dag_runs() const
   return ids;
 }
 
-auto Persistence::get_task_instances(DAGRunId dag_run_id) const
+auto Persistence::get_task_instances(const DAGRunId& dag_run_id) const
     -> Result<std::vector<TaskInstanceInfo>> {
+  // Get run_rowid from dag_run_id
+  auto rowid_res = get_run_rowid(dag_run_id);
+  if (!rowid_res) {
+    // If DAG run doesn't exist, return empty list instead of error
+    if (rowid_res.error() == make_error_code(Error::NotFound)) {
+      return std::vector<TaskInstanceInfo>{};
+    }
+    return std::unexpected(rowid_res.error());
+  }
+  int64_t run_rowid = *rowid_res;
+
   constexpr auto sql = R"(
-    SELECT id, task_id, state, attempt, started_at, finished_at,
+    SELECT task_idx, state, attempt, started_at, finished_at,
            exit_code, error_message
-    FROM task_instances WHERE dag_run_id = ?;
+    FROM task_instances WHERE run_rowid = ?;
   )";
 
   auto result = prepare(sql);
@@ -441,29 +514,24 @@ auto Persistence::get_task_instances(DAGRunId dag_run_id) const
     return std::unexpected(result.error());
   Statement stmt(*result);
 
-  sqlite3_bind_text(stmt.get(), 1, dag_run_id.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt.get(), 1, run_rowid);
 
   std::vector<TaskInstanceInfo> instances;
   while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
-    auto task_id_str = col_text(stmt.get(), 1);
-    NodeIndex task_idx = kInvalidNode;
-    if (!task_id_str.empty()) {
-      auto [ptr, ec] = std::from_chars(
-          task_id_str.data(), task_id_str.data() + task_id_str.size(),
-          task_idx);
-      if (ec != std::errc{}) {
-        task_idx = kInvalidNode;
-      }
-    }
+    auto task_idx = static_cast<NodeIndex>(sqlite3_column_int(stmt.get(), 0));
+    auto state_int = sqlite3_column_int(stmt.get(), 1);
+    TaskState state = static_cast<TaskState>(state_int);
+    
     instances.push_back(
-        {.instance_id = InstanceId{col_text(stmt.get(), 0)},
+        {.instance_id = InstanceId{},  // No longer stored in DB
          .task_idx = task_idx,
-         .state = parse_task_state(col_text(stmt.get(), 2)),
-         .attempt = sqlite3_column_int(stmt.get(), 3),
-         .started_at = from_timestamp(sqlite3_column_int64(stmt.get(), 4)),
-         .finished_at = from_timestamp(sqlite3_column_int64(stmt.get(), 5)),
-         .exit_code = sqlite3_column_int(stmt.get(), 6),
-         .error_message = col_text(stmt.get(), 7)});
+         .state = state,
+         .attempt = sqlite3_column_int(stmt.get(), 2),
+         .started_at = from_timestamp(sqlite3_column_int64(stmt.get(), 3)),
+         .finished_at = from_timestamp(sqlite3_column_int64(stmt.get(), 4)),
+         .exit_code = sqlite3_column_int(stmt.get(), 5),
+         .error_message = col_text(stmt.get(), 6),
+         .run_rowid = run_rowid});
   }
   return instances;
 }
@@ -491,7 +559,7 @@ auto Persistence::list_run_history(std::optional<DAGId> dag_id, std::size_t limi
   if (!dag_id.has_value() || dag_id->value().empty()) {
     sqlite3_bind_int64(stmt.get(), 1, static_cast<sqlite3_int64>(limit));
   } else {
-    std::string pattern = std::string(dag_id->value()) + "_%";
+  std::string pattern = std::format("{}_%", dag_id->value());
     sqlite3_bind_text(stmt.get(), 1, pattern.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt.get(), 2, static_cast<sqlite3_int64>(limit));
   }
@@ -506,12 +574,14 @@ auto Persistence::list_run_history(std::optional<DAGId> dag_id, std::size_t limi
 
     DAGRunId run_id(std::move(dag_run_id_str));
     DAGId extracted_dag_id(std::move(extracted_dag_id_str));
-    auto trigger_str = col_text(stmt.get(), 2);
+    // State and trigger_type are now TINYINT, not TEXT
+    int state_int = sqlite3_column_int(stmt.get(), 1);
+    int trigger_int = sqlite3_column_int(stmt.get(), 2);
     entries.push_back(
         {.dag_run_id = std::move(run_id),
          .dag_id = std::move(extracted_dag_id),
-         .state = parse_dag_run_state(col_text(stmt.get(), 1)),
-         .trigger_type = parse<TriggerType>(trigger_str),
+         .state = static_cast<DAGRunState>(state_int),
+         .trigger_type = static_cast<TriggerType>(trigger_int),
          .scheduled_at = sqlite3_column_int64(stmt.get(), 3),
          .started_at = sqlite3_column_int64(stmt.get(), 4),
          .finished_at = sqlite3_column_int64(stmt.get(), 5),
@@ -520,7 +590,7 @@ auto Persistence::list_run_history(std::optional<DAGId> dag_id, std::size_t limi
   return entries;
 }
 
-auto Persistence::get_run_history(DAGRunId dag_run_id) const
+auto Persistence::get_run_history(const DAGRunId& dag_run_id) const
     -> Result<RunHistoryEntry> {
   constexpr auto sql = R"(
     SELECT dag_run_id, state, trigger_type, scheduled_at, started_at, finished_at, execution_date
@@ -546,12 +616,13 @@ auto Persistence::get_run_history(DAGRunId dag_run_id) const
 
   DAGRunId run_id(std::move(fetched_run_id_str));
   DAGId dag_id(std::move(extracted_dag_id_str));
-  auto trigger_str = col_text(stmt.get(), 2);
+  // State and trigger_type are now TINYINT, not TEXT
+  int state_int = sqlite3_column_int(stmt.get(), 1);
+  int trigger_int = sqlite3_column_int(stmt.get(), 2);
   return RunHistoryEntry{.dag_run_id = std::move(run_id),
                          .dag_id = std::move(dag_id),
-                         .state =
-                             parse_dag_run_state(col_text(stmt.get(), 1)),
-                         .trigger_type = parse<TriggerType>(trigger_str),
+                         .state = static_cast<DAGRunState>(state_int),
+                         .trigger_type = static_cast<TriggerType>(trigger_int),
                          .scheduled_at = sqlite3_column_int64(stmt.get(), 3),
                          .started_at = sqlite3_column_int64(stmt.get(), 4),
                          .finished_at = sqlite3_column_int64(stmt.get(), 5),
@@ -616,7 +687,7 @@ auto Persistence::save_dag(const DAGInfo& info) -> Result<void> {
   return ok();
 }
 
-auto Persistence::delete_dag(DAGId dag_id) -> Result<void> {
+auto Persistence::delete_dag(const DAGId& dag_id) -> Result<void> {
   constexpr auto sql = "DELETE FROM dags WHERE dag_id = ?;";
 
   auto result = prepare(sql);
@@ -631,7 +702,7 @@ auto Persistence::delete_dag(DAGId dag_id) -> Result<void> {
              : fail(Error::DatabaseQueryFailed);
 }
 
-auto Persistence::get_dag(DAGId dag_id) const -> Result<DAGInfo> {
+auto Persistence::get_dag(const DAGId& dag_id) const -> Result<DAGInfo> {
   constexpr auto sql =
       "SELECT dag_id, name, description, cron, max_concurrent_runs, "
       "created_at, updated_at FROM dags WHERE dag_id = ?;";
@@ -641,8 +712,7 @@ auto Persistence::get_dag(DAGId dag_id) const -> Result<DAGInfo> {
     return std::unexpected(result.error());
   Statement stmt(*result);
 
-  std::string id_str(dag_id);
-  sqlite3_bind_text(stmt.get(), 1, id_str.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.get(), 1, dag_id.c_str(), -1, SQLITE_TRANSIENT);
 
   if (sqlite3_step(stmt.get()) != SQLITE_ROW)
     return fail(Error::NotFound);
@@ -702,7 +772,7 @@ auto Persistence::list_dags() const -> Result<std::vector<DAGInfo>> {
   return dags;
 }
 
-auto Persistence::save_task(DAGId dag_id, const TaskConfig& task)
+auto Persistence::save_task(const DAGId& dag_id, const TaskConfig& task)
     -> Result<void> {
   constexpr auto sql = R"(
     INSERT INTO dag_tasks (dag_id, task_id, name, command, working_dir, executor, deps, timeout, retry_interval, max_retries)
@@ -721,9 +791,9 @@ auto Persistence::save_task(DAGId dag_id, const TaskConfig& task)
   nlohmann::json deps_json = nlohmann::json::array();
   for (const auto& dep : task.dependencies) {
     if (dep.label.empty()) {
-      deps_json.push_back(std::string(dep.task_id.value()));
+      deps_json.push_back(dep.task_id.value());
     } else {
-      deps_json.push_back({{"task", std::string(dep.task_id.value())}, {"label", dep.label}});
+      deps_json.push_back({{"task", dep.task_id.value()}, {"label", dep.label}});
     }
   }
   std::string deps_str = deps_json.dump();
@@ -747,7 +817,7 @@ auto Persistence::save_task(DAGId dag_id, const TaskConfig& task)
              : fail(Error::DatabaseQueryFailed);
 }
 
-auto Persistence::delete_task(DAGId dag_id, TaskId task_id)
+auto Persistence::delete_task(const DAGId& dag_id, const TaskId& task_id)
     -> Result<void> {
   constexpr auto sql =
       "DELETE FROM dag_tasks WHERE dag_id = ? AND task_id = ?;";
@@ -757,16 +827,15 @@ auto Persistence::delete_task(DAGId dag_id, TaskId task_id)
     return std::unexpected(result.error());
   Statement stmt(*result);
 
-  std::string dag_str(dag_id), task_str(task_id);
-  sqlite3_bind_text(stmt.get(), 1, dag_str.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt.get(), 2, task_str.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.get(), 1, dag_id.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_text(stmt.get(), 2, task_id.c_str(), -1, SQLITE_TRANSIENT);
 
   return sqlite3_step(stmt.get()) == SQLITE_DONE
              ? ok()
              : fail(Error::DatabaseQueryFailed);
 }
 
-auto Persistence::get_tasks(DAGId dag_id) const
+auto Persistence::get_tasks(const DAGId& dag_id) const
     -> Result<std::vector<TaskConfig>> {
   constexpr auto sql = R"(
     SELECT task_id, name, command, working_dir, executor, deps, timeout, retry_interval, max_retries
@@ -810,11 +879,16 @@ auto Persistence::get_all_tasks() const
 
 
 auto Persistence::save_task_instances_batch(
-    DAGRunId dag_run_id, const std::vector<TaskInstanceInfo>& instances)
+    const DAGRunId& dag_run_id, const std::vector<TaskInstanceInfo>& instances)
     -> Result<void> {
   if (instances.empty()) {
     return ok();
   }
+
+  // Get run_rowid ONCE before the loop (optimization!)
+  auto rowid_res = get_run_rowid(dag_run_id);
+  if (!rowid_res) return std::unexpected(rowid_res.error());
+  int64_t run_rowid = *rowid_res;
 
   if (auto r = begin_transaction(); !r.has_value()) {
     return r;
@@ -822,57 +896,53 @@ auto Persistence::save_task_instances_batch(
 
   constexpr auto sql = R"(
     INSERT INTO task_instances
-      (id, dag_run_id, task_id, state, attempt, started_at, finished_at,
+      (run_rowid, task_idx, state, attempt, started_at, finished_at,
        exit_code, error_message)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
   )";
 
-  auto result = prepare(sql);
-  if (!result) {
-    (void)rollback_transaction();
-    return std::unexpected(result.error());
+  // Use cached prepared statement for performance
+  if (!save_task_instance_stmt_) {
+    auto result = prepare(sql);
+    if (!result) {
+      (void)rollback_transaction();
+      return std::unexpected(result.error());
+    }
+    save_task_instance_stmt_ = Statement(*result);
   }
-  Statement stmt(*result);
 
   for (const auto& info : instances) {
-    sqlite3_clear_bindings(stmt.get());
+    // Reset and clear bindings before each use
+    sqlite3_reset(save_task_instance_stmt_.get());
+    sqlite3_clear_bindings(save_task_instance_stmt_.get());
 
-    if (info.instance_id.empty()) {
-      log::error("Task instance missing instance_id at task_idx {}", info.task_idx);
-      (void)rollback_transaction();
-      return fail(Error::InvalidArgument);
-    }
-
-    sqlite3_bind_text(stmt.get(), 1, info.instance_id.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt.get(), 2, dag_run_id.c_str(), -1, SQLITE_TRANSIENT);
-    auto task_idx_str = std::to_string(info.task_idx);
-    sqlite3_bind_text(stmt.get(), 3, task_idx_str.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt.get(), 4, task_state_name(info.state), -1,
-                      SQLITE_TRANSIENT);
-    sqlite3_bind_int(stmt.get(), 5, info.attempt);
-    sqlite3_bind_int64(stmt.get(), 6, to_timestamp(info.started_at));
-    sqlite3_bind_int64(stmt.get(), 7, to_timestamp(info.finished_at));
-    sqlite3_bind_int(stmt.get(), 8, info.exit_code);
-    sqlite3_bind_text(stmt.get(), 9, info.error_message.c_str(), -1,
+    sqlite3_bind_int64(save_task_instance_stmt_.get(), 1, run_rowid);
+    sqlite3_bind_int(save_task_instance_stmt_.get(), 2, static_cast<int>(info.task_idx));
+    sqlite3_bind_int(save_task_instance_stmt_.get(), 3, std::to_underlying(info.state));
+    sqlite3_bind_int(save_task_instance_stmt_.get(), 4, info.attempt);
+    sqlite3_bind_int64(save_task_instance_stmt_.get(), 5, to_timestamp(info.started_at));
+    sqlite3_bind_int64(save_task_instance_stmt_.get(), 6, to_timestamp(info.finished_at));
+    sqlite3_bind_int(save_task_instance_stmt_.get(), 7, info.exit_code);
+    sqlite3_bind_text(save_task_instance_stmt_.get(), 8, info.error_message.c_str(), -1,
                       SQLITE_TRANSIENT);
 
-    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
-      log::error("Failed to save task instance {} in batch: {}",
-                 info.instance_id.value(), sqlite3_errmsg(db_.get()));
+    if (sqlite3_step(save_task_instance_stmt_.get()) != SQLITE_DONE) {
+      log::error("Failed to save task instance at task_idx {} in batch: {}",
+                 info.task_idx, sqlite3_errmsg(db_.get()));
       (void)rollback_transaction();
       return fail(Error::DatabaseQueryFailed);
     }
   }
 
   if (auto r = commit_transaction(); !r.has_value()) {
-    log::error("Failed to commit transaction: {}", r.error().message());
     return r;
   }
+
   return ok();
 }
 
-auto Persistence::save_task_log(DAGRunId dag_run_id,
-                                TaskId task_id, int attempt,
+auto Persistence::save_task_log(const DAGRunId& dag_run_id,
+                                const TaskId& task_id, int attempt,
                                 std::string_view level, std::string_view stream,
                                 std::string_view message) -> Result<void> {
   constexpr auto sql = R"(
@@ -909,8 +979,8 @@ auto Persistence::save_task_log(DAGRunId dag_run_id,
   return ok();
 }
 
-auto Persistence::get_task_logs(DAGRunId dag_run_id,
-                                TaskId task_id, int attempt) const
+auto Persistence::get_task_logs(const DAGRunId& dag_run_id,
+                                const TaskId& task_id, int attempt) const
     -> Result<std::vector<TaskLogEntry>> {
   std::string sql;
   if (task_id.empty()) {
@@ -950,8 +1020,9 @@ auto Persistence::get_task_logs(DAGRunId dag_run_id,
   while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
     TaskLogEntry entry;
     entry.id = sqlite3_column_int64(stmt.get(), 0);
-    entry.dag_run_id = DAGRunId{col_text(stmt.get(), 1)};
-    entry.task_id = TaskId{col_text(stmt.get(), 2)};
+    // Reuse the parameters instead of reconstructing from DB
+    entry.dag_run_id = dag_run_id;
+    entry.task_id = task_id.empty() ? TaskId{col_text(stmt.get(), 2)} : task_id;
     entry.attempt = sqlite3_column_int(stmt.get(), 3);
     entry.timestamp = sqlite3_column_int64(stmt.get(), 4);
     auto lvl = col_text(stmt.get(), 5);
@@ -975,7 +1046,7 @@ auto Persistence::clear_all_dag_data() -> Result<void> {
   return commit_transaction();
 }
 
-auto Persistence::save_xcom(DAGRunId dag_run_id, TaskId task_id,
+auto Persistence::save_xcom(const DAGRunId& dag_run_id, const TaskId& task_id,
                             std::string_view key,
                             const nlohmann::json& value) -> Result<void> {
   constexpr auto sql = R"(
@@ -1005,7 +1076,7 @@ auto Persistence::save_xcom(DAGRunId dag_run_id, TaskId task_id,
              : fail(Error::DatabaseQueryFailed);
 }
 
-auto Persistence::get_xcom(DAGRunId dag_run_id, TaskId task_id,
+auto Persistence::get_xcom(const DAGRunId& dag_run_id, const TaskId& task_id,
                            std::string_view key) const
     -> Result<nlohmann::json> {
   constexpr auto sql =
@@ -1032,7 +1103,7 @@ auto Persistence::get_xcom(DAGRunId dag_run_id, TaskId task_id,
   return parsed;
 }
 
-auto Persistence::get_task_xcoms(DAGRunId dag_run_id, TaskId task_id) const
+auto Persistence::get_task_xcoms(const DAGRunId& dag_run_id, const TaskId& task_id) const
     -> Result<std::vector<std::pair<std::string, nlohmann::json>>> {
   constexpr auto sql =
       "SELECT key, value FROM xcom_values WHERE dag_run_id = ? AND task_id = ?;";
@@ -1057,7 +1128,7 @@ auto Persistence::get_task_xcoms(DAGRunId dag_run_id, TaskId task_id) const
   return xcoms;
 }
 
-auto Persistence::delete_run_xcoms(DAGRunId dag_run_id) -> Result<void> {
+auto Persistence::delete_run_xcoms(const DAGRunId& dag_run_id) -> Result<void> {
   constexpr auto sql = "DELETE FROM xcom_values WHERE dag_run_id = ?;";
 
   auto result = prepare(sql);
@@ -1072,7 +1143,7 @@ auto Persistence::delete_run_xcoms(DAGRunId dag_run_id) -> Result<void> {
              : fail(Error::DatabaseQueryFailed);
 }
 
-auto Persistence::get_last_execution_date(DAGId dag_id) const
+auto Persistence::get_last_execution_date(const DAGId& dag_id) const
     -> Result<std::optional<std::chrono::system_clock::time_point>> {
   const char* sql = R"(
     SELECT MAX(execution_date) FROM dag_runs WHERE dag_run_id LIKE ?
@@ -1081,7 +1152,7 @@ auto Persistence::get_last_execution_date(DAGId dag_id) const
   auto stmt = prepare(sql);
   if (!stmt) return fail(Error::DatabaseQueryFailed);
 
-  std::string pattern = std::string(dag_id.value()) + "_%";
+  std::string pattern = std::format("{}_%", dag_id.value());
   auto raw_stmt = *stmt;
   auto rc = sqlite3_bind_text(raw_stmt, 1, pattern.c_str(),
                               static_cast<int>(pattern.size()),
@@ -1112,7 +1183,7 @@ auto Persistence::run_exists(const DAGId& dag_id,
   return result.value_or(false);
 }
 
-auto Persistence::has_dag_run(DAGId dag_id,
+auto Persistence::has_dag_run(const DAGId& dag_id,
                               std::chrono::system_clock::time_point execution_date) const
     -> Result<bool> {
   constexpr auto sql =
@@ -1123,7 +1194,7 @@ auto Persistence::has_dag_run(DAGId dag_id,
     return std::unexpected(result.error());
   Statement stmt(*result);
 
-  std::string pattern = std::string(dag_id.value()) + "_%";
+  std::string pattern = std::format("{}_%", dag_id.value());
   sqlite3_bind_text(stmt.get(), 1, pattern.c_str(), -1, SQLITE_TRANSIENT);
   sqlite3_bind_int64(stmt.get(), 2, to_timestamp(execution_date));
 
@@ -1131,14 +1202,14 @@ auto Persistence::has_dag_run(DAGId dag_id,
 }
 
 auto Persistence::get_previous_task_state(
-    DAGId dag_id, NodeIndex task_idx,
+    const DAGId& dag_id, NodeIndex task_idx,
     std::chrono::system_clock::time_point current_execution_date,
     std::string_view current_dag_run_id) const
     -> Result<std::optional<TaskState>> {
   const char* sql = R"(
     SELECT ti.state FROM task_instances ti
-    JOIN dag_runs dr ON ti.dag_run_id = dr.dag_run_id
-    WHERE dr.dag_run_id LIKE ? AND ti.task_id = ? AND dr.execution_date <= ? AND dr.dag_run_id != ?
+    JOIN dag_runs dr ON ti.run_rowid = dr.run_rowid
+    WHERE dr.dag_run_id LIKE ? AND ti.task_idx = ? AND dr.execution_date <= ? AND dr.dag_run_id != ?
     ORDER BY dr.execution_date DESC, dr.dag_run_id DESC LIMIT 1
   )";
 
@@ -1146,19 +1217,18 @@ auto Persistence::get_previous_task_state(
   if (!stmt_result) return fail(Error::DatabaseQueryFailed);
   Statement stmt(*stmt_result);
 
-  std::string pattern = std::string(dag_id.value()) + "_%";
-  std::string task_idx_str = std::to_string(task_idx);
+  std::string pattern = std::format("{}_%", dag_id.value());
   auto current_ts = to_timestamp(current_execution_date);
 
   sqlite3_bind_text(stmt.get(), 1, pattern.c_str(), -1, SQLITE_TRANSIENT);
-  sqlite3_bind_text(stmt.get(), 2, task_idx_str.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int(stmt.get(), 2, static_cast<int>(task_idx));
   sqlite3_bind_int64(stmt.get(), 3, current_ts);
   sqlite3_bind_text(stmt.get(), 4, current_dag_run_id.data(), static_cast<int>(current_dag_run_id.size()), SQLITE_TRANSIENT);
 
   auto rc = sqlite3_step(stmt.get());
   if (rc == SQLITE_ROW) {
-    auto state_str = col_text(stmt.get(), 0);
-    return parse_task_state(state_str);
+    int state_int = sqlite3_column_int(stmt.get(), 0);
+    return static_cast<TaskState>(state_int);
   }
   
   if (rc == SQLITE_DONE) {
@@ -1168,7 +1238,7 @@ auto Persistence::get_previous_task_state(
   return fail(Error::DatabaseQueryFailed);
 }
 
-auto Persistence::save_watermark(DAGId dag_id,
+auto Persistence::save_watermark(const DAGId& dag_id,
                                  std::chrono::system_clock::time_point timestamp)
     -> Result<void> {
   constexpr auto sql = R"(
@@ -1191,7 +1261,7 @@ auto Persistence::save_watermark(DAGId dag_id,
              : fail(Error::DatabaseQueryFailed);
 }
 
-auto Persistence::get_watermark(DAGId dag_id) const
+auto Persistence::get_watermark(const DAGId& dag_id) const
     -> Result<std::optional<std::chrono::system_clock::time_point>> {
   constexpr auto sql =
       "SELECT last_scheduled_at FROM dag_watermarks WHERE dag_id = ?;";

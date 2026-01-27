@@ -213,14 +213,25 @@ protected:
 
     std::string insert_run = std::format(
         "INSERT INTO dag_runs (dag_run_id, state, execution_date) "
-        "VALUES ('{}', 'success', {})",
+        "VALUES ('{}', 1, {});",  // state=1 (Running as int), ts
         dag_run_id_str, ts);
     sqlite3_exec(db, insert_run.c_str(), nullptr, nullptr, nullptr);
 
+    // Get the run_rowid that was just generated
+    std::string get_rowid_sql = std::format(
+        "SELECT run_rowid FROM dag_runs WHERE dag_run_id = '{}'",
+        dag_run_id_str);
+    sqlite3_stmt* stmt;
+    sqlite3_prepare_v2(db, get_rowid_sql.c_str(), -1, &stmt, nullptr);
+    sqlite3_step(stmt);
+    int64_t run_rowid = sqlite3_column_int64(stmt, 0);
+    sqlite3_finalize(stmt);
+
+    // New schema: (run_rowid, task_idx, state as int, attempt, started_at, finished_at, exit_code, error_message)
     std::string insert_task = std::format(
-        "INSERT INTO task_instances (dag_run_id, task_id, state) "
-        "VALUES ('{}', '0', '{}')",
-        dag_run_id_str, task_state_name(state));
+        "INSERT INTO task_instances (run_rowid, task_idx, state, attempt, started_at, finished_at, exit_code, error_message) "
+        "VALUES ({}, 0, {}, 0, 0, 0, 0, '')",
+        run_rowid, std::to_underlying(state));
     sqlite3_exec(db, insert_task.c_str(), nullptr, nullptr, nullptr);
 
     sqlite3_close(db);

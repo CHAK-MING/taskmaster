@@ -112,8 +112,9 @@ struct std::hash<taskmaster::TypedId<Tag>> {
 
 // Enable std::print/std::format support (C++23)
 template <typename Tag>
-struct std::formatter<taskmaster::TypedId<Tag>> : std::formatter<std::string> {
+struct std::formatter<taskmaster::TypedId<Tag>> : std::formatter<std::string_view> {
   auto format(const taskmaster::TypedId<Tag>& id, auto& ctx) const {
-    return std::formatter<std::string>::format(std::string(id.value()), ctx);
+    // Use string_view to avoid copying the underlying string
+    return std::formatter<std::string_view>::format(id.value(), ctx);
   }
 };

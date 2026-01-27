@@ -59,6 +59,10 @@ struct TaskInstanceInfo {
   std::chrono::system_clock::time_point finished_at{};
   int exit_code{0};
   std::string error_message;
+  
+  // Performance optimization: store DB rowid for fast updates
+  // -1 indicates not yet persisted to database
+  int64_t run_rowid{-1};
 };
 
 class DAGRun {
@@ -166,6 +170,16 @@ public:
     data_interval_end_ = t;
   }
 
+  // Performance optimization: DB rowid accessors
+  void set_run_rowid(int64_t rowid) noexcept { 
+    run_rowid_ = rowid;
+    // Propagate to all task instances to avoid N+1 queries
+    for (auto& ti : task_info_) {
+      ti.run_rowid = rowid;
+    }
+  }
+  [[nodiscard]] auto run_rowid() const noexcept -> int64_t { return run_rowid_; }
+
 private:
   DAGRun(DAGRunPrivateTag, DAGRunId dag_run_id, const DAG& dag);
   
@@ -201,9 +215,13 @@ private:
   std::chrono::system_clock::time_point started_at_{};
   std::chrono::system_clock::time_point finished_at_{};
   std::chrono::system_clock::time_point execution_date_{};
-  std::chrono::system_clock::time_point data_interval_start_{};
+  std::chrono::system_clock::time_point data_interval_start_{}; 
   std::chrono::system_clock::time_point data_interval_end_{};
   TriggerType trigger_type_{TriggerType::Manual};
+  
+  // Performance optimization: store DB rowid for fast updates
+  // -1 indicates not yet persisted to database
+  int64_t run_rowid_{-1};
 };
 
 }  // namespace taskmaster

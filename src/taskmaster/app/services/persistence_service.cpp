@@ -29,15 +29,20 @@ auto PersistenceService::persistence() -> Persistence* {
   return db_.get();
 }
 
-auto PersistenceService::save_run(const DAGRun& run) -> void {
+auto PersistenceService::save_run(const DAGRun& run) -> Result<int64_t> {
   if (!db_)
-    return;
-  if (auto r = db_->save_dag_run(run); !r.has_value()) {
-    log::warn("Failed to persist run {}: {}", run.id(), r.error().message());
+    return fail(Error::NotFound);
+  
+  auto result = db_->save_dag_run(run);
+  if (!result.has_value()) {
+    log::warn("Failed to persist run {}: {}", run.id(), result.error().message());
+    return std::unexpected(result.error());
   }
+  
+  return result.value();
 }
 
-auto PersistenceService::save_task(DAGRunId dag_run_id, const TaskInstanceInfo& info) -> void {
+auto PersistenceService::save_task(const DAGRunId& dag_run_id, const TaskInstanceInfo& info) -> void {
   if (!db_)
     return;
   if (auto r = db_->update_task_instance(dag_run_id, info); !r.has_value()) {
@@ -47,8 +52,8 @@ auto PersistenceService::save_task(DAGRunId dag_run_id, const TaskInstanceInfo& 
   }
 }
 
-auto PersistenceService::save_log(DAGRunId dag_run_id,
-                                  TaskId task, int attempt,
+auto PersistenceService::save_log(const DAGRunId& dag_run_id,
+                                  const TaskId& task, int attempt,
                                   std::string_view level,
                                   std::string_view msg) -> void {
   if (!db_)
@@ -59,8 +64,8 @@ auto PersistenceService::save_log(DAGRunId dag_run_id,
   }
 }
 
-auto PersistenceService::save_xcom(DAGRunId dag_run_id,
-                                   TaskId task,
+auto PersistenceService::save_xcom(const DAGRunId& dag_run_id,
+                                   const TaskId& task,
                                    std::string_view key,
                                    const nlohmann::json& value) -> void {
   if (!db_)
@@ -70,8 +75,8 @@ auto PersistenceService::save_xcom(DAGRunId dag_run_id,
   }
 }
 
-auto PersistenceService::get_xcom(DAGRunId dag_run_id,
-                                  TaskId task,
+auto PersistenceService::get_xcom(const DAGRunId& dag_run_id,
+                                  const TaskId& task,
                                   std::string_view key) -> Result<nlohmann::json> {
   if (!db_)
     return fail(Error::NotFound);
@@ -86,6 +91,34 @@ auto PersistenceService::get_previous_task_state(
   if (!db_)
     return fail(Error::NotFound);
   return db_->get_previous_task_state(dag_id, task_idx, current_execution_date, current_dag_run_id);
+}
+
+auto PersistenceService::begin_transaction() -> Result<void> {
+  if (!db_)
+    return fail(Error::NotFound);
+  return db_->begin_transaction();
+}
+
+auto PersistenceService::commit_transaction() -> Result<void> {
+  if (!db_)
+    return fail(Error::NotFound);
+  return db_->commit_transaction();
+}
+
+auto PersistenceService::rollback_transaction() -> Result<void> {
+  if (!db_)
+    return fail(Error::NotFound);
+  return db_->rollback_transaction();
+}
+
+auto PersistenceService::save_task_instances_batch(
+    const DAGRunId& dag_run_id,
+    const std::vector<TaskInstanceInfo>& instances) -> void {
+  if (!db_)
+    return;
+  if (auto r = db_->save_task_instances_batch(dag_run_id, instances); !r.has_value()) {
+    log::warn("Failed to persist task instances batch: {}", r.error().message());
+  }
 }
 
 }  // namespace taskmaster
