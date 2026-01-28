@@ -22,8 +22,9 @@ public:
     for (const auto& task : info.tasks) {
       for (const auto& dep : task.dependencies) {
         if (auto result = temp_dag.add_edge(dep.task_id, task.task_id); !result.has_value()) {
-          error_message += std::format("Invalid dependency: {} -> {}\n",
-                                       dep.task_id.value(), task.task_id.value());
+          std::format_to(std::back_inserter(error_message), 
+                         "Invalid dependency: {} -> {}\n",
+                         dep.task_id.value(), task.task_id.value());
         }
       }
     }

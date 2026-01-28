@@ -22,13 +22,14 @@ constexpr std::uint8_t kStderrStream = 2;
 
 auto url_encode(std::string_view input) -> std::string {
   std::string result;
-  result.reserve(input.size());
+  result.reserve(input.size() * 3);  // Worst case: each char becomes %XX
   for (char c : input) {
     if (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' ||
         c == '.' || c == '~') {
       result += c;
     } else {
-      result += std::format("%{:02X}", static_cast<unsigned char>(c));
+      std::format_to(std::back_inserter(result), "%{:02X}", 
+                     static_cast<unsigned char>(c));
     }
   }
   return result;
@@ -138,7 +139,7 @@ auto DockerClient::create_container(const ContainerConfig& config,
   std::string path =
       std::format("/{}/containers/create", impl_->config.api_version);
   if (!name.empty()) {
-    path += std::format("?name={}", url_encode(name));
+    std::format_to(std::back_inserter(path), "?name={}", url_encode(name));
   }
 
   auto response =

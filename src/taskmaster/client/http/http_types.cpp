@@ -46,14 +46,20 @@ auto HttpRequest::path_param(std::string_view key) const
 }
 
 auto HttpRequest::serialize() const -> std::vector<uint8_t> {
-  std::string request_line = std::format("{} {} HTTP/1.1\r\n", method, path);
+  std::vector<uint8_t> result;
+  
+  // Pre-allocate: request line (~40) + headers (~40 each) + body
+  result.reserve(256 + body.size());
 
-  std::string header_block;
+  // Write request line directly to vector (zero-copy)
+  std::format_to(std::back_inserter(result), "{} {} HTTP/1.1\r\n", method, path);
+
+  // Write headers directly (zero-copy)
   bool has_content_length = false;
   bool has_host = false;
 
   for (const auto& [key, value] : headers) {
-    header_block += std::format("{}: {}\r\n", key, value);
+    std::format_to(std::back_inserter(result), "{}: {}\r\n", key, value);
     if (key == "Content-Length") {
       has_content_length = true;
     }
@@ -62,20 +68,23 @@ auto HttpRequest::serialize() const -> std::vector<uint8_t> {
     }
   }
 
+  // Add missing Host header
   if (!has_host) {
-    header_block += "Host: localhost\r\n";
+    constexpr std::string_view host_header = "Host: localhost\r\n";
+    result.insert(result.end(), host_header.begin(), host_header.end());
   }
 
+  // Add Content-Length if missing
   if (!has_content_length && !body.empty()) {
-    header_block += std::format("Content-Length: {}\r\n", body.size());
+    std::format_to(std::back_inserter(result), "Content-Length: {}\r\n", 
+                   body.size());
   }
 
-  header_block += "\r\n";
+  // End of headers
+  result.push_back('\r');
+  result.push_back('\n');
 
-  std::vector<uint8_t> result;
-  result.reserve(request_line.size() + header_block.size() + body.size());
-  result.insert(result.end(), request_line.begin(), request_line.end());
-  result.insert(result.end(), header_block.begin(), header_block.end());
+  // Append body (single copy, unavoidable)
   result.insert(result.end(), body.begin(), body.end());
 
   return result;
@@ -157,29 +166,35 @@ auto HttpResponse::set_body(std::vector<uint8_t> body_data) -> HttpResponse& {
 }
 
 auto HttpResponse::serialize() const -> std::vector<uint8_t> {
-  std::string status_line =
-      std::format("HTTP/1.1 {} {}\r\n", status, status_reason_phrase(status));
+  std::vector<uint8_t> result;
+  
+  // Pre-allocate: status line (~30) + headers (~40 each) + body
+  result.reserve(256 + body.size());
 
-  std::string header_block;
+  // Write status line directly to vector (zero-copy)
+  std::format_to(std::back_inserter(result), "HTTP/1.1 {} {}\r\n", 
+                 status, status_reason_phrase(status));
+
+  // Write headers directly (zero-copy)
   bool has_content_length = false;
-
   for (const auto& [key, value] : headers) {
-    header_block += std::format("{}: {}\r\n", key, value);
+    std::format_to(std::back_inserter(result), "{}: {}\r\n", key, value);
     if (key == "Content-Length") {
       has_content_length = true;
     }
   }
 
+  // Add Content-Length if missing
   if (!has_content_length && !body.empty()) {
-    header_block += std::format("Content-Length: {}\r\n", body.size());
+    std::format_to(std::back_inserter(result), "Content-Length: {}\r\n", 
+                   body.size());
   }
 
-  header_block += "\r\n";
+  // End of headers
+  result.push_back('\r');
+  result.push_back('\n');
 
-  std::vector<uint8_t> result;
-  result.reserve(status_line.size() + header_block.size() + body.size());
-  result.insert(result.end(), status_line.begin(), status_line.end());
-  result.insert(result.end(), header_block.begin(), header_block.end());
+  // Append body (single copy, unavoidable)
   result.insert(result.end(), body.begin(), body.end());
 
   return result;

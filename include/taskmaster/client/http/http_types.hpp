@@ -67,7 +67,8 @@ struct HttpRequest {
   std::string query_string;
   HttpHeaders headers;
   std::vector<uint8_t> body;
-  std::unordered_map<std::string, std::string, taskmaster::StringHash, taskmaster::StringEqual> path_params;
+  // Mutable: populated by Router during const route() method
+  mutable std::unordered_map<std::string, std::string, taskmaster::StringHash, taskmaster::StringEqual> path_params;
 
   [[nodiscard]] auto header(std::string_view key) const
       -> std::optional<std::string>;

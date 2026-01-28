@@ -38,6 +38,17 @@ struct Router::Impl {
     return segments;
   }
 
+  // Zero-allocation version using string_view
+  static auto split_path_view(std::string_view path) -> std::vector<std::string_view> {
+    std::vector<std::string_view> segments;
+    for (auto part : path | std::views::split('/')) {
+      if (auto sv = std::string_view(part); !sv.empty()) {
+        segments.push_back(sv);
+      }
+    }
+    return segments;
+  }
+
   static auto parse_segment(std::string_view seg) 
       -> std::tuple<std::string, bool> {
     if (seg.starts_with('{') && seg.ends_with('}')) {
@@ -60,9 +71,8 @@ struct Router::Impl {
   }
 
   static auto match_route(const RoutePattern& pattern,
-                          std::string_view path)
+                          const std::vector<std::string_view>& path_segments)
       -> std::optional<std::unordered_map<std::string, std::string, StringHash, StringEqual>> {
-    auto path_segments = split_path(path);
     
     if (path_segments.size() != pattern.segments.size()) {
       return std::nullopt;
@@ -72,7 +82,7 @@ struct Router::Impl {
     
     for (size_t i = 0; i < pattern.segments.size(); ++i) {
       if (pattern.is_param[i]) {
-        params[pattern.segments[i]] = path_segments[i];
+        params[pattern.segments[i]] = std::string(path_segments[i]);
       } else {
         if (pattern.segments[i] != path_segments[i]) {
           return std::nullopt;
@@ -114,16 +124,19 @@ auto Router::del(std::string path, RouteHandler handler) -> void {
 
 auto Router::route(const HttpRequest& req)
     -> taskmaster::task<HttpResponse> {
+  // Split path once, use string_view to avoid allocations
+  auto path_segments = Impl::split_path_view(req.path);
+  
   for (auto& route : impl_->routes) {
     if (route.method != req.method) {
       continue;
     }
     
-    auto params = Impl::match_route(route.parsed, req.path);
+    auto params = Impl::match_route(route.parsed, path_segments);
     if (params) {
-      HttpRequest modified_req = req;
-      modified_req.path_params = std::move(*params);
-      co_return co_await route.handler(modified_req);
+      // Directly modify mutable path_params, no copy!
+      req.path_params = std::move(*params);
+      co_return co_await route.handler(req);
     }
   }
   
