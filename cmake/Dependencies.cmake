@@ -94,10 +94,32 @@ if(UNIX AND NOT APPLE)
         pkg_check_modules(LIBURING QUIET liburing)
     endif()
     
+    if(NOT LIBURING_FOUND)
+        message(STATUS "liburing not found via pkg-config, trying manual search...")
+        find_path(LIBURING_INCLUDE_DIRS NAMES liburing.h PATH_SUFFIXES liburing)
+        find_library(LIBURING_LIBRARIES NAMES uring)
+        if(LIBURING_INCLUDE_DIRS AND LIBURING_LIBRARIES)
+            set(LIBURING_FOUND TRUE)
+            set(LIBURING_VERSION "unknown")
+        endif()
+    endif()
+
     if(LIBURING_FOUND)
         message(STATUS "Found system liburing: ${LIBURING_VERSION}")
+        if(NOT TARGET liburing::liburing)
+            add_library(liburing::liburing INTERFACE IMPORTED)
+            set_target_properties(liburing::liburing PROPERTIES
+                INTERFACE_INCLUDE_DIRECTORIES "${LIBURING_INCLUDE_DIRS}"
+                INTERFACE_LINK_LIBRARIES "${LIBURING_LIBRARIES}"
+            )
+            if(LIBURING_LIBRARY_DIRS)
+                set_target_properties(liburing::liburing PROPERTIES
+                    INTERFACE_LINK_DIRECTORIES "${LIBURING_LIBRARY_DIRS}"
+                )
+            endif()
+        endif()
     else()
-        message(WARNING "liburing not found. Please install: sudo apt install liburing-dev")
+        message(FATAL_ERROR "liburing not found. Please install: sudo apt install liburing-dev")
     endif()
 endif()
 
@@ -165,9 +187,7 @@ function(taskmaster_configure_target target_name)
     target_compile_features(${target_name} PRIVATE cxx_std_23)
     
     if(UNIX AND NOT APPLE AND LIBURING_FOUND)
-        target_link_directories(${target_name} PRIVATE ${LIBURING_LIBRARY_DIRS})
-        target_link_libraries(${target_name} PRIVATE ${LIBURING_LIBRARIES})
-        target_include_directories(${target_name} SYSTEM PRIVATE ${LIBURING_INCLUDE_DIRS})
+        target_link_libraries(${target_name} PRIVATE liburing::liburing)
     endif()
     
     set_target_properties(${target_name} PROPERTIES

@@ -10,7 +10,6 @@
       "name": "default",
       "displayName": "Default (Release + Tests)",
       "description": "Release build with tests and benchmarks enabled",
-      "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
@@ -21,7 +20,6 @@
       "name": "debug",
       "displayName": "Debug",
       "description": "Debug build with tests enabled",
-      "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
@@ -32,7 +30,6 @@
       "name": "asan",
       "displayName": "AddressSanitizer",
       "description": "Debug build with ASan for memory leak detection",
-      "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-asan",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
@@ -46,7 +43,6 @@
       "name": "tsan",
       "displayName": "ThreadSanitizer",
       "description": "Debug build with TSan for data race detection",
-      "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-tsan",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
@@ -60,11 +56,20 @@
       "name": "release",
       "displayName": "Release (No Tests)",
       "description": "Optimized release build without tests",
-      "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "TASKMASTER_ENABLE_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "perf",
+      "displayName": "Release with Debug Info",
+      "description": "Optimized build with debug symbols for profiling",
+      "binaryDir": "${sourceDir}/build-perf",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_CXX_FLAGS": "-fno-omit-frame-pointer"
       }
     }
   ],
@@ -92,6 +97,11 @@
     {
       "name": "release",
       "configurePreset": "release",
+      "jobs": 0
+    },
+    {
+      "name": "perf",
+      "configurePreset": "perf",
       "jobs": 0
     }
   ]
