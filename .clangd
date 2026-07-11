@@ -1,0 +1,35 @@
+CompileFlags:
+  CompilationDatabase: Ancestors
+  Remove:
+    - -Werror
+    - -fdiagnostics-color=*
+    - -fcolor-diagnostics
+
+Index:
+  Background: Build
+
+Diagnostics:
+  UnusedIncludes: None
+  MissingIncludes: None
+  ClangTidy:
+    Remove:
+      - bugprone-easily-swappable-parameters
+      - modernize-use-trailing-return-type
+
+Completion:
+  AllScopes: Yes
+  ArgumentLists: FullPlaceholders
+
+InlayHints:
+  Enabled: Yes
+
+Hover:
+  ShowAKA: Yes
+
+---
+If:
+  PathMatch: (^|.*/)third_party/.*
+Index:
+  Background: Skip
+Diagnostics:
+  Suppress: '*'

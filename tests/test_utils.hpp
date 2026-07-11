@@ -11,6 +11,7 @@
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -42,6 +43,25 @@ namespace dagforge::test {
   return fallback;
 }
 
+[[nodiscard]] inline auto env_port_or_default(const char *key,
+                                              std::uint16_t fallback)
+    -> std::uint16_t {
+  const char *raw = std::getenv(key);
+  if (!raw || *raw == '\0') {
+    return fallback;
+  }
+
+  const std::string_view value{raw};
+  unsigned int port = 0;
+  const auto [end, ec] =
+      std::from_chars(value.data(), value.data() + value.size(), port);
+  if (ec != std::errc{} || end != value.data() + value.size() || port == 0 ||
+      port > 65535) {
+    return fallback;
+  }
+  return static_cast<std::uint16_t>(port);
+}
+
 [[nodiscard]] inline auto unique_token(std::string_view base) -> std::string {
   static std::atomic<std::uint64_t> seq{0};
   const auto n = seq.fetch_add(1, std::memory_order_relaxed);
@@ -51,6 +71,7 @@ namespace dagforge::test {
 [[nodiscard]] inline auto load_test_db_config() -> DatabaseConfig {
   DatabaseConfig cfg;
   cfg.host = env_or_default("DAGFORGE_TEST_MYSQL_HOST", cfg.host);
+  cfg.port = env_port_or_default("DAGFORGE_TEST_MYSQL_PORT", cfg.port);
   cfg.username = env_or_default("DAGFORGE_TEST_MYSQL_USER", cfg.username);
   cfg.password = env_or_default("DAGFORGE_TEST_MYSQL_PASSWORD", cfg.password);
   cfg.database = env_or_default(
@@ -132,7 +153,12 @@ inline auto reset_mysql_test_database(const DatabaseConfig &db_cfg) -> void {
       auto clear_res = run_coro(service.clear_all_dag_data());
       (void)clear_res;
     }
-    run_coro(service.close());
+    auto close_res = run_coro(service.close());
+    if (!close_res) {
+      throw std::runtime_error(std::format(
+          "reset_mysql_test_database: close failed: {}",
+          close_res.error().message()));
+    }
   }
   runtime.stop();
 }

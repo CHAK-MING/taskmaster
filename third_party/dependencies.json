@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-07-11",
+  "vendored_dependencies": [
+    {
+      "name": "glaze",
+      "version": "7.8.4",
+      "upstream_tag": "v7.8.4",
+      "upstream_commit": "0a21fd9dbd36963790b6f26b9539050e13d78649",
+      "source_url": "https://github.com/stephenberry/glaze/releases/tag/v7.8.4",
+      "vendored_path": "third_party/glaze",
+      "vendored_content": "include tree and license",
+      "tree_sha256": "24bf87d23fa1f7d9da1b8a5eec477331bce84742ab5c2da866ee4ba1e53cef6a",
+      "license": "MIT",
+      "license_path": "third_party/glaze/LICENSE",
+      "update_policy": "Track the latest compatible 7.x patch release; parser safety fixes are highest priority."
+    },
+    {
+      "name": "CLI11",
+      "version": "2.6.2",
+      "upstream_tag": "v2.6.2",
+      "upstream_commit": "37bb6edc5317e99af72ef48405e65d9ca5218861",
+      "source_url": "https://github.com/CLIUtils/CLI11/releases/tag/v2.6.2",
+      "vendored_path": "third_party/CLI11",
+      "vendored_content": "include tree and license",
+      "tree_sha256": "dc122b60764f00552f1d08ca3cc213f0fd3046752f187eb46fe27df476d63dfd",
+      "license": "BSD-3-Clause",
+      "license_path": "third_party/CLI11/LICENSE",
+      "update_policy": "Track stable 2.x releases after CLI compatibility tests."
+    },
+    {
+      "name": "unordered_dense",
+      "version": "4.8.1",
+      "upstream_tag": "v4.8.1",
+      "upstream_commit": "3234af2c03549bc85656bfd3a86993bf1cd8aef1",
+      "source_url": "https://github.com/martinus/unordered_dense/releases/tag/v4.8.1",
+      "vendored_path": "third_party/unordered_dense",
+      "vendored_content": "include tree and license",
+      "tree_sha256": "0116d9bbd17ccf3da85d35a4c93b65ad8abd625a944282d9540a3ea40f756bfe",
+      "license": "MIT",
+      "license_path": "third_party/unordered_dense/LICENSE",
+      "update_policy": "Track compatible 4.x releases and retain use only on measured hot paths."
+    },
+    {
+      "name": "prometheus-cpp-core",
+      "version": "1.3.0",
+      "upstream_tag": "v1.3.0",
+      "upstream_commit": "e5fada43131d251e9c4786b04263ce98b6767ba5",
+      "source_url": "https://github.com/jupp0r/prometheus-cpp/releases/tag/v1.3.0",
+      "vendored_path": "third_party/prometheus-cpp-core",
+      "vendored_content": "core include/src subset plus build2 .cpp wrappers and generated export header",
+      "tree_sha256": "afb86d02fe7b9fab4d0480ef0c707153f86b8d46b99b5517d1b9fb732598184a",
+      "license": "MIT",
+      "license_path": "third_party/prometheus-cpp-core/licenses/LICENSE",
+      "update_policy": "Refresh from a tagged core snapshot and revalidate the selected source subset."
+    },
+    {
+      "name": "lua",
+      "version": "5.4.8",
+      "upstream_tag": null,
+      "upstream_commit": null,
+      "source_url": "https://www.lua.org/ftp/lua-5.4.8.tar.gz",
+      "vendored_path": "third_party/lua-5.4.8",
+      "vendored_content": "official source distribution",
+      "tree_sha256": "8f96f48d59affa6dafe7c52c134758f8c319cec097e0eb9a0de5926f15701884",
+      "license": "MIT",
+      "license_path": "third_party/lua-5.4.8/doc/readme.html",
+      "update_policy": "Stay on the latest 5.4 patch release unless a 5.5 migration has an explicit compatibility rationale."
+    }
+  ]
+}

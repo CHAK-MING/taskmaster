@@ -12,6 +12,7 @@
 #include <prometheus/text_serializer.h>
 
 #include <array>
+#include <concepts>
 #include <cstdint>
 #include <initializer_list>
 #include <map>
@@ -47,6 +48,8 @@ labels(std::initializer_list<std::pair<std::string, std::string>> values)
     return "sensor";
   case ExecutorType::Noop:
     return "noop";
+  case ExecutorType::Lua:
+    return "lua";
   }
   return "unknown";
 }
@@ -95,16 +98,26 @@ labels(std::initializer_list<std::pair<std::string, std::string>> values)
   return index < labels.size() ? labels[index] : "unknown";
 }
 
-template <typename MetricFamily>
-auto set_counter(MetricFamily &family, const prom::Labels &metric_labels,
-                 double value) -> void {
-  family.Add(metric_labels).Increment(value);
+[[nodiscard]] constexpr auto to_metric_value(std::integral auto value) noexcept
+    -> double {
+  return static_cast<double>(value);
 }
 
-template <typename MetricFamily>
+[[nodiscard]] constexpr auto to_metric_value(std::floating_point auto value) noexcept
+    -> double {
+  return static_cast<double>(value);
+}
+
+template <typename MetricFamily, typename Value>
+auto set_counter(MetricFamily &family, const prom::Labels &metric_labels,
+                 Value value) -> void {
+  family.Add(metric_labels).Increment(to_metric_value(value));
+}
+
+template <typename MetricFamily, typename Value>
 auto set_gauge(MetricFamily &family, const prom::Labels &metric_labels,
-               double value) -> void {
-  family.Add(metric_labels).Set(value);
+               Value value) -> void {
+  family.Add(metric_labels).Set(to_metric_value(value));
 }
 
 auto set_histogram(prom::Histogram &histogram,
@@ -112,10 +125,10 @@ auto set_histogram(prom::Histogram &histogram,
   std::vector<double> bucket_increments;
   bucket_increments.reserve(snapshot.bucket_counts.size());
   for (auto count : snapshot.bucket_counts) {
-    bucket_increments.push_back(static_cast<double>(count));
+    bucket_increments.push_back(to_metric_value(count));
   }
   const double sum_seconds =
-      static_cast<double>(snapshot.sum_ns) / 1'000'000'000.0;
+      to_metric_value(snapshot.sum_ns) / 1'000'000'000.0;
   histogram.ObserveMultiple(bucket_increments, sum_seconds);
 }
 
@@ -124,10 +137,10 @@ auto set_histogram_bytes(prom::Histogram &histogram,
   std::vector<double> bucket_increments;
   bucket_increments.reserve(snapshot.bucket_counts.size());
   for (auto count : snapshot.bucket_counts) {
-    bucket_increments.push_back(static_cast<double>(count));
+    bucket_increments.push_back(to_metric_value(count));
   }
   histogram.ObserveMultiple(bucket_increments,
-                            static_cast<double>(snapshot.sum_ns));
+                            to_metric_value(snapshot.sum_ns));
 }
 
 auto add_histogram_family(prom::Registry &registry, std::string_view name,
@@ -158,7 +171,7 @@ auto render_prometheus_metrics(const Application &app) -> std::string {
   for (unsigned sid = 0; sid < shard_count; ++sid) {
     const auto value = (sid == 0) ? app.active_coroutines() : 0;
     set_gauge(active_coroutines, labels({{"shard", std::to_string(sid)}}),
-              static_cast<double>(value));
+              value);
   }
 
   auto &mysql_batch_write_ops = prom::BuildCounter()
@@ -281,9 +294,9 @@ auto render_prometheus_metrics(const Application &app) -> std::string {
     const auto shard_label = labels({{"shard", std::to_string(sid)}});
     const auto &shard = app.runtime().shard(static_cast<shard_id>(sid));
     set_gauge(shard_memory_used_bytes, shard_label,
-              static_cast<double>(shard.memory_used_bytes()));
+              shard.memory_used_bytes());
     set_gauge(shard_memory_capacity_bytes, shard_label,
-              static_cast<double>(shard.memory_capacity_bytes()));
+              shard.memory_capacity_bytes());
     set_counter(shard_memory_allocations_total, shard_label,
                 shard.memory_allocations_total());
     set_counter(shard_memory_oom_fallbacks_total, shard_label,
@@ -347,13 +360,11 @@ auto render_prometheus_metrics(const Application &app) -> std::string {
                          0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 10.0});
   for (unsigned sid = 0; sid < shard_count; ++sid) {
     const auto shard_label = labels({{"shard", std::to_string(sid)}});
-    const auto pending_handlers =
-        static_cast<double>(app.runtime().pending_cross_shard_queue_length(
-            static_cast<shard_id>(sid)));
+    const auto pending_handlers = app.runtime().pending_cross_shard_queue_length(
+        static_cast<shard_id>(sid));
     set_gauge(io_context_pending_handlers, shard_label, pending_handlers);
     set_gauge(io_context_timer_depth, shard_label,
-              static_cast<double>(app.runtime().io_context_timer_depth(
-                  static_cast<shard_id>(sid))));
+              app.runtime().io_context_timer_depth(static_cast<shard_id>(sid)));
     auto &hist =
         io_context_poll_duration.Add(shard_label, io_context_poll_buckets);
     set_histogram(hist, app.runtime().io_context_poll_duration_snapshot(
@@ -621,8 +632,7 @@ auto render_prometheus_metrics(const Application &app) -> std::string {
                             .Name("dagforge_executor_queue_size")
                             .Help("Queued run count awaiting dispatch")
                             .Register(registry);
-    set_gauge(queue_depth, {},
-              static_cast<double>(execution->queue_depth_total()));
+    set_gauge(queue_depth, {}, execution->queue_depth_total());
 
     auto &dispatch_invocations_total =
         prom::BuildCounter()
@@ -650,7 +660,8 @@ auto render_prometheus_metrics(const Application &app) -> std::string {
             .Help("Total task starts per executor type")
             .Register(registry);
     for (ExecutorType type : {ExecutorType::Shell, ExecutorType::Docker,
-                              ExecutorType::Sensor, ExecutorType::Noop}) {
+                              ExecutorType::Sensor, ExecutorType::Noop,
+                              ExecutorType::Lua}) {
       const auto label =
           labels({{"executor_type", std::string(executor_type_label(type))}});
       set_gauge(executor_active_count, label,

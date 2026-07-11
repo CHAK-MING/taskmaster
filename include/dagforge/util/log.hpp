@@ -1,6 +1,8 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#include "dagforge/util/time.hpp"
+
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -69,9 +71,10 @@ public:
     auto time = std::chrono::floor<std::chrono::milliseconds>(now);
     auto tid =
         std::hash<std::thread::id>{}(std::this_thread::get_id()) % 1000000;
-    enqueue(std::format("[{:%Y-%m-%d %H:%M:%S}] [{}{}{}] [{}] {}\n", time,
-                        level_color(level), level_name(level), "\o{33}[0m",
-                        tid, std::format(fmt, std::forward<Args>(args)...)));
+    enqueue(std::format("[{}] [{}{}{}] [{}] {}\n",
+                        util::format_local_timestamp(time), level_color(level),
+                        level_name(level), "\o{33}[0m", tid,
+                        std::format(fmt, std::forward<Args>(args)...)));
   }
 };
 

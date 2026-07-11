@@ -5,6 +5,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <memory>
+#include <optional>
+#include <string>
 #include <thread>
 
 #include "gtest/gtest.h"
@@ -100,7 +103,7 @@ TEST_F(EngineTest, RemoveTask) {
 TEST_F(EngineTest, RemoveNonExistentTask) {
   engine_->start();
 
-  // remove_task returns true if event was queued, not if task exists
+  // remove_task reports successful submission, not whether the task exists.
   auto result =
       engine_->remove_task(DAGId("nonexistent"), TaskId("nonexistent"));
   EXPECT_TRUE(result);
@@ -141,6 +144,66 @@ TEST_F(EngineTest, SetOnDagTriggerCallback) {
   EXPECT_FALSE(callback_set.load());
 }
 
+TEST_F(EngineTest, RoutesWorkToConfiguredOwnerShard) {
+  Engine owner_engine(*runtime_, shard_id{1});
+  auto observed_shard = std::make_shared<std::atomic<shard_id>>(kInvalidShard);
+  owner_engine.set_get_watermark_callback(
+      [runtime = runtime_.get(), observed_shard](const DAGId &)
+          -> boost::asio::awaitable<
+              Result<std::optional<std::chrono::system_clock::time_point>>> {
+        observed_shard->store(runtime->current_shard(),
+                              std::memory_order_release);
+        co_return ok(std::optional<std::chrono::system_clock::time_point>{});
+      });
+  owner_engine.start();
+
+  auto info =
+      make_execution_info_with_cron("owner_dag", "schedule", "* * * * *");
+  ASSERT_TRUE(owner_engine.add_task(std::move(info)));
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (observed_shard->load(std::memory_order_acquire) == kInvalidShard &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(kPollInterval);
+  }
+
+  owner_engine.stop();
+  EXPECT_EQ(observed_shard->load(std::memory_order_acquire), shard_id{1});
+}
+
+TEST_F(EngineTest, UsesRuntimeTimingWheelForCronSchedule) {
+  Engine owner_engine(*runtime_, shard_id{1});
+  owner_engine.start();
+
+  auto info =
+      make_execution_info_with_cron("wheel_dag", "schedule", "* * * * *");
+  ASSERT_TRUE(owner_engine.add_task(std::move(info)));
+
+  const auto schedule_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (runtime_->timing_wheel_pending_count(shard_id{1}) == 0 &&
+         std::chrono::steady_clock::now() < schedule_deadline) {
+    std::this_thread::sleep_for(kPollInterval);
+  }
+
+  EXPECT_EQ(runtime_->timing_wheel_pending_count(shard_id{1}), 1U);
+  EXPECT_EQ(owner_engine.scheduled_task_count(), 1U);
+  ASSERT_TRUE(owner_engine.remove_task(DAGId{"wheel_dag"}, TaskId{"schedule"}));
+
+  const auto cancel_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while ((runtime_->timing_wheel_pending_count(shard_id{1}) != 0 ||
+          owner_engine.scheduled_task_count() != 0) &&
+         std::chrono::steady_clock::now() < cancel_deadline) {
+    std::this_thread::sleep_for(kPollInterval);
+  }
+
+  owner_engine.stop();
+  EXPECT_EQ(runtime_->timing_wheel_pending_count(shard_id{1}), 0U);
+  EXPECT_EQ(owner_engine.scheduled_task_count(), 0U);
+}
+
 TEST_F(EngineTest, AddDuplicateTask) {
   engine_->start();
 
@@ -160,7 +223,7 @@ TEST_F(EngineTest, RemoveAfterAdd) {
       make_execution_info_with_cron("test_dag", "test_task", "* * * * *");
   ASSERT_TRUE(engine_->add_task(info));
 
-  // Both calls return true - they queue events, actual removal is async
+  // Both calls report successful submission; actual removal is asynchronous.
   EXPECT_TRUE(engine_->remove_task(dag_id, task_id));
   EXPECT_TRUE(engine_->remove_task(dag_id, task_id));
 }

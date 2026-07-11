@@ -1,11 +1,13 @@
 #pragma once
 
+#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <glaze/json.hpp>
 
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
+#endif
 
 namespace dagforge::api_dto {
 

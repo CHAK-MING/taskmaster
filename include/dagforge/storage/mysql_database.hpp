@@ -6,6 +6,7 @@
 #endif
 
 #include <atomic>
+#include <memory>
 #include <boost/mysql/any_connection.hpp>
 #include <boost/mysql/connection_pool.hpp>
 #include <boost/mysql/pool_params.hpp>
@@ -22,7 +23,9 @@ public:
   MySQLDatabase &operator=(const MySQLDatabase &) = delete;
 
   auto open() -> task<Result<void>> override;
-  auto close() -> task<void> override;
+  auto close() -> task<Result<void>> override;
+  auto shutdown() noexcept -> void;
+  auto wait_for_shutdown() noexcept -> void;
   [[nodiscard]] auto is_open() const noexcept -> bool override;
 
   auto save_dag(const DAGInfo &dag) -> task<Result<int64_t>> override;
@@ -64,6 +67,12 @@ public:
   auto save_task_on_connection(boost::mysql::any_connection &conn,
                                int64_t dag_rowid, const TaskConfig &task_cfg)
       -> task<Result<int64_t>>;
+  auto get_tasks_on_connection(boost::mysql::any_connection &conn,
+                               int64_t dag_rowid)
+      -> task<Result<std::vector<TaskConfig>>>;
+  auto delete_task_on_connection(boost::mysql::any_connection &conn,
+                                 int64_t dag_rowid, const TaskId &task_id)
+      -> task<Result<void>>;
   auto save_tasks_on_connection(boost::mysql::any_connection &conn,
                                 int64_t dag_rowid,
                                 std::vector<TaskConfig> &tasks)
@@ -160,6 +169,8 @@ public:
   auto mark_incomplete_runs_failed() -> task<Result<std::size_t>> override;
 
 private:
+  struct PoolRunState;
+
   auto ensure_database_exists() -> task<Result<void>>;
   auto get_connection() -> task<Result<boost::mysql::pooled_connection>>;
   auto ensure_schema(boost::mysql::any_connection &conn) -> task<Result<void>>;
@@ -171,6 +182,7 @@ private:
   DatabaseConfig cfg_;
   boost::asio::any_io_executor executor_;
   boost::mysql::connection_pool pool_;
+  std::shared_ptr<PoolRunState> pool_run_state_;
   bool open_{false};
   metrics::Histogram connection_acquire_histogram_{};
   std::atomic<std::uint64_t> connection_acquire_failures_total_{0};

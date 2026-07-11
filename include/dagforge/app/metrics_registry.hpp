@@ -4,7 +4,6 @@
 #include "dagforge/client/http/http_types.hpp"
 #include "dagforge/core/metrics.hpp"
 #include "dagforge/util/id.hpp"
-#endif
 
 #include <array>
 #include <atomic>
@@ -16,6 +15,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#endif
 
 namespace dagforge::detail {
 

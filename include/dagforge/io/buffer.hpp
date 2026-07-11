@@ -1,5 +1,6 @@
 #pragma once
 
+#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <concepts>
 #include <cstddef>
 #include <span>
@@ -7,6 +8,7 @@
 #include <string_view>
 #include <type_traits>
 #include <vector>
+#endif
 
 namespace dagforge::io {
 

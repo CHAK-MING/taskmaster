@@ -62,7 +62,7 @@ auto close_stream(Stream &stream) -> void {
 template <typename Stream>
 auto request_over_stream(Stream &stream, HttpRequest req,
                          HttpClientConfig config, const std::string &host)
-    -> task<HttpResponse> {
+    -> task<Result<HttpResponse>> {
   const auto method = req.method;
   const auto target = req.query_string.empty()
                           ? req.path
@@ -75,36 +75,36 @@ auto request_over_stream(Stream &stream, HttpRequest req,
   }
 
   auto request_data = req.serialize();
-  auto [write_ec, written] = co_await boost::asio::async_write(
+  auto write_res = co_await co_as_result(boost::asio::async_write(
       stream, boost::asio::buffer(request_data),
-      boost::asio::cancel_after(config.read_timeout, use_nothrow));
-  (void)written;
-  if (write_ec) {
+      boost::asio::cancel_after(config.read_timeout, use_nothrow)));
+  if (!write_res) {
     close_stream(stream);
     log::error("HTTP request write failed host={} method={} target={}: {}",
-               host, method_to_string(method), target, write_ec.message());
-    co_return HttpResponse{
-        .status = HttpStatus::InternalServerError, .headers = {}, .body = {}};
+               host, method_to_string(method), target,
+               write_res.error().message());
+    co_return fail(write_res.error());
   }
+  (void)*write_res;
 
   beast::flat_buffer read_buffer;
   beast_http::response_parser<beast_http::vector_body<uint8_t>> parser;
   parser.header_limit(256 * 1024);
   parser.body_limit(config.max_response_size);
 
-  auto [read_ec, read_n] = co_await beast_http::async_read(
+  auto read_res = co_await co_as_result(beast_http::async_read(
       stream, read_buffer, parser,
-      boost::asio::cancel_after(config.read_timeout, use_nothrow));
-  (void)read_n;
-  if (read_ec) {
+      boost::asio::cancel_after(config.read_timeout, use_nothrow)));
+  if (!read_res) {
     close_stream(stream);
     log::error("HTTP response read failed host={} method={} target={}: {}",
-               host, method_to_string(method), target, read_ec.message());
-    co_return HttpResponse{
-        .status = HttpStatus::InternalServerError, .headers = {}, .body = {}};
+               host, method_to_string(method), target,
+               read_res.error().message());
+    co_return fail(read_res.error());
   }
+  (void)*read_res;
 
-  co_return to_response(parser.release());
+  co_return ok(to_response(parser.release()));
 }
 
 } // namespace
@@ -140,15 +140,15 @@ auto HttpClient::connect_tcp(io::IoContext &ctx, std::string_view host,
   }
 
   boost::asio::ip::tcp::socket socket(ctx);
-  auto [connect_ec, endpoint] = co_await boost::asio::async_connect(
+  auto connect_res = co_await co_as_result(boost::asio::async_connect(
       socket, endpoints,
-      boost::asio::cancel_after(config.connect_timeout, use_nothrow));
-  (void)endpoint;
-  if (connect_ec) {
+      boost::asio::cancel_after(config.connect_timeout, use_nothrow)));
+  if (!connect_res) {
     log::debug("Failed to connect to {}:{} - {}", host, port,
-               connect_ec.message());
-    co_return fail(std::error_code(connect_ec.value(), std::system_category()));
+               connect_res.error().message());
+    co_return fail(connect_res.error());
   }
+  (void)*connect_res;
 
   auto client = std::make_unique<HttpClient>(std::move(socket), config);
   client->impl_->host = std::string(host);
@@ -171,13 +171,13 @@ auto HttpClient::connect_unix(io::IoContext &ctx, std::string_view socket_path,
                ec.message());
     co_return fail(std::error_code(ec.value(), std::system_category()));
   }
-  auto [connect_ec] = co_await socket.async_connect(
+  auto connect_res = co_await co_as_result(socket.async_connect(
       boost::asio::local::stream_protocol::endpoint(std::string(socket_path)),
-      boost::asio::cancel_after(config.connect_timeout, use_nothrow));
-  if (connect_ec) {
+      boost::asio::cancel_after(config.connect_timeout, use_nothrow)));
+  if (!connect_res) {
     log::debug("Failed to connect to {} - {}", socket_path,
-               connect_ec.message());
-    co_return fail(std::error_code(connect_ec.value(), std::system_category()));
+               connect_res.error().message());
+    co_return fail(connect_res.error());
   }
 
   auto client = std::make_unique<HttpClient>(std::move(socket), config);
@@ -185,69 +185,79 @@ auto HttpClient::connect_unix(io::IoContext &ctx, std::string_view socket_path,
   co_return ok(std::move(client));
 }
 
-auto HttpClient::request(HttpRequest req) -> task<HttpResponse> {
+auto HttpClient::request(HttpRequest req) -> task<Result<HttpResponse>> {
   if (!is_connected()) {
-    co_return HttpResponse{
-        .status = HttpStatus::InternalServerError, .headers = {}, .body = {}};
+    co_return fail(Error::InvalidState);
   }
 
   if (auto *tcp = std::get_if<boost::asio::ip::tcp::socket>(&impl_->socket)) {
-    co_return co_await request_over_stream(*tcp, std::move(req), impl_->config,
-                                           impl_->host);
+    auto response_res =
+        co_await request_over_stream(*tcp, std::move(req), impl_->config,
+                                     impl_->host);
+    if (!response_res) {
+      co_return fail(response_res.error());
+    }
+    co_return ok(std::move(*response_res));
   }
   auto *unix_socket =
       std::get_if<boost::asio::local::stream_protocol::socket>(&impl_->socket);
-  co_return co_await request_over_stream(*unix_socket, std::move(req),
-                                         impl_->config, impl_->host);
+  auto response_res = co_await request_over_stream(*unix_socket, std::move(req),
+                                                   impl_->config, impl_->host);
+  if (!response_res) {
+    co_return fail(response_res.error());
+  }
+  co_return ok(std::move(*response_res));
 }
 
 auto HttpClient::get(std::string_view path, const HttpHeaders &headers)
-    -> task<HttpResponse> {
+    -> task<Result<HttpResponse>> {
   HttpRequest req;
   req.method = HttpMethod::GET;
   req.path = std::string(path);
   req.headers = headers;
-  co_return co_await request(std::move(req));
+  return request(std::move(req));
 }
 
 auto HttpClient::post(std::string_view path, std::vector<uint8_t> body,
-                      const HttpHeaders &headers) -> task<HttpResponse> {
+                      const HttpHeaders &headers) -> task<Result<HttpResponse>> {
   HttpRequest req;
   req.method = HttpMethod::POST;
   req.path = std::string(path);
   req.body = std::move(body);
   req.headers = headers;
-  co_return co_await request(std::move(req));
+  return request(std::move(req));
 }
 
 auto HttpClient::post_json(std::string_view path, std::string_view json,
-                           const HttpHeaders &headers) -> task<HttpResponse> {
+                           const HttpHeaders &headers)
+    -> task<Result<HttpResponse>> {
   HttpRequest req;
   req.method = HttpMethod::POST;
   req.path = std::string(path);
   req.body = std::vector<uint8_t>(json.begin(), json.end());
   req.headers = headers;
   req.headers["Content-Type"] = "application/json";
-  co_return co_await request(std::move(req));
+  return request(std::move(req));
 }
 
 auto HttpClient::delete_(std::string_view path, const HttpHeaders &headers)
-    -> task<HttpResponse> {
+    -> task<Result<HttpResponse>> {
   HttpRequest req;
   req.method = HttpMethod::DELETE;
   req.path = std::string(path);
   req.headers = headers;
-  co_return co_await request(std::move(req));
+  return request(std::move(req));
 }
 
 auto HttpClient::put(std::string_view path, std::vector<uint8_t> body,
-                     const HttpHeaders &headers) -> task<HttpResponse> {
+                     const HttpHeaders &headers)
+    -> task<Result<HttpResponse>> {
   HttpRequest req;
   req.method = HttpMethod::PUT;
   req.path = std::string(path);
   req.body = std::move(body);
   req.headers = headers;
-  co_return co_await request(std::move(req));
+  return request(std::move(req));
 }
 
 auto HttpClient::is_connected() const noexcept -> bool {

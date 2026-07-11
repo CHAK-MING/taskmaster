@@ -46,6 +46,10 @@ In-depth usage, patterns, and troubleshooting. For a quick overview see the [REA
 - Boost 1.87+
 - MySQL 8.0+
 
+> [!NOTE]
+> Source builds are supported through **build2**. This repository does not ship
+> a supported CMake configuration.
+
 ### 🗄️ MySQL Setup
 
 ```sql
@@ -59,8 +63,8 @@ FLUSH PRIVILEGES;
 ### 🏗️ Build
 
 ```bash
-bdep init -C build @gcc cc config.cxx=g++
-bdep update @gcc
+./scripts/setup-build2.sh
+./scripts/build.sh
 # Binary: ./bin/dagforge
 ```
 

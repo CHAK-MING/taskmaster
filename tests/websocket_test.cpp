@@ -522,3 +522,74 @@ TEST_F(WebSocketTest, HubBroadcast_RespectsRunFilter) {
 
   ::close(pair.client_fd);
 }
+
+TEST_F(WebSocketTest, HubStress_RepeatedConnectAndCloseAllWhileBroadcasting) {
+  constexpr int kCycles = 20;
+  constexpr int kConnectionsPerCycle = 3;
+
+  std::atomic<bool> stop_broadcast{false};
+  std::thread broadcaster([this, &stop_broadcast] {
+    int seq = 0;
+    while (!stop_broadcast.load(std::memory_order_acquire)) {
+      hub_->broadcast_log(WebSocketHub::LogMessage{
+          .timestamp = std::to_string(seq),
+          .dag_run_id = "stress_run",
+          .task_id = "stress_task",
+          .stream = "stdout",
+          .content = "msg-" + std::to_string(seq),
+      });
+      hub_->broadcast_event(WebSocketHub::EventMessage{
+          .timestamp = std::to_string(seq),
+          .event = "stress_event",
+          .dag_run_id = "stress_run",
+          .task_id = "stress_task",
+          .data = R"({"status":"running"})",
+      });
+      ++seq;
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  });
+
+  for (int cycle = 0; cycle < kCycles; ++cycle) {
+    std::vector<ConnPair> pairs;
+    pairs.reserve(kConnectionsPerCycle);
+
+    for (int i = 0; i < kConnectionsPerCycle; ++i) {
+      auto pair = make_connection_pair();
+      ASSERT_GE(pair.client_fd, 0);
+      ASSERT_TRUE(pair.server_conn != nullptr);
+
+      auto t = [conn = pair.server_conn]() -> spawn_task {
+        co_await conn->handle_frames(
+            [](WebSocketOpCode, std::span<const std::byte>) {});
+      };
+      runtime_->spawn_external(t());
+
+      ASSERT_TRUE(perform_client_handshake(pair.client_fd));
+      run_on_runtime([this, conn = pair.server_conn] { hub_->add_connection(conn); });
+      pairs.push_back(std::move(pair));
+    }
+
+    ASSERT_TRUE(test::poll_until(
+        [this] { return hub_->connection_count() >= kConnectionsPerCycle; },
+        std::chrono::milliseconds(2000), std::chrono::milliseconds(10)));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    hub_->close_all();
+
+    ASSERT_TRUE(test::poll_until(
+        [this] { return hub_->connection_count() == 0; },
+        std::chrono::milliseconds(2000), std::chrono::milliseconds(10)));
+
+    for (auto &pair : pairs) {
+      ASSERT_TRUE(test::poll_until(
+          [&pair] { return pair.server_conn->is_closed(); },
+          std::chrono::milliseconds(2000), std::chrono::milliseconds(10)));
+      ::shutdown(pair.client_fd, SHUT_RDWR);
+      ::close(pair.client_fd);
+    }
+  }
+
+  stop_broadcast.store(true, std::memory_order_release);
+  broadcaster.join();
+}

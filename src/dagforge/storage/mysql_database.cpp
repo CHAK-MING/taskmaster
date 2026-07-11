@@ -1,6 +1,7 @@
 #include "dagforge/storage/mysql_database.hpp"
 #include "dagforge/storage/mysql_schema.hpp"
 
+#include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/util/enum_mysql_formatter.hpp"
 #include "dagforge/util/log.hpp"
 #include "dagforge/util/time.hpp"
@@ -9,8 +10,8 @@
 #include <boost/asio/cancel_after.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/dispatch.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/this_coro.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <boost/mysql/any_connection.hpp>
 #include <boost/mysql/connect_params.hpp>
 #include <boost/mysql/error_with_diagnostics.hpp>
@@ -23,13 +24,16 @@
 
 #include <algorithm>
 #include <array>
+#include <condition_variable>
 #include <cstdint>
 #include <memory_resource>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -38,7 +42,13 @@
 namespace dagforge::storage {
 namespace {
 
-using boost::asio::use_awaitable;
+#define DAGFORGE_TRY_MYSQL(expr)                                               \
+  do {                                                                         \
+    auto dagforge_mysql_result__ = co_await (expr);                            \
+    if (!dagforge_mysql_result__) {                                            \
+      co_return fail(dagforge_mysql_result__.error());                         \
+    }                                                                          \
+  } while (false)
 
 constexpr std::array<std::uint64_t, 15> kConnectionAcquireBucketsNs{
     100'000ULL,       250'000ULL,       500'000ULL,       1'000'000ULL,
@@ -167,18 +177,56 @@ auto fetch_column_data_type(boost::mysql::any_connection &conn,
                             std::string_view column_name)
     -> task<Result<std::string>> {
   boost::mysql::results res;
-  co_await conn.async_execute(
+  auto execute_res = co_await co_as_result(conn.async_execute(
       boost::mysql::with_params(
           "SELECT DATA_TYPE "
           "FROM information_schema.columns "
           "WHERE table_schema = DATABASE() AND table_name = {} "
           "AND column_name = {}",
           table_name, column_name),
-      res, use_awaitable);
+      res, dagforge::use_nothrow));
+  if (!execute_res) {
+    co_return fail(execute_res.error());
+  }
   if (res.rows().empty()) {
     co_return fail(Error::NotFound);
   }
   co_return ok(as_str(res.rows().at(0).at(0)));
+}
+
+template <typename Query>
+auto execute_mysql(boost::mysql::any_connection &conn, Query query,
+                   boost::mysql::results &res) -> task<Result<void>> {
+  auto execute_res = co_await co_as_result(
+      conn.async_execute(std::move(query), res, dagforge::use_nothrow));
+  if (!execute_res) {
+    co_return fail(execute_res.error());
+  }
+  co_return ok();
+}
+
+auto run_pipeline_mysql(
+    boost::mysql::any_connection &conn, boost::mysql::pipeline_request &req,
+    std::vector<boost::mysql::stage_response> &stage_responses)
+    -> task<Result<void>> {
+  auto pipeline_res = co_await co_as_result(
+      conn.async_run_pipeline(req, stage_responses, dagforge::use_nothrow));
+  if (!pipeline_res) {
+    co_return fail(pipeline_res.error());
+  }
+  co_return ok();
+}
+
+template <typename CompletionToken>
+auto acquire_pooled_connection(
+    boost::mysql::connection_pool &pool, boost::mysql::diagnostics &diag,
+    CompletionToken token) -> task<Result<boost::mysql::pooled_connection>> {
+  auto conn_res = co_await co_as_result(
+      pool.async_get_connection(diag, std::move(token)));
+  if (!conn_res) {
+    co_return fail(conn_res.error());
+  }
+  co_return ok(std::move(*conn_res));
 }
 
 auto validate_integer_enum_column(boost::mysql::any_connection &conn,
@@ -401,11 +449,20 @@ summarize_task_instance_batch(std::span<const TaskInstanceInfo> instances)
   };
 }
 
+// Coroutines must own temporary callables across suspension points.
 template <typename F>
-auto mysql_try(F &&f, std::string_view op_name = {}, std::string context = {})
-    -> task<typename std::invoke_result_t<F>::value_type> {
+auto mysql_try(F f, std::string_view op_name = {}, std::string context = {})
+    -> task<typename std::invoke_result_t<F &>::value_type> {
   try {
-    co_return co_await std::forward<F>(f)();
+    auto result = co_await f();
+    if (!result) {
+      co_return fail(result.error());
+    }
+    if constexpr (std::is_void_v<typename decltype(result)::value_type>) {
+      co_return ok();
+    } else {
+      co_return ok(std::move(*result));
+    }
   } catch (const boost::mysql::error_with_diagnostics &e) {
     if (op_name.empty()) {
       log::error("MySQL operation failed: {} ({})", e.what(),
@@ -441,14 +498,24 @@ auto mysql_try(F &&f, std::string_view op_name = {}, std::string context = {})
 
 } // namespace
 
+struct MySQLDatabase::PoolRunState {
+  std::mutex mutex;
+  std::condition_variable completed;
+  std::size_t active_runs{0};
+};
+
 MySQLDatabase::MySQLDatabase(boost::asio::any_io_executor executor,
                              const DatabaseConfig &config)
     : cfg_(config), executor_(executor),
       pool_(executor_, make_pool_params(config)),
+      pool_run_state_(std::make_shared<PoolRunState>()),
       connection_acquire_histogram_(
           std::span<const std::uint64_t>(kConnectionAcquireBucketsNs)) {}
 
-MySQLDatabase::~MySQLDatabase() { pool_.cancel(); }
+MySQLDatabase::~MySQLDatabase() {
+  shutdown();
+  wait_for_shutdown();
+}
 
 auto MySQLDatabase::ensure_database_exists() -> task<Result<void>> {
   auto ex = co_await boost::asio::this_coro::executor;
@@ -466,12 +533,20 @@ auto MySQLDatabase::ensure_database_exists() -> task<Result<void>> {
     params.multi_queries = false;
 
     boost::mysql::any_connection conn(ex);
-    co_await conn.async_connect(
+    auto connect_res = co_await co_as_result(conn.async_connect(
         params, boost::asio::cancel_after(
-                    std::chrono::seconds(cfg_.connect_timeout), use_awaitable));
-
-    co_await conn.async_close(use_awaitable);
-    co_return ok();
+                    std::chrono::seconds(cfg_.connect_timeout),
+                    dagforge::use_nothrow)));
+    if (!connect_res) {
+      direct_connect_error = connect_res.error().message();
+    } else {
+      auto close_res =
+          co_await co_as_result(conn.async_close(dagforge::use_nothrow));
+      if (!close_res) {
+        co_return fail(close_res.error());
+      }
+      co_return ok();
+    }
   } catch (const boost::mysql::error_with_diagnostics &e) {
     direct_connect_error = std::format(
         "{} ({})", e.what(), describe_mysql_diagnostics(e.get_diagnostics()));
@@ -490,16 +565,36 @@ auto MySQLDatabase::ensure_database_exists() -> task<Result<void>> {
     params.multi_queries = false;
 
     boost::mysql::any_connection conn(ex);
-    co_await conn.async_connect(
+    auto connect_res = co_await co_as_result(conn.async_connect(
         params, boost::asio::cancel_after(
-                    std::chrono::seconds(cfg_.connect_timeout), use_awaitable));
+                    std::chrono::seconds(cfg_.connect_timeout),
+                    dagforge::use_nothrow)));
+    if (!connect_res) {
+      log::error("MySQL ensure database failed: direct_connect='{}', "
+                 "connect_without_db='{}'",
+                 direct_connect_error, connect_res.error().message());
+      co_return fail(connect_res.error());
+    }
 
     boost::mysql::results res;
-    co_await conn.async_execute(
+    auto execute_res = co_await co_as_result(conn.async_execute(
         boost::mysql::with_params("CREATE DATABASE IF NOT EXISTS {:i}",
                                   cfg_.database),
-        res, use_awaitable);
-    co_await conn.async_close(use_awaitable);
+        res, dagforge::use_nothrow));
+    if (!execute_res) {
+      log::error("MySQL ensure database failed: direct_connect='{}', "
+                 "create_db='{}'",
+                 direct_connect_error, execute_res.error().message());
+      co_return fail(execute_res.error());
+    }
+    auto close_res =
+        co_await co_as_result(conn.async_close(dagforge::use_nothrow));
+    if (!close_res) {
+      log::error("MySQL ensure database failed: direct_connect='{}', "
+                 "close_after_create='{}'",
+                 direct_connect_error, close_res.error().message());
+      co_return fail(close_res.error());
+    }
     co_return ok();
   } catch (const boost::mysql::error_with_diagnostics &e) {
     log::error("MySQL ensure database failed: direct_connect='{}', "
@@ -530,18 +625,35 @@ auto MySQLDatabase::open() -> task<Result<void>> {
   }
 
   open_ = true;
-  pool_.async_run(boost::asio::detached);
+  auto pool_run_state = pool_run_state_;
+  {
+    std::lock_guard lock(pool_run_state->mutex);
+    ++pool_run_state->active_runs;
+  }
+  pool_.async_run([pool_run_state](boost::mysql::error_code) {
+    std::lock_guard lock(pool_run_state->mutex);
+    --pool_run_state->active_runs;
+    pool_run_state->completed.notify_all();
+  });
 
   auto conn_res = co_await get_connection();
   if (!conn_res) {
-    open_ = false;
-    co_return fail(conn_res.error());
+    const auto open_error = conn_res.error();
+    if (auto close_res = co_await close(); !close_res) {
+      log::warn("MySQL pool shutdown after connection failure failed: {}",
+                close_res.error().message());
+    }
+    co_return fail(open_error);
   }
 
   auto schema_res = co_await ensure_schema(conn_res->get());
   if (!schema_res) {
-    open_ = false;
-    co_return fail(schema_res.error());
+    const auto schema_error = schema_res.error();
+    if (auto close_res = co_await close(); !close_res) {
+      log::warn("MySQL pool shutdown after schema failure failed: {}",
+                close_res.error().message());
+    }
+    co_return fail(schema_error);
   }
 
   conn_res->return_without_reset();
@@ -551,12 +663,36 @@ auto MySQLDatabase::open() -> task<Result<void>> {
   co_return ok();
 }
 
-auto MySQLDatabase::close() -> task<void> {
-  if (open_) {
-    pool_.cancel();
-    open_ = false;
+auto MySQLDatabase::close() -> task<Result<void>> {
+  shutdown();
+
+  auto executor = co_await boost::asio::this_coro::executor;
+  boost::asio::steady_timer timer(executor);
+  while (true) {
+    {
+      std::lock_guard lock(pool_run_state_->mutex);
+      if (pool_run_state_->active_runs == 0) {
+        co_return ok();
+      }
+    }
+
+    timer.expires_after(std::chrono::milliseconds(1));
+    auto wait_res = co_await co_as_result(timer.async_wait(use_nothrow));
+    if (!wait_res) {
+      co_return fail(wait_res.error());
+    }
   }
-  co_return;
+}
+
+auto MySQLDatabase::shutdown() noexcept -> void {
+  pool_.cancel();
+  open_ = false;
+}
+
+auto MySQLDatabase::wait_for_shutdown() noexcept -> void {
+  std::unique_lock lock(pool_run_state_->mutex);
+  pool_run_state_->completed.wait(
+      lock, [this] { return pool_run_state_->active_runs == 0; });
 }
 
 auto MySQLDatabase::is_open() const noexcept -> bool { return open_; }
@@ -583,10 +719,14 @@ auto MySQLDatabase::get_connection()
 
   try {
     boost::mysql::diagnostics diag;
-    auto conn = co_await pool_.async_get_connection(
-        diag, boost::asio::cancel_after(
-                  std::chrono::seconds(cfg_.connect_timeout), use_awaitable));
-    co_return ok(std::move(conn));
+    auto conn_res = co_await acquire_pooled_connection(
+        pool_, diag,
+        boost::asio::cancel_after(std::chrono::seconds(cfg_.connect_timeout),
+                                  dagforge::use_nothrow));
+    if (!conn_res) {
+      co_return fail(conn_res.error());
+    }
+    co_return conn_res;
   } catch (const boost::mysql::error_with_diagnostics &e) {
     connection_acquire_failures_total_.fetch_add(1, std::memory_order_relaxed);
     log::error("MySQL get connection failed: {} ({})", e.what(),
@@ -625,47 +765,56 @@ auto MySQLDatabase::ensure_schema(boost::mysql::any_connection &conn)
                     std::to_string(schema::CURRENT_SCHEMA_VERSION) + ")");
 
     std::vector<boost::mysql::stage_response> stage_responses;
-    co_await conn.async_run_pipeline(req, stage_responses, use_awaitable);
+    DAGFORGE_TRY_MYSQL(run_pipeline_mysql(conn, req, stage_responses));
 
     boost::mysql::results alter_res;
-    co_await conn.async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn,
         "ALTER TABLE task_instances "
         "ADD COLUMN IF NOT EXISTS execution_date BIGINT NOT NULL DEFAULT 0 "
         "AFTER last_heartbeat",
-        alter_res, use_awaitable);
-    co_await conn.async_execute(
+        alter_res));
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn,
         "ALTER TABLE task_instances "
         "ADD INDEX IF NOT EXISTS idx_ti_queue (state, execution_date)",
-        alter_res, use_awaitable);
-    co_await conn.async_execute("ALTER TABLE task_instances "
-                                "ADD INDEX IF NOT EXISTS idx_ti_history "
-                                "(task_rowid, execution_date, attempt)",
-                                alter_res, use_awaitable);
-    co_await conn.async_execute(
+        alter_res));
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn,
+        "ALTER TABLE task_instances "
+        "ADD INDEX IF NOT EXISTS idx_ti_history "
+        "(task_rowid, execution_date, attempt)",
+        alter_res));
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn,
         "ALTER TABLE dag_tasks "
         "ADD COLUMN IF NOT EXISTS is_branch TINYINT NOT NULL DEFAULT 0 "
         "AFTER trigger_rule",
-        alter_res, use_awaitable);
-    co_await conn.async_execute(
+        alter_res));
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn,
         "ALTER TABLE dag_tasks "
         "ADD COLUMN IF NOT EXISTS branch_xcom_key VARCHAR(255) NOT NULL "
         "DEFAULT 'branch' AFTER is_branch",
-        alter_res, use_awaitable);
-    co_await conn.async_execute(
+        alter_res));
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn,
         "ALTER TABLE dag_tasks "
         "ADD COLUMN IF NOT EXISTS depends_on_past TINYINT NOT NULL DEFAULT 0 "
         "AFTER branch_xcom_key",
-        alter_res, use_awaitable);
-    co_await conn.async_execute(
+        alter_res));
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn,
         "ALTER TABLE dag_tasks "
         "ADD COLUMN IF NOT EXISTS xcom_push JSON NOT NULL DEFAULT ('[]') "
         "AFTER depends_on_past",
-        alter_res, use_awaitable);
-    co_await conn.async_execute(
+        alter_res));
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn,
         "ALTER TABLE dag_tasks "
         "ADD COLUMN IF NOT EXISTS xcom_pull JSON NOT NULL DEFAULT ('[]') "
         "AFTER xcom_push",
-        alter_res, use_awaitable);
+        alter_res));
     if (auto r =
             co_await validate_integer_enum_column(conn, "dag_runs", "state");
         !r) {
@@ -681,11 +830,13 @@ auto MySQLDatabase::ensure_schema(boost::mysql::any_connection &conn)
         !r) {
       co_return fail(r.error());
     }
-    co_await conn.async_execute("UPDATE task_instances ti "
-                                "JOIN dag_runs r ON r.run_rowid = ti.run_rowid "
-                                "SET ti.execution_date = r.execution_date "
-                                "WHERE ti.execution_date = 0",
-                                alter_res, use_awaitable);
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn,
+        "UPDATE task_instances ti "
+        "JOIN dag_runs r ON r.run_rowid = ti.run_rowid "
+        "SET ti.execution_date = r.execution_date "
+        "WHERE ti.execution_date = 0",
+        alter_res));
 
     co_return ok();
   } catch (const boost::mysql::error_with_diagnostics &e) {
@@ -703,10 +854,11 @@ auto MySQLDatabase::get_dag_rowid(boost::mysql::any_connection &conn,
     -> task<Result<int64_t>> {
   try {
     boost::mysql::results res;
-    co_await conn.async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn,
         boost::mysql::with_params(
             "SELECT dag_rowid FROM dags WHERE dag_id = {}", dag_id.str()),
-        res, use_awaitable);
+        res));
     if (res.rows().empty()) {
       co_return fail(Error::NotFound);
     }
@@ -721,7 +873,8 @@ auto MySQLDatabase::save_dag_run_on_connection(
     boost::mysql::any_connection &conn, const DAGRun &run)
     -> task<Result<int64_t>> {
   boost::mysql::results res;
-  co_await conn.async_execute(
+  DAGFORGE_TRY_MYSQL(execute_mysql(
+      conn,
       boost::mysql::with_params(
           "INSERT INTO dag_runs(dag_run_id, dag_rowid, dag_version, state, "
           "trigger_type, scheduled_at, started_at, finished_at, "
@@ -737,7 +890,7 @@ auto MySQLDatabase::save_dag_run_on_connection(
           util::enum_to_code(run.trigger_type()), to_millis(run.scheduled_at()),
           to_millis(run.started_at()), to_millis(run.finished_at()),
           to_millis(run.execution_date())),
-      res, use_awaitable);
+      res));
   co_return ok(static_cast<int64_t>(res.last_insert_id()));
 }
 
@@ -751,12 +904,13 @@ auto MySQLDatabase::save_task_instances_batch_on_connection(
 
   if (run_rowid <= 0 || execution_date_ms < 0) {
     boost::mysql::results run_res;
-    co_await conn.async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn,
         boost::mysql::with_params(
             "SELECT run_rowid, execution_date FROM dag_runs "
             "WHERE dag_run_id = {}",
             run_id.str()),
-        run_res, use_awaitable);
+        run_res));
     if (run_res.rows().empty()) {
       co_return fail(Error::NotFound);
     }
@@ -781,7 +935,8 @@ auto MySQLDatabase::save_task_instances_batch_on_connection(
   };
 
   boost::mysql::results upsert_res;
-  co_await conn.async_execute(
+  DAGFORGE_TRY_MYSQL(execute_mysql(
+      conn,
       boost::mysql::with_params(
           "INSERT INTO task_instances(run_rowid, task_rowid, attempt, state, "
           "worker_id, last_heartbeat, execution_date, started_at, finished_at, "
@@ -795,7 +950,7 @@ auto MySQLDatabase::save_task_instances_batch_on_connection(
           "error_type=VALUES(error_type)",
           boost::mysql::sequence(std::cref(instances), format_ti),
           util::enum_to_code(TaskState::Running)),
-      upsert_res, use_awaitable);
+      upsert_res));
   co_return ok();
 }
 
@@ -818,7 +973,8 @@ auto MySQLDatabase::save_dag_on_connection(boost::mysql::any_connection &conn,
                                            const DAGInfo &dag)
     -> task<Result<int64_t>> {
   boost::mysql::results res;
-  co_await conn.async_execute(
+  DAGFORGE_TRY_MYSQL(execute_mysql(
+      conn,
       boost::mysql::with_params(
           "INSERT INTO dags(dag_id, version, name, description, tags, cron, "
           "timezone, "
@@ -846,7 +1002,7 @@ auto MySQLDatabase::save_dag_on_connection(boost::mysql::any_connection &conn,
           dag.end_date ? to_millis(*dag.end_date) : 0,
           to_millis(dag.created_at), to_millis(dag.updated_at),
           dag.retention_days),
-      res, use_awaitable);
+      res));
   co_return ok(static_cast<int64_t>(res.last_insert_id()));
 }
 
@@ -859,19 +1015,21 @@ auto MySQLDatabase::set_dag_active(const DAGId &dag_id, bool active)
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "UPDATE dags SET is_active = {} WHERE dag_id = {}", active ? 1 : 0,
             dag_id.str()),
-        res, use_awaitable);
+        res));
 
     if (res.affected_rows() == 0) {
       boost::mysql::results exists_res;
-      co_await conn_res->get().async_execute(
+      DAGFORGE_TRY_MYSQL(execute_mysql(
+          conn_res->get(),
           boost::mysql::with_params(
               "SELECT EXISTS(SELECT 1 FROM dags WHERE dag_id = {})",
               dag_id.str()),
-          exists_res, use_awaitable);
+          exists_res));
       if (!as_bool(exists_res.rows().at(0).at(0))) {
         co_return fail(Error::NotFound);
       }
@@ -890,19 +1048,21 @@ auto MySQLDatabase::set_dag_paused(const DAGId &dag_id, bool paused)
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "UPDATE dags SET is_paused = {} WHERE dag_id = {}", paused ? 1 : 0,
             dag_id.str()),
-        res, use_awaitable);
+        res));
 
     if (res.affected_rows() == 0) {
       boost::mysql::results exists_res;
-      co_await conn_res->get().async_execute(
+      DAGFORGE_TRY_MYSQL(execute_mysql(
+          conn_res->get(),
           boost::mysql::with_params(
               "SELECT EXISTS(SELECT 1 FROM dags WHERE dag_id = {})",
               dag_id.str()),
-          exists_res, use_awaitable);
+          exists_res));
       if (!as_bool(exists_res.rows().at(0).at(0))) {
         co_return fail(Error::NotFound);
       }
@@ -920,10 +1080,11 @@ auto MySQLDatabase::get_dag_active(const DAGId &dag_id) -> task<Result<bool>> {
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT is_active FROM dags WHERE dag_id = {}", dag_id.str()),
-        res, use_awaitable);
+        res));
     if (res.rows().empty()) {
       co_return fail(Error::NotFound);
     }
@@ -941,16 +1102,45 @@ auto MySQLDatabase::delete_dag(const DAGId &dag_id) -> task<Result<void>> {
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params("DELETE FROM dags WHERE dag_id = {}",
                                   dag_id.str()),
-        res, use_awaitable);
+        res));
     conn_res->return_without_reset();
     if (res.affected_rows() == 0) {
       co_return fail(Error::NotFound);
     }
     co_return ok();
   });
+}
+
+auto MySQLDatabase::get_tasks_on_connection(
+    boost::mysql::any_connection &conn, int64_t dag_rowid)
+    -> task<Result<std::vector<TaskConfig>>> {
+  boost::mysql::results res;
+  DAGFORGE_TRY_MYSQL(execute_mysql(
+      conn,
+      boost::mysql::with_params(
+          "SELECT task_rowid, task_id, name, command, working_dir, "
+          "dag_rowid, executor, "
+          "executor_config, timeout, retry_interval, max_retries, "
+          "trigger_rule, is_branch, branch_xcom_key, depends_on_past, "
+          "xcom_push, xcom_pull "
+          "FROM dag_tasks WHERE dag_rowid = {} ORDER BY task_rowid",
+          dag_rowid),
+      res));
+
+  std::vector<TaskConfig> out;
+  out.reserve(res.rows().size());
+  for (auto row : res.rows()) {
+    auto task = to_task_config(row);
+    if (!task) {
+      co_return fail(task.error());
+    }
+    out.emplace_back(std::move(*task));
+  }
+  co_return ok(std::move(out));
 }
 
 auto MySQLDatabase::get_tasks(const DAGId &dag_id)
@@ -966,29 +1156,13 @@ auto MySQLDatabase::get_tasks(const DAGId &dag_id)
       co_return fail(dag_rowid_res.error());
     }
 
-    boost::mysql::results res;
-    co_await conn_res->get().async_execute(
-        boost::mysql::with_params(
-            "SELECT task_rowid, task_id, name, command, working_dir, "
-            "dag_rowid, executor, "
-            "executor_config, timeout, retry_interval, max_retries, "
-            "trigger_rule, is_branch, branch_xcom_key, depends_on_past, "
-            "xcom_push, xcom_pull "
-            "FROM dag_tasks WHERE dag_rowid = {} ORDER BY task_rowid",
-            *dag_rowid_res),
-        res, use_awaitable);
-
-    std::vector<TaskConfig> out;
-    out.reserve(res.rows().size());
-    for (auto row : res.rows()) {
-      auto task = to_task_config(row);
-      if (!task) {
-        co_return fail(task.error());
-      }
-      out.emplace_back(std::move(*task));
+    auto tasks_res =
+        co_await get_tasks_on_connection(conn_res->get(), *dag_rowid_res);
+    if (!tasks_res) {
+      co_return fail(tasks_res.error());
     }
     conn_res->return_without_reset();
-    co_return ok(std::move(out));
+    co_return ok(std::move(*tasks_res));
   });
 }
 
@@ -1007,7 +1181,8 @@ auto MySQLDatabase::get_task_dependencies(const DAGId &dag_id)
         }
 
         boost::mysql::results res;
-        co_await conn_res->get().async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn_res->get(),
             boost::mysql::with_params(
                 "SELECT t.task_id, u.task_id "
                 "FROM task_dependencies d "
@@ -1015,7 +1190,7 @@ auto MySQLDatabase::get_task_dependencies(const DAGId &dag_id)
                 "JOIN dag_tasks u ON u.task_rowid = d.depends_on_task_rowid "
                 "WHERE d.dag_rowid = {}",
                 *dag_rowid_res),
-            res, use_awaitable);
+            res));
 
         std::vector<std::pair<TaskId, TaskId>> out;
         out.reserve(res.rows().size());
@@ -1036,7 +1211,8 @@ auto MySQLDatabase::get_dag(const DAGId &dag_id) -> task<Result<DAGInfo>> {
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params("SELECT dag_rowid, dag_id, version, name, "
                                   "description, tags, cron, timezone, "
                                   "max_concurrent_runs, catchup, is_active, "
@@ -1044,7 +1220,7 @@ auto MySQLDatabase::get_dag(const DAGId &dag_id) -> task<Result<DAGInfo>> {
                                   "created_at, updated_at, retention_days "
                                   "FROM dags WHERE dag_id = {}",
                                   dag_id.str()),
-        res, use_awaitable);
+        res));
 
     if (res.rows().empty()) {
       co_return fail(Error::NotFound);
@@ -1090,16 +1266,21 @@ auto MySQLDatabase::get_dag_by_rowid(int64_t dag_rowid)
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT dag_id FROM dags WHERE dag_rowid = {}", dag_rowid),
-        res, use_awaitable);
+        res));
     if (res.rows().empty()) {
       co_return fail(Error::NotFound);
     }
     auto dag_id = DAGId{as_str(res.rows().at(0).at(0))};
     conn_res->return_without_reset();
-    co_return co_await get_dag(dag_id);
+    auto dag_res = co_await get_dag(dag_id);
+    if (!dag_res) {
+      co_return fail(dag_res.error());
+    }
+    co_return ok(std::move(*dag_res));
   });
 }
 
@@ -1111,14 +1292,15 @@ auto MySQLDatabase::list_dags() -> task<Result<std::vector<DAGInfo>>> {
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         "SELECT dag_rowid, dag_id, version, name, description, tags, cron, "
         "timezone, "
         "max_concurrent_runs, catchup, is_active, is_paused, start_date, "
         "end_date, "
         "created_at, updated_at, retention_days "
         "FROM dags ORDER BY dag_id",
-        res, use_awaitable);
+        res));
 
     std::vector<DAGInfo> out;
     out.reserve(res.rows().size());
@@ -1134,13 +1316,14 @@ auto MySQLDatabase::list_dags() -> task<Result<std::vector<DAGInfo>>> {
       }
 
       boost::mysql::results task_res;
-      co_await conn_res->get().async_execute(
+      DAGFORGE_TRY_MYSQL(execute_mysql(
+          conn_res->get(),
           "SELECT task_rowid, task_id, name, command, working_dir, "
           "dag_rowid, executor, executor_config, timeout, retry_interval, "
           "max_retries, trigger_rule, is_branch, branch_xcom_key, "
           "depends_on_past, xcom_push, xcom_pull "
           "FROM dag_tasks ORDER BY dag_rowid, task_rowid",
-          task_res, use_awaitable);
+          task_res));
 
       for (auto row : task_res.rows()) {
         const auto dag_rowid = as_i64(row.at(5));
@@ -1155,13 +1338,14 @@ auto MySQLDatabase::list_dags() -> task<Result<std::vector<DAGInfo>>> {
       }
 
       boost::mysql::results dep_res;
-      co_await conn_res->get().async_execute(
+      DAGFORGE_TRY_MYSQL(execute_mysql(
+          conn_res->get(),
           "SELECT d.dag_rowid, t.task_id, u.task_id "
           "FROM task_dependencies d "
           "JOIN dag_tasks t ON t.task_rowid = d.task_rowid "
           "JOIN dag_tasks u ON u.task_rowid = d.depends_on_task_rowid "
           "ORDER BY d.dag_rowid, d.task_rowid",
-          dep_res, use_awaitable);
+          dep_res));
 
       std::vector<std::unordered_map<TaskId, std::size_t>> task_indexes;
       task_indexes.reserve(out.size());
@@ -1209,11 +1393,12 @@ auto MySQLDatabase::list_dag_states()
         }
 
         boost::mysql::results res;
-        co_await conn_res->get().async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn_res->get(),
             "SELECT dag_rowid, dag_id, version, is_paused, created_at, "
             "updated_at "
             "FROM dags ORDER BY dag_id",
-            res, use_awaitable);
+            res));
 
         std::vector<DagStateRecord> out;
         out.reserve(res.rows().size());
@@ -1236,10 +1421,11 @@ auto MySQLDatabase::list_dag_states()
           }
 
           boost::mysql::results task_res;
-          co_await conn_res->get().async_execute(
+          DAGFORGE_TRY_MYSQL(execute_mysql(
+              conn_res->get(),
               "SELECT dag_rowid, task_id, task_rowid "
               "FROM dag_tasks ORDER BY dag_rowid, task_rowid",
-              task_res, use_awaitable);
+              task_res));
 
           for (auto row : task_res.rows()) {
             const auto dag_rowid = as_i64(row.at(0));
@@ -1281,7 +1467,8 @@ auto MySQLDatabase::save_task_on_connection(boost::mysql::any_connection &conn,
                                             const TaskConfig &task_cfg)
     -> task<Result<int64_t>> {
   boost::mysql::results res;
-  co_await conn.async_execute(
+  DAGFORGE_TRY_MYSQL(execute_mysql(
+      conn,
       boost::mysql::with_params(
           "INSERT INTO dag_tasks(dag_rowid, task_id, name, command, "
           "working_dir, executor, "
@@ -1312,7 +1499,7 @@ auto MySQLDatabase::save_task_on_connection(boost::mysql::any_connection &conn,
           task_cfg.depends_on_past,
           xcom::serialize_push_configs(task_cfg.xcom_push),
           xcom::serialize_pull_configs(task_cfg.xcom_pull)),
-      res, use_awaitable);
+      res));
   co_return ok(static_cast<int64_t>(res.last_insert_id()));
 }
 
@@ -1339,7 +1526,8 @@ auto MySQLDatabase::save_tasks_on_connection(boost::mysql::any_connection &conn,
   };
 
   boost::mysql::results upsert_res;
-  co_await conn.async_execute(
+  DAGFORGE_TRY_MYSQL(execute_mysql(
+      conn,
       boost::mysql::with_params(
           "INSERT INTO dag_tasks(dag_rowid, task_id, name, command, "
           "working_dir, executor, executor_config, timeout, retry_interval, "
@@ -1356,7 +1544,7 @@ auto MySQLDatabase::save_tasks_on_connection(boost::mysql::any_connection &conn,
           "depends_on_past=VALUES(depends_on_past), "
           "xcom_push=VALUES(xcom_push), xcom_pull=VALUES(xcom_pull)",
           boost::mysql::sequence(std::cref(tasks), format_task)),
-      upsert_res, use_awaitable);
+      upsert_res));
 
   std::vector<std::string> task_ids;
   task_ids.reserve(tasks.size());
@@ -1370,13 +1558,14 @@ auto MySQLDatabase::save_tasks_on_connection(boost::mysql::any_connection &conn,
   };
 
   boost::mysql::results rowids_res;
-  co_await conn.async_execute(
+  DAGFORGE_TRY_MYSQL(execute_mysql(
+      conn,
       boost::mysql::with_params(
           "SELECT task_id, task_rowid FROM dag_tasks WHERE dag_rowid = {} "
           "AND task_id IN ({})",
           dag_rowid,
           boost::mysql::sequence(std::cref(task_ids), format_task_id)),
-      rowids_res, use_awaitable);
+      rowids_res));
 
   std::unordered_map<std::string, int64_t> rowids_by_task_id;
   rowids_by_task_id.reserve(rowids_res.rows().size());
@@ -1399,10 +1588,11 @@ auto MySQLDatabase::replace_task_dependencies_on_connection(
     boost::mysql::any_connection &conn, int64_t dag_rowid,
     const std::vector<TaskConfig> &tasks) -> task<Result<void>> {
   boost::mysql::results clear_res;
-  co_await conn.async_execute(
+  DAGFORGE_TRY_MYSQL(execute_mysql(
+      conn,
       boost::mysql::with_params(
           "DELETE FROM task_dependencies WHERE dag_rowid = {}", dag_rowid),
-      clear_res, use_awaitable);
+      clear_res));
 
   struct DependencyRow {
     int64_t task_rowid;
@@ -1450,13 +1640,30 @@ auto MySQLDatabase::replace_task_dependencies_on_connection(
   };
 
   boost::mysql::results insert_res;
-  co_await conn.async_execute(
+  DAGFORGE_TRY_MYSQL(execute_mysql(
+      conn,
       boost::mysql::with_params(
           "INSERT INTO task_dependencies(dag_rowid, task_rowid, "
           "depends_on_task_rowid, dependency_type) VALUES {} "
           "ON DUPLICATE KEY UPDATE dependency_type=VALUES(dependency_type)",
           boost::mysql::sequence(std::cref(rows), format_dep)),
-      insert_res, use_awaitable);
+      insert_res));
+  co_return ok();
+}
+
+auto MySQLDatabase::delete_task_on_connection(
+    boost::mysql::any_connection &conn, int64_t dag_rowid,
+    const TaskId &task_id) -> task<Result<void>> {
+  boost::mysql::results res;
+  DAGFORGE_TRY_MYSQL(execute_mysql(
+      conn,
+      boost::mysql::with_params(
+          "DELETE FROM dag_tasks WHERE dag_rowid = {} AND task_id = {}",
+          dag_rowid, task_id.str()),
+      res));
+  if (res.affected_rows() == 0) {
+    co_return fail(Error::NotFound);
+  }
   co_return ok();
 }
 
@@ -1473,17 +1680,12 @@ auto MySQLDatabase::delete_task(const DAGId &dag_id, const TaskId &task_id)
       co_return fail(dag_rowid_res.error());
     }
 
-    boost::mysql::results res;
-    co_await conn_res->get().async_execute(
-        boost::mysql::with_params(
-            "DELETE FROM dag_tasks WHERE dag_rowid = {} AND task_id = {}",
-            *dag_rowid_res, task_id.str()),
-        res, use_awaitable);
-
-    conn_res->return_without_reset();
-    if (res.affected_rows() == 0) {
-      co_return fail(Error::NotFound);
+    auto delete_res = co_await delete_task_on_connection(
+        conn_res->get(), *dag_rowid_res, task_id);
+    if (!delete_res) {
+      co_return fail(delete_res.error());
     }
+    conn_res->return_without_reset();
     co_return ok();
   });
 }
@@ -1516,13 +1718,14 @@ auto MySQLDatabase::save_task_dependencies(
     };
 
     boost::mysql::results rows_res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT task_id, task_rowid FROM dag_tasks "
             "WHERE dag_rowid = {} AND task_id IN ({})",
             *dag_rowid_res,
             boost::mysql::sequence(std::cref(lookup_task_ids), format_task_id)),
-        rows_res, use_awaitable);
+        rows_res));
 
     std::unordered_map<std::string, std::int64_t> task_rowid_by_id;
     task_rowid_by_id.reserve(rows_res.rows().size());
@@ -1537,11 +1740,12 @@ auto MySQLDatabase::save_task_dependencies(
     const auto task_rowid = it_task_rowid->second;
 
     boost::mysql::results del_res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params("DELETE FROM task_dependencies WHERE "
                                   "dag_rowid = {} AND task_rowid = {}",
                                   *dag_rowid_res, task_rowid),
-        del_res, use_awaitable);
+        del_res));
 
     if (dep_task_ids.empty()) {
       conn_res->return_without_reset();
@@ -1574,14 +1778,15 @@ auto MySQLDatabase::save_task_dependencies(
     };
 
     boost::mysql::results ins_res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "INSERT INTO task_dependencies(dag_rowid, task_rowid, "
             "depends_on_task_rowid, "
             "dependency_type) VALUES {} "
             "ON DUPLICATE KEY UPDATE dependency_type=VALUES(dependency_type)",
             boost::mysql::sequence(std::cref(dep_rowids), format_dep)),
-        ins_res, use_awaitable);
+        ins_res));
 
     conn_res->return_without_reset();
     co_return ok();
@@ -1601,11 +1806,12 @@ auto MySQLDatabase::clear_task_dependencies(const DAGId &dag_id)
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "DELETE FROM task_dependencies WHERE dag_rowid = {}",
             *dag_rowid_res),
-        res, use_awaitable);
+        res));
     conn_res->return_without_reset();
     co_return ok();
   });
@@ -1644,12 +1850,13 @@ auto MySQLDatabase::create_run_with_task_instances_transaction(
 
         auto &conn = conn_res->get();
         boost::mysql::results tx_res;
-        co_await conn.async_execute("START TRANSACTION", tx_res, use_awaitable);
+        DAGFORGE_TRY_MYSQL(
+            execute_mysql(conn, "START TRANSACTION", tx_res));
 
         auto rowid_res = co_await save_dag_run_on_connection(conn, run);
         if (!rowid_res) {
           boost::mysql::results rollback_res;
-          co_await conn.async_execute("ROLLBACK", rollback_res, use_awaitable);
+          DAGFORGE_TRY_MYSQL(execute_mysql(conn, "ROLLBACK", rollback_res));
           co_return fail(rowid_res.error());
         }
 
@@ -1663,12 +1870,12 @@ auto MySQLDatabase::create_run_with_task_instances_transaction(
             to_millis(run.execution_date()));
         if (!batch_res) {
           boost::mysql::results rollback_res;
-          co_await conn.async_execute("ROLLBACK", rollback_res, use_awaitable);
+          DAGFORGE_TRY_MYSQL(execute_mysql(conn, "ROLLBACK", rollback_res));
           co_return fail(batch_res.error());
         }
 
         boost::mysql::results commit_res;
-        co_await conn.async_execute("COMMIT", commit_res, use_awaitable);
+        DAGFORGE_TRY_MYSQL(execute_mysql(conn, "COMMIT", commit_res));
         conn_res->return_without_reset();
         co_return rowid_res;
       },
@@ -1679,7 +1886,7 @@ auto MySQLDatabase::create_run_with_task_instances_transaction(
 
 auto MySQLDatabase::acquire_batch_writer_connection()
     -> task<Result<boost::mysql::pooled_connection>> {
-  co_return co_await get_connection();
+  return get_connection();
 }
 
 auto MySQLDatabase::create_runs_with_task_instances_transaction(
@@ -1690,7 +1897,7 @@ auto MySQLDatabase::create_runs_with_task_instances_transaction(
     co_return ok(std::vector<int64_t>{});
   }
 
-  co_return co_await mysql_try(
+  auto rowids_res = co_await mysql_try(
       [&]() -> task<Result<std::vector<int64_t>>> {
         auto format_run = [](const RunInsertBundle &bundle,
                              boost::mysql::format_context_base &ctx) {
@@ -1709,10 +1916,12 @@ auto MySQLDatabase::create_runs_with_task_instances_transaction(
         };
 
         boost::mysql::results tx_res;
-        co_await conn.async_execute("START TRANSACTION", tx_res, use_awaitable);
+        DAGFORGE_TRY_MYSQL(
+            execute_mysql(conn, "START TRANSACTION", tx_res));
 
         boost::mysql::results run_insert_res;
-        co_await conn.async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn,
             boost::mysql::with_params(
                 "INSERT INTO dag_runs(dag_run_id, dag_rowid, dag_version, "
                 "state, "
@@ -1726,15 +1935,16 @@ auto MySQLDatabase::create_runs_with_task_instances_transaction(
                 "finished_at=VALUES(finished_at), "
                 "execution_date=VALUES(execution_date)",
                 boost::mysql::sequence(std::cref(bundles), format_run)),
-            run_insert_res, use_awaitable);
+            run_insert_res));
 
         boost::mysql::results rowid_res;
-        co_await conn.async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn,
             boost::mysql::with_params(
                 "SELECT dag_run_id, run_rowid FROM dag_runs "
                 "WHERE dag_run_id IN ({})",
                 boost::mysql::sequence(std::cref(bundles), format_run_id)),
-            rowid_res, use_awaitable);
+            rowid_res));
 
         std::unordered_map<std::string, int64_t> rowids_by_run_id;
         rowids_by_run_id.reserve(rowid_res.rows().size());
@@ -1757,8 +1967,7 @@ auto MySQLDatabase::create_runs_with_task_instances_transaction(
           const auto it = rowids_by_run_id.find(bundle.run.id().str());
           if (it == rowids_by_run_id.end()) {
             boost::mysql::results rollback_res;
-            co_await conn.async_execute("ROLLBACK", rollback_res,
-                                        use_awaitable);
+            DAGFORGE_TRY_MYSQL(execute_mysql(conn, "ROLLBACK", rollback_res));
             co_return fail(Error::DatabaseQueryFailed);
           }
 
@@ -1794,7 +2003,8 @@ auto MySQLDatabase::create_runs_with_task_instances_transaction(
           };
 
           boost::mysql::results task_upsert_res;
-          co_await conn.async_execute(
+          DAGFORGE_TRY_MYSQL(execute_mysql(
+              conn,
               boost::mysql::with_params(
                   "INSERT INTO task_instances(run_rowid, task_rowid, attempt, "
                   "state, worker_id, last_heartbeat, execution_date, "
@@ -1813,15 +2023,19 @@ auto MySQLDatabase::create_runs_with_task_instances_transaction(
                   boost::mysql::sequence(std::cref(flattened_instances),
                                          format_ti),
                   util::enum_to_code(TaskState::Running)),
-              task_upsert_res, use_awaitable);
+              task_upsert_res));
         }
 
         boost::mysql::results commit_res;
-        co_await conn.async_execute("COMMIT", commit_res, use_awaitable);
+        DAGFORGE_TRY_MYSQL(execute_mysql(conn, "COMMIT", commit_res));
         co_return ok(std::move(rowids));
       },
       "create_runs_with_task_instances_transaction",
       std::format("batch_size={}", bundles.size()));
+  if (!rowids_res) {
+    co_return fail(rowids_res.error());
+  }
+  co_return ok(std::move(*rowids_res));
 }
 
 auto MySQLDatabase::update_dag_run_state(const DAGRunId &id, DAGRunState state)
@@ -1832,11 +2046,12 @@ auto MySQLDatabase::update_dag_run_state(const DAGRunId &id, DAGRunState state)
       co_return fail(conn_res.error());
     }
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "UPDATE dag_runs SET state = {} WHERE dag_run_id = {}",
             util::enum_to_code(state), id.str()),
-        res, use_awaitable);
+        res));
 
     conn_res->return_without_reset();
     if (res.affected_rows() == 0) {
@@ -1854,10 +2069,11 @@ auto MySQLDatabase::get_dag_run_state(const DAGRunId &id)
       co_return fail(conn_res.error());
     }
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT state FROM dag_runs WHERE dag_run_id = {}", id.str()),
-        res, use_awaitable);
+        res));
     if (res.rows().empty()) {
       co_return fail(Error::NotFound);
     }
@@ -1876,12 +2092,13 @@ auto MySQLDatabase::get_incomplete_dag_runs()
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT dag_run_id FROM dag_runs WHERE state IN ({}, {})",
             util::enum_to_code(DAGRunState::Queued),
             util::enum_to_code(DAGRunState::Running)),
-        res, use_awaitable);
+        res));
 
     std::vector<DAGRunId> out;
     out.reserve(res.rows().size());
@@ -1896,7 +2113,7 @@ auto MySQLDatabase::get_incomplete_dag_runs()
 auto MySQLDatabase::save_task_instance(const DAGRunId &run_id,
                                        const TaskInstanceInfo &info)
     -> task<Result<void>> {
-  co_return co_await update_task_instance(run_id, info);
+  return update_task_instance(run_id, info);
 }
 
 auto MySQLDatabase::update_task_instance(const DAGRunId &run_id,
@@ -1913,12 +2130,13 @@ auto MySQLDatabase::update_task_instance(const DAGRunId &run_id,
         std::int64_t execution_date_ms = -1;
         if (run_rowid <= 0) {
           boost::mysql::results run_res;
-          co_await conn_res->get().async_execute(
+          DAGFORGE_TRY_MYSQL(execute_mysql(
+              conn_res->get(),
               boost::mysql::with_params(
                   "SELECT run_rowid, execution_date FROM dag_runs "
                   "WHERE dag_run_id = {}",
                   run_id.str()),
-              run_res, use_awaitable);
+              run_res));
           if (run_res.rows().empty()) {
             co_return fail(Error::NotFound);
           }
@@ -1927,11 +2145,12 @@ auto MySQLDatabase::update_task_instance(const DAGRunId &run_id,
         }
         if (execution_date_ms < 0) {
           boost::mysql::results run_res;
-          co_await conn_res->get().async_execute(
+          DAGFORGE_TRY_MYSQL(execute_mysql(
+              conn_res->get(),
               boost::mysql::with_params(
                   "SELECT execution_date FROM dag_runs WHERE run_rowid = {}",
                   run_rowid),
-              run_res, use_awaitable);
+              run_res));
           if (run_res.rows().empty()) {
             co_return fail(Error::NotFound);
           }
@@ -1944,7 +2163,8 @@ auto MySQLDatabase::update_task_instance(const DAGRunId &run_id,
                 : 0;
 
         boost::mysql::results res;
-        co_await conn_res->get().async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn_res->get(),
             boost::mysql::with_params(
                 "INSERT INTO task_instances(run_rowid, task_rowid, attempt, "
                 "state, "
@@ -1968,7 +2188,7 @@ auto MySQLDatabase::update_task_instance(const DAGRunId &run_id,
                 to_millis(info.started_at), to_millis(info.finished_at), now_ms,
                 info.exit_code, info.error_message, info.error_type,
                 util::enum_to_code(TaskState::Running)),
-            res, use_awaitable);
+            res));
 
         conn_res->return_without_reset();
         co_return ok();
@@ -1990,18 +2210,20 @@ auto MySQLDatabase::get_task_instances(const DAGRunId &run_id)
         }
 
         boost::mysql::results run_res;
-        co_await conn_res->get().async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn_res->get(),
             boost::mysql::with_params(
                 "SELECT run_rowid FROM dag_runs WHERE dag_run_id = {}",
                 run_id.str()),
-            run_res, use_awaitable);
+            run_res));
         if (run_res.rows().empty()) {
           co_return fail(Error::NotFound);
         }
         auto run_rowid = as_i64(run_res.rows().at(0).at(0));
 
         boost::mysql::results res;
-        co_await conn_res->get().async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn_res->get(),
             boost::mysql::with_params(
                 "SELECT ti.task_rowid, t.task_id, ti.attempt, ti.state, "
                 "ti.started_at, ti.finished_at, ti.exit_code, "
@@ -2010,7 +2232,7 @@ auto MySQLDatabase::get_task_instances(const DAGRunId &run_id)
                 "JOIN dag_tasks t ON t.task_rowid = ti.task_rowid "
                 "WHERE ti.run_rowid = {}",
                 run_rowid),
-            res, use_awaitable);
+            res));
 
         std::vector<TaskInstanceInfo> out;
         out.reserve(res.rows().size());
@@ -2067,7 +2289,8 @@ auto MySQLDatabase::list_run_history(std::size_t limit)
         }
 
         boost::mysql::results res;
-        co_await conn_res->get().async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn_res->get(),
             boost::mysql::with_params(
                 "SELECT r.dag_run_id, d.dag_id, r.dag_rowid, r.run_rowid, "
                 "r.dag_version, "
@@ -2077,7 +2300,7 @@ auto MySQLDatabase::list_run_history(std::size_t limit)
                 "FROM dag_runs r JOIN dags d ON d.dag_rowid = r.dag_rowid "
                 "ORDER BY r.execution_date DESC LIMIT {}",
                 limit),
-            res, use_awaitable);
+            res));
 
         std::vector<RunHistoryEntry> out;
         out.reserve(res.rows().size());
@@ -2099,7 +2322,8 @@ auto MySQLDatabase::list_dag_run_history(const DAGId &dag_id, std::size_t limit)
         }
 
         boost::mysql::results res;
-        co_await conn_res->get().async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn_res->get(),
             boost::mysql::with_params(
                 "SELECT r.dag_run_id, d.dag_id, r.dag_rowid, r.run_rowid, "
                 "r.dag_version, "
@@ -2110,7 +2334,7 @@ auto MySQLDatabase::list_dag_run_history(const DAGId &dag_id, std::size_t limit)
                 "WHERE d.dag_id = {} "
                 "ORDER BY r.execution_date DESC LIMIT {}",
                 dag_id.str(), limit),
-            res, use_awaitable);
+            res));
 
         std::vector<RunHistoryEntry> out;
         out.reserve(res.rows().size());
@@ -2132,7 +2356,8 @@ auto MySQLDatabase::get_run_history(const DAGRunId &run_id)
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT r.dag_run_id, d.dag_id, r.dag_rowid, r.run_rowid, "
             "r.dag_version, "
@@ -2142,7 +2367,7 @@ auto MySQLDatabase::get_run_history(const DAGRunId &run_id)
             "FROM dag_runs r JOIN dags d ON d.dag_rowid = r.dag_rowid "
             "WHERE r.dag_run_id = {} LIMIT 1",
             run_id.str()),
-        res, use_awaitable);
+        res));
 
     if (res.rows().empty()) {
       co_return fail(Error::NotFound);
@@ -2165,7 +2390,8 @@ auto MySQLDatabase::save_xcom(const DAGRunId &run_id, const TaskId &task_id,
         }
 
         boost::mysql::results key_res;
-        co_await conn_res->get().async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn_res->get(),
             boost::mysql::with_params(
                 "SELECT r.run_rowid, t.task_rowid "
                 "FROM dag_runs r "
@@ -2173,7 +2399,7 @@ auto MySQLDatabase::save_xcom(const DAGRunId &run_id, const TaskId &task_id,
                 "JOIN dag_tasks t ON t.dag_rowid = d.dag_rowid "
                 "WHERE r.dag_run_id = {} AND t.task_id = {}",
                 run_id.str(), task_id.str()),
-            key_res, use_awaitable);
+            key_res));
         if (key_res.rows().empty()) {
           co_return fail(Error::NotFound);
         }
@@ -2182,7 +2408,8 @@ auto MySQLDatabase::save_xcom(const DAGRunId &run_id, const TaskId &task_id,
         const auto task_rowid = as_i64(key_res.rows().at(0).at(1));
 
         boost::mysql::results res;
-        co_await conn_res->get().async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn_res->get(),
             boost::mysql::with_params(
                 "INSERT INTO xcom_values(run_rowid, task_rowid, `key`, value, "
                 "value_type, byte_size, "
@@ -2194,7 +2421,7 @@ auto MySQLDatabase::save_xcom(const DAGRunId &run_id, const TaskId &task_id,
                 run_rowid, task_rowid, key, value_json,
                 static_cast<int>(value_json.size()),
                 to_millis(std::chrono::system_clock::now())),
-            res, use_awaitable);
+            res));
 
         conn_res->return_without_reset();
         co_return ok();
@@ -2213,7 +2440,8 @@ auto MySQLDatabase::get_xcom(const DAGRunId &run_id, const TaskId &task_id,
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT x.`key`, CAST(x.value AS CHAR), x.byte_size, x.created_at "
             "FROM xcom_values x "
@@ -2221,7 +2449,7 @@ auto MySQLDatabase::get_xcom(const DAGRunId &run_id, const TaskId &task_id,
             "JOIN dag_tasks t ON t.task_rowid = x.task_rowid "
             "WHERE r.dag_run_id = {} AND t.task_id = {} AND x.`key` = {}",
             run_id.str(), task_id.str(), std::string(key)),
-        res, use_awaitable);
+        res));
 
     if (res.rows().empty()) {
       co_return fail(Error::NotFound);
@@ -2249,7 +2477,8 @@ auto MySQLDatabase::get_task_xcoms(const DAGRunId &run_id,
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT x.`key`, CAST(x.value AS CHAR), x.byte_size, x.created_at "
             "FROM xcom_values x "
@@ -2257,7 +2486,7 @@ auto MySQLDatabase::get_task_xcoms(const DAGRunId &run_id,
             "JOIN dag_tasks t ON t.task_rowid = x.task_rowid "
             "WHERE r.dag_run_id = {} AND t.task_id = {}",
             run_id.str(), task_id.str()),
-        res, use_awaitable);
+        res));
 
     std::vector<XComEntry> out;
     out.reserve(res.rows().size());
@@ -2286,7 +2515,8 @@ auto MySQLDatabase::get_run_xcoms(const DAGRunId &run_id)
         }
 
         boost::mysql::results res;
-        co_await conn_res->get().async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn_res->get(),
             boost::mysql::with_params(
                 "SELECT t.task_id, x.`key`, CAST(x.value AS CHAR), "
                 "x.byte_size, x.created_at "
@@ -2295,7 +2525,7 @@ auto MySQLDatabase::get_run_xcoms(const DAGRunId &run_id)
                 "JOIN dag_tasks t ON t.task_rowid = x.task_rowid "
                 "WHERE r.dag_run_id = {}",
                 run_id.str()),
-            res, use_awaitable);
+            res));
 
         std::vector<XComTaskEntry> out;
         out.reserve(res.rows().size());
@@ -2324,21 +2554,23 @@ auto MySQLDatabase::delete_run_xcoms(const DAGRunId &run_id)
     }
 
     boost::mysql::results run_res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT run_rowid FROM dag_runs WHERE dag_run_id = {}",
             run_id.str()),
-        run_res, use_awaitable);
+        run_res));
     if (run_res.rows().empty()) {
       co_return fail(Error::NotFound);
     }
 
     boost::mysql::results del_res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "DELETE FROM xcom_values WHERE run_rowid = {}",
             as_i64(run_res.rows().at(0).at(0))),
-        del_res, use_awaitable);
+        del_res));
 
     conn_res->return_without_reset();
     co_return ok();
@@ -2354,12 +2586,13 @@ auto MySQLDatabase::get_last_execution_date(const DAGId &dag_id)
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT MAX(r.execution_date) FROM dag_runs r "
             "JOIN dags d ON d.dag_rowid = r.dag_rowid WHERE d.dag_id = {}",
             dag_id.str()),
-        res, use_awaitable);
+        res));
 
     if (res.rows().empty() || res.rows().at(0).at(0).is_null()) {
       co_return fail(Error::NotFound);
@@ -2372,7 +2605,7 @@ auto MySQLDatabase::get_last_execution_date(const DAGId &dag_id)
 
 auto MySQLDatabase::run_exists(const DAGId &dag_id, TimePoint execution_time)
     -> task<Result<bool>> {
-  co_return co_await has_dag_run(dag_id, execution_time);
+  return has_dag_run(dag_id, execution_time);
 }
 
 auto MySQLDatabase::has_dag_run(const DAGId &dag_id, TimePoint execution_date)
@@ -2384,7 +2617,8 @@ auto MySQLDatabase::has_dag_run(const DAGId &dag_id, TimePoint execution_date)
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT EXISTS("
             "SELECT 1 FROM dag_runs r "
@@ -2392,7 +2626,7 @@ auto MySQLDatabase::has_dag_run(const DAGId &dag_id, TimePoint execution_date)
             "WHERE d.dag_id = {} AND r.execution_date = {} LIMIT 1"
             ")",
             dag_id.str(), to_millis(execution_date)),
-        res, use_awaitable);
+        res));
 
     auto exists = !res.rows().empty() && as_bool(res.rows().at(0).at(0));
     conn_res->return_without_reset();
@@ -2410,7 +2644,8 @@ auto MySQLDatabase::list_dag_run_execution_dates(const DAGId &dag_id,
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT r.execution_date "
             "FROM dag_runs r "
@@ -2418,7 +2653,7 @@ auto MySQLDatabase::list_dag_run_execution_dates(const DAGId &dag_id,
             "WHERE d.dag_id = {} AND r.execution_date BETWEEN {} AND {} "
             "ORDER BY r.execution_date",
             dag_id.str(), to_millis(start), to_millis(end)),
-        res, use_awaitable);
+        res));
 
     std::vector<TimePoint> execution_dates;
     execution_dates.reserve(res.rows().size());
@@ -2444,14 +2679,15 @@ auto MySQLDatabase::save_watermark(const DAGId &dag_id, TimePoint ts)
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params("INSERT INTO dag_watermarks(dag_rowid, "
                                   "last_scheduled_at, last_success_at, "
                                   "last_failure_at) VALUES({}, {}, 0, 0) "
                                   "ON DUPLICATE KEY UPDATE "
                                   "last_scheduled_at=VALUES(last_scheduled_at)",
                                   *dag_rowid_res, to_millis(ts)),
-        res, use_awaitable);
+        res));
 
     conn_res->return_without_reset();
     co_return ok();
@@ -2471,11 +2707,12 @@ auto MySQLDatabase::get_watermark(const DAGId &dag_id)
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT last_scheduled_at FROM dag_watermarks WHERE dag_rowid = {}",
             *dag_rowid_res),
-        res, use_awaitable);
+        res));
 
     if (res.rows().empty()) {
       co_return fail(Error::NotFound);
@@ -2499,14 +2736,15 @@ auto MySQLDatabase::update_watermark_success(const DAGId &dag_id, TimePoint ts)
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "INSERT INTO dag_watermarks(dag_rowid, last_scheduled_at, "
             "last_success_at, "
             "last_failure_at) VALUES({}, 0, {}, 0) "
             "ON DUPLICATE KEY UPDATE last_success_at=VALUES(last_success_at)",
             *dag_rowid_res, to_millis(ts)),
-        res, use_awaitable);
+        res));
 
     conn_res->return_without_reset();
     co_return ok();
@@ -2526,14 +2764,15 @@ auto MySQLDatabase::update_watermark_failure(const DAGId &dag_id, TimePoint ts)
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "INSERT INTO dag_watermarks(dag_rowid, last_scheduled_at, "
             "last_success_at, "
             "last_failure_at) VALUES({}, 0, 0, {}) "
             "ON DUPLICATE KEY UPDATE last_failure_at=VALUES(last_failure_at)",
             *dag_rowid_res, to_millis(ts)),
-        res, use_awaitable);
+        res));
 
     conn_res->return_without_reset();
     co_return ok();
@@ -2552,13 +2791,14 @@ auto MySQLDatabase::get_previous_task_state(std::int64_t task_rowid,
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT state FROM task_instances "
             "WHERE task_rowid = {} AND execution_date < {} "
             "ORDER BY execution_date DESC, attempt DESC LIMIT 1",
             task_rowid, to_millis(current_execution_date)),
-        res, use_awaitable);
+        res));
 
     if (res.rows().empty()) {
       conn_res->return_without_reset();
@@ -2587,8 +2827,8 @@ auto MySQLDatabase::clear_all_dag_data() -> task<Result<void>> {
     }
 
     std::vector<boost::mysql::stage_response> stage_responses;
-    co_await conn_res->get().async_run_pipeline(req, stage_responses,
-                                                use_awaitable);
+    DAGFORGE_TRY_MYSQL(
+        run_pipeline_mysql(conn_res->get(), req, stage_responses));
 
     conn_res->return_without_reset();
     co_return ok();
@@ -2603,7 +2843,8 @@ auto MySQLDatabase::mark_incomplete_runs_failed() -> task<Result<std::size_t>> {
     }
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "UPDATE task_instances ti "
             "JOIN dag_runs r ON r.run_rowid = ti.run_rowid "
@@ -2620,16 +2861,17 @@ auto MySQLDatabase::mark_incomplete_runs_failed() -> task<Result<std::size_t>> {
             util::enum_to_code(DAGRunState::Queued),
             util::enum_to_code(DAGRunState::Running),
             util::enum_to_code(TaskState::Running)),
-        res, use_awaitable);
+        res));
 
     boost::mysql::results run_res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "UPDATE dag_runs SET state = {} WHERE state IN ({}, {})",
             util::enum_to_code(DAGRunState::Failed),
             util::enum_to_code(DAGRunState::Queued),
             util::enum_to_code(DAGRunState::Running)),
-        run_res, use_awaitable);
+        run_res));
 
     conn_res->return_without_reset();
     co_return ok(static_cast<std::size_t>(run_res.affected_rows()));
@@ -2648,7 +2890,7 @@ auto MySQLDatabase::claim_task_instances(std::size_t limit,
 
     auto &conn = conn_res->get();
     boost::mysql::results tx_res;
-    co_await conn.async_execute("START TRANSACTION", tx_res, use_awaitable);
+    DAGFORGE_TRY_MYSQL(execute_mysql(conn, "START TRANSACTION", tx_res));
 
     struct QueuedTaskCandidate {
       int64_t run_rowid{0};
@@ -2660,7 +2902,8 @@ auto MySQLDatabase::claim_task_instances(std::size_t limit,
     auto fetch_candidates =
         [&](TaskState state) -> task<Result<std::vector<QueuedTaskCandidate>>> {
       boost::mysql::results res;
-      co_await conn.async_execute(
+      DAGFORGE_TRY_MYSQL(execute_mysql(
+          conn,
           boost::mysql::with_params(
               "SELECT run_rowid, task_rowid, attempt, execution_date "
               "FROM task_instances "
@@ -2668,7 +2911,7 @@ auto MySQLDatabase::claim_task_instances(std::size_t limit,
               "ORDER BY execution_date ASC "
               "LIMIT {} FOR UPDATE SKIP LOCKED",
               util::enum_to_code(state), limit),
-          res, use_awaitable);
+          res));
       std::vector<QueuedTaskCandidate> out;
       out.reserve(res.rows().size());
       for (auto row : res.rows()) {
@@ -2685,13 +2928,13 @@ auto MySQLDatabase::claim_task_instances(std::size_t limit,
     auto retrying_res = co_await fetch_candidates(TaskState::Retrying);
     if (!retrying_res) {
       boost::mysql::results rollback_res;
-      co_await conn.async_execute("ROLLBACK", rollback_res, use_awaitable);
+      DAGFORGE_TRY_MYSQL(execute_mysql(conn, "ROLLBACK", rollback_res));
       co_return fail(retrying_res.error());
     }
     auto ready_res = co_await fetch_candidates(TaskState::Ready);
     if (!ready_res) {
       boost::mysql::results rollback_res;
-      co_await conn.async_execute("ROLLBACK", rollback_res, use_awaitable);
+      DAGFORGE_TRY_MYSQL(execute_mysql(conn, "ROLLBACK", rollback_res));
       co_return fail(ready_res.error());
     }
 
@@ -2732,7 +2975,7 @@ auto MySQLDatabase::claim_task_instances(std::size_t limit,
 
     if (selected.empty()) {
       boost::mysql::results commit_res;
-      co_await conn.async_execute("COMMIT", commit_res, use_awaitable);
+      DAGFORGE_TRY_MYSQL(execute_mysql(conn, "COMMIT", commit_res));
       conn_res->return_without_reset();
       co_return ok(std::vector<ClaimedTaskInstance>{});
     }
@@ -2760,7 +3003,8 @@ auto MySQLDatabase::claim_task_instances(std::size_t limit,
     };
 
     boost::mysql::results upd_res;
-    co_await conn.async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn,
         boost::mysql::with_params(
             "UPDATE task_instances "
             "SET state={}, worker_id={}, last_heartbeat={}, "
@@ -2772,17 +3016,18 @@ auto MySQLDatabase::claim_task_instances(std::size_t limit,
             boost::mysql::sequence(std::cref(claim_keys), format_claim_key),
             util::enum_to_code(TaskState::Retrying),
             util::enum_to_code(TaskState::Ready)),
-        upd_res, use_awaitable);
+        upd_res));
 
     boost::mysql::results claimed_res;
-    co_await conn.async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn,
         boost::mysql::with_params(
             "SELECT r.dag_run_id, ti.run_rowid, ti.task_rowid, ti.attempt "
             "FROM task_instances ti "
             "JOIN dag_runs r ON r.run_rowid = ti.run_rowid "
             "WHERE (ti.run_rowid, ti.task_rowid, ti.attempt) IN ({})",
             boost::mysql::sequence(std::cref(claim_keys), format_claim_key)),
-        claimed_res, use_awaitable);
+        claimed_res));
     claimed.clear();
     claimed.reserve(claimed_res.rows().size());
     for (auto row : claimed_res.rows()) {
@@ -2796,7 +3041,8 @@ auto MySQLDatabase::claim_task_instances(std::size_t limit,
 
     if (upd_res.affected_rows() != claim_keys.size()) {
       boost::mysql::results verify_res;
-      co_await conn.async_execute(
+      DAGFORGE_TRY_MYSQL(execute_mysql(
+          conn,
           boost::mysql::with_params(
               "SELECT r.dag_run_id, ti.run_rowid, ti.task_rowid, ti.attempt "
               "FROM task_instances ti "
@@ -2805,7 +3051,7 @@ auto MySQLDatabase::claim_task_instances(std::size_t limit,
               "AND ti.state = {}",
               boost::mysql::sequence(std::cref(claim_keys), format_claim_key),
               util::enum_to_code(TaskState::Running)),
-          verify_res, use_awaitable);
+          verify_res));
       claimed.clear();
       claimed.reserve(verify_res.rows().size());
       for (auto row : verify_res.rows()) {
@@ -2819,7 +3065,7 @@ auto MySQLDatabase::claim_task_instances(std::size_t limit,
     }
 
     boost::mysql::results commit_res;
-    co_await conn.async_execute("COMMIT", commit_res, use_awaitable);
+    DAGFORGE_TRY_MYSQL(execute_mysql(conn, "COMMIT", commit_res));
     conn_res->return_without_reset();
     co_return ok(std::move(claimed));
   });
@@ -2839,7 +3085,8 @@ auto MySQLDatabase::touch_task_heartbeat(const TaskInstanceKey &key)
     const auto now_ms = to_millis(std::chrono::system_clock::now());
 
     boost::mysql::results upd_res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "UPDATE task_instances "
             "SET last_heartbeat = GREATEST({}, last_heartbeat + 1), "
@@ -2848,7 +3095,7 @@ auto MySQLDatabase::touch_task_heartbeat(const TaskInstanceKey &key)
             "AND state={}",
             now_ms, now_ms, key.run_rowid, key.task_rowid, key.attempt,
             util::enum_to_code(TaskState::Running)),
-        upd_res, use_awaitable);
+        upd_res));
 
     if (upd_res.affected_rows() == 0) {
       conn_res->return_without_reset();
@@ -2872,7 +3119,8 @@ auto MySQLDatabase::reap_zombie_task_instances(
     const auto cutoff_ms = now_ms - heartbeat_timeout_ms;
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "UPDATE task_instances "
             "SET state={}, finished_at={}, updated_at={}, "
@@ -2885,7 +3133,7 @@ auto MySQLDatabase::reap_zombie_task_instances(
             "OR (last_heartbeat = 0 AND started_at > 0 AND started_at < {}))",
             util::enum_to_code(TaskState::Failed), now_ms, now_ms,
             util::enum_to_code(TaskState::Running), cutoff_ms, cutoff_ms),
-        res, use_awaitable);
+        res));
 
     conn_res->return_without_reset();
     co_return ok(static_cast<std::size_t>(res.affected_rows()));
@@ -2903,14 +3151,15 @@ auto MySQLDatabase::append_task_log(const DAGRunId &run_id,
           co_return fail(conn_res.error());
 
         boost::mysql::results run_res;
-        co_await conn_res->get().async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn_res->get(),
             boost::mysql::with_params("SELECT r.run_rowid, t.task_rowid "
                                       "FROM dag_runs r "
                                       "JOIN dag_tasks t ON t.dag_rowid = "
                                       "r.dag_rowid AND t.task_id = {} "
                                       "WHERE r.dag_run_id = {} LIMIT 1",
                                       task_id.str(), run_id.str()),
-            run_res, use_awaitable);
+            run_res));
 
         if (run_res.rows().empty())
           co_return fail(Error::NotFound);
@@ -2920,13 +3169,14 @@ auto MySQLDatabase::append_task_log(const DAGRunId &run_id,
         const auto now_ms = to_millis(std::chrono::system_clock::now());
 
         boost::mysql::results ins_res;
-        co_await conn_res->get().async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn_res->get(),
             boost::mysql::with_params(
                 "INSERT INTO task_logs "
                 "(run_rowid, task_rowid, attempt, stream, logged_at, content) "
                 "VALUES ({}, {}, {}, {}, {}, {})",
                 run_rowid, task_rowid, attempt, stream, now_ms, content),
-            ins_res, use_awaitable);
+            ins_res));
 
         conn_res->return_without_reset();
         co_return ok();
@@ -2947,7 +3197,8 @@ auto MySQLDatabase::get_task_logs(const DAGRunId &run_id, const TaskId &task_id,
       co_return fail(conn_res.error());
 
     boost::mysql::results res;
-    co_await conn_res->get().async_execute(
+    DAGFORGE_TRY_MYSQL(execute_mysql(
+        conn_res->get(),
         boost::mysql::with_params(
             "SELECT tl.log_rowid, tl.attempt, tl.stream, tl.logged_at, "
             "tl.content "
@@ -2959,7 +3210,7 @@ auto MySQLDatabase::get_task_logs(const DAGRunId &run_id, const TaskId &task_id,
             "LIMIT {}",
             run_id.str(), task_id.str(), attempt,
             static_cast<std::int64_t>(limit)),
-        res, use_awaitable);
+        res));
 
     std::vector<orm::TaskLogEntry> out;
     out.reserve(res.rows().size());
@@ -2988,7 +3239,8 @@ auto MySQLDatabase::get_run_logs(const DAGRunId &run_id, std::size_t limit)
           co_return fail(conn_res.error());
 
         boost::mysql::results res;
-        co_await conn_res->get().async_execute(
+        DAGFORGE_TRY_MYSQL(execute_mysql(
+            conn_res->get(),
             boost::mysql::with_params(
                 "SELECT tl.log_rowid, t.task_id, tl.attempt, tl.stream, "
                 "tl.logged_at, tl.content "
@@ -2999,7 +3251,7 @@ auto MySQLDatabase::get_run_logs(const DAGRunId &run_id, std::size_t limit)
                 "ORDER BY tl.logged_at ASC, tl.log_rowid ASC "
                 "LIMIT {}",
                 run_id.str(), static_cast<std::int64_t>(limit)),
-            res, use_awaitable);
+            res));
 
         std::vector<orm::TaskLogEntry> out;
         out.reserve(res.rows().size());

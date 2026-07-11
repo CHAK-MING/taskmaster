@@ -30,7 +30,7 @@ struct HttpClientConfig {
 
 template <typename T>
 concept HttpConnector = requires(T t, HttpRequest req) {
-  { t.request(std::move(req)) } -> std::same_as<task<HttpResponse>>;
+  { t.request(std::move(req)) } -> std::same_as<task<Result<HttpResponse>>>;
   { t.is_connected() } -> std::same_as<bool>;
 };
 
@@ -56,22 +56,22 @@ public:
                            HttpClientConfig config = {})
       -> task<Result<std::unique_ptr<HttpClient>>>;
 
-  auto request(HttpRequest req) -> task<HttpResponse>;
+  auto request(HttpRequest req) -> task<Result<HttpResponse>>;
 
   auto get(std::string_view path, const HttpHeaders &headers = {})
-      -> task<HttpResponse>;
+      -> task<Result<HttpResponse>>;
 
   auto post(std::string_view path, std::vector<uint8_t> body,
-            const HttpHeaders &headers = {}) -> task<HttpResponse>;
+            const HttpHeaders &headers = {}) -> task<Result<HttpResponse>>;
 
   auto post_json(std::string_view path, std::string_view json,
-                 const HttpHeaders &headers = {}) -> task<HttpResponse>;
+                 const HttpHeaders &headers = {}) -> task<Result<HttpResponse>>;
 
   auto delete_(std::string_view path, const HttpHeaders &headers = {})
-      -> task<HttpResponse>;
+      -> task<Result<HttpResponse>>;
 
   auto put(std::string_view path, std::vector<uint8_t> body,
-           const HttpHeaders &headers = {}) -> task<HttpResponse>;
+           const HttpHeaders &headers = {}) -> task<Result<HttpResponse>>;
 
   [[nodiscard]] auto is_connected() const noexcept -> bool;
   auto close() -> void;

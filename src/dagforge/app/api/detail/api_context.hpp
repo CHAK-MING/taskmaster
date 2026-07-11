@@ -7,6 +7,8 @@
 #include "dagforge/app/metrics_registry.hpp"
 #include "dagforge/app/services/execution_service.hpp"
 #include "dagforge/app/services/persistence_service.hpp"
+#include "dagforge/util/log.hpp"
+#include "dto_mapper.hpp"
 
 #include <array>
 #include <atomic>
@@ -15,8 +17,10 @@
 #include <span>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace dagforge::api_detail {
+
 
 inline constexpr std::array<std::uint64_t, 12> kHttpDurationBucketsNs{
     1'000'000,     5'000'000,     10'000'000,    25'000'000,
@@ -95,18 +99,31 @@ inline auto ApiContext::get_run_history_async(const DAGRunId &dag_run_id) const
     auto snapshot_res = co_await execution->get_run_snapshot(dag_run_id);
     if (snapshot_res) {
       if (auto dag_id = dag_id_from_run_id(dag_run_id)) {
-        co_return ok(DatabaseService::RunHistoryEntry{
-            .dag_run_id = (*snapshot_res)->id().clone(),
-            .dag_id = dag_id->clone(),
-            .dag_rowid = (*snapshot_res)->dag_rowid(),
-            .run_rowid = (*snapshot_res)->run_rowid(),
-            .dag_version = (*snapshot_res)->dag_version(),
+        co_return ok(to_run_history_entry(**snapshot_res, *dag_id));
+      }
+    }
+  }
+
+  auto *persistence = app.persistence_service();
+  if (!persistence) {
+    co_return fail(Error::DatabaseError);
+  }
+  auto history_res = co_await persistence->get_run_history(dag_run_id);
+  if (!history_res) {
+    co_return fail(history_res.error());
+  }
+  co_return ok(std::move(*history_res));
+}
+
+inline auto ApiContext::get_run_view_async(const DAGRunId &dag_run_id) const
+    -> task<Result<RunHistoryView>> {
+  if (auto *execution = app.execution_service()) {
+    auto snapshot_res = co_await execution->get_run_snapshot(dag_run_id);
+    if (snapshot_res) {
+      if (auto dag_id = dag_id_from_run_id(dag_run_id)) {
+        co_return ok(RunHistoryView{
+            .entry = to_run_history_entry(**snapshot_res, *dag_id),
             .state = (*snapshot_res)->state(),
-            .trigger_type = (*snapshot_res)->trigger_type(),
-            .scheduled_at = (*snapshot_res)->scheduled_at(),
-            .started_at = (*snapshot_res)->started_at(),
-            .finished_at = (*snapshot_res)->finished_at(),
-            .execution_date = (*snapshot_res)->execution_date(),
         });
       }
     }
@@ -116,18 +133,21 @@ inline auto ApiContext::get_run_history_async(const DAGRunId &dag_run_id) const
   if (!persistence) {
     co_return fail(Error::DatabaseError);
   }
-  co_return co_await persistence->get_run_history(dag_run_id);
-}
 
-inline auto ApiContext::get_run_view_async(const DAGRunId &dag_run_id) const
-    -> task<Result<RunHistoryView>> {
-  auto entry_res = co_await get_run_history_async(dag_run_id);
+  auto entry_res = co_await persistence->get_run_history(dag_run_id);
   if (!entry_res) {
     co_return fail(entry_res.error());
   }
 
+  auto resolved_state = entry_res->state;
   auto state_res = co_await app.get_run_state_async(entry_res->dag_run_id);
-  const auto resolved_state = state_res.value_or(entry_res->state);
+  if (!state_res) {
+    log::warn("get_run_view_async: falling back to persisted state for run {}: "
+              "{}",
+              entry_res->dag_run_id, state_res.error().message());
+  } else {
+    resolved_state = *state_res;
+  }
   co_return ok(RunHistoryView{
       .entry = std::move(*entry_res),
       .state = resolved_state,
@@ -141,7 +161,11 @@ inline auto ApiContext::list_dag_run_history_async(const DAGId &dag_id,
   if (!persistence) {
     co_return fail(Error::DatabaseError);
   }
-  co_return co_await persistence->list_dag_run_history(dag_id, limit);
+  auto history_res = co_await persistence->list_dag_run_history(dag_id, limit);
+  if (!history_res) {
+    co_return fail(history_res.error());
+  }
+  co_return ok(std::move(*history_res));
 }
 
 inline auto ApiContext::list_dag_run_views_async(const DAGId &dag_id,
@@ -156,7 +180,14 @@ inline auto ApiContext::list_dag_run_views_async(const DAGId &dag_id,
   views.reserve(entries_res->size());
   for (auto &entry : *entries_res) {
     auto state_res = co_await app.get_run_state_async(entry.dag_run_id);
-    const auto resolved_state = state_res.value_or(entry.state);
+    auto resolved_state = entry.state;
+    if (!state_res) {
+      log::warn("list_dag_run_views_async: falling back to persisted state for "
+                "run {}: {}",
+                entry.dag_run_id, state_res.error().message());
+    } else {
+      resolved_state = *state_res;
+    }
     views.emplace_back(RunHistoryView{
         .entry = std::move(entry),
         .state = resolved_state,
@@ -172,7 +203,11 @@ ApiContext::get_task_instances_async(const DAGRunId &dag_run_id) const
   if (!persistence) {
     co_return fail(Error::DatabaseError);
   }
-  co_return co_await persistence->get_task_instances(dag_run_id);
+  auto tasks_res = co_await persistence->get_task_instances(dag_run_id);
+  if (!tasks_res) {
+    co_return fail(tasks_res.error());
+  }
+  co_return ok(std::move(*tasks_res));
 }
 
 inline auto ApiContext::get_dag_snapshot_async(const DAGId &dag_id) const
@@ -181,7 +216,11 @@ inline auto ApiContext::get_dag_snapshot_async(const DAGId &dag_id) const
   if (!persistence) {
     co_return fail(Error::DatabaseError);
   }
-  co_return co_await persistence->get_dag(dag_id);
+  auto dag_res = co_await persistence->get_dag(dag_id);
+  if (!dag_res) {
+    co_return fail(dag_res.error());
+  }
+  co_return ok(std::move(*dag_res));
 }
 
 inline auto ApiContext::get_task_xcoms_async(const DAGRunId &dag_run_id,
@@ -191,7 +230,11 @@ inline auto ApiContext::get_task_xcoms_async(const DAGRunId &dag_run_id,
   if (!persistence) {
     co_return fail(Error::DatabaseError);
   }
-  co_return co_await persistence->get_task_xcoms(dag_run_id, task_id);
+  auto xcoms_res = co_await persistence->get_task_xcoms(dag_run_id, task_id);
+  if (!xcoms_res) {
+    co_return fail(xcoms_res.error());
+  }
+  co_return ok(std::move(*xcoms_res));
 }
 
 inline auto ApiContext::list_run_history_async(std::size_t limit) const
@@ -200,7 +243,11 @@ inline auto ApiContext::list_run_history_async(std::size_t limit) const
   if (!persistence) {
     co_return fail(Error::DatabaseError);
   }
-  co_return co_await persistence->list_run_history(limit);
+  auto history_res = co_await persistence->list_run_history(limit);
+  if (!history_res) {
+    co_return fail(history_res.error());
+  }
+  co_return ok(std::move(*history_res));
 }
 
 inline auto ApiContext::list_run_views_async(std::size_t limit) const
@@ -214,7 +261,14 @@ inline auto ApiContext::list_run_views_async(std::size_t limit) const
   views.reserve(entries_res->size());
   for (auto &entry : *entries_res) {
     auto state_res = co_await app.get_run_state_async(entry.dag_run_id);
-    const auto resolved_state = state_res.value_or(entry.state);
+    auto resolved_state = entry.state;
+    if (!state_res) {
+      log::warn("list_run_views_async: falling back to persisted state for run "
+                "{}: {}",
+                entry.dag_run_id, state_res.error().message());
+    } else {
+      resolved_state = *state_res;
+    }
     views.emplace_back(RunHistoryView{
         .entry = std::move(entry),
         .state = resolved_state,
@@ -230,7 +284,11 @@ inline auto ApiContext::get_run_logs_async(const DAGRunId &run_id,
   if (!persistence) {
     co_return fail(Error::DatabaseError);
   }
-  co_return co_await persistence->get_run_logs(run_id, limit);
+  auto logs_res = co_await persistence->get_run_logs(run_id, limit);
+  if (!logs_res) {
+    co_return fail(logs_res.error());
+  }
+  co_return ok(std::move(*logs_res));
 }
 
 inline auto ApiContext::get_task_logs_async(const DAGRunId &run_id,
@@ -241,8 +299,12 @@ inline auto ApiContext::get_task_logs_async(const DAGRunId &run_id,
   if (!persistence) {
     co_return fail(Error::DatabaseError);
   }
-  co_return co_await persistence->get_task_logs(run_id, task_id, attempt,
-                                                limit);
+  auto logs_res =
+      co_await persistence->get_task_logs(run_id, task_id, attempt, limit);
+  if (!logs_res) {
+    co_return fail(logs_res.error());
+  }
+  co_return ok(std::move(*logs_res));
 }
 
 } // namespace dagforge::api_detail

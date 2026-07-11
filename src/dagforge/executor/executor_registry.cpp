@@ -39,6 +39,17 @@ auto build_sensor_config(const TaskConfig &task) -> Result<ExecutorConfig> {
   return ok(ExecutorConfig{std::move(exec)});
 }
 
+auto build_lua_config(const TaskConfig &task) -> Result<ExecutorConfig> {
+  LuaExecutorConfig exec;
+  if (const auto *lua_cfg = task.executor_config.as<LuaExecutorConfig>()) {
+    exec.script = lua_cfg->script;
+    exec.script_file = lua_cfg->script_file;
+    exec.max_instructions = lua_cfg->max_instructions;
+    exec.max_memory_bytes = lua_cfg->max_memory_bytes;
+  }
+  return ok(ExecutorConfig{std::move(exec)});
+}
+
 auto build_noop_config(const TaskConfig &task) -> Result<ExecutorConfig> {
   NoopExecutorConfig exec;
   if (const auto *noop_cfg = task.executor_config.as<NoopExecutorConfig>()) {
@@ -62,8 +73,18 @@ auto parse_default_config(ExecutorType type, std::string_view)
     return ok(ExecutorConfig{DockerExecutorConfig{}});
   case ExecutorType::Sensor:
     return ok(ExecutorConfig{SensorExecutorConfig{}});
+  case ExecutorType::Lua:
+    return ok(ExecutorConfig{LuaExecutorConfig{}});
   }
   return fail(Error::InvalidArgument);
+}
+
+auto parse_shell_config(std::string_view input) -> Result<ExecutorConfig> {
+  return parse_default_config(ExecutorType::Shell, input);
+}
+
+auto parse_noop_config(std::string_view input) -> Result<ExecutorConfig> {
+  return parse_default_config(ExecutorType::Noop, input);
 }
 
 auto serialize_docker_config(const ExecutorConfig &config) -> std::string {
@@ -159,6 +180,42 @@ auto parse_sensor_config(std::string_view input) -> Result<ExecutorConfig> {
   return ok(ExecutorConfig{std::move(cfg)});
 }
 
+auto serialize_lua_config(const ExecutorConfig &config) -> std::string {
+  const auto *lua = config.as<LuaExecutorConfig>();
+  if (lua == nullptr) {
+    return "{}";
+  }
+  executor_dto::LuaExecutorConfigJson j{
+      .script = lua->script,
+      .script_file = lua->script_file,
+      .max_instructions = lua->max_instructions,
+      .max_memory_bytes = lua->max_memory_bytes,
+  };
+  if (auto out = glz::write_json(j); out) {
+    return *out;
+  }
+  return "{}";
+}
+
+auto parse_lua_config(std::string_view input) -> Result<ExecutorConfig> {
+  if (input.empty() || input == "{}") {
+    return ok(ExecutorConfig{LuaExecutorConfig{}});
+  }
+
+  executor_dto::LuaExecutorConfigJson j{};
+  constexpr auto kOpts = glz::opts{.null_terminated = false};
+  if (auto ec = glz::read<kOpts>(j, input); ec) {
+    return fail(Error::ParseError);
+  }
+
+  LuaExecutorConfig cfg{};
+  cfg.script = std::move(j.script);
+  cfg.script_file = std::move(j.script_file);
+  cfg.max_instructions = j.max_instructions;
+  cfg.max_memory_bytes = j.max_memory_bytes;
+  return ok(ExecutorConfig{std::move(cfg)});
+}
+
 auto validate_sensor_task(const TaskConfig &task, std::vector<std::string> &errors)
     -> void {
   const auto *sensor = task.executor_config.as<SensorExecutorConfig>();
@@ -176,6 +233,31 @@ auto validate_sensor_task(const TaskConfig &task, std::vector<std::string> &erro
   }
 }
 
+auto validate_lua_task(const TaskConfig &task, std::vector<std::string> &errors)
+    -> void {
+  const auto *lua = task.executor_config.as<LuaExecutorConfig>();
+  if (lua == nullptr) {
+    errors.emplace_back(
+        std::format("Task '{}': lua executor config missing", task.task_id));
+    return;
+  }
+  if (lua->script.empty() == lua->script_file.empty()) {
+    errors.emplace_back(std::format(
+        "Task '{}': lua executor requires exactly one of script or script_file",
+        task.task_id));
+  }
+  if (lua->max_instructions == 0) {
+    errors.emplace_back(std::format(
+        "Task '{}': lua max_instructions must be greater than zero",
+        task.task_id));
+  }
+  if (lua->max_memory_bytes == 0) {
+    errors.emplace_back(std::format(
+        "Task '{}': lua max_memory_bytes must be greater than zero",
+        task.task_id));
+  }
+}
+
 } // namespace
 
 } // namespace dagforge
@@ -187,10 +269,7 @@ auto ExecutorRegistry::instance() -> ExecutorRegistry & {
     ExecutorRegistry value;
     value.register_type(
         ExecutorType::Shell, [](Runtime &rt) { return create_shell_executor(rt); },
-        build_shell_config, serialize_default_config,
-        [](std::string_view input) {
-          return parse_default_config(ExecutorType::Shell, input);
-        });
+        build_shell_config, serialize_default_config, parse_shell_config);
     value.register_type(
         ExecutorType::Docker,
         [](Runtime &rt) { return create_docker_executor(rt); },
@@ -202,11 +281,12 @@ auto ExecutorRegistry::instance() -> ExecutorRegistry & {
         build_sensor_config, serialize_sensor_config, parse_sensor_config,
         validate_sensor_task);
     value.register_type(
+        ExecutorType::Lua, [](Runtime &rt) { return create_lua_executor(rt); },
+        build_lua_config, serialize_lua_config, parse_lua_config,
+        validate_lua_task);
+    value.register_type(
         ExecutorType::Noop, [](Runtime &rt) { return create_noop_executor(rt); },
-        build_noop_config, serialize_default_config,
-        [](std::string_view input) {
-          return parse_default_config(ExecutorType::Noop, input);
-        });
+        build_noop_config, serialize_default_config, parse_noop_config);
     return value;
   }();
   return registry;

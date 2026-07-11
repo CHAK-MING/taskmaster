@@ -251,6 +251,43 @@ template <> struct meta<dagforge::detail::ParsedTaskConfig> {
     }
     cfg->target = input;
   };
+  static constexpr auto read_lua_script = [](T &value, const std::string &input) {
+    auto cfg = value.task.executor_config.as<dagforge::LuaExecutorConfig>();
+    if (cfg == nullptr) {
+      value.task.executor_config = dagforge::LuaExecutorConfig{};
+      cfg = value.task.executor_config.as<dagforge::LuaExecutorConfig>();
+    }
+    cfg->script = input;
+  };
+  static constexpr auto read_lua_script_file = [](T &value,
+                                                  const std::string &input) {
+    auto cfg = value.task.executor_config.as<dagforge::LuaExecutorConfig>();
+    if (cfg == nullptr) {
+      value.task.executor_config = dagforge::LuaExecutorConfig{};
+      cfg = value.task.executor_config.as<dagforge::LuaExecutorConfig>();
+    }
+    cfg->script_file = input;
+  };
+  static constexpr auto read_lua_max_instructions = [](T &value,
+                                                       const std::int64_t input) {
+    auto cfg = value.task.executor_config.as<dagforge::LuaExecutorConfig>();
+    if (cfg == nullptr) {
+      value.task.executor_config = dagforge::LuaExecutorConfig{};
+      cfg = value.task.executor_config.as<dagforge::LuaExecutorConfig>();
+    }
+    cfg->max_instructions = static_cast<std::uint64_t>(std::max<std::int64_t>(0, input));
+  };
+  static constexpr auto read_lua_max_memory_mb = [](T &value,
+                                                    const std::int64_t input) {
+    auto cfg = value.task.executor_config.as<dagforge::LuaExecutorConfig>();
+    if (cfg == nullptr) {
+      value.task.executor_config = dagforge::LuaExecutorConfig{};
+      cfg = value.task.executor_config.as<dagforge::LuaExecutorConfig>();
+    }
+    const auto megabytes =
+        static_cast<std::uint64_t>(std::max<std::int64_t>(0, input));
+    cfg->max_memory_bytes = megabytes * 1024ULL * 1024ULL;
+  };
   static constexpr auto value = object(
       "id", custom<read_id, nullptr>, "name", custom<read_name, nullptr>,
       "command", custom<read_command, nullptr>, "working_dir",
@@ -272,7 +309,10 @@ template <> struct meta<dagforge::detail::ParsedTaskConfig> {
       custom<read_soft_fail, nullptr>, "sensor_expected_status",
       custom<read_sensor_expected_status, nullptr>, "sensor_http_method",
       custom<read_sensor_http_method, nullptr>, "target",
-      custom<read_target, nullptr>);
+      custom<read_target, nullptr>, "script", custom<read_lua_script, nullptr>,
+      "script_file", custom<read_lua_script_file, nullptr>,
+      "max_instructions", custom<read_lua_max_instructions, nullptr>,
+      "max_memory_mb", custom<read_lua_max_memory_mb, nullptr>);
 };
 
 template <> struct meta<dagforge::detail::ParsedDagToml> {
@@ -368,6 +408,13 @@ auto finalize_task(TaskConfig &task) -> void {
     auto cfg = task.executor_config.as<NoopExecutorConfig>() != nullptr
                    ? *task.executor_config.as<NoopExecutorConfig>()
                    : NoopExecutorConfig{};
+    task.executor_config = std::move(cfg);
+    break;
+  }
+  case ExecutorType::Lua: {
+    auto cfg = task.executor_config.as<LuaExecutorConfig>() != nullptr
+                   ? *task.executor_config.as<LuaExecutorConfig>()
+                   : LuaExecutorConfig{};
     task.executor_config = std::move(cfg);
     break;
   }
@@ -493,6 +540,16 @@ auto append_task_toml(std::string &out, const TaskConfig &task) -> void {
     if (!sensor->target.empty()) {
       append_toml_string(out, "target", sensor->target);
     }
+  } else if (const auto *lua = task.executor_config.as<LuaExecutorConfig>()) {
+    if (!lua->script.empty()) {
+      append_toml_string(out, "script", lua->script);
+    }
+    if (!lua->script_file.empty()) {
+      append_toml_string(out, "script_file", lua->script_file);
+    }
+    append_toml_scalar(out, "max_instructions", lua->max_instructions);
+    append_toml_scalar(out, "max_memory_mb",
+                       lua->max_memory_bytes / (1024ULL * 1024ULL));
   }
 }
 
@@ -533,6 +590,7 @@ auto append_task_toml(std::string &out, const TaskConfig &task) -> void {
     }
 
     if (task.command.empty() && task.executor != ExecutorType::Sensor &&
+        task.executor != ExecutorType::Lua &&
         task.executor != ExecutorType::Noop) {
       errors.emplace_back(
           std::format("Task '{}': command cannot be empty", task.task_id));

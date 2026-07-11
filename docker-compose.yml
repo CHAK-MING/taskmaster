@@ -29,9 +29,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        BUILD_WEB_UI: ${DAGFORGE_BUILD_WEB_UI:-0}
-        CMAKE_PRESET: ${DAGFORGE_CMAKE_PRESET:-release}
-        CMAKE_BUILD_PARALLEL_LEVEL: ${DAGFORGE_BUILD_JOBS:-0}
+        BUILD_JOBS: ${DAGFORGE_BUILD_JOBS:-0}
     container_name: dagforge-app
     restart: unless-stopped
     ports:
@@ -43,8 +41,6 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-    environment:
-      - RUST_BACKTRACE=1
     networks:
       - dagforge-network
 

@@ -11,11 +11,11 @@ module;
 #include <unordered_map>
 #include <vector>
 
-export module dagforge.app;
+export module dagforge.metrics;
 
-export import dagforge.client;
 export import dagforge.core;
 export import dagforge.dag;
+export import dagforge.http;
 
 #define DAGFORGE_BUILDING_MODULE_INTERFACE 1
 export {

@@ -2,12 +2,13 @@
 
 import dagforge.core;
 import dagforge.config;
-import dagforge.client;
+import dagforge.http;
 import dagforge.io;
+import dagforge.metrics;
 import dagforge.dag;
 import dagforge.domain;
 import dagforge.scheduler;
-import dagforge.storage;
+import dagforge.storage.schema;
 import dagforge.util;
 
 TEST(ModulesCoreSmokeTest, ImportsCoreWithoutDagforgeHeaders) {
@@ -67,7 +68,7 @@ TEST(ModulesCoreSmokeTest, ImportsDagAndConfigValueModulesWithoutDagforgeHeaders
 
   dagforge::SystemConfig config;
   EXPECT_EQ(config.database.port, 3306);
-  EXPECT_EQ(config.api.port, 8080);
+  EXPECT_EQ(config.api.port, 8888);
   EXPECT_EQ(config.dag_source.mode, dagforge::DAGSourceMode::File);
 }
 

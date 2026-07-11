@@ -29,7 +29,7 @@ TEST(ConfigTest, ApiDefaults) {
   ApiConfig cfg;
   EXPECT_FALSE(cfg.enabled);
   EXPECT_EQ(cfg.host, "127.0.0.1");
-  EXPECT_EQ(cfg.port, 8080);
+  EXPECT_EQ(cfg.port, 8888);
 }
 
 TEST(ConfigTest, LoadFromTomlString) {

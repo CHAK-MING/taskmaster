@@ -113,16 +113,22 @@ auto run_executor_heartbeat(
 
 auto wait_for_command_exit(bp::process &proc,
                            std::chrono::steady_clock::duration timeout)
-    -> task<ProcessWaitResult> {
-  auto [ec, exit_code] =
-      co_await proc.async_wait(boost::asio::cancel_after(timeout, use_nothrow));
-  if (!ec) {
-    co_return ProcessWaitResult{.exit_code = exit_code};
+    -> task<Result<ProcessWaitResult>> {
+  auto wait_res = co_await co_as_result(
+      proc.async_wait(boost::asio::cancel_after(timeout, use_nothrow)));
+  if (wait_res) {
+    co_return ok(ProcessWaitResult{.exit_code = *wait_res});
   }
-  if (ec == boost::asio::error::operation_aborted) {
-    co_return co_await terminate_and_reap_process(proc, true);
+  if (wait_res.error() ==
+      std::error_code(boost::asio::error::make_error_code(
+          boost::asio::error::operation_aborted))) {
+    auto terminated_res = co_await terminate_and_reap_process(proc, true);
+    if (!terminated_res) {
+      co_return fail(terminated_res.error());
+    }
+    co_return ok(std::move(*terminated_res));
   }
-  co_return ProcessWaitResult{.error = ec};
+  co_return fail(wait_res.error());
 }
 
 auto run_file_sensor(Runtime &runtime, SensorExecutorConfig config,
@@ -157,7 +163,7 @@ auto run_file_sensor(Runtime &runtime, SensorExecutorConfig config,
     }
 
     auto exists_res = check_file_sensor(config.target);
-    if (exists_res.value_or(false)) {
+    if (exists_res && *exists_res) {
       if (sink.on_complete) {
         auto result = make_result(resource);
         result.exit_code = 0;
@@ -243,25 +249,27 @@ auto run_command_sensor(Runtime &runtime, SensorExecutorConfig config,
     if (now >= deadline) {
       break;
     }
-    auto wait_result = co_await wait_for_command_exit(*proc, deadline - now);
+    auto wait_result_res =
+        co_await wait_for_command_exit(*proc, deadline - now);
     ctx.state->unregister_active(instance_id);
 
     if (is_cancelled(instance_id, ctx)) {
       complete_cancelled(instance_id, sink);
       co_return;
     }
-    if (wait_result.error) {
+    if (!wait_result_res) {
       if (sink.on_complete) {
         auto result = make_result(resource);
         result.exit_code = 1;
         result.error = pmr::string(
             std::format("Command sensor wait failed: {}",
-                        wait_result.error.message()),
+                        wait_result_res.error().message()),
             resource);
         sink.on_complete(instance_id, std::move(result));
       }
       co_return;
     }
+    auto &wait_result = *wait_result_res;
     if (wait_result.timed_out) {
       break;
     }
@@ -356,24 +364,22 @@ auto run_http_sensor(Runtime &runtime, SensorExecutorConfig config,
       client = std::move(*client_res);
     }
 
-    // Graceful recovery: wrap request in try-catch to handle EOF/Broken Pipe
-    bool request_failed = false;
-    http::HttpResponse resp;
-    try {
-      http::HttpRequest req;
-      req.method = method;
-      req.path = parsed.path;
-      resp = co_await client->request(std::move(req));
-    } catch (const std::exception &ex) {
+    http::HttpRequest req;
+    req.method = method;
+    req.path = parsed.path;
+    auto resp_res = co_await client->request(std::move(req));
+    if (!resp_res) {
       log::debug(
           "HTTP sensor request failed (likely EOF/connection reset): {}, "
           "resetting connection...",
-          ex.what());
-      client.reset(); // Reset client to trigger reconnection on next iteration
-      request_failed = true;
+          resp_res.error().message());
+      client.reset();
+      co_await async_sleep_on_timing_wheel(config.poke_interval);
+      continue;
     }
 
-    if (!request_failed && static_cast<uint16_t>(resp.status) == expected) {
+    auto &resp = *resp_res;
+    if (static_cast<uint16_t>(resp.status) == expected) {
       if (sink.on_complete) {
         auto result = make_result(resource);
         result.exit_code = 0;

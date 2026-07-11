@@ -81,8 +81,9 @@ namespace glz
       std::same_as<std::remove_cvref_t<T>, wchar_t>;
 
    template <class T>
-   concept bool_t =
-      std::same_as<std::remove_cvref_t<T>, bool> || std::same_as<std::remove_cvref_t<T>, std::vector<bool>::reference>;
+   concept bool_t = std::same_as<std::remove_cvref_t<T>, bool> ||
+                    std::same_as<std::remove_cvref_t<T>, std::vector<bool>::reference> ||
+                    std::same_as<std::remove_cvref_t<T>, std::vector<bool>::const_reference>;
 
    template <class T>
    concept int_t = std::integral<std::remove_cvref_t<T>> && !char_t<T> && !wide_char_t<T> && !bool_t<T>;
@@ -168,9 +169,11 @@ namespace glz
       { container.emplace_back() } -> std::same_as<typename T::reference>;
    };
 
+   // Accepts both the C++23 return type (T*) and the C++26 P3981 return type
+   // (std::optional<T&>); both are contextually convertible to bool.
    template <class T>
    concept has_try_emplace_back = requires(T container) {
-      { container.try_emplace_back() } -> std::same_as<typename T::pointer>;
+      { static_cast<bool>(container.try_emplace_back()) };
    };
 
    template <class T>

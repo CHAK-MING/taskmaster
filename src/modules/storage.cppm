@@ -5,7 +5,7 @@ module;
 #include <string>
 #include <string_view>
 
-export module dagforge.storage;
+export module dagforge.storage.schema;
 
 export import dagforge.dag;
 export import dagforge.domain;

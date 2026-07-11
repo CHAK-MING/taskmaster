@@ -135,10 +135,12 @@ public:
       if (i > 0)
         std::print(" ");
       const auto &col = columns_[i];
+      auto visible = ansi::ansi_visible_width(col.header);
+      auto pad = visible < col.width ? col.width - visible : 0;
       if (col.right_align) {
-        std::print("{:>{}}", col.header, col.width);
+        std::print("{}{}", std::string(pad, ' '), col.header);
       } else {
-        std::print("{:<{}}", col.header, col.width);
+        std::print("{}{}", col.header, std::string(pad, ' '));
       }
     }
     std::println("");

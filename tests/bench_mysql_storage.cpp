@@ -427,11 +427,12 @@ void BM_MySQL_Heartbeat_Prepared(benchmark::State &state) {
   }());
 
   auto stmt = bench::run_on_io(ctx.io, [&]() -> task<boost::mysql::statement> {
-    co_return co_await ctx.conn->async_prepare_statement(
+    auto prepared = co_await ctx.conn->async_prepare_statement(
         "SELECT EXISTS(SELECT 1 FROM dag_runs r JOIN dags d ON "
         "d.dag_rowid = r.dag_rowid "
         "WHERE d.dag_id = ? AND r.execution_date = ? LIMIT 1)",
         use_awaitable);
+    co_return prepared;
   }());
 
   for (auto _ : state) {

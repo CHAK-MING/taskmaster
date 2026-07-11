@@ -8,33 +8,13 @@
 
 #include "glaze/core/context.hpp"
 #include "glaze/core/optimization_level.hpp"
+#include "glaze/core/traits.hpp"
+#include "glaze/forward.hpp"
 #include "glaze/util/inline.hpp"
 #include "glaze/util/type_traits.hpp"
 
 namespace glz
 {
-   // Formats
-   // Built in formats must be less than 65536
-   // User defined formats can be 65536 to 4294967296
-   inline constexpr uint32_t INVALID = 0;
-   inline constexpr uint32_t BEVE = 1;
-   inline constexpr uint32_t CBOR = 2; // RFC 8949 - Concise Binary Object Representation
-   inline constexpr uint32_t JSON = 10;
-   inline constexpr uint32_t JSON_PTR = 20;
-   inline constexpr uint32_t MSGPACK = 30;
-   inline constexpr uint32_t NDJSON = 100; // new line delimited JSON
-   inline constexpr uint32_t TOML = 400;
-   inline constexpr uint32_t YAML = 450;
-   inline constexpr uint32_t STENCIL = 500;
-   inline constexpr uint32_t MUSTACHE = 501;
-   inline constexpr uint32_t CSV = 10000;
-   inline constexpr uint32_t EETF = 20000;
-
-   // Protocol formats
-   inline constexpr uint32_t REPE = 30000;
-   inline constexpr uint32_t REST = 30100;
-   inline constexpr uint32_t JSONRPC = 30200;
-
    // layout
    inline constexpr uint8_t rowwise = 0;
    inline constexpr uint8_t colwise = 1;
@@ -113,6 +93,7 @@ namespace glz
       uint8_t layout = rowwise; // CSV row wise output/input
       bool use_headers = true; // Whether to write column/row headers in CSV format
       bool raw_string = false; // do not decode/encode escaped characters for strings (improves read/write performance)
+      char delimiter = ','; // field delimiter character (e.g. ',', ';', '|', '\t')
 
       // New options for headerless CSV support
       bool skip_header_row =
@@ -165,6 +146,10 @@ namespace glz
    // Shrinks dynamic containers to new size to save memory
 
    // ---
+   // bool error_on_missing_array_elements = false;
+   // Require arrays to have all elements expected by the target type (tuples, glaze_array_t, tuple_t)
+
+   // ---
    // bool error_on_const_read = false;
    // Error if attempt is made to read into a const value, by default the value is skipped without error
 
@@ -192,6 +177,10 @@ namespace glz
    // When specified, uses std::format_to instead of Dragonbox for float/double serialization
 
    // ---
+   // bool skip_read_constraint = false;
+   // Skip read_constraint validation during reading. Useful for performance when constraints are known to be valid
+
+   // ---
    // bool skip_self_constraint = false;
    // Skip self_constraint validation during reading. Useful for performance when constraints are known to be valid
    // or when validation should be deferred.
@@ -208,6 +197,20 @@ namespace glz
    // Controls speed vs binary size tradeoff. See glaze/core/optimization_level.hpp for details.
    // Levels: size, normal (default)
    // Use preset struct: glz::opts_size
+
+   // ---
+   // bool reflect_enums = false;
+   // When true and GLZ_REFLECTION26 is enabled, automatically reflects all enum types
+   // using C++26 P2996 reflection, serializing them as strings instead of integers.
+   // This allows enum string serialization without explicit glz::meta specializations.
+
+   // ---
+   // bool qualified_type_names = false;
+   // When true and GLZ_REFLECTION26 is enabled, type_name_for_opts and name_for_opts return
+   // fully-qualified type names with namespace prefixes (e.g., "mylib::MyType" instead of "MyType").
+   // This uses P2996's std::meta::qualified_name_of instead of display_string_of.
+   // Useful for avoiding name collisions when types in different namespaces share the same name.
+   // Note: Only affects P2996 reflection. Traditional reflection always returns qualified names.
 
    // ---
    // size_t max_string_length = 0;
@@ -266,6 +269,13 @@ namespace glz
    // Skip escape sequence encoding/decoding for strings.
    // Improves read/write performance when strings are known to not contain escape characters.
    // Can be combined with 'raw' to write completely unprocessed string content.
+
+   // ---
+   // bool aligned_arrays = false;
+   // When true, BEVE typed arrays for numeric types use alignment padding so that the data payload
+   // begins at a memory offset that is a multiple of the element size. This enables zero-copy
+   // access via std::span<T> directly into the message buffer, eliminating copy and allocation overhead.
+   // Only applies to BEVE format. The alignment padding is deterministic and does not need to be stored.
 
    // ---
    // bool structs_as_arrays = false;
@@ -348,6 +358,16 @@ namespace glz
       }
    }
 
+   consteval bool check_error_on_missing_array_elements(auto&& Opts)
+   {
+      if constexpr (requires { Opts.error_on_missing_array_elements; }) {
+         return Opts.error_on_missing_array_elements;
+      }
+      else {
+         return false;
+      }
+   }
+
    consteval bool check_error_on_const_read(auto&& Opts)
    {
       if constexpr (requires { Opts.error_on_const_read; }) {
@@ -382,6 +402,16 @@ namespace glz
    {
       if constexpr (requires { Opts.validate_trailing_whitespace; }) {
          return Opts.validate_trailing_whitespace;
+      }
+      else {
+         return false;
+      }
+   }
+
+   consteval bool check_null_terminated(auto&& Opts)
+   {
+      if constexpr (requires { Opts.null_terminated; }) {
+         return Opts.null_terminated;
       }
       else {
          return false;
@@ -425,6 +455,16 @@ namespace glz
       }
       else {
          return true;
+      }
+   }
+
+   consteval bool check_skip_default_members(auto&& Opts)
+   {
+      if constexpr (requires { Opts.skip_default_members; }) {
+         return Opts.skip_default_members;
+      }
+      else {
+         return false;
       }
    }
 
@@ -485,6 +525,31 @@ namespace glz
       }
       else {
          return false;
+      }
+   }
+
+   consteval bool is_valid_csv_delimiter(char c)
+   {
+      switch (c) {
+      case ',':
+      case '\t':
+      case '|':
+      case ';':
+         return true;
+      default:
+         return false;
+      }
+   }
+
+   template <auto Opts>
+   consteval char csv_delimiter()
+   {
+      if constexpr (requires { Opts.delimiter; }) {
+         static_assert(is_valid_csv_delimiter(Opts.delimiter), "CSV delimiter must be one of: ',' '\\t' '|' ';'");
+         return Opts.delimiter;
+      }
+      else {
+         return ',';
       }
    }
 
@@ -616,6 +681,16 @@ namespace glz
       }
    }
 
+   consteval bool check_skip_read_constraint(auto&& Opts)
+   {
+      if constexpr (requires { Opts.skip_read_constraint; }) {
+         return Opts.skip_read_constraint;
+      }
+      else {
+         return false;
+      }
+   }
+
    consteval bool check_skip_self_constraint(auto&& Opts)
    {
       if constexpr (requires { Opts.skip_self_constraint; }) {
@@ -641,12 +716,14 @@ namespace glz
       if constexpr (requires { Opts.linear_search; }) {
          return Opts.linear_search;
       }
-      else {
+      else if constexpr (requires { Opts.optimization_level; }) {
          // In size mode, default to linear search (no hash tables)
-         if constexpr (requires { Opts.optimization_level; }) {
-            return Opts.optimization_level == optimization_level::size;
-         }
-         return false;
+         return Opts.optimization_level == optimization_level::size;
+      }
+      else {
+         // No explicit optimization_level member: fall back to the build-wide
+         // default so GLZ_DEFAULT_OPTIMIZATION_SIZE also drops per-struct hash tables.
+         return default_optimization_level == optimization_level::size;
       }
    }
 
@@ -696,11 +773,43 @@ namespace glz
          return Opts.optimization_level;
       }
       else {
-         return optimization_level::normal;
+         // No explicit optimization_level member: use the build-wide default
+         // (normal unless GLZ_DEFAULT_OPTIMIZATION_SIZE / GLZ_DEFAULT_OPTIMIZATION_LEVEL is set).
+         return default_optimization_level;
       }
    }
 
    consteval bool is_size_optimized(auto&& Opts) { return check_optimization_level(Opts) == optimization_level::size; }
+
+   consteval bool check_reflect_enums(auto&& Opts)
+   {
+      if constexpr (requires { Opts.reflect_enums; }) {
+         return Opts.reflect_enums;
+      }
+      else {
+         return false;
+      }
+   }
+
+   consteval bool check_qualified_type_names(auto&& Opts)
+   {
+      if constexpr (requires { Opts.qualified_type_names; }) {
+         return Opts.qualified_type_names;
+      }
+      else {
+         return false;
+      }
+   }
+
+   consteval bool check_aligned_arrays(auto&& Opts)
+   {
+      if constexpr (requires { Opts.aligned_arrays; }) {
+         return Opts.aligned_arrays;
+      }
+      else {
+         return false;
+      }
+   }
 
    // Check if raw pointer allocation is possible (either compile-time or runtime option available)
    template <auto Opts, class Ctx>
@@ -1301,6 +1410,22 @@ namespace glz
    }
 
    template <auto Opts>
+   constexpr auto set_jsonb()
+   {
+      auto ret = Opts;
+      ret.format = JSONB;
+      return ret;
+   }
+
+   template <auto Opts>
+   constexpr auto set_bson()
+   {
+      auto ret = Opts;
+      ret.format = BSON;
+      return ret;
+   }
+
+   template <auto Opts>
    constexpr auto set_json()
    {
       auto ret = Opts;
@@ -1335,17 +1460,9 @@ namespace glz
 
 namespace glz
 {
-   template <uint32_t Format = INVALID, class T = void>
-   struct to;
-
-   template <uint32_t Format = INVALID, class T = void>
-   struct from;
-
-   template <uint32_t Format = INVALID, class T = void>
-   struct to_partial;
-
-   template <uint32_t Format = INVALID>
-   struct skip_value;
+   // Note: primary templates for glz::to, glz::from, glz::to_partial, glz::skip_value,
+   // glz::parse, glz::serialize, glz::serialize_partial live in glaze/forward.hpp.
+   // Note: specified and is_specified are defined in glaze/core/traits.hpp.
 
    template <class T, uint32_t Format>
    concept write_supported = requires { to<Format, std::remove_cvref_t<T>>{}; };
@@ -1353,20 +1470,16 @@ namespace glz
    template <class T, uint32_t Format>
    concept read_supported = requires { from<Format, std::remove_cvref_t<T>>{}; };
 
-   // These templates save typing by determining the core type used to select the proper to/from specialization
-   // Long term I would like to remove these detail indirections.
+   // Default context type for a format.
+   // Formats that need a richer context (e.g. YAML) specialize this.
+   template <uint32_t Format>
+   struct format_context
+   {
+      using type = context;
+   };
 
    template <uint32_t Format>
-   struct parse
-   {};
-
-   template <uint32_t Format>
-   struct serialize
-   {};
-
-   template <uint32_t Format>
-   struct serialize_partial
-   {};
+   using format_context_t = typename format_context<Format>::type;
 
    // Preset options for size-optimized builds (embedded systems)
    struct opts_size : opts

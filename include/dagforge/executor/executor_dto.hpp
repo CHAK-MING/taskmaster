@@ -1,9 +1,11 @@
 #pragma once
 
+#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <glaze/json.hpp>
 
 #include <cstdint>
 #include <string>
+#endif
 
 namespace dagforge::executor_dto {
 
@@ -22,6 +24,13 @@ struct DockerExecutorConfigJson {
   std::string pull_policy;
 };
 
+struct LuaExecutorConfigJson {
+  std::string script;
+  std::string script_file;
+  std::uint64_t max_instructions{100000};
+  std::uint64_t max_memory_bytes{8ULL * 1024ULL * 1024ULL};
+};
+
 } // namespace dagforge::executor_dto
 
 namespace glz {
@@ -38,6 +47,14 @@ template <> struct meta<dagforge::executor_dto::DockerExecutorConfigJson> {
   using T = dagforge::executor_dto::DockerExecutorConfigJson;
   static constexpr auto value = object("image", &T::image, "socket", &T::socket,
                                        "pull_policy", &T::pull_policy);
+};
+
+template <> struct meta<dagforge::executor_dto::LuaExecutorConfigJson> {
+  using T = dagforge::executor_dto::LuaExecutorConfigJson;
+  static constexpr auto value =
+      object("script", &T::script, "script_file", &T::script_file,
+             "max_instructions", &T::max_instructions, "max_memory_bytes",
+             &T::max_memory_bytes);
 };
 
 } // namespace glz

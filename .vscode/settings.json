@@ -1,0 +1,18 @@
+{
+  "clangd.path": "${workspaceFolder}/.clangd-tools/clangd",
+  "clangd.onConfigChanged": "restart",
+  "clangd.arguments": [
+    "--background-index",
+    "--header-insertion=iwyu",
+    "--clang-tidy",
+    "--completion-style=detailed",
+    "--enable-config",
+    "--query-driver=${workspaceFolder}/.clangd-tools/clang++,/usr/bin/clang++*,/usr/local/bin/clang++*,/opt/llvm-*/bin/clang++*"
+  ],
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "C_Cpp.errorSquiggles": "disabled",
+  "files.associations": {
+    "*.cppm": "cpp",
+    "*.inc": "cpp"
+  }
+}

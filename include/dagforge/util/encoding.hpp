@@ -1,11 +1,13 @@
 #pragma once
 
+#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <boost/beast/core/detail/base64.hpp>
 
 #include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
+#endif
 
 namespace dagforge::util {
 

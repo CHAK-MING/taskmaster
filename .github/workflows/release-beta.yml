@@ -1,26 +1,15 @@
-name: Release 0.1.0-beta Assets
+name: Release Assets
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (example: 0.1.0-beta)"
+        description: Release tag, for example 0.3.0 or 0.4.0-beta.1
         required: true
-        default: "0.1.0-beta"
-      binary_path:
-        description: "Path to prebuilt Linux x86_64 dagforge binary in repo"
-        required: true
-        default: "build-release/bin/dagforge"
-      web_ui_dist_path:
-        description: "Path to prebuilt web-ui dist directory"
-        required: true
-        default: "web-ui/dist"
+        default: 0.3.0
 
 permissions:
   contents: write
-
-env:
-  APP_NAME: dagforge
 
 jobs:
   release-assets:
@@ -29,146 +18,65 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Resolve release names
-        id: meta
+      - name: Validate release tag
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          TAG="${{ github.event.inputs.tag }}"
-          PKG_DIR="${{ env.APP_NAME }}-${TAG}-linux-x86_64"
-          ARCHIVE_NAME="${PKG_DIR}.tar.gz"
-
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "pkg_dir=${PKG_DIR}" >> "$GITHUB_OUTPUT"
-          echo "archive_name=${ARCHIVE_NAME}" >> "$GITHUB_OUTPUT"
-
-      - name: Validate prebuilt assets exist
-        id: asset_check
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          BIN_PATH="${{ github.event.inputs.binary_path }}"
-          WEB_UI_DIST="${{ github.event.inputs.web_ui_dist_path }}"
-          NEED_BUILD=0
-
-          if [[ ! -f "${BIN_PATH}" ]]; then
-            echo "Prebuilt binary not found: ${BIN_PATH}"
-            NEED_BUILD=1
-          fi
-
-          if [[ ! -d "${WEB_UI_DIST}" ]]; then
-            echo "Prebuilt web-ui dist not found: ${WEB_UI_DIST}"
-            NEED_BUILD=1
-          fi
-
-          if [[ ! -f "system_config.toml" ]]; then
-            echo "ERROR: required config not found: system_config.toml" >&2
+          if [[ ! "$RELEASE_TAG" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "Invalid release tag: $RELEASE_TAG" >&2
             exit 1
           fi
 
-          echo "need_build=${NEED_BUILD}" >> "$GITHUB_OUTPUT"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Install build dependencies (fallback)
-        if: steps.asset_check.outputs.need_build == '1'
+      - name: Build and verify release bundle
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: release-bundle
+          platforms: linux/amd64
+          push: false
+          outputs: type=local,dest=release-root
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Package reproducible archive
+        id: package
         shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake \
-            gcc-14 \
-            g++-14 \
-            make \
-            ninja-build \
-            git \
-            ccache \
-            pkg-config \
-            libboost-all-dev \
-            libssl-dev \
-            liburing-dev \
-            nodejs \
-            npm
-
-          # Boost CONFIG mode on Ubuntu can split components into versioned
-          # packages. Ensure charconv/url/process component dev packages exist.
-          mapfile -t BOOST_COMPONENT_PKGS < <(
-            apt-cache pkgnames | grep -E '^libboost-(charconv|url|process).*-dev$' | sort -u || true
-          )
-          if [[ ${#BOOST_COMPONENT_PKGS[@]} -gt 0 ]]; then
-            sudo apt-get install -y --no-install-recommends "${BOOST_COMPONENT_PKGS[@]}"
-          fi
-
-      - name: Build backend and web-ui (fallback)
-        if: steps.asset_check.outputs.need_build == '1'
-        shell: bash
-        run: |
-          set -euo pipefail
-          export CCACHE_DISABLE=1
-          export CC=gcc-14
-          export CXX=g++-14
-          $CC --version
-          $CXX --version
-          cmake --preset release -DDAGFORGE_ENABLE_TESTS=OFF -G Ninja
-          cmake --build --preset release --target dagforge --parallel "$(nproc)"
-          (
-            cd web-ui
-            if [[ -f package-lock.json ]]; then
-              npm ci
-            else
-              npm install
-            fi
-            npm run build
-          )
-
-      - name: Prepare release artifacts
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          TAG="${{ steps.meta.outputs.tag }}"
-          PKG_DIR="${{ steps.meta.outputs.pkg_dir }}"
-          ARCHIVE_NAME="${{ steps.meta.outputs.archive_name }}"
-
-          BIN_PATH="${{ github.event.inputs.binary_path }}"
-          WEB_UI_DIST="${{ github.event.inputs.web_ui_dist_path }}"
-
-          mkdir -p "dist/${PKG_DIR}/bin"
-          mkdir -p "dist/${PKG_DIR}/web-ui-dist"
-
-          cp "${BIN_PATH}" "dist/${PKG_DIR}/bin/dagforge"
-          chmod +x "dist/${PKG_DIR}/bin/dagforge"
-
-          cp system_config.toml "dist/${PKG_DIR}/system_config.toml"
-
-          if [[ -f "docker_config.toml" ]]; then
-            cp docker_config.toml "dist/${PKG_DIR}/docker_config.toml"
-          fi
-
-          cp -r "${WEB_UI_DIST}"/* "dist/${PKG_DIR}/web-ui-dist/"
-
-          tar -C dist -czf "dist/${ARCHIVE_NAME}" "${PKG_DIR}"
-
-          sha256sum \
-            "dist/${ARCHIVE_NAME}" \
-            > "dist/sha256sums-${TAG}.txt"
+          export SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          archive_abs=$(bash scripts/package-release.sh \
+            "$RELEASE_TAG" release-root dist)
+          archive="dist/$(basename "$archive_abs")"
+          bash scripts/verify-release.sh "$archive" --no-exec
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "checksums=dist/sha256sums-${RELEASE_TAG}.txt" >> "$GITHUB_OUTPUT"
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-assets-${{ steps.meta.outputs.tag }}
+          name: release-assets-${{ inputs.tag }}
           path: |
-            dist/${{ steps.meta.outputs.archive_name }}
-            dist/sha256sums-${{ steps.meta.outputs.tag }}.txt
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.checksums }}
+          if-no-files-found: error
 
-      - name: Publish GitHub Release assets
+      - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          name: ${{ steps.meta.outputs.tag }}
-          prerelease: true
+          tag_name: ${{ inputs.tag }}
+          name: ${{ inputs.tag }}
+          prerelease: ${{ contains(inputs.tag, 'alpha') || contains(inputs.tag, 'beta') || contains(inputs.tag, 'rc') }}
           generate_release_notes: true
           files: |
-            dist/${{ steps.meta.outputs.archive_name }}
-            dist/sha256sums-${{ steps.meta.outputs.tag }}.txt
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.checksums }}

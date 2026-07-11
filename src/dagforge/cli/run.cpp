@@ -103,7 +103,11 @@ auto trigger_via_running_service(const SystemConfig &config,
   auto &client = *client_res;
   auto path =
       std::format("/api/dags/{}/trigger", util::url_encode(opts.dag_id));
-  auto resp = run_async(io, client->post_json(path, "{}"));
+  auto resp_res = run_async(io, client->post_json(path, "{}"));
+  if (!resp_res) {
+    return std::nullopt;
+  }
+  auto &resp = *resp_res;
   if (resp.status != http::HttpStatus::Created &&
       resp.status != http::HttpStatus::Ok) {
     const std::string body(resp.body.begin(), resp.body.end());

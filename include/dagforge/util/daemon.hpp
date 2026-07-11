@@ -1,10 +1,8 @@
 #pragma once
 
 
-#if !defined(DAGFORGE_CONSUME_NAMED_MODULES) ||                                  \
-    !DAGFORGE_CONSUME_NAMED_MODULES
+#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
-#endif
 
 #include <atomic>
 #include <chrono>
@@ -12,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#endif
 
 
 namespace boost::interprocess {

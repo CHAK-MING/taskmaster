@@ -103,7 +103,8 @@ TEST(PersistenceServiceLifecycleTest,
   auto dags = run_coro(good_service.list_dags());
   EXPECT_TRUE(dags.has_value()) << dags.error().message();
 
-  run_coro(good_service.close());
+  auto close_res = run_coro(good_service.close());
+  ASSERT_TRUE(close_res.has_value()) << close_res.error().message();
   good_runtime.stop();
 }
 
@@ -124,7 +125,8 @@ TEST_F(PersistenceTest, CloseAndReopenRestoresDatabaseOperations) {
   auto initial = create_persisted_dag("reopen_dag", "reopen_task");
   ASSERT_GT(initial.dag_rowid, 0);
 
-  run_coro(service_->close());
+  auto close_res = run_coro(service_->close());
+  ASSERT_TRUE(close_res.has_value()) << close_res.error().message();
   EXPECT_FALSE(service_->is_open());
 
   auto reopen = run_coro(service_->open(), std::chrono::seconds(10));
@@ -136,6 +138,20 @@ TEST_F(PersistenceTest, CloseAndReopenRestoresDatabaseOperations) {
   const auto it = std::ranges::find_if(
       *dags, [&](const DAGInfo &d) { return d.dag_id == initial.dag_id; });
   EXPECT_NE(it, dags->end());
+}
+
+TEST_F(PersistenceTest, RepeatedCloseAndReopenQuiescesBatchWriters) {
+  for (int iteration = 0; iteration < 25; ++iteration) {
+    SCOPED_TRACE(iteration);
+
+    auto close_res = run_coro(service_->close());
+    ASSERT_TRUE(close_res.has_value()) << close_res.error().message();
+    EXPECT_FALSE(service_->is_open());
+
+    auto reopen_res = run_coro(service_->open(), std::chrono::seconds(10));
+    ASSERT_TRUE(reopen_res.has_value()) << reopen_res.error().message();
+    EXPECT_TRUE(service_->is_open());
+  }
 }
 
 TEST_F(PersistenceTest, GetDagRunState_NonexistentId_ReturnsNotFound) {
@@ -630,7 +646,8 @@ TEST(PersistenceOpenTest, SyncWaitOpenSucceedsWhenDatabaseIsReachable) {
   }
 
   EXPECT_TRUE(open_res.has_value());
-  service.sync_wait(service.close());
+  auto close_res = service.sync_wait(service.close());
+  ASSERT_TRUE(close_res.has_value()) << close_res.error().message();
   runtime.stop();
 }
 
@@ -646,7 +663,8 @@ TEST(PersistenceOpenTest, SuccessfulOpenAndCloseIncrementTransactionsTotal) {
                  << open_res.error().message();
   }
 
-  service.sync_wait(service.close());
+  auto close_res = service.sync_wait(service.close());
+  ASSERT_TRUE(close_res.has_value()) << close_res.error().message();
   EXPECT_GE(service.db_transactions_total(), 2U);
   runtime.stop();
 }
@@ -673,6 +691,7 @@ TEST(PersistenceOpenTest, SyncWaitListDagsSucceedsAfterOpen) {
   auto dags_res = service.sync_wait(service.list_dags());
   EXPECT_TRUE(dags_res.has_value());
 
-  service.sync_wait(service.close());
+  auto close_res = service.sync_wait(service.close());
+  ASSERT_TRUE(close_res.has_value()) << close_res.error().message();
   runtime.stop();
 }

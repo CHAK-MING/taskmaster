@@ -3,7 +3,6 @@ import {
     LayoutDashboard,
     GitBranch,
     Settings,
-    Workflow,
 } from "lucide-react";
 import {
     Sidebar,

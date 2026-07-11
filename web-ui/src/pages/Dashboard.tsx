@@ -10,7 +10,6 @@ import { DAGSummaryCard } from "@/components/DAGSummaryCard";
 import {
   GitBranch,
   Play,
-  CheckCircle2,
   Clock,
   ArrowRight,
   AlertCircle,

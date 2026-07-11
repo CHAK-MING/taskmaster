@@ -87,7 +87,10 @@ public:
       return;
     }
     try {
-      service_.sync_wait(service_.close());
+      auto close_res = service_.sync_wait(service_.close());
+      if (!close_res) {
+        last_error_ = close_res.error().message();
+      }
     } catch (const std::exception &e) {
       last_error_ = e.what();
     } catch (...) {

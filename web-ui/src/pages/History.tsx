@@ -11,12 +11,9 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Search, RefreshCw, Loader2, Clock, Hand, Zap } from "lucide-react";
-import { useState, useEffect } from "react";
-import { toast } from "sonner";
-import { listHistory, type RunRecord } from "@/lib/api";
+import { useState } from "react";
 import { DAGStatusBadge, DAGStatusIcon, formatDuration, formatTime } from "@/lib/status";
 import { DAGRunState } from "@/types/dag";
-import { wsManager } from "@/lib/websocket";
 import { useI18n } from "@/contexts/I18nContext";
 import { matchesSearchQuery } from "@/lib/search";
 

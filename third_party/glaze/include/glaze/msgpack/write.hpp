@@ -60,15 +60,15 @@ namespace glz::msgpack::detail
       if (value <= 0x7F) {
          dump(std::byte{static_cast<uint8_t>(value)}, b, ix);
       }
-      else if (value <= std::numeric_limits<uint8_t>::max()) {
+      else if (value <= (std::numeric_limits<uint8_t>::max)()) {
          dump(std::byte{uint8}, b, ix);
          dump_uint8(static_cast<uint8_t>(value), b, ix);
       }
-      else if (value <= std::numeric_limits<uint16_t>::max()) {
+      else if (value <= (std::numeric_limits<uint16_t>::max)()) {
          dump(std::byte{uint16}, b, ix);
          dump_uint16(static_cast<uint16_t>(value), b, ix);
       }
-      else if (value <= std::numeric_limits<uint32_t>::max()) {
+      else if (value <= (std::numeric_limits<uint32_t>::max)()) {
          dump(std::byte{uint32}, b, ix);
          dump_uint32(static_cast<uint32_t>(value), b, ix);
       }
@@ -88,15 +88,15 @@ namespace glz::msgpack::detail
       if (value <= 0x7F) {
          dump(std::byte{static_cast<uint8_t>(value)}, b, ix);
       }
-      else if (value <= std::numeric_limits<uint8_t>::max()) {
+      else if (value <= (std::numeric_limits<uint8_t>::max)()) {
          dump(std::byte{uint8}, b, ix);
          dump_uint8(static_cast<uint8_t>(value), b, ix);
       }
-      else if (value <= std::numeric_limits<uint16_t>::max()) {
+      else if (value <= (std::numeric_limits<uint16_t>::max)()) {
          dump(std::byte{uint16}, b, ix);
          dump_uint16(static_cast<uint16_t>(value), b, ix);
       }
-      else if (value <= std::numeric_limits<uint32_t>::max()) {
+      else if (value <= (std::numeric_limits<uint32_t>::max)()) {
          dump(std::byte{uint32}, b, ix);
          dump_uint32(static_cast<uint32_t>(value), b, ix);
       }
@@ -113,15 +113,15 @@ namespace glz::msgpack::detail
       if (value >= -32 && value <= 127) {
          dump(std::byte{static_cast<uint8_t>(value)}, b, ix);
       }
-      else if (value >= std::numeric_limits<int8_t>::min() && value <= std::numeric_limits<int8_t>::max()) {
+      else if (value >= (std::numeric_limits<int8_t>::min)() && value <= (std::numeric_limits<int8_t>::max)()) {
          dump(std::byte{int8}, b, ix);
          dump_uint8(static_cast<uint8_t>(value), b, ix);
       }
-      else if (value >= std::numeric_limits<int16_t>::min() && value <= std::numeric_limits<int16_t>::max()) {
+      else if (value >= (std::numeric_limits<int16_t>::min)() && value <= (std::numeric_limits<int16_t>::max)()) {
          dump(std::byte{int16}, b, ix);
          dump_uint16(static_cast<uint16_t>(value), b, ix);
       }
-      else if (value >= std::numeric_limits<int32_t>::min() && value <= std::numeric_limits<int32_t>::max()) {
+      else if (value >= (std::numeric_limits<int32_t>::min)() && value <= (std::numeric_limits<int32_t>::max)()) {
          dump(std::byte{int32}, b, ix);
          dump_uint32(static_cast<uint32_t>(value), b, ix);
       }
@@ -141,15 +141,15 @@ namespace glz::msgpack::detail
       if (value >= -32 && value <= 127) {
          dump(std::byte{static_cast<uint8_t>(value)}, b, ix);
       }
-      else if (value >= std::numeric_limits<int8_t>::min() && value <= std::numeric_limits<int8_t>::max()) {
+      else if (value >= (std::numeric_limits<int8_t>::min)() && value <= (std::numeric_limits<int8_t>::max)()) {
          dump(std::byte{int8}, b, ix);
          dump_uint8(static_cast<uint8_t>(value), b, ix);
       }
-      else if (value >= std::numeric_limits<int16_t>::min() && value <= std::numeric_limits<int16_t>::max()) {
+      else if (value >= (std::numeric_limits<int16_t>::min)() && value <= (std::numeric_limits<int16_t>::max)()) {
          dump(std::byte{int16}, b, ix);
          dump_uint16(static_cast<uint16_t>(value), b, ix);
       }
-      else if (value >= std::numeric_limits<int32_t>::min() && value <= std::numeric_limits<int32_t>::max()) {
+      else if (value >= (std::numeric_limits<int32_t>::min)() && value <= (std::numeric_limits<int32_t>::max)()) {
          dump(std::byte{int32}, b, ix);
          dump_uint32(static_cast<uint32_t>(value), b, ix);
       }
@@ -199,11 +199,11 @@ namespace glz::msgpack::detail
       if (size <= 31) {
          dump(std::byte{static_cast<uint8_t>(fixstr_bits | size)}, b, ix);
       }
-      else if (size <= std::numeric_limits<uint8_t>::max()) {
+      else if (size <= (std::numeric_limits<uint8_t>::max)()) {
          dump(std::byte{str8}, b, ix);
          dump_uint8(static_cast<uint8_t>(size), b, ix);
       }
-      else if (size <= std::numeric_limits<uint16_t>::max()) {
+      else if (size <= (std::numeric_limits<uint16_t>::max)()) {
          dump(std::byte{str16}, b, ix);
          dump_uint16(static_cast<uint16_t>(size), b, ix);
       }
@@ -223,11 +223,11 @@ namespace glz::msgpack::detail
       if (size <= 31) {
          dump(std::byte{static_cast<uint8_t>(fixstr_bits | size)}, b, ix);
       }
-      else if (size <= std::numeric_limits<uint8_t>::max()) {
+      else if (size <= (std::numeric_limits<uint8_t>::max)()) {
          dump(std::byte{str8}, b, ix);
          dump_uint8(static_cast<uint8_t>(size), b, ix);
       }
-      else if (size <= std::numeric_limits<uint16_t>::max()) {
+      else if (size <= (std::numeric_limits<uint16_t>::max)()) {
          dump(std::byte{str16}, b, ix);
          dump_uint16(static_cast<uint16_t>(size), b, ix);
       }
@@ -244,7 +244,7 @@ namespace glz::msgpack::detail
       if (size <= 15) {
          dump(std::byte{static_cast<uint8_t>(fixarray_bits | size)}, b, ix);
       }
-      else if (size <= std::numeric_limits<uint16_t>::max()) {
+      else if (size <= (std::numeric_limits<uint16_t>::max)()) {
          dump(std::byte{array16}, b, ix);
          dump_uint16(static_cast<uint16_t>(size), b, ix);
       }
@@ -264,7 +264,7 @@ namespace glz::msgpack::detail
       if (size <= 15) {
          dump(std::byte{static_cast<uint8_t>(fixarray_bits | size)}, b, ix);
       }
-      else if (size <= std::numeric_limits<uint16_t>::max()) {
+      else if (size <= (std::numeric_limits<uint16_t>::max)()) {
          dump(std::byte{array16}, b, ix);
          dump_uint16(static_cast<uint16_t>(size), b, ix);
       }
@@ -281,7 +281,7 @@ namespace glz::msgpack::detail
       if (size <= 15) {
          dump(std::byte{static_cast<uint8_t>(fixmap_bits | size)}, b, ix);
       }
-      else if (size <= std::numeric_limits<uint16_t>::max()) {
+      else if (size <= (std::numeric_limits<uint16_t>::max)()) {
          dump(std::byte{map16}, b, ix);
          dump_uint16(static_cast<uint16_t>(size), b, ix);
       }
@@ -301,7 +301,7 @@ namespace glz::msgpack::detail
       if (size <= 15) {
          dump(std::byte{static_cast<uint8_t>(fixmap_bits | size)}, b, ix);
       }
-      else if (size <= std::numeric_limits<uint16_t>::max()) {
+      else if (size <= (std::numeric_limits<uint16_t>::max)()) {
          dump(std::byte{map16}, b, ix);
          dump_uint16(static_cast<uint16_t>(size), b, ix);
       }
@@ -315,11 +315,11 @@ namespace glz::msgpack::detail
    template <class B>
    GLZ_ALWAYS_INLINE void write_binary_header(size_t size, B& b, size_t& ix) noexcept(not vector_like<B>)
    {
-      if (size <= std::numeric_limits<uint8_t>::max()) {
+      if (size <= (std::numeric_limits<uint8_t>::max)()) {
          dump(std::byte{bin8}, b, ix);
          dump_uint8(static_cast<uint8_t>(size), b, ix);
       }
-      else if (size <= std::numeric_limits<uint16_t>::max()) {
+      else if (size <= (std::numeric_limits<uint16_t>::max)()) {
          dump(std::byte{bin16}, b, ix);
          dump_uint16(static_cast<uint16_t>(size), b, ix);
       }
@@ -336,11 +336,11 @@ namespace glz::msgpack::detail
       if (!ensure_space(ctx, b, ix + 5 + write_padding_bytes)) [[unlikely]] {
          return false;
       }
-      if (size <= std::numeric_limits<uint8_t>::max()) {
+      if (size <= (std::numeric_limits<uint8_t>::max)()) {
          dump(std::byte{bin8}, b, ix);
          dump_uint8(static_cast<uint8_t>(size), b, ix);
       }
-      else if (size <= std::numeric_limits<uint16_t>::max()) {
+      else if (size <= (std::numeric_limits<uint16_t>::max)()) {
          dump(std::byte{bin16}, b, ix);
          dump_uint16(static_cast<uint16_t>(size), b, ix);
       }
@@ -625,8 +625,7 @@ namespace glz
       static consteval size_t count_members()
       {
          return []<size_t... I>(std::index_sequence<I...>) consteval {
-            return (size_t{} + ... +
-                    (std::same_as<field_t<T, I>, hidden> || std::same_as<field_t<T, I>, skip> ? size_t{} : size_t{1}));
+            return (size_t{} + ... + (always_skipped<field_t<T, I>> ? size_t{} : size_t{1}));
          }(std::make_index_sequence<N>{});
       }
 
@@ -641,7 +640,7 @@ namespace glz
                if (bool(ctx.error)) [[unlikely]] {
                   return;
                }
-               if constexpr (!std::same_as<field_t<T, I>, hidden> && !std::same_as<field_t<T, I>, skip>) {
+               if constexpr (!always_skipped<field_t<T, I>>) {
                   serialize<MSGPACK>::op<Opts>(get_member(value, get<I>(reflect<T>::values)), ctx, b, ix);
                   if constexpr (is_output_streaming<decltype(b)>) {
                      flush_buffer(b, ix);
@@ -657,7 +656,7 @@ namespace glz
                if (bool(ctx.error)) [[unlikely]] {
                   return;
                }
-               if constexpr (!std::same_as<field_t<T, I>, hidden> && !std::same_as<field_t<T, I>, skip>) {
+               if constexpr (!always_skipped<field_t<T, I>>) {
                   static constexpr sv key = reflect<T>::keys[I];
                   if (!msgpack::detail::write_str_header(ctx, key.size(), b, ix)) [[unlikely]] {
                      return;
@@ -692,12 +691,27 @@ namespace glz
       template <auto Opts, class Value, is_context Ctx, class B, class IX>
       GLZ_ALWAYS_INLINE static void op(Value&& value, Ctx&& ctx, B&& b, IX&& ix)
       {
-         if (!msgpack::detail::write_map_header(ctx, value.size(), b, ix)) [[unlikely]] {
+         using map_t = std::remove_cvref_t<Value>;
+         using val_t = std::remove_cvref_t<detail::iterator_second_type<map_t>>;
+         constexpr bool may_skip = null_t<val_t> && Opts.skip_null_members;
+
+         size_t count = value.size();
+         if constexpr (may_skip) {
+            count = 0;
+            for (auto&& item : value) {
+               if (!skip_member<Opts>(item.second)) ++count;
+            }
+         }
+
+         if (!msgpack::detail::write_map_header(ctx, count, b, ix)) [[unlikely]] {
             return;
          }
          for (auto&& item : value) {
             if (bool(ctx.error)) [[unlikely]] {
                return;
+            }
+            if constexpr (may_skip) {
+               if (skip_member<Opts>(item.second)) continue;
             }
             serialize<MSGPACK>::op<Opts>(item.first, ctx, b, ix);
             serialize<MSGPACK>::op<Opts>(item.second, ctx, b, ix);
@@ -708,6 +722,10 @@ namespace glz
       }
    };
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4702) // unreachable code from if constexpr
+#endif
    template <writable_array_t T>
    struct to<MSGPACK, T>
    {
@@ -740,6 +758,9 @@ namespace glz
             }
          }
       }
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
    };
 
    template <>
@@ -787,19 +808,19 @@ namespace glz
             break;
          }
 
-         if (len <= std::numeric_limits<uint8_t>::max()) {
+         if (len <= (std::numeric_limits<uint8_t>::max)()) {
             dump_payload([&] {
                dump(std::byte{msgpack::ext8}, b, ix);
                msgpack::dump_uint8(static_cast<uint8_t>(len), b, ix);
             });
          }
-         else if (len <= std::numeric_limits<uint16_t>::max()) {
+         else if (len <= (std::numeric_limits<uint16_t>::max)()) {
             dump_payload([&] {
                dump(std::byte{msgpack::ext16}, b, ix);
                msgpack::dump_uint16(static_cast<uint16_t>(len), b, ix);
             });
          }
-         else if (len <= std::numeric_limits<uint32_t>::max()) {
+         else if (len <= (std::numeric_limits<uint32_t>::max)()) {
             dump_payload([&] {
                dump(std::byte{msgpack::ext32}, b, ix);
                msgpack::dump_uint32(static_cast<uint32_t>(len), b, ix);
@@ -831,7 +852,7 @@ namespace glz
 
          // Timestamp 32: seconds only, fits in uint32, no nanoseconds
          if (value.nanoseconds == 0 && value.seconds >= 0 &&
-             value.seconds <= static_cast<int64_t>(std::numeric_limits<uint32_t>::max())) {
+             value.seconds <= static_cast<int64_t>((std::numeric_limits<uint32_t>::max)())) {
             dump(std::byte{msgpack::fixext4}, b, ix);
             dump(std::byte{type_byte}, b, ix);
             msgpack::dump_uint32(static_cast<uint32_t>(value.seconds), b, ix);
@@ -944,10 +965,9 @@ namespace glz
                   }
                }
                else {
-                  static thread_local auto key =
-                     typename std::decay_t<Value>::key_type(key_value); // TODO handle numeric pointer segments
-                  serialize<MSGPACK>::op<Opts>(key, ctx, b, ix);
-                  auto it = value.find(key);
+                  auto k = typename std::decay_t<Value>::key_type(key_value); // TODO handle numeric pointer segments
+                  serialize<MSGPACK>::op<Opts>(k, ctx, b, ix);
+                  auto it = value.find(k);
                   if (it != value.end()) {
                      serialize_partial<MSGPACK>::op<sub_partial, Opts>(it->second, ctx, b, ix);
                   }
@@ -1010,6 +1030,7 @@ namespace glz
    };
 
    template <is_variant T>
+      requires(not custom_write<T>)
    struct to<MSGPACK, T>
    {
       template <auto Opts, class Value, is_context Ctx, class B, class IX>

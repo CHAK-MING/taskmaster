@@ -4,7 +4,6 @@
 #pragma once
 
 #include <algorithm>
-#include <any>
 #include <charconv>
 
 #include "glaze/core/seek.hpp"
@@ -105,8 +104,8 @@ namespace glz
                         if (bool(ctx.error)) [[unlikely]] {
                            return;
                         }
-                        if (*it != ',') {
-                           ctx.error = error_code::key_not_found;
+                        if (it >= end || *it != ',') {
+                           ctx.error = it >= end ? error_code::unexpected_end : error_code::key_not_found;
                            return;
                         }
                         ++it;
@@ -123,8 +122,8 @@ namespace glz
                         if (bool(ctx.error)) [[unlikely]] {
                            return;
                         }
-                        if (*it != ',') {
-                           ctx.error = error_code::array_element_not_found;
+                        if (it >= end || *it != ',') {
+                           ctx.error = it >= end ? error_code::unexpected_end : error_code::array_element_not_found;
                            return;
                         }
                         ++it;
@@ -187,8 +186,8 @@ namespace glz
                      if (bool(ctx.error)) [[unlikely]] {
                         return;
                      }
-                     if (*it != ',') {
-                        ctx.error = error_code::key_not_found;
+                     if (it >= end || *it != ',') {
+                        ctx.error = it >= end ? error_code::unexpected_end : error_code::key_not_found;
                         return;
                      }
                      ++it;

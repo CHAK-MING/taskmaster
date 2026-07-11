@@ -1,0 +1,6 @@
+*
+!.gitignore
+!valid_json
+!valid_toml
+!truncated_json_escape
+!truncated_toml_array

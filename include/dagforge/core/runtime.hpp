@@ -4,6 +4,7 @@
 #include "dagforge/core/memory.hpp"
 #include "dagforge/core/coroutine.hpp"
 #include "dagforge/core/error.hpp"
+#include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/io/timing_wheel.hpp"
 #include "dagforge/core/metrics.hpp"
 #include "dagforge/core/shard.hpp"

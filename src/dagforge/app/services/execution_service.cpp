@@ -35,8 +35,21 @@ namespace {
     return 2;
   case ExecutorType::Noop:
     return 3;
+  case ExecutorType::Lua:
+    return 4;
   }
   return 0;
+}
+
+template <typename T, typename... Args>
+auto log_result_error(const Result<T> &result,
+                      std::format_string<Args...> fmt,
+                      Args &&...args) -> void {
+  if (result) {
+    return;
+  }
+  log::error("{}: {}", std::format(fmt, std::forward<Args>(args)...),
+             result.error().message());
 }
 
 [[nodiscard]] auto
@@ -145,7 +158,7 @@ ExecutionService::ExecutionService(Runtime &runtime, IExecutor &executor)
       dispatch_spawn_duration_histogram_(
           std::span<const std::uint64_t>(kDispatchLatencyBucketsNs)) {}
 
-ExecutionService::~ExecutionService() = default;
+ExecutionService::~ExecutionService() { lifetime_token_.reset(); }
 
 auto ExecutionService::set_max_concurrency(int max_concurrency) -> void {
   max_concurrency_ = max_concurrency;
@@ -195,23 +208,16 @@ auto ExecutionService::remember_completed_run(
   }
 }
 
-auto ExecutionService::schedule_dispatch_on_owner(ShardState &state,
-                                                  const DAGRunId &dag_run_id)
-    -> void {
-  auto it = state.runs.find(dag_run_id);
-  if (it == state.runs.end() || !it->second.run ||
-      it->second.run->is_complete()) {
-    return;
-  }
-
-  switch (it->second.dispatch_state) {
+auto ExecutionService::schedule_dispatch_on_owner(
+    ActiveRunState &run_state, const DAGRunId &dag_run_id) -> void {
+  switch (run_state.dispatch_state) {
   case DispatchState::Idle:
   case DispatchState::Queued:
-    it->second.dispatch_state = DispatchState::Dispatching;
+    run_state.dispatch_state = DispatchState::Dispatching;
     runtime_.spawn_on(owner_shard(dag_run_id), dispatch(dag_run_id.clone()));
     return;
   case DispatchState::Dispatching:
-    it->second.dispatch_state = DispatchState::DispatchingQueued;
+    run_state.dispatch_state = DispatchState::DispatchingQueued;
     return;
   case DispatchState::DispatchingQueued:
     return;
@@ -230,12 +236,13 @@ auto ExecutionService::schedule_dispatch(const DAGRunId &dag_run_id) -> void {
     if (it->second.run->ready_count() == 0) {
       return;
     }
+    auto &run_state = it->second;
     const auto has_capacity =
         running_tasks_.load(std::memory_order_relaxed) < max_concurrency_;
-    switch (it->second.dispatch_state) {
+    switch (run_state.dispatch_state) {
     case DispatchState::Idle:
       if (has_capacity) {
-        schedule_dispatch_on_owner(state, dag_run_id);
+        schedule_dispatch_on_owner(run_state, dag_run_id);
         return;
       }
       break;
@@ -245,12 +252,12 @@ auto ExecutionService::schedule_dispatch(const DAGRunId &dag_run_id) -> void {
       }
       return;
     case DispatchState::Dispatching:
-      schedule_dispatch_on_owner(state, dag_run_id);
+      schedule_dispatch_on_owner(run_state, dag_run_id);
       return;
     case DispatchState::DispatchingQueued:
       return;
     }
-    if (enqueue_ready_run(state, dag_run_id)) {
+    if (enqueue_ready_run(state, run_state, dag_run_id)) {
       schedule_dispatch_scan(target);
     }
     return;
@@ -258,7 +265,12 @@ auto ExecutionService::schedule_dispatch(const DAGRunId &dag_run_id) -> void {
 
   post_to_owner(dag_run_id, [this, id = dag_run_id.clone()]() mutable {
     auto &state = shard_state(id);
-    if (enqueue_ready_run(state, id)) {
+    auto it = state.runs.find(id);
+    if (it == state.runs.end() || !it->second.run ||
+        it->second.run->is_complete()) {
+      return;
+    }
+    if (enqueue_ready_run(state, it->second, id)) {
       schedule_dispatch_scan(owner_shard(id));
     }
   });
@@ -288,18 +300,14 @@ auto ExecutionService::schedule_dispatch_scan(shard_id sid) -> void {
 }
 
 auto ExecutionService::enqueue_ready_run(ShardState &state,
+                                         ActiveRunState &run_state,
                                          const DAGRunId &dag_run_id) -> bool {
-  auto it = state.runs.find(dag_run_id);
-  if (it == state.runs.end() || !it->second.run ||
-      it->second.run->is_complete()) {
+  if (run_state.run->ready_count() == 0) {
     return false;
   }
-  if (it->second.run->ready_count() == 0) {
-    return false;
-  }
-  switch (it->second.dispatch_state) {
+  switch (run_state.dispatch_state) {
   case DispatchState::Idle:
-    it->second.dispatch_state = DispatchState::Queued;
+    run_state.dispatch_state = DispatchState::Queued;
     state.ready_run_queue.push_back(dag_run_id.clone());
     ready_run_queue_sizes_[owner_shard(dag_run_id)].value.fetch_add(
         1, std::memory_order_relaxed);
@@ -308,7 +316,7 @@ auto ExecutionService::enqueue_ready_run(ShardState &state,
   case DispatchState::DispatchingQueued:
     return false;
   case DispatchState::Dispatching:
-    it->second.dispatch_state = DispatchState::DispatchingQueued;
+    run_state.dispatch_state = DispatchState::DispatchingQueued;
     return false;
   }
   return false;
@@ -367,7 +375,7 @@ auto ExecutionService::dispatch_pending_on_shard(shard_id sid) -> void {
       it->second.dispatch_state = DispatchState::Idle;
       continue;
     }
-    schedule_dispatch_on_owner(state, dag_run_id);
+    schedule_dispatch_on_owner(it->second, dag_run_id);
   }
 
   const auto rearm = state.dispatch_scan_state == DispatchScanState::Rearmed;
@@ -405,8 +413,6 @@ auto ExecutionService::notify_capacity_available() -> void {
 
 auto ExecutionService::set_callbacks(ExecutionCallbacks callbacks) -> void {
   callbacks_ = std::move(callbacks);
-  // The resolver's synchronous xcom_lookup is kept as a fallback for cached
-  // misses in edge cases; the primary path is prefetch_xcom before execution.
   template_resolver_.set_xcom_lookup(nullptr);
 }
 
@@ -422,27 +428,26 @@ auto ExecutionService::start_run(const DAGRunId &dag_run_id, RunContext ctx)
   post_to_owner(dag_run_id, [this, id = dag_run_id.clone(),
                              ctx = std::move(ctx)]() mutable {
     auto &state = shard_state(id);
-    state.runs.insert_or_assign(
+    auto it = state.runs.insert_or_assign(
         id.clone(),
         ActiveRunState{.run = std::move(ctx.run),
                        .executor_configs = std::move(ctx.executor_configs),
                        .task_configs = std::move(ctx.task_configs),
                        .dag_id = std::move(ctx.dag_id),
-                       .xcom_cache = {}});
-    auto it = state.runs.find(id);
-    if (it == state.runs.end() || !it->second.run ||
-        it->second.run->is_complete()) {
+                       .xcom_cache = {}})
+                  .first;
+    if (!it->second.run || it->second.run->is_complete()) {
       return;
     }
 
     // Fast path for root-task release: avoid queue+scan if we can dispatch now.
     if (it->second.run->ready_count() > 0 &&
         running_tasks_.load(std::memory_order_relaxed) < max_concurrency_) {
-      schedule_dispatch_on_owner(state, id);
+      schedule_dispatch_on_owner(it->second, id);
       return;
     }
 
-    if (enqueue_ready_run(state, id)) {
+    if (enqueue_ready_run(state, it->second, id)) {
       schedule_dispatch_scan(owner_shard(id));
     }
   });
@@ -500,12 +505,17 @@ auto ExecutionService::has_active_runs() const -> bool {
   return active_run_count_.load(std::memory_order_acquire) > 0;
 }
 
-auto ExecutionService::wait_for_completion_async(int timeout_ms) -> task<void> {
+auto ExecutionService::wait_for_completion_async(int timeout_ms)
+    -> task<Result<void>> {
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
   while (has_active_runs() && std::chrono::steady_clock::now() < deadline) {
     co_await async_sleep(std::chrono::milliseconds(50));
   }
+  if (has_active_runs()) {
+    co_return fail(Error::Timeout);
+  }
+  co_return ok();
 }
 
 auto ExecutionService::coro_count() const -> int { return coro_count_.load(); }
@@ -666,7 +676,7 @@ auto ExecutionService::finalize_task_execution(
             log::error("run_task: on_task_failure failed: {}", ec.message());
             return ok(false);
           });
-  const bool will_retry = retry_result.value_or(false);
+  const bool will_retry = *retry_result;
   if (callbacks_.on_task_status) {
     callbacks_.on_task_status(dag_run_id, task_id,
                               will_retry ? TaskState::Retrying
@@ -996,7 +1006,7 @@ auto ExecutionService::expire_local_task_lease(const DAGRunId &dag_run_id,
                        ec.message());
             return ok(false);
           });
-  const bool will_retry = retry_result.value_or(false);
+  const bool will_retry = *retry_result;
   if (callbacks_.on_task_status) {
     callbacks_.on_task_status(dag_run_id, lease.task_id,
                               will_retry ? TaskState::Retrying
@@ -1009,6 +1019,7 @@ auto ExecutionService::expire_local_task_lease(const DAGRunId &dag_run_id,
 
 auto ExecutionService::dispatch(DAGRunId dag_run_id) -> task<Result<void>> {
   const auto target = owner_shard(dag_run_id);
+  auto lifetime = std::weak_ptr<int>{lifetime_token_};
 
   // If not on owner shard, schedule a coroutine on the owner and return.
   if (!runtime_.is_current_shard() || runtime_.current_shard() != target) {
@@ -1019,7 +1030,10 @@ auto ExecutionService::dispatch(DAGRunId dag_run_id) -> task<Result<void>> {
   // --- We are on the owner shard; direct access, no locks ---
   const auto started_at = std::chrono::steady_clock::now();
   const auto dispatch_metrics_guard =
-      std::experimental::scope_exit([this, started_at] {
+      std::experimental::scope_exit([lifetime, this, started_at] {
+        if (lifetime.expired()) {
+          return;
+        }
         const auto elapsed_ns =
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - started_at)
@@ -1030,8 +1044,11 @@ auto ExecutionService::dispatch(DAGRunId dag_run_id) -> task<Result<void>> {
 
   dispatch_invocations_.fetch_add(1, std::memory_order_relaxed);
   const auto dispatch_cycle_guard =
-      std::experimental::scope_exit([this, target, &dag_run_id] {
-        finish_dispatch_cycle(target, dag_run_id);
+      std::experimental::scope_exit([lifetime, this, target,
+                                     dag_run_id = dag_run_id.clone()] {
+        if (!lifetime.expired()) {
+          finish_dispatch_cycle(target, dag_run_id);
+        }
       });
 
   auto &state = shard_states_[target];
@@ -1149,7 +1166,7 @@ auto ExecutionService::dispatch(DAGRunId dag_run_id) -> task<Result<void>> {
 
       auto state_res = co_await callbacks_.check_previous_task_state(
           candidate.task_rowid, candidate.execution_date, dag_run_id);
-      bool blocked =
+      auto blocked_res =
           state_res
               .and_then([&](auto state_val) -> Result<bool> {
                 if (state_val != TaskState::Success &&
@@ -1169,8 +1186,8 @@ auto ExecutionService::dispatch(DAGRunId dag_run_id) -> task<Result<void>> {
                            "(persistence error: {})",
                            candidate.idx, ec.message());
                 return ok(true);
-              })
-              .value_or(true);
+              });
+      const bool blocked = *blocked_res;
       if (blocked) {
         depends_on_past_blocked.emplace_back(candidate.idx);
       }
@@ -1187,10 +1204,7 @@ auto ExecutionService::dispatch(DAGRunId dag_run_id) -> task<Result<void>> {
       co_return ok();
     }
     auto &run_state = it->second;
-    auto &run = *it->second.run;
-    if (!executor_configs_snapshot || !task_configs_snapshot) [[unlikely]] {
-      co_return fail(Error::InvalidState);
-    }
+    auto &run = *run_state.run;
     const auto &executor_configs = *executor_configs_snapshot;
     const auto &task_configs = *task_configs_snapshot;
     pmr::unordered_set<NodeIndex> blocked_set(&dispatch_resource);
@@ -1349,7 +1363,7 @@ struct ExecutionVisitor {
   std::shared_ptr<pmr::memory_resource> task_resource_owner;
   pmr::memory_resource *task_resource;
 
-  auto operator()() const -> task<ExecutorResult> {
+  auto operator()() const -> task<Result<ExecutorResult>> {
     switch (job.cfg().type()) {
     case ExecutorType::Shell:
       return execute_shell();
@@ -1359,6 +1373,8 @@ struct ExecutionVisitor {
       return execute_sensor();
     case ExecutorType::Noop:
       return execute_noop();
+    case ExecutorType::Lua:
+      return invalid_config_task("lua");
     }
     return invalid_config_task("unknown");
   }
@@ -1381,7 +1397,7 @@ private:
     });
   }
 
-  auto execute_shell() const -> task<ExecutorResult> {
+  auto execute_shell() const -> task<Result<ExecutorResult>> {
     auto *cfg = job.cfg().as<ShellExecutorConfig>();
     if (cfg == nullptr) {
       return invalid_config_task("shell");
@@ -1439,7 +1455,7 @@ private:
         [this](const InstanceId &) { refresh_heartbeat(); });
   }
 
-  auto execute_docker() const -> task<ExecutorResult> {
+  auto execute_docker() const -> task<Result<ExecutorResult>> {
     auto *cfg = job.cfg().as<DockerExecutorConfig>();
     if (cfg == nullptr) {
       return invalid_config_task("docker");
@@ -1480,7 +1496,7 @@ private:
                          [this](const InstanceId &) { refresh_heartbeat(); });
   }
 
-  auto execute_sensor() const -> task<ExecutorResult> {
+  auto execute_sensor() const -> task<Result<ExecutorResult>> {
     auto *cfg = job.cfg().as<SensorExecutorConfig>();
     if (cfg == nullptr) {
       return invalid_config_task("sensor");
@@ -1517,7 +1533,7 @@ private:
                          [this](const InstanceId &) { refresh_heartbeat(); });
   }
 
-  auto execute_noop() const -> task<ExecutorResult> {
+  auto execute_noop() const -> task<Result<ExecutorResult>> {
     auto *cfg = job.cfg().as<NoopExecutorConfig>();
     if (cfg == nullptr) {
       return invalid_config_task("noop");
@@ -1546,13 +1562,14 @@ private:
     return result;
   }
 
-  auto ready_result(ExecutorResult result) const -> task<ExecutorResult> {
-    co_return result;
+  auto ready_result(ExecutorResult result) const
+      -> task<Result<ExecutorResult>> {
+    co_return ok(std::move(result));
   }
 
   auto invalid_config_task(std::string_view executor_name) const
-      -> task<ExecutorResult> {
-    co_return invalid_config(executor_name);
+      -> task<Result<ExecutorResult>> {
+    co_return ok(invalid_config(executor_name));
   }
 
   [[nodiscard]] auto make_template_ctx() const -> TemplateContext {
@@ -1604,9 +1621,13 @@ private:
 
 auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job)
     -> spawn_task {
+  auto lifetime = std::weak_ptr<int>{lifetime_token_};
   ++coro_count_;
-  const auto coro_count_guard =
-      std::experimental::scope_exit([this] { --coro_count_; });
+  const auto coro_count_guard = std::experimental::scope_exit([lifetime, this] {
+    if (!lifetime.expired()) {
+      --coro_count_;
+    }
+  });
 
   const auto task_started_at = begin_task_execution(dag_run_id, job);
 
@@ -1788,13 +1809,21 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job)
   arm_local_task_lease(dag_run_id, job, task_started_at);
   auto task_resource = std::make_shared<pmr::monotonic_buffer_resource>(
       current_memory_resource_or_default());
-  auto result =
+  auto result_res =
       co_await ExecutionVisitor{.service = *this,
                                 .dag_run_id = dag_run_id,
                                 .job = job,
                                 .dag_id = std::move(dag_id),
                                 .task_resource_owner = task_resource,
                                 .task_resource = task_resource.get()}();
+  ExecutorResult result = make_executor_result(task_resource.get());
+  if (!result_res) {
+    result.exit_code = 1;
+    result.error = pmr::string(result_res.error().message(),
+                               task_resource.get());
+  } else {
+    result = std::move(*result_res);
+  }
   co_await finalize_task_execution(dag_run_id, job, std::move(result),
                                    task_started_at, target);
 }
@@ -1829,7 +1858,13 @@ auto ExecutionService::dispatch_after_delay(DAGRunId dag_run_id,
 
 auto ExecutionService::dispatch_after_yield(DAGRunId dag_run_id) -> spawn_task {
   auto executor = co_await boost::asio::this_coro::executor;
-  co_await boost::asio::post(executor, boost::asio::use_awaitable);
+  auto post_res =
+      co_await co_as_result(boost::asio::post(executor, dagforge::use_nothrow));
+  if (!post_res) {
+    log::error("dispatch_after_yield: post failed: {}",
+               post_res.error().message());
+    co_return;
+  }
   if (auto result = co_await dispatch(std::move(dag_run_id)); !result) {
     log::error("dispatch_after_yield: dispatch failed: {}",
                result.error().message());

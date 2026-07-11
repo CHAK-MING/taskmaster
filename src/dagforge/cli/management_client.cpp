@@ -31,21 +31,6 @@ auto run_task(io::IoContext &io, task<Result<T>> op) -> Result<T> {
   }
 }
 
-auto run_task_void(io::IoContext &io, task<void> op) -> void {
-  auto fut = boost::asio::co_spawn(io, std::move(op), boost::asio::use_future);
-  while (fut.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
-    (void)io.run_one();
-  }
-  io.restart();
-  try {
-    fut.get();
-  } catch (const std::future_error &e) {
-    log::error("ManagementClient async void operation failed: {}", e.what());
-  } catch (const std::exception &e) {
-    log::error("ManagementClient async void operation failed: {}", e.what());
-  }
-}
-
 auto reset_task_for_clear(TaskInstanceInfo &task) -> void {
   task.state = TaskState::Pending;
   task.started_at = {};
@@ -61,12 +46,12 @@ auto rebuild_run_after_clear(io::IoContext &io, storage::MySQLDatabase &db,
     -> Result<void> {
   auto run_entry = run_task(io, db.get_run_history(run_id));
   if (!run_entry) {
-    return std::unexpected(run_entry.error());
+    return fail(run_entry.error());
   }
 
   auto dag = run_task(io, db.get_dag(run_entry->dag_id));
   if (!dag) {
-    return std::unexpected(dag.error());
+    return fail(dag.error());
   }
   if (auto prepared = dag->prepare_runtime_artifacts(); !prepared) {
     return prepared;
@@ -77,7 +62,7 @@ auto rebuild_run_after_clear(io::IoContext &io, storage::MySQLDatabase &db,
 
   auto run = DAGRun::create(run_id.clone(), dag->compiled_graph);
   if (!run) {
-    return std::unexpected(run.error());
+    return fail(run.error());
   }
 
   run->set_run_rowid(run_entry->run_rowid);
@@ -100,7 +85,7 @@ auto rebuild_run_after_clear(io::IoContext &io, storage::MySQLDatabase &db,
 
   auto tasks = run_task(io, db.get_task_instances(run_id));
   if (!tasks) {
-    return std::unexpected(tasks.error());
+    return fail(tasks.error());
   }
 
   for (auto &task : *tasks) {
@@ -133,8 +118,10 @@ ManagementClient::ManagementClient(const DatabaseConfig &db_config)
     : db_config_(db_config), db_(io_.get_executor(), db_config_) {}
 
 ManagementClient::~ManagementClient() {
-  if (db_.is_open()) {
-    run_task_void(io_, db_.close());
+  auto close_res = run_task(io_, db_.close());
+  if (!close_res) {
+    log::error("ManagementClient database close failed: {}",
+               close_res.error().message());
   }
 }
 
@@ -245,7 +232,7 @@ auto ManagementClient::get_latest_run(const DAGId &dag_id) const
     -> Result<RunHistoryEntry> {
   auto runs = run_task(io_, db_.list_dag_run_history(dag_id, 1));
   if (!runs)
-    return std::unexpected(runs.error());
+    return fail(runs.error());
   if (runs->empty())
     return fail(Error::NotFound);
   return ok(std::move(runs->front()));

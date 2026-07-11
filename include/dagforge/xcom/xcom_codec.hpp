@@ -3,11 +3,11 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/config/task_types.hpp"
 #include "dagforge/core/error.hpp"
-#endif
 
 #include <string>
 #include <string_view>
 #include <vector>
+#endif
 
 namespace dagforge::xcom {
 

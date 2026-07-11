@@ -69,33 +69,3 @@ export function useWebSocketStatus() {
 
   return { isConnected, connectionLost };
 }
-
-// Hook for real-time DAG updates
-export function useDAGWebSocket(
-  dagId: string | undefined,
-  onTaskStatusChange: (data: { dag_id: string; run_id: string; task_id: string; status: string }) => void,
-  onRunComplete: (data: { dag_id: string; run_id: string; status: string }) => void
-) {
-  useEffect(() => {
-    if (!dagId || !WS_ENABLED) return;
-
-    wsManager.connect();
-
-    const unsubscribeTask = wsManager.on("task_status_changed", (data) => {
-      if (data.dag_id === dagId) {
-        onTaskStatusChange(data as { dag_id: string; run_id: string; task_id: string; status: string });
-      }
-    });
-
-    const unsubscribeRun = wsManager.on("dag_run_completed", (data) => {
-      if (data.dag_id === dagId) {
-        onRunComplete(data as { dag_id: string; run_id: string; status: string });
-      }
-    });
-
-    return () => {
-      unsubscribeTask();
-      unsubscribeRun();
-    };
-  }, [dagId, onTaskStatusChange, onRunComplete]);
-}

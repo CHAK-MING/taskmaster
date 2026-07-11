@@ -25,6 +25,11 @@ public:
 
   [[nodiscard]] auto run() -> std::size_t { return context_.run(); }
   [[nodiscard]] auto run_one() -> std::size_t { return context_.run_one(); }
+  template <typename Rep, typename Period>
+  [[nodiscard]] auto run_one_for(std::chrono::duration<Rep, Period> timeout)
+      -> std::size_t {
+    return context_.run_one_for(timeout);
+  }
   [[nodiscard]] auto poll() -> std::size_t { return context_.poll(); }
   [[nodiscard]] auto poll_one() -> std::size_t { return context_.poll_one(); }
   template <typename Rep, typename Period>

@@ -2,18 +2,27 @@ import foundation = lib{dagforge-foundation}
 
 ./: lib{dagforge}
 
-intf_libs = -lboost_url -lboost_system
+intf_libs = -lboost_url
+
+lua_core = ../third_party/lua-5.4.8/src/c{lapi lcode lctype ldebug ldo ldump \
+    lfunc lgc llex lmem lobject lopcodes lparser lstate lstring ltable ltm \
+    lundump lvm lzio}
+lua_lib = ../third_party/lua-5.4.8/src/c{lauxlib lbaselib lcorolib ldblib \
+    linit liolib lmathlib loadlib loslib lstrlib ltablib lutf8lib}
 
 ./: lib{dagforge-foundation}: libul{dagforge-foundation}: \
   mxx{modules/base modules/core modules/util modules/domain modules/io \
       modules/config modules/scheduler modules/dag modules/storage \
       modules/client modules/executor modules/task_types modules/app \
+      modules/dagforge \
       modules/cli modules/xcom} \
   cxx{modules/scheduler}
 
 lib{dagforge-foundation}:
 {
-  cxx.export.poptions = "-I$src_root/include" "-DDAGFORGE_USE_STDLIB_MODULES=0"
+  cxx.export.poptions = "-I$src_root/include" \
+                        "-I$src_root/third_party/unordered_dense/include" \
+                        "-DDAGFORGE_USE_STDLIB_MODULES=0"
   cxx.export.libs = $intf_libs
 }
 
@@ -33,10 +42,12 @@ lib{dagforge}:                                                   \
       dagforge/dag/dag_run                                        \
       dagforge/dag/dag_manager                                    \
       dagforge/app/metrics_exporter                               \
+      dagforge/app/lifecycle_manager                              \
       dagforge/storage/mysql_database                             \
       dagforge/executor/shell_executor                            \
       dagforge/executor/docker_executor                           \
       dagforge/executor/sensor_executor                           \
+      dagforge/executor/lua_executor                              \
       dagforge/executor/noop_executor                             \
       dagforge/executor/composite_executor                        \
       dagforge/executor/executor_registry                         \
@@ -46,6 +57,7 @@ lib{dagforge}:                                                   \
       dagforge/app/services/execution_service                     \
       dagforge/app/services/execution_event_bridge                \
       dagforge/app/services/dag_catalog_service                   \
+      dagforge/app/services/dag_orchestrator                      \
       dagforge/app/services/scheduler_service                     \
       dagforge/app/services/persistence_service                   \
       dagforge/client/http/http_parser                            \
@@ -76,6 +88,8 @@ lib{dagforge}:                                                   \
       dagforge/xcom/xcom_codec                                    \
       dagforge/xcom/xcom_extractor                                \
       dagforge/xcom/template_resolver}                            \
+  $lua_core                                                       \
+  $lua_lib                                                        \
   $foundation                                                     \
   ../third_party/prometheus-cpp-core/cxx{check_names             \
       counter                                                     \
@@ -92,13 +106,14 @@ lib{dagforge}:                                                   \
       summary                                                     \
       text_serializer}
 {
-  cxx.poptions += "-DDAGFORGE_CONSUME_NAMED_MODULES=0" \
-                  "-DBOOST_ASIO_HAS_IO_URING=0" \
+  cxx.poptions += "-DBOOST_ASIO_HAS_IO_URING=0" \
                   "-DDAGFORGE_USE_MIMALLOC=0"
-  cxx.libs = -lboost_system -lboost_url -lboost_charconv -lboost_process -lssl -lcrypto -pthread
-  cxx.export.libs = -lboost_system -lboost_url -lboost_charconv -lboost_process -lssl -lcrypto -pthread
+  c.libs = -lm -ldl
+  cxx.libs = -lboost_url -lboost_charconv -lboost_process -lboost_filesystem -lssl -lcrypto -pthread -lm -ldl
+  cxx.export.libs = -lboost_url -lboost_charconv -lboost_process -lboost_filesystem -lssl -lcrypto -pthread -lm -ldl
 }
 
+mxx{modules/dagforge}@modules/: cxx.module_name = dagforge.foundation
 mxx{modules/base}@modules/: cxx.module_name = dagforge.base
 mxx{modules/core}@modules/: cxx.module_name = dagforge.core
 mxx{modules/util}@modules/: cxx.module_name = dagforge.util
@@ -107,10 +122,10 @@ mxx{modules/io}@modules/: cxx.module_name = dagforge.io
 mxx{modules/config}@modules/: cxx.module_name = dagforge.config
 mxx{modules/scheduler}@modules/: cxx.module_name = dagforge.scheduler
 mxx{modules/dag}@modules/: cxx.module_name = dagforge.dag
-mxx{modules/storage}@modules/: cxx.module_name = dagforge.storage
-mxx{modules/client}@modules/: cxx.module_name = dagforge.client
+mxx{modules/storage}@modules/: cxx.module_name = dagforge.storage.schema
+mxx{modules/client}@modules/: cxx.module_name = dagforge.http
 mxx{modules/executor}@modules/: cxx.module_name = dagforge.executor
 mxx{modules/task_types}@modules/: cxx.module_name = dagforge.task_types
-mxx{modules/app}@modules/: cxx.module_name = dagforge.app
+mxx{modules/app}@modules/: cxx.module_name = dagforge.metrics
 mxx{modules/cli}@modules/: cxx.module_name = dagforge.cli
 mxx{modules/xcom}@modules/: cxx.module_name = dagforge.xcom

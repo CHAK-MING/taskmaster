@@ -28,7 +28,7 @@ namespace dagforge {
 
 class DAG {
 public:
-  [[nodiscard]] auto add_node(TaskId task_id,
+  [[nodiscard]] auto add_node(const TaskId &task_id,
                               TriggerRule rule = TriggerRule::AllSuccess,
                               bool is_branch = false) -> Result<NodeIndex> {
     auto it = key_to_idx_.find(task_id);

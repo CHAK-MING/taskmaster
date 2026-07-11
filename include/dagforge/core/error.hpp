@@ -41,11 +41,12 @@ enum class Error : std::uint8_t {
   Incomplete,
   ProtocolError,
   Unauthorized,
+  RateLimited,
   Unknown,
 };
 
 class ErrorCategory : public std::error_category {
-  static constexpr std::array<std::string_view, 26> messages = {
+  static constexpr std::array<std::string_view, 27> messages = {
       "success",
       "file not found",
       "failed to open file",
@@ -71,8 +72,14 @@ class ErrorCategory : public std::error_category {
       "incomplete data",
       "protocol error",
       "unauthorized",
+      "rate limited",
       "unknown error",
   };
+
+  static_assert(std::to_underlying(Error::Success) == 0,
+                "dagforge::Error must stay zero-based for table lookup.");
+  static_assert(messages.size() == std::to_underlying(Error::Unknown) + 1,
+                "Update ErrorCategory::messages when adding dagforge::Error values.");
 
 public:
   ~ErrorCategory() override = default;
@@ -116,9 +123,19 @@ template <typename T>
   return std::unexpected{make_error_code(e)};
 }
 
+[[nodiscard]] inline auto fail(Error e, std::string_view /*message*/)
+    -> std::unexpected<std::error_code> {
+  return fail(e);
+}
+
 [[nodiscard]] inline auto fail(std::error_code ec)
     -> std::unexpected<std::error_code> {
   return std::unexpected{ec};
+}
+
+[[nodiscard]] inline auto fail(std::error_code ec, std::string_view /*message*/)
+    -> std::unexpected<std::error_code> {
+  return fail(ec);
 }
 
 template <typename T> [[nodiscard]] auto sys_check(T val) -> Result<T> {

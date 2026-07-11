@@ -3,13 +3,13 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/id.hpp"
 #include "dagforge/xcom/xcom_types.hpp"
-#endif
 
 #include <ankerl/unordered_dense.h>
 #include <chrono>
 #include <functional>
 #include <string>
 #include <vector>
+#endif
 
 
 namespace dagforge {

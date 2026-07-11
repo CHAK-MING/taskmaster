@@ -46,20 +46,10 @@ function toRunLabel(runs: RunRecord[], runId?: string) {
   return index >= 0 ? `Run #${runs.length - index}` : runId;
 }
 
-function dedupeLogs(logs: DisplayLogEntry[]): DisplayLogEntry[] {
-  const seen = new Set<string>();
-  const result: DisplayLogEntry[] = [];
-
-  for (const log of logs) {
-    const identity = `${log.logged_at}|${log.task_id}|${log.stream}|${log.content}`;
-    if (seen.has(identity)) {
-      continue;
-    }
-    seen.add(identity);
-    result.push(log);
-  }
-
-  return result;
+function logIdentity(
+  log: Pick<DisplayLogEntry, "logged_at" | "task_id" | "stream" | "content">
+) {
+  return `${log.logged_at}|${log.task_id}|${log.stream}|${log.content}`;
 }
 
 function mapPersistedLogs(logs: TaskLogEntry[]): DisplayLogEntry[] {
@@ -99,46 +89,98 @@ export function RunLogsTab({
   const [followTail, setFollowTail] = useState(false);
   const [liveLogs, setLiveLogs] = useState<DisplayLogEntry[]>([]);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const connectedRef = useRef<boolean | null>(null);
 
   const selectedRun = runs.find((run) => run.dag_run_id === selectedRunId);
   const isLiveRun = selectedRun?.state === "running";
 
-  const { data: persistedLogs = [] } = useRunLogsQuery(
-    selectedRunId,
-    10000,
-    isLiveRun ? 5000 : undefined
-  );
+  const {
+    data: persistedLogs = [],
+    refetch: refetchPersistedLogs,
+  } = useRunLogsQuery(selectedRunId, 10000);
 
   useEffect(() => {
     setLiveLogs([]);
+    connectedRef.current = null;
   }, [selectedRunId]);
 
   useEffect(() => {
     setFollowTail(Boolean(isLiveRun));
   }, [isLiveRun, selectedRunId]);
 
+  const persistedDisplayLogs = useMemo(
+    () => mapPersistedLogs(persistedLogs),
+    [persistedLogs]
+  );
+
+  const persistedIdentitySet = useMemo(
+    () => new Set(persistedDisplayLogs.map((log) => logIdentity(log))),
+    [persistedDisplayLogs]
+  );
+
   const handleLogEvent = useCallback((data: WebSocketEventData) => {
     if (data.type !== "log" || data.dag_run_id !== selectedRunId) {
       return;
     }
 
-    setLiveLogs((prev) => [
-      ...prev,
-      {
-        key: `live-${data.timestamp}-${data.task_id}-${data.stream}-${prev.length}`,
-        task_id: data.task_id,
-        stream: data.stream,
-        logged_at: data.timestamp,
-        content: data.content,
-      },
-    ]);
+    const nextLog: DisplayLogEntry = {
+      key: `live-${data.timestamp}-${data.task_id}-${data.stream}-${data.content.length}`,
+      task_id: data.task_id,
+      stream: data.stream,
+      logged_at: data.timestamp,
+      content: data.content,
+    };
+    const nextIdentity = logIdentity(nextLog);
+
+    setLiveLogs((prev) => {
+      if (prev.some((log) => logIdentity(log) === nextIdentity)) {
+        return prev;
+      }
+      return [...prev, nextLog];
+    });
   }, [selectedRunId]);
 
-  useWebSocket("log", handleLogEvent, !!selectedRunId && !!isLiveRun);
+  const handleRunComplete = useCallback((data: WebSocketEventData) => {
+    if (data.type !== "dag_run_completed" || data.run_id !== selectedRunId) {
+      return;
+    }
 
-  const mergedLogs = useMemo(
-    () => dedupeLogs([...mapPersistedLogs(persistedLogs), ...liveLogs]),
-    [persistedLogs, liveLogs]
+    void refetchPersistedLogs();
+  }, [refetchPersistedLogs, selectedRunId]);
+
+  useWebSocket("log", handleLogEvent, !!selectedRunId && !!isLiveRun);
+  useWebSocket("dag_run_completed", handleRunComplete, !!selectedRunId);
+
+  useEffect(() => {
+    if (!selectedRunId || !isLiveRun) {
+      connectedRef.current = isConnected;
+      return;
+    }
+
+    if (connectedRef.current === false && isConnected) {
+      void refetchPersistedLogs();
+    }
+    connectedRef.current = isConnected;
+  }, [isConnected, isLiveRun, refetchPersistedLogs, selectedRunId]);
+
+  useEffect(() => {
+    if (persistedIdentitySet.size === 0) {
+      return;
+    }
+
+    setLiveLogs((prev) =>
+      prev.filter((log) => !persistedIdentitySet.has(logIdentity(log)))
+    );
+  }, [persistedIdentitySet]);
+
+  const unreconciledLiveLogs = useMemo(
+    () => liveLogs.filter((log) => !persistedIdentitySet.has(logIdentity(log))),
+    [liveLogs, persistedIdentitySet]
+  );
+
+  const displayLogs = useMemo(
+    () => [...persistedDisplayLogs, ...unreconciledLiveLogs],
+    [persistedDisplayLogs, unreconciledLiveLogs]
   );
 
   const taskNameById = useMemo(
@@ -148,7 +190,7 @@ export function RunLogsTab({
 
   const filteredLogs = useMemo(
     () =>
-      mergedLogs.filter((log) => {
+      displayLogs.filter((log) => {
         if (taskQuery.trim()) {
           const needle = taskQuery.trim().toLowerCase();
           const taskId = log.task_id.toLowerCase();
@@ -162,7 +204,7 @@ export function RunLogsTab({
         }
         return true;
       }),
-    [mergedLogs, streamFilter, taskNameById, taskQuery]
+    [displayLogs, streamFilter, taskNameById, taskQuery]
   );
 
   const scrollToBottom = useCallback(() => {

@@ -5,6 +5,7 @@
 
 #include "glaze/cbor/header.hpp"
 #include "glaze/cbor/skip.hpp"
+#include "glaze/core/chrono.hpp"
 #include "glaze/core/opts.hpp"
 #include "glaze/core/read.hpp"
 #include "glaze/core/reflect.hpp"
@@ -358,7 +359,7 @@ namespace glz
                return;
 
             // Range check: n must fit in T's positive range
-            constexpr auto max_val = static_cast<uint64_t>(std::numeric_limits<T>::max());
+            constexpr auto max_val = static_cast<uint64_t>((std::numeric_limits<T>::max)());
             if (n > max_val) [[unlikely]] {
                ctx.error = error_code::parse_number_failure;
                return;
@@ -372,7 +373,7 @@ namespace glz
 
             // CBOR negative value = -1 - n
             // For T's range [-2^(bits-1), 2^(bits-1)-1], max valid n = 2^(bits-1) - 1
-            constexpr auto max_n = static_cast<uint64_t>(std::numeric_limits<T>::max());
+            constexpr auto max_n = static_cast<uint64_t>((std::numeric_limits<T>::max)());
 
             if (n > max_n) [[unlikely]] {
                ctx.error = error_code::parse_number_failure;
@@ -502,7 +503,10 @@ namespace glz
                return;
             }
             else {
-               value.clear();
+               if constexpr (resizable<T>) {
+                  value.clear();
+               }
+               size_t offset = 0; // fill position for fixed-size targets
                while (true) {
                   if (it >= end) [[unlikely]] {
                      ctx.error = error_code::unexpected_end;
@@ -541,8 +545,25 @@ namespace glz
                      return;
                   }
 
-                  value.append(reinterpret_cast<const char*>(it), chunk_len);
+                  if constexpr (array_char_t<T>) {
+                     // Fixed-size std::array<char, N>: accumulate with bounds checking.
+                     if (offset + chunk_len > value.size()) [[unlikely]] {
+                        ctx.error = error_code::syntax_error;
+                        return;
+                     }
+                     std::memcpy(value.data() + offset, it, chunk_len);
+                     offset += static_cast<size_t>(chunk_len);
+                  }
+                  else {
+                     value.append(reinterpret_cast<const char*>(it), chunk_len);
+                  }
                   it += chunk_len;
+               }
+               if constexpr (array_char_t<T>) {
+                  // Zero-fill any unused tail of the fixed-size buffer.
+                  if (offset < value.size()) {
+                     std::memset(value.data() + offset, 0, value.size() - offset);
+                  }
                }
             }
          }
@@ -574,6 +595,18 @@ namespace glz
             if constexpr (string_view_t<T>) {
                value = {reinterpret_cast<const char*>(it), static_cast<size_t>(length)};
             }
+            else if constexpr (array_char_t<T>) {
+               // Fixed-size std::array<char, N>: bounds-check, copy, zero-fill remainder.
+               if (length > value.size()) [[unlikely]] {
+                  ctx.error = error_code::syntax_error;
+                  return;
+               }
+               std::memcpy(value.data(), it, length);
+               if (length < value.size()) {
+                  std::memset(value.data() + static_cast<size_t>(length), 0,
+                              value.size() - static_cast<size_t>(length));
+               }
+            }
             else {
                value.assign(reinterpret_cast<const char*>(it), length);
             }
@@ -582,9 +615,12 @@ namespace glz
       }
    };
 
-   // Byte strings - std::vector<std::byte>
+   // Byte strings - any contiguous byte-like range (std::vector<std::byte>, std::vector<uint8_t>,
+   // std::array<std::byte, N>, std::array<uint8_t, N>, ...). Handles both resizable and fixed-size
+   // targets (the latter bounds-checked with the remainder zero-filled); std::byte, unsigned char,
+   // and uint8_t ranges share one implementation (see glz::contiguous_byte_range / byte_like).
    template <class T>
-      requires(std::same_as<typename T::value_type, std::byte> && resizable<T>)
+      requires(contiguous_byte_range<std::remove_cvref_t<T>> && !str_t<T>)
    struct from<CBOR, T>
    {
       template <auto Opts>
@@ -611,7 +647,10 @@ namespace glz
 
          if (additional_info == info::indefinite) {
             // Indefinite-length byte string
-            value.clear();
+            if constexpr (resizable<T>) {
+               value.clear();
+            }
+            size_t offset = 0; // fill position for fixed-size targets
             while (true) {
                if (it >= end) [[unlikely]] {
                   ctx.error = error_code::unexpected_end;
@@ -648,10 +687,27 @@ namespace glz
                   return;
                }
 
-               const size_t old_size = value.size();
-               value.resize(old_size + static_cast<size_t>(chunk_len));
-               std::memcpy(value.data() + old_size, it, chunk_len);
+               if constexpr (resizable<T>) {
+                  const size_t old_size = value.size();
+                  value.resize(old_size + static_cast<size_t>(chunk_len));
+                  std::memcpy(value.data() + old_size, it, chunk_len);
+               }
+               else {
+                  // Fixed-size std::array<std::byte, N>: accumulate with bounds checking.
+                  if (offset + chunk_len > value.size()) [[unlikely]] {
+                     ctx.error = error_code::syntax_error;
+                     return;
+                  }
+                  std::memcpy(value.data() + offset, it, chunk_len);
+                  offset += static_cast<size_t>(chunk_len);
+               }
                it += chunk_len;
+            }
+            if constexpr (!resizable<T>) {
+               // Zero-fill any unused tail of the fixed-size buffer.
+               if (offset < value.size()) {
+                  std::memset(value.data() + offset, 0, value.size() - offset);
+               }
             }
          }
          else {
@@ -678,109 +734,22 @@ namespace glz
                }
             }
 
-            value.resize(static_cast<size_t>(length));
-            std::memcpy(value.data(), it, length);
-            it += length;
-         }
-      }
-   };
-
-   // Byte strings - std::vector<uint8_t>
-   template <>
-   struct from<CBOR, std::vector<uint8_t>>
-   {
-      template <auto Opts>
-      static void op(auto& value, is_context auto& ctx, auto& it, auto end)
-      {
-         using namespace cbor;
-
-         if (it >= end) [[unlikely]] {
-            ctx.error = error_code::unexpected_end;
-            return;
-         }
-
-         uint8_t initial;
-         std::memcpy(&initial, it, 1);
-         ++it;
-
-         const uint8_t major_type = get_major_type(initial);
-         const uint8_t additional_info = get_additional_info(initial);
-
-         if (major_type != major::bstr) [[unlikely]] {
-            ctx.error = error_code::syntax_error;
-            return;
-         }
-
-         if (additional_info == info::indefinite) {
-            value.clear();
-            while (true) {
-               if (it >= end) [[unlikely]] {
-                  ctx.error = error_code::unexpected_end;
-                  return;
-               }
-
-               uint8_t chunk_initial;
-               std::memcpy(&chunk_initial, it, 1);
-
-               if (chunk_initial == initial_byte(major::simple, simple::break_code)) {
-                  ++it;
-                  break;
-               }
-
-               const uint8_t chunk_major = get_major_type(chunk_initial);
-               const uint8_t chunk_info = get_additional_info(chunk_initial);
-
-               if (chunk_major != major::bstr) [[unlikely]] {
+            if constexpr (resizable<T>) {
+               value.resize(static_cast<size_t>(length));
+               std::memcpy(value.data(), it, length);
+            }
+            else {
+               // Fixed-size std::array<std::byte, N>: bounds-check, copy, zero-fill remainder.
+               if (length > value.size()) [[unlikely]] {
                   ctx.error = error_code::syntax_error;
                   return;
                }
-               if (chunk_info == info::indefinite) [[unlikely]] {
-                  ctx.error = error_code::syntax_error;
-                  return;
-               }
-
-               ++it;
-               uint64_t chunk_len = cbor_detail::decode_arg(ctx, it, end, chunk_info);
-               if (bool(ctx.error)) [[unlikely]]
-                  return;
-
-               if (static_cast<uint64_t>(end - it) < chunk_len) [[unlikely]] {
-                  ctx.error = error_code::unexpected_end;
-                  return;
-               }
-
-               const size_t old_size = value.size();
-               value.resize(old_size + static_cast<size_t>(chunk_len));
-               std::memcpy(value.data() + old_size, it, chunk_len);
-               it += chunk_len;
-            }
-         }
-         else {
-            uint64_t length = cbor_detail::decode_arg(ctx, it, end, additional_info);
-            if (bool(ctx.error)) [[unlikely]]
-               return;
-
-            if (static_cast<uint64_t>(end - it) < length) [[unlikely]] {
-               ctx.error = error_code::unexpected_end;
-               return;
-            }
-
-            // Check user-configured array size limit
-            if constexpr (check_max_array_size(Opts) > 0) {
-               if (length > check_max_array_size(Opts)) [[unlikely]] {
-                  ctx.error = error_code::invalid_length;
-                  return;
+               std::memcpy(value.data(), it, length);
+               if (length < value.size()) {
+                  std::memset(value.data() + static_cast<size_t>(length), 0,
+                              value.size() - static_cast<size_t>(length));
                }
             }
-            if constexpr (has_runtime_max_array_size<std::decay_t<decltype(ctx)>>) {
-               if (ctx.max_array_size > 0 && length > ctx.max_array_size) [[unlikely]] {
-                  ctx.error = error_code::invalid_length;
-                  return;
-               }
-            }
-
-            value.resize(static_cast<size_t>(length));
-            std::memcpy(value.data(), it, length);
             it += length;
          }
       }
@@ -788,8 +757,9 @@ namespace glz
 
    // Arrays (std::vector, std::deque, etc.)
    // Note: eigen_t types have their own specialization in glaze/ext/eigen.hpp
+   // Contiguous byte-like ranges are excluded here; they are read as CBOR byte strings above.
    template <readable_array_t T>
-      requires(!eigen_t<T>)
+      requires(!eigen_t<T> && !contiguous_byte_range<std::remove_cvref_t<T>>)
    struct from<CBOR, T> final
    {
       template <auto Opts>
@@ -1230,8 +1200,11 @@ namespace glz
             if (bool(ctx.error)) [[unlikely]]
                return;
 
-            // Validate count against remaining buffer size (minimum 2 bytes per key-value pair)
-            if (count * 2 > static_cast<uint64_t>(end - it)) [[unlikely]] {
+            // Validate count against remaining buffer size (minimum 2 bytes per key-value pair).
+            // Tested as a division so count * 2 cannot overflow uint64_t for an attacker-supplied
+            // count (decode_arg returns an unclamped 64-bit value); this is equivalent to
+            // count * 2 > end - it.
+            if (count > static_cast<uint64_t>(end - it) / 2) [[unlikely]] {
                ctx.error = error_code::unexpected_end;
                return;
             }
@@ -1306,6 +1279,10 @@ namespace glz
       }
    };
 
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4702) // unreachable code from if constexpr
+#endif
    // Glaze objects (structs with reflection)
    template <class T>
       requires((glaze_object_t<T> || reflectable<T>) && !custom_read<T>)
@@ -1334,11 +1311,14 @@ namespace glz
          }
 
          static constexpr auto N = reflect<T>::size;
+         if constexpr (N == 0) {
+            (void)value;
+         }
 
          uint64_t n_keys;
          if (additional_info == info::indefinite) {
             // Handle indefinite map by counting as we go
-            n_keys = std::numeric_limits<uint64_t>::max();
+            n_keys = (std::numeric_limits<uint64_t>::max)();
          }
          else {
             n_keys = cbor_detail::decode_arg(ctx, it, end, additional_info);
@@ -1387,6 +1367,8 @@ namespace glz
             if constexpr (N > 0) {
                static constexpr auto HashInfo = hash_info<T>;
 
+               // decode_hash_with_size pre-screens the key length against [min_length, max_length],
+               // so no call-site length filter is needed here (the buffer bound above still applies).
                const auto index = decode_hash_with_size<CBOR, T, HashInfo, HashInfo.type>::op(it, end, key_len);
 
                if (index < N) [[likely]] {
@@ -1448,6 +1430,9 @@ namespace glz
          }
       }
    };
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
    // Tuples
    template <class T>
@@ -1661,8 +1646,7 @@ namespace glz
    };
 
    // Nullable types
-   template <nullable_t T>
-      requires(!std::is_array_v<T> && not is_expected<T>)
+   template <nullable_like T>
    struct from<CBOR, T> final
    {
       template <auto Opts>
@@ -1733,6 +1717,7 @@ namespace glz
 
    // Variants
    template <is_variant T>
+      requires(not custom_read<T>)
    struct from<CBOR, T>
    {
       template <auto Opts>
@@ -1959,12 +1944,256 @@ namespace glz
       template <auto Opts>
       static void op(auto& value, is_context auto& ctx, auto&... args)
       {
-         static thread_local std::string buffer{};
+         std::string buffer{};
          parse<CBOR>::op<Opts>(buffer, ctx, args...);
          if (bool(ctx.error)) [[unlikely]] {
             return;
          }
          value = buffer;
+      }
+   };
+
+   // std::chrono::duration - bare numeric count in the duration's native units
+   template <is_duration T>
+   struct from<CBOR, T>
+   {
+      template <auto Opts>
+      GLZ_ALWAYS_INLINE static void op(auto& value, is_context auto& ctx, auto& it, auto end) noexcept
+      {
+         using Rep = typename std::remove_cvref_t<T>::rep;
+         Rep count{};
+         from<CBOR, Rep>::template op<Opts>(count, ctx, it, end);
+         if (bool(ctx.error)) [[unlikely]]
+            return;
+         value = std::remove_cvref_t<T>(count);
+      }
+   };
+
+   namespace cbor_detail
+   {
+      // Decode a CBOR tag-1 payload (RFC 8949 §3.4.2) into a system_clock::time_point.
+      // Accepts unsigned/negative integer seconds or float16/32/64 seconds (NaN/Inf rejected).
+      // Nested tags (e.g. tag 4 decimal fractions) are forbidden by §3.4.2 and rejected here.
+      // Values that would overflow system_clock::duration are rejected rather than wrapping.
+      //
+      // The `Duration` template parameter names the wire-level precision the caller cares
+      // about. For the float path, casting fsec -> Duration -> sys_dur when Duration is
+      // coarser than sys_dur keeps the integer count under 2^53 (critical on platforms
+      // where sys_dur is nanoseconds and the raw count for a modern epoch exceeds that).
+      template <auto Opts, class Duration = std::chrono::system_clock::duration>
+      inline void decode_tag1_payload(is_context auto& ctx, auto& it, auto end,
+                                      std::chrono::system_clock::time_point& tp) noexcept
+      {
+         using namespace cbor;
+         using namespace std::chrono;
+         using sys_dur = system_clock::duration;
+
+         if (it >= end) [[unlikely]] {
+            ctx.error = error_code::unexpected_end;
+            return;
+         }
+
+         uint8_t initial;
+         std::memcpy(&initial, it, 1);
+         const uint8_t mt = get_major_type(initial);
+         const uint8_t ai = get_additional_info(initial);
+
+         // duration_cast<sys_dur>(seconds{secs}) overflows if secs exceeds the seconds-
+         // range sys_dur can represent. Compute the bounds from sys_dur::max/min.
+         constexpr int64_t max_seconds = duration_cast<seconds>((sys_dur::max)()).count();
+         constexpr int64_t min_seconds = duration_cast<seconds>((sys_dur::min)()).count();
+
+         if (mt == major::uint || mt == major::nint) {
+            int64_t secs{};
+            from<CBOR, int64_t>::template op<Opts>(secs, ctx, it, end);
+            if (bool(ctx.error)) [[unlikely]]
+               return;
+            if (secs > max_seconds || secs < min_seconds) [[unlikely]] {
+               ctx.error = error_code::parse_error;
+               return;
+            }
+            tp = system_clock::time_point{duration_cast<sys_dur>(seconds{secs})};
+         }
+         else if (mt == major::simple && (ai == simple::float16 || ai == simple::float32 || ai == simple::float64)) {
+            double d{};
+            from<CBOR, double>::template op<Opts>(d, ctx, it, end);
+            if (bool(ctx.error)) [[unlikely]]
+               return;
+            if (!std::isfinite(d)) [[unlikely]] {
+               ctx.error = error_code::parse_error;
+               return;
+            }
+            // Guard against a finite-but-out-of-range double silently wrapping inside
+            // duration_cast (the cast multiplies by sys_dur::period::den and casts to int64).
+            if (!(d >= static_cast<double>(min_seconds) && d <= static_cast<double>(max_seconds))) [[unlikely]] {
+               ctx.error = error_code::parse_error;
+               return;
+            }
+            using fsec = duration<double>;
+            if constexpr (std::ratio_greater_v<typename Duration::period, typename sys_dur::period>) {
+               // Duration is coarser than sys_dur: fsec -> Duration -> sys_dur routes the
+               // lossy-in-double step through the smaller integer count, then scales up
+               // with exact integer math. This avoids precision loss when sys_dur is ns.
+               const auto dur = duration_cast<Duration>(fsec{d});
+               tp = system_clock::time_point{duration_cast<sys_dur>(dur)};
+            }
+            else {
+               tp = system_clock::time_point{duration_cast<sys_dur>(fsec{d})};
+            }
+         }
+         else [[unlikely]] {
+            // Per RFC 8949 §3.4.2, other content types (including nested tags) are invalid.
+            ctx.error = error_code::syntax_error;
+         }
+      }
+   }
+
+   // system_clock::time_point - decoder accepts:
+   //   - tag 0 + tstr (RFC 8949 §3.4.1 canonical; what glaze writes)
+   //   - tag 1 + int/float seconds (RFC 8949 §3.4.2; converted from epoch)
+   //   - bare tstr (no tag) - lenient for producers that omit tag 0
+   // Bare numbers and any other shape are rejected: the unit would be ambiguous.
+   // Note: this does NOT cross-read with epoch_time<Duration>, which writes tag 1
+   // directly; decode into the type that matches the wire form you expect.
+   template <is_system_time_point T>
+   struct from<CBOR, T>
+   {
+      template <auto Opts>
+      static void op(auto& value, is_context auto& ctx, auto& it, auto end) noexcept
+      {
+         using namespace cbor;
+
+         if (it >= end) [[unlikely]] {
+            ctx.error = error_code::unexpected_end;
+            return;
+         }
+
+         uint8_t initial;
+         std::memcpy(&initial, it, 1);
+
+         if (get_major_type(initial) == major::tag) {
+            ++it;
+            const uint64_t tag = cbor_detail::decode_arg(ctx, it, end, get_additional_info(initial));
+            if (bool(ctx.error)) [[unlikely]]
+               return;
+            if (it >= end) [[unlikely]] {
+               ctx.error = error_code::unexpected_end;
+               return;
+            }
+
+            if (tag == semantic_tag::datetime_string) {
+               // RFC 8949 §3.4.1: tag 0 content MUST be a text string.
+               uint8_t content;
+               std::memcpy(&content, it, 1);
+               if (get_major_type(content) != major::tstr) [[unlikely]] {
+                  ctx.error = error_code::syntax_error;
+                  return;
+               }
+               std::string_view str;
+               from<CBOR, std::string_view>::template op<Opts>(str, ctx, it, end);
+               if (bool(ctx.error)) [[unlikely]]
+                  return;
+               chrono_detail::parse_iso8601(str, value, ctx.error);
+            }
+            else if (tag == semantic_tag::datetime_epoch) {
+               using Duration = typename std::remove_cvref_t<T>::duration;
+               std::chrono::system_clock::time_point tp{};
+               cbor_detail::decode_tag1_payload<Opts, Duration>(ctx, it, end, tp);
+               if (bool(ctx.error)) [[unlikely]]
+                  return;
+               value = std::chrono::time_point_cast<Duration>(tp);
+            }
+            else [[unlikely]] {
+               ctx.error = error_code::syntax_error;
+            }
+         }
+         else if (get_major_type(initial) == major::tstr) {
+            // Bare RFC 3339 string (no tag). Lenient for interop with producers that omit tag 0.
+            std::string_view str;
+            from<CBOR, std::string_view>::template op<Opts>(str, ctx, it, end);
+            if (bool(ctx.error)) [[unlikely]]
+               return;
+            chrono_detail::parse_iso8601(str, value, ctx.error);
+         }
+         else [[unlikely]] {
+            // A bare number has no defined unit for a time_point; require a tag.
+            ctx.error = error_code::syntax_error;
+         }
+      }
+   };
+
+   // steady_clock::time_point - bare count in native duration
+   template <is_steady_time_point T>
+   struct from<CBOR, T>
+   {
+      template <auto Opts>
+      GLZ_ALWAYS_INLINE static void op(auto& value, is_context auto& ctx, auto& it, auto end) noexcept
+      {
+         using Duration = typename std::remove_cvref_t<T>::duration;
+         using Rep = typename Duration::rep;
+         Rep count{};
+         from<CBOR, Rep>::template op<Opts>(count, ctx, it, end);
+         if (bool(ctx.error)) [[unlikely]]
+            return;
+         value = std::remove_cvref_t<T>(Duration(count));
+      }
+   };
+
+   // high_resolution_clock::time_point when it's a distinct type (rare)
+   template <is_high_res_time_point T>
+   struct from<CBOR, T>
+   {
+      template <auto Opts>
+      GLZ_ALWAYS_INLINE static void op(auto& value, is_context auto& ctx, auto& it, auto end) noexcept
+      {
+         using Duration = typename std::remove_cvref_t<T>::duration;
+         using Rep = typename Duration::rep;
+         Rep count{};
+         from<CBOR, Rep>::template op<Opts>(count, ctx, it, end);
+         if (bool(ctx.error)) [[unlikely]]
+            return;
+         value = std::remove_cvref_t<T>(Duration(count));
+      }
+   };
+
+   // epoch_time wrapper - decoder accepts:
+   //   - tag 1 + integer seconds (RFC 8949 §3.4.2; what glaze writes for Period >= 1s)
+   //   - tag 1 + float16/32/64 seconds (§3.4.2; what glaze writes for sub-second Periods)
+   //   - bare integer or float (no tag) - lenient for producers that omit tag 1; same semantics
+   // Nested tags (e.g. tag 4 decimal fraction) are rejected per §3.4.2.
+   // Note: this does NOT cross-read with is_system_time_point, which writes tag 0 strings.
+   template <class Duration>
+   struct from<CBOR, epoch_time<Duration>>
+   {
+      template <auto Opts>
+      static void op(auto& wrapper, is_context auto& ctx, auto& it, auto end) noexcept
+      {
+         using namespace cbor;
+
+         if (it >= end) [[unlikely]] {
+            ctx.error = error_code::unexpected_end;
+            return;
+         }
+
+         uint8_t initial;
+         std::memcpy(&initial, it, 1);
+
+         if (get_major_type(initial) == major::tag) {
+            ++it;
+            const uint64_t tag = cbor_detail::decode_arg(ctx, it, end, get_additional_info(initial));
+            if (bool(ctx.error)) [[unlikely]]
+               return;
+            if (tag != semantic_tag::datetime_epoch) [[unlikely]] {
+               ctx.error = error_code::syntax_error;
+               return;
+            }
+         }
+
+         std::chrono::system_clock::time_point tp{};
+         cbor_detail::decode_tag1_payload<Opts, Duration>(ctx, it, end, tp);
+         if (bool(ctx.error)) [[unlikely]]
+            return;
+         wrapper.value = tp;
       }
    };
 

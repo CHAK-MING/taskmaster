@@ -108,7 +108,12 @@ auto DagCatalogService::ensure_materialized(const DAGId &dag_id)
     co_return fail(dag_res.error());
   }
 
-  co_return co_await materialize_snapshot(dag_id, std::move(*dag_res), false);
+  auto snapshot_res =
+      co_await materialize_snapshot(dag_id, std::move(*dag_res), false);
+  if (!snapshot_res) {
+    co_return fail(snapshot_res.error());
+  }
+  co_return ok(std::move(*snapshot_res));
 }
 
 auto DagCatalogService::materialize_snapshot(const DAGId &dag_id, DAGInfo info,

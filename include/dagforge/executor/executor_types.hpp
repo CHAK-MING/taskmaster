@@ -2,7 +2,6 @@
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/enum.hpp"
-#endif
 
 #include <chrono>
 #include <cstdint>
@@ -11,6 +10,7 @@
 #include <string>
 
 #include <boost/describe/enum.hpp>
+#endif
 
 namespace dagforge {
 
@@ -18,9 +18,10 @@ enum class ExecutorType : std::uint8_t {
   Shell,
   Docker,
   Sensor,
+  Lua,
   Noop,
 };
-BOOST_DESCRIBE_ENUM(ExecutorType, Shell, Docker, Sensor, Noop)
+BOOST_DESCRIBE_ENUM(ExecutorType, Shell, Docker, Sensor, Lua, Noop)
 
 enum class ImagePullPolicy : std::uint8_t {
   Never,
@@ -28,8 +29,28 @@ enum class ImagePullPolicy : std::uint8_t {
   Always,
 };
 BOOST_DESCRIBE_ENUM(ImagePullPolicy, Never, IfNotPresent, Always)
-DAGFORGE_DEFINE_ENUM_SERDE(ExecutorType, ExecutorType::Shell)
-DAGFORGE_DEFINE_ENUM_SERDE(ImagePullPolicy, ImagePullPolicy::Never)
+
+[[nodiscard]] constexpr auto to_string_view(ExecutorType value) noexcept
+    -> std::string_view {
+  return ::dagforge::util::enum_to_snake_case_view(value);
+}
+
+template <>
+[[nodiscard]] inline auto parse<ExecutorType>(std::string_view s) noexcept
+    -> ExecutorType {
+  return ::dagforge::util::parse_enum(s, ExecutorType::Shell);
+}
+
+[[nodiscard]] constexpr auto to_string_view(ImagePullPolicy value) noexcept
+    -> std::string_view {
+  return ::dagforge::util::enum_to_snake_case_view(value);
+}
+
+template <>
+[[nodiscard]] inline auto parse<ImagePullPolicy>(std::string_view s) noexcept
+    -> ImagePullPolicy {
+  return ::dagforge::util::parse_enum(s, ImagePullPolicy::Never);
+}
 
 struct ShellExecutorConfig {
   std::flat_map<std::string, std::string> env;
@@ -48,7 +69,17 @@ enum class SensorType : std::uint8_t {
   Command,
 };
 BOOST_DESCRIBE_ENUM(SensorType, File, Http, Command)
-DAGFORGE_DEFINE_ENUM_SERDE(SensorType, SensorType::File)
+
+[[nodiscard]] constexpr auto to_string_view(SensorType value) noexcept
+    -> std::string_view {
+  return ::dagforge::util::enum_to_snake_case_view(value);
+}
+
+template <>
+[[nodiscard]] inline auto parse<SensorType>(std::string_view s) noexcept
+    -> SensorType {
+  return ::dagforge::util::parse_enum(s, SensorType::File);
+}
 
 struct SensorExecutorConfig {
   SensorType type{SensorType::File};
@@ -57,6 +88,13 @@ struct SensorExecutorConfig {
   bool soft_fail{false};
   int expected_status{200};
   std::string http_method{"GET"};
+};
+
+struct LuaExecutorConfig {
+  std::string script;
+  std::string script_file;
+  std::uint64_t max_instructions{100'000};
+  std::uint64_t max_memory_bytes{8ULL * 1024ULL * 1024ULL};
 };
 
 struct NoopExecutorConfig {
@@ -75,6 +113,10 @@ template <> struct ExecutorConfigTraits<DockerExecutorConfig> {
 
 template <> struct ExecutorConfigTraits<SensorExecutorConfig> {
   static constexpr ExecutorType type = ExecutorType::Sensor;
+};
+
+template <> struct ExecutorConfigTraits<LuaExecutorConfig> {
+  static constexpr ExecutorType type = ExecutorType::Lua;
 };
 
 template <> struct ExecutorConfigTraits<NoopExecutorConfig> {

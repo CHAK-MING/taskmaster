@@ -1,6 +1,7 @@
 #pragma once
 
-
+#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#include "dagforge/core/error.hpp"
 #include "dagforge/util/log.hpp"
 
 #include <glaze/toml.hpp>
@@ -12,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#endif
 
 
 namespace dagforge::toml_util {
@@ -31,9 +33,18 @@ namespace dagforge::toml_util {
 template <typename T>
 [[nodiscard]] auto parse_toml(std::string_view text,
                               std::string *diagnostic = nullptr) -> Result<T> {
+  if (text.find('\0') != std::string_view::npos) {
+    if (diagnostic) {
+      *diagnostic = "embedded NUL byte";
+    }
+    return fail(Error::ParseError);
+  }
+
   T raw{};
   constexpr auto kOpts =
-      glz::opts{.format = glz::TOML, .error_on_unknown_keys = false};
+      glz::opts{.format = glz::TOML,
+                .null_terminated = false,
+                .error_on_unknown_keys = false};
   if (auto ec = glz::read<kOpts>(raw, text); ec) {
     auto detail = glz::format_error(ec, text);
     log::error("TOML parse error: {}", detail);

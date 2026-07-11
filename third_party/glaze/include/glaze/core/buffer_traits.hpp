@@ -27,13 +27,13 @@ namespace glz
       GLZ_ALWAYS_INLINE static constexpr size_t capacity(const Buffer& b) noexcept
       {
          if constexpr (is_resizable) {
-            return std::numeric_limits<size_t>::max(); // Effectively unlimited
+            return (std::numeric_limits<size_t>::max)(); // Effectively unlimited
          }
          else if constexpr (has_size<std::remove_cvref_t<Buffer>>) {
             return b.size();
          }
          else {
-            return std::numeric_limits<size_t>::max();
+            return (std::numeric_limits<size_t>::max)();
          }
       }
 
@@ -43,6 +43,7 @@ namespace glz
       {
          if constexpr (is_resizable) {
             if (needed > b.size()) {
+               // 2× growth amortizes repeated reallocations to O(n) total cost.
                b.resize(2 * needed);
             }
             return true;
@@ -120,7 +121,10 @@ namespace glz
       static constexpr bool is_output_streaming = false;
       static constexpr bool is_input_streaming = false;
 
-      GLZ_ALWAYS_INLINE static constexpr size_t capacity(char*) noexcept { return std::numeric_limits<size_t>::max(); }
+      GLZ_ALWAYS_INLINE static constexpr size_t capacity(char*) noexcept
+      {
+         return (std::numeric_limits<size_t>::max)();
+      }
 
       GLZ_ALWAYS_INLINE static constexpr bool ensure_capacity(char*, size_t) noexcept
       {
@@ -179,6 +183,7 @@ namespace glz
 
       if constexpr (vector_like<Buffer>) {
          if (required > b.size()) [[unlikely]] {
+            // 2× growth amortizes repeated reallocations to O(n) total cost.
             b.resize(2 * required);
          }
          return true;

@@ -185,7 +185,8 @@ TEST_F(CoroutineTest, SymmetricTransfer_StackDepth) {
   recur = [&](int n) -> awaitable<int> {
     if (n == 0)
       co_return 0;
-    co_return co_await recur(n - 1) + 1;
+    auto value = co_await recur(n - 1);
+    co_return value + 1;
   };
   EXPECT_EQ(run(io, recur(depth)), depth);
 }

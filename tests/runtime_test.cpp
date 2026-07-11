@@ -189,3 +189,62 @@ TEST(RuntimeTest, SpawnOnTargetShard_FromExternalContext) {
 
   rt.stop();
 }
+
+TEST(RuntimeTest, CrossShardQueueOverflowPreservesTargetOwnership) {
+  constexpr int kPostedTasks = 5000;
+  constexpr shard_id kSourceShard = 0;
+  constexpr shard_id kTargetShard = 1;
+
+  Runtime rt(2);
+  ASSERT_TRUE(rt.start().has_value());
+
+  std::atomic<bool> target_blocked{false};
+  std::atomic<bool> release_target{false};
+  std::atomic<bool> producer_done{false};
+  std::atomic<int> completed{0};
+  std::atomic<int> wrong_shard{0};
+
+  rt.post_to(kTargetShard, [&] {
+    target_blocked.store(true, std::memory_order_release);
+    while (!release_target.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+  });
+
+  auto deadline = std::chrono::steady_clock::now() + kTaskTimeout;
+  while (!target_blocked.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(kPollInterval);
+  }
+  ASSERT_TRUE(target_blocked.load(std::memory_order_acquire));
+
+  rt.post_to(kSourceShard, [&] {
+    for (int i = 0; i < kPostedTasks; ++i) {
+      rt.post_to(kTargetShard, [&] {
+        if (!rt.is_current_shard() ||
+            rt.current_shard() != kTargetShard) {
+          wrong_shard.fetch_add(1, std::memory_order_relaxed);
+        }
+        completed.fetch_add(1, std::memory_order_release);
+      });
+    }
+    producer_done.store(true, std::memory_order_release);
+    release_target.store(true, std::memory_order_release);
+  });
+
+  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while ((!producer_done.load(std::memory_order_acquire) ||
+          completed.load(std::memory_order_acquire) != kPostedTasks) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(kPollInterval);
+  }
+
+  EXPECT_TRUE(producer_done.load(std::memory_order_acquire));
+  EXPECT_EQ(completed.load(std::memory_order_acquire), kPostedTasks);
+  EXPECT_GT(rt.cross_shard_queue_overflow_total(kSourceShard, kTargetShard),
+            0U);
+  EXPECT_EQ(wrong_shard.load(std::memory_order_relaxed), 0);
+
+  release_target.store(true, std::memory_order_release);
+  rt.stop();
+}

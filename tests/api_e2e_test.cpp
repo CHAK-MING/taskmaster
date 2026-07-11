@@ -57,8 +57,11 @@ auto http_post_json(Application &app, std::uint16_t port, std::string_view path,
         if (!client) {
           co_return fail(client.error());
         }
-        auto resp = co_await (*client)->post_json(path, payload);
-        co_return ok(resp);
+        auto resp_res = co_await (*client)->post_json(path, payload);
+        if (!resp_res) {
+          co_return fail(resp_res.error());
+        }
+        co_return ok(std::move(*resp_res));
       },
       boost::asio::use_future);
   return fut.get();
@@ -74,8 +77,11 @@ auto http_get(Application &app, std::uint16_t port, std::string_view path)
         if (!client) {
           co_return fail(client.error());
         }
-        auto resp = co_await (*client)->get(path);
-        co_return ok(resp);
+        auto resp_res = co_await (*client)->get(path);
+        if (!resp_res) {
+          co_return fail(resp_res.error());
+        }
+        co_return ok(std::move(*resp_res));
       },
       boost::asio::use_future);
   return fut.get();

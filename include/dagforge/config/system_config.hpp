@@ -1,12 +1,7 @@
 #pragma once
 
-#if !defined(DAGFORGE_BUILDING_MODULE_INTERFACE) &&                              \
-    (!defined(DAGFORGE_CONSUME_NAMED_MODULES) ||                                \
-     !DAGFORGE_CONSUME_NAMED_MODULES)
-#include "dagforge/util/enum.hpp"
-#endif
-
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#include "dagforge/util/enum.hpp"
 #include <boost/describe/enum.hpp>
 #include <cstdint>
 #include <string>
@@ -45,7 +40,7 @@ struct SchedulerConfig {
 
 struct ApiConfig {
   bool enabled{false};
-  std::uint16_t port{8080};
+  std::uint16_t port{8888};
   std::string host{"127.0.0.1"};
   bool reuse_port{false};
   bool tls_enabled{false};

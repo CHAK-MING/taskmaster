@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <cstdint>
 #include <ranges>
 #include <span>
 
@@ -192,11 +193,10 @@ struct DAGRun::Impl {
     reset_ready_list();
 
     for (auto [i, deg] : std::views::enumerate(deps_.in_degree)) {
-      if (deg == 0) {
-        transition_to_ready(static_cast<NodeIndex>(i));
-      } else if (trigger_rules_[i] == TriggerRule::Always) {
+      const auto task_index = static_cast<std::size_t>(i);
+      if (deg == 0 || trigger_rules_[task_index] == TriggerRule::Always) {
         // Airflow-compatible: ALWAYS does not wait for upstream completion.
-        transition_to_ready(static_cast<NodeIndex>(i));
+        transition_to_ready(static_cast<NodeIndex>(task_index));
       }
     }
 #ifndef NDEBUG
@@ -294,7 +294,12 @@ struct DAGRun::Impl {
     }
   }
 
-  enum class TriggerStatus { Ready, Waiting, Skipped, UpstreamFailed };
+  enum class TriggerStatus : std::uint8_t {
+    Ready,
+    Waiting,
+    Skipped,
+    UpstreamFailed,
+  };
 
   auto evaluate_trigger_rule(NodeIndex task) const -> TriggerStatus {
     const int total = deps_.in_degree[task];
@@ -392,9 +397,13 @@ struct DAGRun::Impl {
       if (status == TriggerStatus::Ready) {
         transition_to_ready(dep, delta);
       } else if (status == TriggerStatus::UpstreamFailed) {
-        (void)mark_task_upstream_failed(dep, delta);
+        [[maybe_unused]] auto transition_res =
+            mark_task_upstream_failed(dep, delta);
+        assert(transition_res.has_value());
       } else if (status == TriggerStatus::Skipped) {
-        (void)mark_task_branch_skipped(dep, delta);
+        [[maybe_unused]] auto transition_res =
+            mark_task_branch_skipped(dep, delta);
+        assert(transition_res.has_value());
       }
     }
   }
@@ -750,7 +759,9 @@ auto DAGRun::mark_task_completed_with_branch(
       }
 
       if (!selected) {
-        (void)impl_->mark_task_branch_skipped(dep_idx, &delta);
+        [[maybe_unused]] auto transition_res =
+            impl_->mark_task_branch_skipped(dep_idx, &delta);
+        assert(transition_res.has_value());
       }
     }
   }

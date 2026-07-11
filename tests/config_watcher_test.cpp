@@ -69,7 +69,7 @@ TEST_F(ConfigWatcherTest, StartAndStop) {
   ASSERT_TRUE(watcher.start().has_value());
   EXPECT_TRUE(watcher.is_running());
 
-  watcher.stop();
+  EXPECT_TRUE(watcher.stop().has_value());
   EXPECT_FALSE(watcher.is_running());
 }
 
@@ -82,7 +82,7 @@ TEST_F(ConfigWatcherTest, DoubleStartIsNoop) {
   EXPECT_TRUE(watcher.start().has_value());
   EXPECT_TRUE(watcher.is_running());
 
-  watcher.stop();
+  EXPECT_TRUE(watcher.stop().has_value());
   EXPECT_FALSE(watcher.is_running());
 }
 
@@ -90,10 +90,10 @@ TEST_F(ConfigWatcherTest, DoubleStopIsNoop) {
   ConfigWatcher watcher(runtime_, test_dir_.string());
 
   ASSERT_TRUE(watcher.start().has_value());
-  watcher.stop();
+  EXPECT_TRUE(watcher.stop().has_value());
   EXPECT_FALSE(watcher.is_running());
 
-  watcher.stop();
+  EXPECT_TRUE(watcher.stop().has_value());
   EXPECT_FALSE(watcher.is_running());
 }
 
@@ -123,7 +123,7 @@ TEST_F(ConfigWatcherTest, DetectsNewTomlFile) {
   auto file = create_toml_file("new_dag.toml");
 
   ASSERT_TRUE(wait_for(change_count, 1));
-  watcher.stop();
+  EXPECT_TRUE(watcher.stop().has_value());
 
   std::lock_guard lock(changed_file_mutex);
   EXPECT_EQ(changed_file.filename(), "new_dag.toml");
@@ -145,7 +145,7 @@ TEST_F(ConfigWatcherTest, DetectsModifiedTomlFile) {
 
   ASSERT_TRUE(wait_for(change_count, 1));
 
-  watcher.stop();
+  EXPECT_TRUE(watcher.stop().has_value());
 }
 
 TEST_F(ConfigWatcherTest, DetectsDeletedTomlFile) {
@@ -168,7 +168,7 @@ TEST_F(ConfigWatcherTest, DetectsDeletedTomlFile) {
   fs::remove(file);
 
   ASSERT_TRUE(wait_for(remove_count, 1));
-  watcher.stop();
+  EXPECT_TRUE(watcher.stop().has_value());
 
   std::lock_guard lock(removed_file_mutex);
   EXPECT_EQ(removed_file.filename(), "to_delete.toml");
@@ -190,7 +190,7 @@ TEST_F(ConfigWatcherTest, IgnoresNonTomlFiles) {
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
   EXPECT_EQ(change_count.load(), 0);
 
-  watcher.stop();
+  EXPECT_TRUE(watcher.stop().has_value());
 }
 
 TEST_F(ConfigWatcherTest, AcceptsTomlExtension) {
@@ -207,7 +207,7 @@ TEST_F(ConfigWatcherTest, AcceptsTomlExtension) {
 
   ASSERT_TRUE(wait_for(change_count, 1));
 
-  watcher.stop();
+  EXPECT_TRUE(watcher.stop().has_value());
 }
 
 TEST_F(ConfigWatcherTest, NoCallbacksSetDoesNotCrash) {
@@ -220,7 +220,18 @@ TEST_F(ConfigWatcherTest, NoCallbacksSetDoesNotCrash) {
 
   std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-  watcher.stop();
+  EXPECT_TRUE(watcher.stop().has_value());
+}
+
+TEST_F(ConfigWatcherTest, RapidStartStopStress) {
+  ConfigWatcher watcher(runtime_, test_dir_.string());
+
+  for (int i = 0; i < 25; ++i) {
+    ASSERT_TRUE(watcher.start().has_value());
+    create_toml_file("stress_" + std::to_string(i) + ".toml");
+    EXPECT_TRUE(watcher.stop().has_value());
+    EXPECT_FALSE(watcher.is_running());
+  }
 }
 
 TEST_F(ConfigWatcherTest, InvalidDirectoryFailsGracefully) {

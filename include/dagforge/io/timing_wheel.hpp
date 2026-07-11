@@ -7,6 +7,7 @@
 
 #include <boost/asio/steady_timer.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -75,6 +76,7 @@ private:
   std::chrono::nanoseconds tick_;
   std::vector<Bucket> buckets_;
   std::unordered_map<std::uint64_t, EntryLocation> locations_;
+  std::atomic<std::size_t> pending_count_snapshot_{0};
   std::size_t cursor_{0};
   std::uint64_t next_handle_{1};
   bool running_{false};

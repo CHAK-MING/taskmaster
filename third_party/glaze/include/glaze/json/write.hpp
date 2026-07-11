@@ -9,19 +9,11 @@
 #include <variant>
 
 #include "glaze/core/chrono.hpp"
+#include "glaze/simd/avx.hpp"
+#include "glaze/simd/neon.hpp"
+#include "glaze/simd/simd.hpp"
+#include "glaze/simd/sse.hpp"
 #include "glaze/util/parse.hpp"
-
-#if !defined(GLZ_DISABLE_SIMD) && (defined(__x86_64__) || defined(_M_X64))
-#if defined(_MSC_VER)
-#include <intrin.h>
-#else
-#include <immintrin.h>
-#endif
-
-#if defined(__AVX2__)
-#define GLZ_USE_AVX2
-#endif
-#endif
 
 #if defined(_MSC_VER) && !defined(__clang__)
 // disable "unreachable code" warnings, which are often invalid due to constexpr branching
@@ -189,7 +181,7 @@ namespace glz
                   }
                }
                else {
-                  static thread_local auto k = typename std::decay_t<T>::key_type(key);
+                  auto k = typename std::decay_t<T>::key_type(key);
                   auto it = value.find(k);
                   if (it != value.end()) {
                      serialize_partial<JSON>::op<sub_partial, Opts>(it->second, ctx, b, ix);
@@ -477,10 +469,11 @@ namespace glz
                   return 64;
                }
                else if constexpr (sizeof(T) > 4) {
-                  return 32;
+                  // zmij scratch + 4 for optional quotes and trailing comma.
+                  return zmij::double_buffer_size + 4;
                }
                else {
-                  return 24;
+                  return zmij::float_buffer_size + 4;
                }
             }
             else if constexpr (sizeof(T) > 4) {
@@ -520,9 +513,56 @@ namespace glz
       return value;
    }
 
+   // Only use this if you are not prettifying
+   // Returns zero if the fixed size cannot be determined
+   template <class T>
+   inline constexpr size_t fixed_padding = [] {
+      constexpr auto N = reflect<T>::size;
+      size_t fixed = 2 + 16; // {} + extra padding
+      for_each_short_circuit<N>([&]<auto I>() -> bool {
+         using val_t = field_t<T, I>;
+         if constexpr (required_padding<val_t>()) {
+            fixed += required_padding<val_t>();
+            fixed += reflect<T>::keys[I].size() + 2; // quoted key length
+            fixed += 2; // colon and comma
+            return false; // continue
+         }
+         else {
+            fixed = 0;
+            return true; // break
+         }
+      });
+      if (fixed) {
+         fixed = round_up_to_nearest_16(fixed);
+      }
+      return fixed;
+   }();
+
+   // Returns true if writing type T to JSON can potentially set ctx.error.
+   // Checks for a static constexpr bool `can_error` in the to<JSON, T> specialization.
+   // If not present, conservatively assumes true.
+   template <class T>
+   constexpr bool write_can_error()
+   {
+      using V = std::remove_cvref_t<T>;
+      if constexpr (always_skipped<V>) {
+         return false; // hidden/skip types are never written
+      }
+      else if constexpr (requires {
+                            { to<JSON, V>::can_error } -> std::convertible_to<bool>;
+                         }) {
+         return to<JSON, V>::can_error;
+      }
+      else {
+         return true;
+      }
+   }
+
    template <is_bitset T>
    struct to<JSON, T>
    {
+      static constexpr bool can_error = false;
+
       template <auto Opts, class B>
       static void op(auto&& value, is_context auto&& ctx, B&& b, auto& ix)
       {
@@ -549,6 +589,8 @@ namespace glz
    template <glaze_flags_t T>
    struct to<JSON, T>
    {
+      static constexpr bool can_error = false;
+
       template <auto Opts, class B>
       static void op(auto&& value, is_context auto&& ctx, B&& b, auto& ix)
       {
@@ -651,6 +693,8 @@ namespace glz
    template <boolean_like T>
    struct to<JSON, T>
    {
+      static constexpr bool can_error = false;
+
       template <auto Opts, class B>
       GLZ_ALWAYS_INLINE static void op(const bool value, is_context auto&& ctx, B&& b, auto& ix)
       {
@@ -686,6 +730,8 @@ namespace glz
    template <num_t T>
    struct to<JSON, T>
    {
+      static constexpr bool can_error = false;
+
       template <auto Opts, class B>
       GLZ_ALWAYS_INLINE static void op(auto&& value, is_context auto&& ctx, B&& b, auto& ix)
       {
@@ -715,6 +761,8 @@ namespace glz
       requires str_t<T> || char_t<T>
    struct to<JSON, T>
    {
+      static constexpr bool can_error = false;
+
       template <auto Opts, class B>
       static void op(auto&& value, is_context auto&& ctx, B&& b, auto& ix)
       {
@@ -722,6 +770,11 @@ namespace glz
             const sv str = [&]() -> const sv {
                if constexpr (!char_array_t<T> && std::is_pointer_v<std::decay_t<T>>) {
                   return value ? value : "";
+               }
+               else if constexpr (array_char_t<T>) {
+                  const auto* start = value.data();
+                  const auto* end = static_cast<const char*>(std::memchr(start, '\0', value.size()));
+                  return sv{start, end ? size_t(end - start) : value.size()};
                }
                else if constexpr (u8str_t<T>) {
                   return sv{reinterpret_cast<const char*>(value.data()), value.size()};
@@ -861,73 +914,44 @@ namespace glz
                   const auto start = &b[ix];
                   auto data = start;
 
-                  // We don't check for writing out invalid characters as this can be tested by the user if
-                  // necessary. In the case of invalid JSON characters we write out null characters to
-                  // showcase the error and make the JSON invalid. These would then be detected upon reading
-                  // the JSON.
+                  // By default we don't escape control characters for performance. Invalid JSON characters
+                  // result in null characters in the output, making the JSON invalid — these would then be
+                  // detected upon reading. Enable the `escape_control_characters` option to properly escape
+                  // control characters (0x00–0x1F) as \uXXXX sequences.
 
-#if defined(GLZ_USE_AVX2)
-                  // Optimization for systems with AVX2 support
-                  if (n > 31) {
-                     const __m256i lo7_mask = _mm256_set1_epi8(0b01111111);
-                     const __m256i quote_char = _mm256_set1_epi8('"');
-                     const __m256i backslash_char = _mm256_set1_epi8('\\');
-                     const __m256i less_32_mask = _mm256_set1_epi8(0b01100000);
-                     const __m256i high_bit_mask = _mm256_set1_epi8(static_cast<int8_t>(0b10000000));
-
-                     for (const char* end_m31 = e - 31; c < end_m31;) {
-                        __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(c));
-
-                        _mm256_storeu_si256(reinterpret_cast<__m256i*>(data), v);
-
-                        const __m256i lo7 = _mm256_and_si256(v, lo7_mask);
-                        const __m256i quote = _mm256_add_epi8(_mm256_xor_si256(lo7, quote_char), lo7_mask);
-                        const __m256i backslash = _mm256_add_epi8(_mm256_xor_si256(lo7, backslash_char), lo7_mask);
-                        const __m256i less_32 = _mm256_add_epi8(_mm256_and_si256(v, less_32_mask), lo7_mask);
-
-                        __m256i temp = _mm256_and_si256(quote, backslash);
-                        temp = _mm256_and_si256(temp, less_32);
-                        temp = _mm256_or_si256(temp, v);
-                        __m256i next = _mm256_andnot_si256(temp, _mm256_set1_epi8(-1)); // Equivalent to ~temp
-                        next = _mm256_and_si256(next, high_bit_mask);
-
-                        uint32_t mask = _mm256_movemask_epi8(next);
-
-                        if (mask == 0) {
-                           data += 32;
-                           c += 32;
-                           continue;
-                        }
-
-                        uint32_t length = countr_zero(mask);
-
-                        c += length;
-                        data += length;
-
-                        if constexpr (check_escape_control_characters(Opts)) {
-                           if (const auto escaped = char_escape_table[uint8_t(*c)]; escaped) {
-                              std::memcpy(data, &escaped, 2);
-                              data += 2;
-                           }
-                           else {
-                              // Write as \uXXXX format for control characters
-                              char unicode_escape[6] = {'\\', 'u', '0', '0', '0', '0'};
-                              constexpr char hex_digits[] = "0123456789ABCDEF";
-                              unicode_escape[4] = hex_digits[(uint8_t(*c) >> 4) & 0xF];
-                              unicode_escape[5] = hex_digits[uint8_t(*c) & 0xF];
-                              std::memcpy(data, unicode_escape, 6);
-                              data += 6;
-                           }
-                        }
-                        else {
-                           std::memcpy(data, &char_escape_table[uint8_t(*c)], 2);
+                  // Escape handler: writes the escaped form of *c into data, advances both pointers
+                  auto write_escape = [&]() {
+                     if constexpr (check_escape_control_characters(Opts)) {
+                        if (const auto escaped = char_escape_table[uint8_t(*c)]; escaped) {
+                           std::memcpy(data, &escaped, 2);
                            data += 2;
                         }
-                        ++c;
+                        else {
+                           char unicode_escape[6] = {'\\', 'u', '0', '0', '0', '0'};
+                           constexpr char hex_digits[] = "0123456789ABCDEF";
+                           unicode_escape[4] = hex_digits[(uint8_t(*c) >> 4) & 0xF];
+                           unicode_escape[5] = hex_digits[uint8_t(*c) & 0xF];
+                           std::memcpy(data, unicode_escape, 6);
+                           data += 6;
+                        }
                      }
-                  }
+                     else {
+                        std::memcpy(data, &char_escape_table[uint8_t(*c)], 2);
+                        data += 2;
+                     }
+                     ++c;
+                  };
+
+#if defined(GLZ_USE_AVX2)
+                  detail::avx2_string_escape(c, e, data, n, write_escape);
+#endif
+#if defined(GLZ_USE_SSE2)
+                  detail::sse2_string_escape(c, e, data, n, write_escape);
+#elif defined(GLZ_USE_NEON)
+                  detail::neon_string_escape(c, e, data, n, write_escape);
 #endif
 
+                  // SWAR: 8 bytes at a time
                   if (n > 7) {
                      for (const auto end_m7 = e - 7; c < end_m7;) {
                         std::memcpy(data, c, 8);
@@ -954,31 +978,11 @@ namespace glz
                         const auto length = (countr_zero(next) >> 3);
                         c += length;
                         data += length;
-
-                        if constexpr (check_escape_control_characters(Opts)) {
-                           if (const auto escaped = char_escape_table[uint8_t(*c)]; escaped) {
-                              std::memcpy(data, &escaped, 2);
-                              data += 2;
-                           }
-                           else {
-                              // Write as \uXXXX format for control characters
-                              char unicode_escape[6] = {'\\', 'u', '0', '0', '0', '0'};
-                              constexpr char hex_digits[] = "0123456789ABCDEF";
-                              unicode_escape[4] = hex_digits[(uint8_t(*c) >> 4) & 0xF];
-                              unicode_escape[5] = hex_digits[uint8_t(*c) & 0xF];
-                              std::memcpy(data, unicode_escape, 6);
-                              data += 6;
-                           }
-                        }
-                        else {
-                           std::memcpy(data, &char_escape_table[uint8_t(*c)], 2);
-                           data += 2;
-                        }
-                        ++c;
+                        write_escape();
                      }
                   }
 
-                  // Tail end of buffer. Uncommon for long strings.
+                  // Scalar tail
                   for (; c < e; ++c) {
                      if (const auto escaped = char_escape_table[uint8_t(*c)]; escaped) {
                         std::memcpy(data, &escaped, 2);
@@ -986,7 +990,6 @@ namespace glz
                      }
                      else if constexpr (check_escape_control_characters(Opts)) {
                         if (uint8_t(*c) < 0x20) {
-                           // Write as \uXXXX format for control characters
                            char unicode_escape[6] = {'\\', 'u', '0', '0', '0', '0'};
                            constexpr char hex_digits[] = "0123456789ABCDEF";
                            unicode_escape[4] = hex_digits[(uint8_t(*c) >> 4) & 0xF];
@@ -1019,6 +1022,8 @@ namespace glz
       requires((glaze_enum_t<T> || (meta_keys<T> && std::is_enum_v<std::decay_t<T>>)) && not custom_write<T>)
    struct to<JSON, T>
    {
+      static constexpr bool can_error = false;
+
       template <auto Opts, class... Args>
       GLZ_ALWAYS_INLINE static void op(auto&& value, is_context auto&& ctx, Args&&... args)
       {
@@ -1041,16 +1046,42 @@ namespace glz
       }
    };
 
+   // Fallback handler for enums without explicit glz::meta
+   // Serializes as underlying integer unless reflect_enums option is enabled (P2996)
    template <class T>
       requires(!meta_keys<T> && std::is_enum_v<std::decay_t<T>> && !glaze_enum_t<T> && !custom_write<T>)
    struct to<JSON, T>
    {
+      static constexpr bool can_error = false;
+
       template <auto Opts, class... Args>
       GLZ_ALWAYS_INLINE static void op(auto&& value, is_context auto&& ctx, Args&&... args)
       {
-         // serialize as underlying number
-         serialize<JSON>::op<Opts>(static_cast<std::underlying_type_t<std::decay_t<T>>>(value), ctx,
-                                   std::forward<Args>(args)...);
+#if GLZ_REFLECTION26
+         if constexpr (check_reflect_enums(Opts)) {
+            // P2996 reflection using reflect_constant_array and expansion statements
+            const sv name = enum_to_string(value);
+            if (!name.empty()) {
+               if constexpr (not check_unquoted(Opts)) {
+                  dump('"', args...);
+               }
+               dump_maybe_empty(name, args...);
+               if constexpr (not check_unquoted(Opts)) {
+                  dump('"', args...);
+               }
+            }
+            else [[unlikely]] {
+               serialize<JSON>::op<Opts>(static_cast<std::underlying_type_t<std::decay_t<T>>>(value), ctx,
+                                         std::forward<Args>(args)...);
+            }
+         }
+         else
+#endif
+         {
+            // Fallback: serialize as underlying number
+            serialize<JSON>::op<Opts>(static_cast<std::underlying_type_t<std::decay_t<T>>>(value), ctx,
+                                      std::forward<Args>(args)...);
+         }
       }
    };
 
@@ -1167,7 +1198,7 @@ namespace glz
    template <auto Opts, class Key, class Value, is_context Ctx, class B>
    GLZ_ALWAYS_INLINE void write_pair_content(const Key& key, Value&& value, Ctx& ctx, B&& b, auto& ix)
    {
-      if constexpr (str_t<Key> || char_t<Key> || glaze_enum_t<Key> || mimics_str_t<Key> || custom_str_t<Key> ||
+      if constexpr (str_t<Key> || char_t<Key> || is_named_enum<Key> || mimics_str_t<Key> || custom_str_t<Key> ||
                     check_quoted_num(Opts)) {
          to<JSON, core_t<Key>>::template op<Opts>(key, ctx, b, ix);
       }
@@ -1192,8 +1223,10 @@ namespace glz
    }
 
    template <class T>
-   concept array_padding_known =
-      requires { typename T::value_type; } && (required_padding<typename T::value_type>() > 0);
+   concept array_padding_known = requires { typename T::value_type; } &&
+                                 (required_padding<typename T::value_type>() > 0 ||
+                                  ((glaze_object_t<typename T::value_type> || reflectable<typename T::value_type>) &&
+                                   fixed_padding<typename T::value_type> > 0));
 
    template <class T>
       requires(writable_array_t<T> || writable_map_t<T>)
@@ -1213,7 +1246,12 @@ namespace glz
             if constexpr (has_size<T> && array_padding_known<T> && !has_bounded_capacity<B>) {
                const auto n = value.size();
 
-               static constexpr auto value_padding = required_padding<typename T::value_type>();
+               static constexpr auto value_padding = []() -> size_t {
+                  if constexpr (required_padding<typename T::value_type>() > 0)
+                     return required_padding<typename T::value_type>();
+                  else
+                     return fixed_padding<typename T::value_type>;
+               }();
 
                if constexpr (Opts.prettify) {
                   if constexpr (check_new_lines_in_arrays(Opts)) {
@@ -1564,6 +1602,18 @@ namespace glz
    template <nullable_like T>
    struct to<JSON, T>
    {
+      static constexpr bool can_error = [] {
+         if constexpr (has_value_type<T>) {
+            return write_can_error<typename T::value_type>();
+         }
+         else if constexpr (has_element_type<T>) {
+            return write_can_error<typename T::element_type>();
+         }
+         else {
+            return false;
+         }
+      }();
+
       template <auto Opts>
       GLZ_ALWAYS_INLINE static void op(auto&& value, is_context auto&& ctx, auto&& b, auto& ix)
       {
@@ -1601,11 +1651,11 @@ namespace glz
    struct to<JSON, T>
    {
       template <auto Opts, class B>
-      GLZ_ALWAYS_INLINE static void op(auto&&, is_context auto&&, B&& b, auto& ix)
+      GLZ_ALWAYS_INLINE static void op(auto&&, is_context auto&& ctx, B&& b, auto& ix)
       {
          if constexpr (not check_write_unchecked(Opts)) {
-            if (const auto k = ix + 4; k > b.size()) [[unlikely]] {
-               b.resize(2 * k);
+            if (!ensure_space(ctx, b, ix + 4)) [[unlikely]] {
+               return;
             }
          }
          if constexpr (std::endian::native == std::endian::big) {
@@ -1621,6 +1671,7 @@ namespace glz
    };
 
    template <is_variant T>
+      requires(not custom_write<T>)
    struct to<JSON, T>
    {
       template <auto Opts, class B>
@@ -1630,9 +1681,76 @@ namespace glz
             [&](auto&& val) {
                using V = std::decay_t<decltype(val)>;
 
-               if constexpr (check_write_type_info(Opts) && not tag_v<T>.empty() &&
-                             (glaze_object_t<V> || (reflectable<V> && !has_member_with_name<V>(tag_v<T>)) ||
-                              is_memory_object<V>)) {
+               if constexpr (check_write_type_info(Opts) && not tag_v<T>.empty() && custom_write<V>) {
+                  // Custom alternative: the user's serializer emits the object body, into which we
+                  // merge the variant tag. For this to produce valid JSON the custom to<> must (1)
+                  // write an object body and (2) honor opening_and_closing_handled (suppress its own
+                  // braces) so the tag shares the alternative's object. A custom writer that emits a
+                  // scalar/array, or that ignores those flags, would yield malformed output.
+                  //
+                  // The tag-emission below mirrors the reflected-object branch that follows; keep the
+                  // two in sync. The body size is not known at compile time, so we always write the
+                  // tag separator and then drop it at runtime if the body turned out empty.
+                  using id_type = std::decay_t<decltype(ids_v<T>[value.index()])>;
+                  if constexpr (Opts.prettify) {
+                     dump("{\n", b, ix);
+                     ctx.depth += check_indentation_width(Opts);
+                     dumpn(check_indentation_char(Opts), ctx.depth, b, ix);
+                     dump('"', b, ix);
+                     dump_maybe_empty(tag_v<T>, b, ix);
+                     if constexpr (std::integral<id_type>) {
+                        dump("\": ", b, ix);
+                        serialize<JSON>::op<Opts>(ids_v<T>[value.index()], ctx, b, ix);
+                     }
+                     else {
+                        dump("\": \"", b, ix);
+                        dump_maybe_empty(ids_v<T>[value.index()], b, ix);
+                        dump('"', b, ix);
+                     }
+                     const auto pos_after_tag = ix;
+                     dump(",\n", b, ix);
+                     dumpn(check_indentation_char(Opts), ctx.depth, b, ix);
+                     const auto pos_body_start = ix;
+                     to<JSON, V>::template op<opening_and_closing_handled<Opts>()>(val, ctx, b, ix);
+                     if (ix == pos_body_start) {
+                        ix = pos_after_tag; // custom body was empty: undo the tag separator
+                     }
+                     ctx.depth -= check_indentation_width(Opts);
+                     if (!ensure_space(ctx, b, ix + ctx.depth + write_padding_bytes)) [[unlikely]] {
+                        return;
+                     }
+                     std::memcpy(&b[ix], "\n", 1);
+                     ++ix;
+                     std::memset(&b[ix], check_indentation_char(Opts), ctx.depth);
+                     ix += ctx.depth;
+                     std::memcpy(&b[ix], "}", 1);
+                     ++ix;
+                  }
+                  else {
+                     dump("{\"", b, ix);
+                     dump_maybe_empty(tag_v<T>, b, ix);
+                     if constexpr (std::integral<id_type>) {
+                        dump("\":", b, ix);
+                        serialize<JSON>::op<Opts>(ids_v<T>[value.index()], ctx, b, ix);
+                     }
+                     else {
+                        dump("\":\"", b, ix);
+                        dump_maybe_empty(ids_v<T>[value.index()], b, ix);
+                        dump('"', b, ix);
+                     }
+                     const auto pos_after_tag = ix;
+                     dump(',', b, ix);
+                     const auto pos_body_start = ix;
+                     to<JSON, V>::template op<opening_and_closing_handled<Opts>()>(val, ctx, b, ix);
+                     if (ix == pos_body_start) {
+                        ix = pos_after_tag; // custom body was empty: undo the tag separator
+                     }
+                     dump('}', b, ix);
+                  }
+               }
+               else if constexpr (check_write_type_info(Opts) && not tag_v<T>.empty() &&
+                                  (glaze_object_t<V> || (reflectable<V> && !has_member_with_name<V>(tag_v<T>)) ||
+                                   is_memory_object<V>)) {
                   constexpr auto N = []() {
                      if constexpr (is_memory_object<V>) {
                         return reflect<memory_type<V>>::size;
@@ -1997,35 +2115,22 @@ namespace glz
       }
    };
 
-   // Only use this if you are not prettifying
-   // Returns zero if the fixed size cannot be determined
-   template <class T>
-   inline constexpr size_t fixed_padding = [] {
-      constexpr auto N = reflect<T>::size;
-      size_t fixed = 2 + 16; // {} + extra padding
-      for_each_short_circuit<N>([&]<auto I>() -> bool {
-         using val_t = field_t<T, I>;
-         if constexpr (required_padding<val_t>()) {
-            fixed += required_padding<val_t>();
-            fixed += reflect<T>::keys[I].size() + 2; // quoted key length
-            fixed += 2; // colon and comma
-            return false; // continue
-         }
-         else {
-            fixed = 0;
-            return true; // break
-         }
-      });
-      if (fixed) {
-         fixed = round_up_to_nearest_16(fixed);
-      }
-      return fixed;
-   }();
-
    template <class T>
       requires((glaze_object_t<T> || reflectable<T>) && not custom_write<T>)
    struct to<JSON, T>
    {
+      static constexpr bool can_error = [] {
+         constexpr auto N = reflect<T>::size;
+         if constexpr (N == 0) {
+            return false;
+         }
+         else {
+            return []<size_t... I>(std::index_sequence<I...>) {
+               return (write_can_error<field_t<T, I>>() || ...);
+            }(std::make_index_sequence<N>{});
+         }
+      }();
+
       template <auto Options, class V, class B>
          requires(not std::is_pointer_v<std::remove_cvref_t<V>>)
       static void op(V&& value, is_context auto&& ctx, B&& b, auto& ix)
@@ -2069,8 +2174,10 @@ namespace glz
             if constexpr (not check_opening_handled(Options)) {
                if constexpr (Options.prettify) {
                   ctx.depth += check_indentation_width(Options);
-                  if (!ensure_space(ctx, b, ix + ctx.depth + write_padding_bytes)) [[unlikely]] {
-                     return;
+                  if constexpr (not check_write_unchecked(Options)) {
+                     if (!ensure_space(ctx, b, ix + ctx.depth + write_padding_bytes)) [[unlikely]] {
+                        return;
+                     }
                   }
                   std::memcpy(&b[ix], "{\n", 2);
                   ix += 2;
@@ -2078,10 +2185,12 @@ namespace glz
                   ix += ctx.depth;
                }
                else {
-                  if (!ensure_space(ctx, b, ix + 1)) [[unlikely]] {
-                     return;
+                  if constexpr (not check_write_unchecked(Options)) {
+                     if (!ensure_space(ctx, b, ix + 1)) [[unlikely]] {
+                        return;
+                     }
                   }
-                  dump('{', b, ix);
+                  dump<not check_write_unchecked(Options)>('{', b, ix);
                }
             }
 
@@ -2152,6 +2261,25 @@ namespace glz
                            if (is_null) return;
                         }
                      }
+                     else if constexpr (is_specialization_v<val_t, custom_t> && Opts.skip_null_members &&
+                                        custom_getter_returns_nullable<val_t>()) {
+                        if (is_custom_field_null<T, I>(value, t, ctx)) return;
+                     }
+                     else if constexpr (Opts.skip_null_members && glaze_value_is_nullable<val_t>()) {
+                        if (is_glaze_value_field_null<T, I>(value, t)) return;
+                     }
+
+                     if constexpr (check_skip_default_members(Opts) && has_skippable_default<val_t>) {
+                        decltype(auto) member = [&]() -> decltype(auto) {
+                           if constexpr (reflectable<T>) {
+                              return get_member(value, get<I>(t));
+                           }
+                           else {
+                              return get_member(value, get<I>(reflect<T>::values));
+                           }
+                        }();
+                        if (is_default_value(member)) return;
+                     }
 
                      if constexpr (Opts.prettify) {
                         if (!ensure_space(ctx, b, ix + padding + ctx.depth)) [[unlikely]] {
@@ -2203,16 +2331,18 @@ namespace glz
                });
             }
             else {
-               static constexpr size_t fixed_max_size = fixed_padding<T>;
-               if constexpr (fixed_max_size) {
+               static constexpr size_t fixed_max_size = Opts.prettify ? 0 : fixed_padding<T>;
+               if constexpr (fixed_max_size && not check_write_unchecked(Options)) {
                   if (!ensure_space(ctx, b, ix + fixed_max_size)) [[unlikely]] {
                      return;
                   }
                }
 
                for_each<N>([&]<size_t I>() {
-                  if (bool(ctx.error)) [[unlikely]] {
-                     return;
+                  if constexpr (write_can_error<T>()) {
+                     if (bool(ctx.error)) [[unlikely]] {
+                        return;
+                     }
                   }
                   if constexpr (not fixed_max_size) {
                      if constexpr (Opts.prettify) {
@@ -2282,8 +2412,10 @@ namespace glz
             if constexpr (not check_closing_handled(Options)) {
                if constexpr (Options.prettify) {
                   ctx.depth -= check_indentation_width(Options);
-                  if (!ensure_space(ctx, b, ix + ctx.depth + write_padding_bytes)) [[unlikely]] {
-                     return;
+                  if constexpr (not check_write_unchecked(Options)) {
+                     if (!ensure_space(ctx, b, ix + ctx.depth + write_padding_bytes)) [[unlikely]] {
+                        return;
+                     }
                   }
                   std::memcpy(&b[ix], "\n", 1);
                   ++ix;
@@ -2293,7 +2425,7 @@ namespace glz
                   ++ix;
                }
                else {
-                  dump('}', b, ix);
+                  dump<not(fixed_padding<T> || check_write_unchecked(Options))>('}', b, ix);
                }
             }
          }
@@ -2317,95 +2449,161 @@ namespace glz
       }
    };
 
-   // system_clock::time_point: serialize as ISO 8601 string
-   // Zero-allocation implementation writing directly to buffer
+   // system_clock::time_point: serialize as ISO 8601 string.
+   // Zero-allocation implementation writing directly to buffer.
+   // Time points whose Duration period is exactly `days` (e.g. std::chrono::sys_days)
+   // are written as date-only "YYYY-MM-DD" since the time-of-day is always zero at that
+   // precision and the calendar date is the meaningful payload. Coarser periods (weeks,
+   // months, years) fall through to the full ISO 8601 path; this avoids silently
+   // truncating an arbitrary date to a multi-day boundary on read.
    template <is_system_time_point T>
       requires(not custom_write<T>)
    struct to<JSON, T>
    {
       template <auto Opts, class B>
-      static void op(auto&& value, [[maybe_unused]] is_context auto&& ctx, B&& b, auto& ix) noexcept
+      static void op(auto&& value, is_context auto&& ctx, B&& b, auto& ix) noexcept
       {
          using namespace std::chrono;
          using TP = std::remove_cvref_t<T>;
          using Duration = typename TP::duration;
+         using Period = typename Duration::period;
 
-         // Split into date and time-of-day
+         constexpr bool date_only = std::ratio_equal_v<Period, std::ratio<86400>>;
+
          const auto dp = floor<days>(value);
          const year_month_day ymd{dp};
-         const hh_mm_ss tod{floor<Duration>(value - dp)};
-
-         // Extract components
          const int yr = static_cast<int>(ymd.year());
          const unsigned mo = static_cast<unsigned>(ymd.month());
          const unsigned dy = static_cast<unsigned>(ymd.day());
-         const auto hr = static_cast<unsigned>(tod.hours().count());
-         const auto mi = static_cast<unsigned>(tod.minutes().count());
-         const auto sc = static_cast<unsigned>(tod.seconds().count());
 
-         // Calculate fractional digits based on duration precision
-         constexpr size_t frac_digits = []() constexpr {
-            using Period = typename Duration::period;
-            if constexpr (std::ratio_greater_equal_v<Period, std::ratio<1>>) {
-               return 0; // seconds or coarser
-            }
-            else if constexpr (std::ratio_greater_equal_v<Period, std::milli>) {
-               return 3; // milliseconds
-            }
-            else if constexpr (std::ratio_greater_equal_v<Period, std::micro>) {
-               return 6; // microseconds
-            }
-            else {
-               return 9; // nanoseconds or finer
-            }
-         }();
+         // RFC 3339 requires a 4-digit year in [0000, 9999]. Reject anything else rather
+         // than silently corrupting the output via uint64_t wrap of a negative year.
+         if (yr < 0 || yr > 9999) [[unlikely]] {
+            ctx.error = error_code::constraint_violated;
+            return;
+         }
 
-         // Max size: "YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ" = 30 + quotes = 32
-         constexpr size_t max_size = 22 + (frac_digits > 0 ? 1 + frac_digits : 0);
+         if constexpr (date_only) {
+            // "YYYY-MM-DD" = 10 chars + optional quotes
+            constexpr size_t max_size = 12;
+            if (!ensure_space(ctx, b, ix + max_size)) [[unlikely]] {
+               return;
+            }
+
+            if constexpr (not check_unquoted(Opts)) {
+               b[ix++] = '"';
+            }
+            chrono_detail::write_digits<4>(b, ix, static_cast<uint64_t>(yr));
+            b[ix++] = '-';
+            chrono_detail::write_digits<2>(b, ix, mo);
+            b[ix++] = '-';
+            chrono_detail::write_digits<2>(b, ix, dy);
+            if constexpr (not check_unquoted(Opts)) {
+               b[ix++] = '"';
+            }
+         }
+         else {
+            const hh_mm_ss tod{floor<Duration>(value - dp)};
+            const auto hr = static_cast<unsigned>(tod.hours().count());
+            const auto mi = static_cast<unsigned>(tod.minutes().count());
+            const auto sc = static_cast<unsigned>(tod.seconds().count());
+
+            // Calculate fractional digits based on duration precision
+            constexpr size_t frac_digits = []() constexpr {
+               if constexpr (std::ratio_greater_equal_v<Period, std::ratio<1>>) {
+                  return 0; // seconds or coarser
+               }
+               else if constexpr (std::ratio_greater_equal_v<Period, std::milli>) {
+                  return 3; // milliseconds
+               }
+               else if constexpr (std::ratio_greater_equal_v<Period, std::micro>) {
+                  return 6; // microseconds
+               }
+               else {
+                  return 9; // nanoseconds or finer
+               }
+            }();
+
+            // Max size: "YYYY-MM-DDTHH:MM:SS.nnnnnnnnnZ" = 30 + quotes = 32
+            constexpr size_t max_size = 22 + (frac_digits > 0 ? 1 + frac_digits : 0);
+            if (!ensure_space(ctx, b, ix + max_size)) [[unlikely]] {
+               return;
+            }
+
+            if constexpr (not check_unquoted(Opts)) {
+               b[ix++] = '"';
+            }
+            chrono_detail::write_digits<4>(b, ix, static_cast<uint64_t>(yr));
+            b[ix++] = '-';
+            chrono_detail::write_digits<2>(b, ix, mo);
+            b[ix++] = '-';
+            chrono_detail::write_digits<2>(b, ix, dy);
+            b[ix++] = 'T';
+            chrono_detail::write_digits<2>(b, ix, hr);
+            b[ix++] = ':';
+            chrono_detail::write_digits<2>(b, ix, mi);
+            b[ix++] = ':';
+            chrono_detail::write_digits<2>(b, ix, sc);
+
+            // Write fractional seconds if duration is finer than seconds
+            if constexpr (frac_digits > 0) {
+               b[ix++] = '.';
+               const auto subsec = tod.subseconds();
+               if constexpr (frac_digits == 3) {
+                  chrono_detail::write_digits<3>(b, ix,
+                                                 static_cast<uint64_t>(duration_cast<milliseconds>(subsec).count()));
+               }
+               else if constexpr (frac_digits == 6) {
+                  chrono_detail::write_digits<6>(b, ix,
+                                                 static_cast<uint64_t>(duration_cast<microseconds>(subsec).count()));
+               }
+               else {
+                  chrono_detail::write_digits<9>(b, ix,
+                                                 static_cast<uint64_t>(duration_cast<nanoseconds>(subsec).count()));
+               }
+            }
+
+            b[ix++] = 'Z';
+            if constexpr (not check_unquoted(Opts)) {
+               b[ix++] = '"';
+            }
+         }
+      }
+   };
+
+   // year_month_day: serialize as "YYYY-MM-DD" JSON string
+   template <is_year_month_day T>
+      requires(not custom_write<T>)
+   struct to<JSON, T>
+   {
+      template <auto Opts, class B>
+      static void op(auto&& value, is_context auto&& ctx, B&& b, auto& ix) noexcept
+      {
+         const int yr = static_cast<int>(value.year());
+         const unsigned mo = static_cast<unsigned>(value.month());
+         const unsigned dy = static_cast<unsigned>(value.day());
+
+         // std::chrono::year is a signed 16-bit-ish range, so users can construct dates
+         // outside [0000, 9999]. Reject those rather than emitting wrap-around digits.
+         if (yr < 0 || yr > 9999) [[unlikely]] {
+            ctx.error = error_code::constraint_violated;
+            return;
+         }
+
+         // "YYYY-MM-DD" = 10 chars + optional quotes
+         constexpr size_t max_size = 12;
          if (!ensure_space(ctx, b, ix + max_size)) [[unlikely]] {
             return;
          }
 
-         // Helper to write N-digit zero-padded number
-         auto write_digits = [&]<size_t N>(uint64_t val) {
-            for (size_t i = N; i > 0; --i) {
-               b[ix + i - 1] = static_cast<char>('0' + val % 10);
-               val /= 10;
-            }
-            ix += N;
-         };
-
          if constexpr (not check_unquoted(Opts)) {
             b[ix++] = '"';
          }
-         write_digits.template operator()<4>(static_cast<uint64_t>(yr));
+         chrono_detail::write_digits<4>(b, ix, static_cast<uint64_t>(yr));
          b[ix++] = '-';
-         write_digits.template operator()<2>(mo);
+         chrono_detail::write_digits<2>(b, ix, mo);
          b[ix++] = '-';
-         write_digits.template operator()<2>(dy);
-         b[ix++] = 'T';
-         write_digits.template operator()<2>(hr);
-         b[ix++] = ':';
-         write_digits.template operator()<2>(mi);
-         b[ix++] = ':';
-         write_digits.template operator()<2>(sc);
-
-         // Write fractional seconds if duration is finer than seconds
-         if constexpr (frac_digits > 0) {
-            b[ix++] = '.';
-            const auto subsec = tod.subseconds();
-            if constexpr (frac_digits == 3) {
-               write_digits.template operator()<3>(static_cast<uint64_t>(duration_cast<milliseconds>(subsec).count()));
-            }
-            else if constexpr (frac_digits == 6) {
-               write_digits.template operator()<6>(static_cast<uint64_t>(duration_cast<microseconds>(subsec).count()));
-            }
-            else {
-               write_digits.template operator()<9>(static_cast<uint64_t>(duration_cast<nanoseconds>(subsec).count()));
-            }
-         }
-
-         b[ix++] = 'Z';
+         chrono_detail::write_digits<2>(b, ix, dy);
          if constexpr (not check_unquoted(Opts)) {
             b[ix++] = '"';
          }

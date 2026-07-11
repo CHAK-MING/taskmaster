@@ -1,9 +1,11 @@
 #pragma once
 
+#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <algorithm>
 #include <cctype>
 #include <string>
 #include <string_view>
+#endif
 
 namespace dagforge {
 

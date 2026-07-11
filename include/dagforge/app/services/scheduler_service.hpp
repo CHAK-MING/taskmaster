@@ -31,7 +31,7 @@ using ZombieReaperCallback =
 class SchedulerService {
 public:
   explicit SchedulerService(Runtime &runtime, unsigned scheduler_shards = 0);
-  ~SchedulerService() = default;
+  ~SchedulerService();
 
   SchedulerService(const SchedulerService &) = delete;
   auto operator=(const SchedulerService &) -> SchedulerService & = delete;
@@ -51,14 +51,14 @@ public:
   auto unregister_dag(const DAGId &dag_id) -> void;
 
   auto start() -> void;
-  auto stop() -> void;
+  [[nodiscard]] auto stop(std::chrono::steady_clock::time_point deadline =
+                              std::chrono::steady_clock::time_point::max())
+      -> Result<void>;
   [[nodiscard]] auto is_running() const -> bool;
 
   [[nodiscard]] auto queue_depth() const -> std::size_t;
   [[nodiscard]] auto missed_schedules_total() const -> std::uint64_t;
   [[nodiscard]] auto cron_parse_errors_total() const -> std::uint64_t;
-
-  [[nodiscard]] auto engine() -> Engine &;
 
 private:
   [[nodiscard]] auto owner_engine_index(const DAGId &dag_id) const noexcept
@@ -69,7 +69,17 @@ private:
       -> bool;
   auto refresh_engine_callbacks() -> void;
 
+  struct ZombieReaperState {
+    ZombieReaperCallback callback;
+    int interval_sec{60};
+    int heartbeat_timeout_sec{75};
+    std::atomic<bool> running{false};
+    std::atomic<int> inflight{0};
+    std::atomic<std::uint64_t> generation{0};
+  };
+
   Runtime &runtime_;
+  shard_id zombie_reaper_shard_{0};
   std::vector<std::unique_ptr<Engine>> engines_;
   std::vector<shard_id> engine_shards_;
   DAGTriggerCallback on_dag_trigger_;
@@ -77,11 +87,8 @@ private:
   ListRunExecutionDatesCallback list_run_execution_dates_callback_;
   GetWatermarkCallback get_watermark_callback_;
   SaveWatermarkCallback save_watermark_callback_;
-  ZombieReaperCallback zombie_reaper_callback_;
-  int zombie_reaper_interval_sec_{60};
-  int zombie_heartbeat_timeout_sec_{75};
-  std::atomic<bool> zombie_reaper_running_{false};
-  std::atomic<int> zombie_reaper_inflight_{0};
+  std::shared_ptr<ZombieReaperState> zombie_reaper_state_{
+      std::make_shared<ZombieReaperState>()};
   std::atomic<std::uint64_t> cron_parse_errors_total_{0};
   std::unordered_map<DAGId, TaskId> registered_root_tasks_;
 };

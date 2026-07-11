@@ -3,11 +3,11 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/dag/run_types.hpp"
 #include "dagforge/util/id.hpp"
-#endif
 
 #include <chrono>
 #include <cstdint>
 #include <string>
+#endif
 
 
 namespace dagforge::orm {

@@ -5,11 +5,10 @@
 
 #include <cctype>
 #include <charconv>
-#include <iostream>
+#include <limits>
 
 #include "glaze/core/chrono.hpp"
 #include "glaze/core/common.hpp"
-// #include "glaze/core/opts.hpp"
 #include "glaze/core/read.hpp"
 #include "glaze/core/reflect.hpp"
 #include "glaze/file/file_ops.hpp"
@@ -17,6 +16,7 @@
 #include "glaze/toml/opts.hpp"
 #include "glaze/toml/skip.hpp"
 #include "glaze/util/glaze_fast_float.hpp"
+#include "glaze/util/nullable_traits.hpp"
 #include "glaze/util/parse.hpp"
 #include "glaze/util/type_traits.hpp"
 #include "glaze/util/variant.hpp"
@@ -27,16 +27,134 @@ namespace glz
    struct parse<TOML>
    {
       template <auto Opts, class T, is_context Ctx, class It0, class It1>
-      GLZ_ALWAYS_INLINE static void op(T&& value, Ctx&& ctx, It0&& it, It1 end)
+      static void op(T&& value, Ctx&& ctx, It0&& it, It1 end)
       {
          using V = std::remove_cvref_t<T>;
          from<TOML, V>::template op<Opts>(std::forward<T>(value), std::forward<Ctx>(ctx), std::forward<It0>(it), end);
       }
    };
 
+   inline constexpr int toml_hex_to_int(const char c) noexcept
+   {
+      if (c >= '0' && c <= '9') return c - '0';
+      if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+      if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+      return -1;
+   }
+
+   template <class It, class End>
+   inline bool append_toml_unicode_escape_u(std::string& out, It& it, End end) noexcept
+   {
+      auto hex_it = it;
+      ++hex_it; // first hex digit after 'u'
+      if (hex_it == end) {
+         return false;
+      }
+
+      const auto* const hex_begin = &(*hex_it);
+      const auto* const hex_end = hex_begin + (end - hex_it);
+      const auto* cursor = hex_begin;
+      char utf8[4]{};
+      char* dst = utf8;
+
+      if (!handle_unicode_code_point(cursor, dst, hex_end)) {
+         return false;
+      }
+
+      out.append(utf8, static_cast<size_t>(dst - utf8));
+      hex_it += (cursor - hex_begin);
+      --hex_it; // leave iterator on the last consumed character
+      it = hex_it;
+      return true;
+   }
+
+   template <class It, class End>
+   inline bool append_toml_unicode_escape_U(std::string& out, It& it, End end) noexcept
+   {
+      auto hex_it = it;
+      ++hex_it; // first hex digit after 'U'
+
+      if ((end - hex_it) < 8) {
+         return false;
+      }
+
+      uint32_t code_point{};
+      for (size_t i = 0; i < 8; ++i) {
+         const int digit = toml_hex_to_int(*(hex_it + i));
+         if (digit < 0) {
+            return false;
+         }
+         code_point = (code_point << 4) | static_cast<uint32_t>(digit);
+      }
+
+      if (code_point > 0x10FFFF || (code_point >= 0xD800 && code_point <= 0xDFFF)) {
+         return false;
+      }
+
+      char utf8[4]{};
+      const auto offset = code_point_to_utf8(code_point, utf8);
+      if (!offset) {
+         return false;
+      }
+
+      out.append(utf8, static_cast<size_t>(offset));
+      it = hex_it + 7; // leave iterator on the last consumed character
+      return true;
+   }
+
+   template <class It, class End>
+   inline bool append_toml_basic_escape(std::string& out, It& it, End end) noexcept
+   {
+      switch (*it) {
+      case '"':
+         out.push_back('"');
+         return true;
+      case '\\':
+         out.push_back('\\');
+         return true;
+      case 'e':
+         out.push_back('\x1B');
+         return true;
+      case 'b':
+         out.push_back('\b');
+         return true;
+      case 't':
+         out.push_back('\t');
+         return true;
+      case 'n':
+         out.push_back('\n');
+         return true;
+      case 'f':
+         out.push_back('\f');
+         return true;
+      case 'r':
+         out.push_back('\r');
+         return true;
+      case 'x': {
+         if (it + 2 >= end) {
+            return false;
+         }
+         const int hi = toml_hex_to_int(*(it + 1));
+         const int lo = toml_hex_to_int(*(it + 2));
+         if (hi < 0 || lo < 0) {
+            return false;
+         }
+         out.push_back(static_cast<char>((hi << 4) | lo));
+         it += 2;
+         return true;
+      }
+      case 'u':
+         return append_toml_unicode_escape_u(out, it, end);
+      case 'U':
+         return append_toml_unicode_escape_U(out, it, end);
+      default:
+         return false;
+      }
+   }
+
    // Parse TOML key (bare key or quoted key)
    template <class Ctx, class It, class End>
-   GLZ_ALWAYS_INLINE bool parse_toml_key(std::string& key, Ctx& ctx, It&& it, End end) noexcept
+   inline bool parse_toml_key(std::string& key, Ctx& ctx, It&& it, End end) noexcept
    {
       key.clear();
       skip_ws_and_comments(it, end);
@@ -56,26 +174,9 @@ namespace glz
                   ctx.error = error_code::unexpected_end;
                   return false;
                }
-               switch (*it) {
-               case '"':
-                  key.push_back('"');
-                  break;
-               case '\\':
-                  key.push_back('\\');
-                  break;
-               case 'n':
-                  key.push_back('\n');
-                  break;
-               case 't':
-                  key.push_back('\t');
-                  break;
-               case 'r':
-                  key.push_back('\r');
-                  break;
-               default:
-                  key.push_back('\\');
-                  key.push_back(*it);
-                  break;
+               if (!append_toml_basic_escape(key, it, end)) {
+                  ctx.error = error_code::syntax_error;
+                  return false;
                }
             }
             else {
@@ -90,9 +191,27 @@ namespace glz
          }
          ++it; // Skip closing quote
       }
+      else if (*it == '\'') {
+         // Single-quoted (literal) key
+         ++it;
+         while (it != end && *it != '\'') {
+            if (*it == '\n' || *it == '\r') {
+               ctx.error = error_code::syntax_error;
+               return false;
+            }
+            key.push_back(*it);
+            ++it;
+         }
+
+         if (it == end || *it != '\'') {
+            ctx.error = error_code::syntax_error;
+            return false;
+         }
+         ++it; // Skip closing quote
+      }
       else {
          // Bare key
-         while (it != end && (std::isalnum(*it) || *it == '_' || *it == '-')) {
+         while (it != end && (std::isalnum(static_cast<unsigned char>(*it)) || *it == '_' || *it == '-')) {
             key.push_back(*it);
             ++it;
          }
@@ -107,7 +226,7 @@ namespace glz
    }
 
    template <class Ctx, class It, class End>
-   GLZ_ALWAYS_INLINE bool parse_toml_key(std::vector<std::string>& keys, Ctx& ctx, It& it, End end) noexcept
+   inline bool parse_toml_key(std::vector<std::string>& keys, Ctx& ctx, It& it, End end) noexcept
    {
       keys.clear();
       skip_ws_and_comments(it, end);
@@ -134,26 +253,9 @@ namespace glz
                      ctx.error = error_code::unexpected_end;
                      return false;
                   }
-                  switch (*it) {
-                  case '"':
-                     key.push_back('"');
-                     break;
-                  case '\\':
-                     key.push_back('\\');
-                     break;
-                  case 'n':
-                     key.push_back('\n');
-                     break;
-                  case 't':
-                     key.push_back('\t');
-                     break;
-                  case 'r':
-                     key.push_back('\r');
-                     break;
-                  default:
-                     key.push_back('\\');
-                     key.push_back(*it);
-                     break;
+                  if (!append_toml_basic_escape(key, it, end)) {
+                     ctx.error = error_code::syntax_error;
+                     return false;
                   }
                }
                else {
@@ -168,8 +270,25 @@ namespace glz
             }
             ++it; // skip closing quote
          }
+         else if (*it == '\'') {
+            ++it;
+            while (it != end && *it != '\'') {
+               if (*it == '\n' || *it == '\r') {
+                  ctx.error = error_code::syntax_error;
+                  return false;
+               }
+               key.push_back(*it);
+               ++it;
+            }
+
+            if (it == end || *it != '\'') {
+               ctx.error = error_code::syntax_error;
+               return false;
+            }
+            ++it; // skip closing quote
+         }
          else {
-            while (it != end && (std::isalnum(*it) || *it == '_' || *it == '-')) {
+            while (it != end && (std::isalnum(static_cast<unsigned char>(*it)) || *it == '_' || *it == '-')) {
                key.push_back(*it);
                ++it;
             }
@@ -206,9 +325,21 @@ namespace glz
       template <auto Opts, is_context Ctx, class It0, class It1>
       static void op(auto&& value, Ctx&& ctx, It0&& it, It1 end)
       {
-         using V = decltype(get_member(std::declval<T>(), meta_wrapper_v<T>));
+         using V = std::decay_t<decltype(get_member(std::declval<T>(), meta_wrapper_v<T>))>;
          from<TOML, V>::template op<Opts>(get_member(value, meta_wrapper_v<T>), std::forward<Ctx>(ctx),
                                           std::forward<It0>(it), std::forward<It1>(end));
+      }
+   };
+
+   // Silently consume any value bound to a glz::skip sentinel. Reached when a
+   // type opts out of serialization via meta::value = glz::skip{}.
+   template <>
+   struct from<TOML, skip>
+   {
+      template <auto Opts>
+      GLZ_ALWAYS_INLINE static void op(auto&&, is_context auto&& ctx, auto&&... args) noexcept
+      {
+         skip_value<TOML>::template op<Opts>(ctx, args...);
       }
    };
 
@@ -257,15 +388,23 @@ namespace glz
          return is_any_toml_digit(c);
       }
 
+      constexpr int char_to_digit(char c) noexcept
+      {
+         if (c >= '0' && c <= '9') return c - '0';
+         if (c >= 'a' && c <= 'z') return c - 'a' + 10;
+         if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
+         return -1;
+      }
+
       struct unsigned_accumulator
       {
         private:
          int base = 10;
 
         public:
-         constexpr void inform_base(int base) noexcept { this->base = base; }
+         constexpr void inform_base(int b) noexcept { base = b; }
 
-         constexpr bool is_valid_digit(char c) const noexcept { return is_valid_toml_digit(c, this->base); }
+         constexpr bool is_valid_digit(char c) const noexcept { return is_valid_toml_digit(c, base); }
 
          template <std::unsigned_integral T>
          constexpr bool try_accumulate(T& v, int digit) const noexcept
@@ -280,7 +419,7 @@ namespace glz
                return false;
             }
 
-            v = v * this->base + digit;
+            v = static_cast<T>(v * this->base + digit);
 
             return true;
          }
@@ -295,9 +434,9 @@ namespace glz
         public:
          constexpr void inform_negated() noexcept { this->negated = true; }
 
-         constexpr void inform_base(int base) noexcept { this->base = base; }
+         constexpr void inform_base(int b) noexcept { base = b; }
 
-         constexpr bool is_valid_digit(char c) const noexcept { return is_valid_toml_digit(c, this->base); }
+         constexpr bool is_valid_digit(char c) const noexcept { return is_valid_toml_digit(c, base); }
 
          template <std::signed_integral T>
          constexpr bool try_accumulate(T& v, int digit) const noexcept
@@ -313,7 +452,7 @@ namespace glz
                   return false;
                }
 
-               v = v * this->base - digit;
+               v = static_cast<T>(v * this->base - digit);
 
                return true;
             }
@@ -324,7 +463,7 @@ namespace glz
                return false;
             }
 
-            v = v * this->base + digit;
+            v = static_cast<T>(v * this->base + digit);
 
             return true;
          }
@@ -485,6 +624,50 @@ namespace glz
 
          return true;
       }
+
+      constexpr bool is_toml_number_terminator(const char c) noexcept
+      {
+         return c == ',' || c == ']' || c == '}' || c == '\n' || c == '\r' || c == '#' || c == ' ' || c == '\t';
+      }
+
+      template <std::floating_point T>
+      bool parse_toml_special_float(T& value, auto& it, auto end) noexcept
+      {
+         auto p = it;
+         bool negative = false;
+
+         if (p != end && (*p == '+' || *p == '-')) {
+            negative = (*p == '-');
+            ++p;
+         }
+
+         if ((end - p) >= 3 && p[0] == 'i' && p[1] == 'n' && p[2] == 'f') {
+            const auto next = p + 3;
+            if (next != end && !is_toml_number_terminator(*next)) {
+               return false;
+            }
+
+            value = negative ? -std::numeric_limits<T>::infinity() : std::numeric_limits<T>::infinity();
+            it = next;
+            return true;
+         }
+
+         if ((end - p) >= 3 && p[0] == 'n' && p[1] == 'a' && p[2] == 'n') {
+            const auto next = p + 3;
+            if (next != end && !is_toml_number_terminator(*next)) {
+               return false;
+            }
+
+            value = std::numeric_limits<T>::quiet_NaN();
+            if (negative) {
+               value = -value;
+            }
+            it = next;
+            return true;
+         }
+
+         return false;
+      }
    }
 
    template <num_t T>
@@ -512,6 +695,10 @@ namespace glz
             }
          }
          else {
+            if (detail::parse_toml_special_float(value, it, end)) {
+               return;
+            }
+
             auto [ptr, ec] = glz::from_chars<false>(it, end, value); // Always treat as non-null-terminated
             if (ec != std::errc()) [[unlikely]] {
                ctx.error = error_code::parse_number_failure;
@@ -557,50 +744,24 @@ namespace glz
                      ctx.error = error_code::unexpected_end;
                      return;
                   }
-                  switch (*it) {
-                  case '"':
-                     value.push_back('"');
-                     break;
-                  case '\\':
-                     value.push_back('\\');
-                     break;
-                  case 'n':
-                     value.push_back('\n');
-                     break;
-                  case 't':
-                     value.push_back('\t');
-                     break;
-                  case 'r':
-                     value.push_back('\r');
-                     break;
-                  case 'b':
-                     value.push_back('\b');
-                     break;
-                  case 'f':
-                     value.push_back('\f');
-                     break;
-                  // TOML: Any other character is an error for escape sequences in basic strings
-                  // However, we also need to handle escaped newlines for line trimming
-                  case '\n': /* ignore escaped newline */
+                  // Escaped newline continuation in multiline basic strings
+                  if (*it == '\n') {
                      // Trim all whitespace after escaped newline until non-whitespace or actual newline
                      while (it + 1 < end &&
                             (*(it + 1) == ' ' || *(it + 1) == '\t' || *(it + 1) == '\r' || *(it + 1) == '\n')) {
                         ++it;
                         if (*it == '\n') break; // Stop if we hit an actual newline
                      }
-                     break;
-                  case '\r': // part of CRLF, handle similar to \n
+                  }
+                  else if (*it == '\r') { // part of CRLF, handle similar to \n
                      if (it + 1 < end && *(it + 1) == '\n') ++it;
                      while (it + 1 < end &&
                             (*(it + 1) == ' ' || *(it + 1) == '\t' || *(it + 1) == '\r' || *(it + 1) == '\n')) {
                         ++it;
                         if (*it == '\n') break;
                      }
-                     break;
-                  default:
-                     // In TOML, an unknown escape sequence is an error.
-                     // For simplicity here, we might just append them or flag an error.
-                     // Glaze JSON parser often appends, let's be stricter for TOML.
+                  }
+                  else if (!append_toml_basic_escape(value, it, end)) {
                      ctx.error = error_code::syntax_error;
                      return;
                   }
@@ -628,29 +789,7 @@ namespace glz
                      ctx.error = error_code::unexpected_end;
                      return;
                   }
-                  switch (*it) {
-                  case '"':
-                     value.push_back('"');
-                     break;
-                  case '\\':
-                     value.push_back('\\');
-                     break;
-                  case 'n':
-                     value.push_back('\n');
-                     break;
-                  case 't':
-                     value.push_back('\t');
-                     break;
-                  case 'r':
-                     value.push_back('\r');
-                     break;
-                  case 'b':
-                     value.push_back('\b');
-                     break;
-                  case 'f':
-                     value.push_back('\f');
-                     break;
-                  default:
+                  if (!append_toml_basic_escape(value, it, end)) {
                      ctx.error = error_code::syntax_error;
                      return;
                   }
@@ -875,7 +1014,7 @@ namespace glz
    struct from<TOML, T>
    {
       template <auto Opts, class It0, class It1>
-      GLZ_ALWAYS_INLINE static void op(auto&& value, is_context auto&& ctx, It0&& it, It1 end) noexcept
+      static void op(auto&& value, is_context auto&& ctx, It0&& it, It1 end) noexcept
       {
          using Rep = typename std::remove_cvref_t<T>::rep;
          Rep count{};
@@ -1242,7 +1381,7 @@ namespace glz
    struct from<TOML, T>
    {
       template <auto Opts, class It0, class It1>
-      GLZ_ALWAYS_INLINE static void op(auto&& value, is_context auto&& ctx, It0&& it, It1 end) noexcept
+      static void op(auto&& value, is_context auto&& ctx, It0&& it, It1 end) noexcept
       {
          using Duration = typename std::remove_cvref_t<T>::duration;
          using Rep = typename Duration::rep;
@@ -1260,7 +1399,7 @@ namespace glz
    struct from<TOML, T>
    {
       template <auto Opts, class It0, class It1>
-      GLZ_ALWAYS_INLINE static void op(auto&& value, is_context auto&& ctx, It0&& it, It1 end) noexcept
+      static void op(auto&& value, is_context auto&& ctx, It0&& it, It1 end) noexcept
       {
          // Treat like steady_clock - parse as count
          using Duration = typename std::remove_cvref_t<T>::duration;
@@ -1293,7 +1432,7 @@ namespace glz
          }
 
          ++it; // Skip '['
-         skip_ws_and_comments(it, end);
+         skip_ws_newlines_and_comments(it, end);
 
          value.clear();
 
@@ -1311,7 +1450,7 @@ namespace glz
                return;
             value.emplace(std::move(v));
 
-            skip_ws_and_comments(it, end);
+            skip_ws_newlines_and_comments(it, end);
 
             if (it == end) {
                ctx.error = error_code::unexpected_end;
@@ -1324,13 +1463,19 @@ namespace glz
             }
             else if (*it == ',') {
                ++it;
-               skip_ws_and_comments(it, end);
+               skip_ws_newlines_and_comments(it, end);
+               if (it != end && *it == ']') {
+                  ++it;
+                  return;
+               }
             }
             else {
                ctx.error = error_code::syntax_error;
                return;
             }
          }
+
+         ctx.error = error_code::unexpected_end;
       }
    };
 
@@ -1354,7 +1499,7 @@ namespace glz
          }
 
          ++it; // Skip '['
-         skip_ws_and_comments(it, end);
+         skip_ws_newlines_and_comments(it, end);
 
          // Handle empty array
          if (it != end && *it == ']') {
@@ -1384,7 +1529,7 @@ namespace glz
                return;
             }
 
-            skip_ws_and_comments(it, end);
+            skip_ws_newlines_and_comments(it, end);
 
             if (it == end) {
                ctx.error = error_code::unexpected_end;
@@ -1393,24 +1538,30 @@ namespace glz
 
             if (*it == ']') {
                ++it;
-               break;
+               return;
             }
             else if (*it == ',') {
                ++it;
-               skip_ws_and_comments(it, end);
+               skip_ws_newlines_and_comments(it, end);
+               if (it != end && *it == ']') {
+                  ++it;
+                  return;
+               }
             }
             else {
                ctx.error = error_code::syntax_error;
                return;
             }
          }
+
+         ctx.error = error_code::unexpected_end;
       }
    };
 
    namespace detail
    {
       template <auto Opts, class T, class It, class End, class Ctx>
-      GLZ_ALWAYS_INLINE void parse_toml_object_members(T&& value, It&& it, End end, Ctx&& ctx, bool is_inline_table)
+      inline void parse_toml_object_members(T&& value, It&& it, End end, Ctx&& ctx, bool is_inline_table)
       {
          using U = std::remove_cvref_t<T>;
          static constexpr auto N = reflect<U>::size;
@@ -1425,6 +1576,11 @@ namespace glz
             if (it == end) {
                if (is_inline_table) ctx.error = error_code::unexpected_end; // Inline table must end with '}'
                break;
+            }
+
+            if (is_inline_table && (*it == '\n' || *it == '\r')) {
+               skip_to_next_line(ctx, it, end);
+               continue;
             }
 
             if (is_inline_table && *it == '}') {
@@ -1509,10 +1665,11 @@ namespace glz
                   ctx.error = error_code::unknown_key;
                   return;
                }
-
-               skip_value<TOML>::template op<Opts>(ctx, it, end);
-               if (bool(ctx.error)) [[unlikely]] {
-                  return;
+               else { // else used to fix MSVC unreachable code warning
+                  skip_value<TOML>::template op<Opts>(ctx, it, end);
+                  if (bool(ctx.error)) [[unlikely]] {
+                     return;
+                  }
                }
             }
 
@@ -1554,7 +1711,7 @@ namespace glz
    }
 
    template <auto Opts, class T>
-   GLZ_ALWAYS_INLINE bool resolve_nested(T& root, std::span<std::string> path, auto& ctx, auto& it, auto& end)
+   inline bool resolve_nested(T& root, std::span<std::string> path, auto& ctx, auto& it, auto& end)
    {
       if constexpr (!(glz::reflectable<T> || glz::glaze_object_t<T>)) {
          return true;
@@ -1598,18 +1755,30 @@ namespace glz
                ctx.error = error_code::unknown_key;
                return false;
             }
-
-            skip_value<TOML>::template op<Opts>(ctx, it, end);
-            return !bool(ctx.error);
+            else { // else used to fix MSVC unreachable code warning
+               skip_value<TOML>::template op<Opts>(ctx, it, end);
+               return !bool(ctx.error);
+            }
          }
          return !bool(ctx.error);
       }
    }
 
+   template <auto Opts, nullable_like T>
+   inline bool resolve_nested(T& root, std::span<std::string> path, auto& ctx, auto& it, auto& end)
+   {
+      if (!root) {
+         if (!nullable_emplace<Opts>(root, ctx)) {
+            return false;
+         }
+      }
+      return resolve_nested<Opts>(*root, path, ctx, it, end);
+   }
+
    // Helper to resolve an array-of-tables path and emplace a new element
    // Returns true if successful, false if error
    template <auto Opts, class T>
-   GLZ_ALWAYS_INLINE bool resolve_array_of_tables(T& root, std::span<std::string> path, auto& ctx, auto& it, auto& end)
+   inline bool resolve_array_of_tables(T& root, std::span<std::string> path, auto& ctx, auto& it, auto& end)
    {
       if constexpr (!(glz::reflectable<T> || glz::glaze_object_t<T>)) {
          ctx.error = error_code::syntax_error;
@@ -1629,7 +1798,7 @@ namespace glz
             visit<N>(
                [&]<size_t I>() {
                   if (I == index) {
-                     decltype(auto) member_obj = [&]() -> decltype(auto) {
+                     decltype(auto) raw_member_obj = [&]() -> decltype(auto) {
                         if constexpr (reflectable<U>) {
                            return get<I>(to_tie(root));
                         }
@@ -1637,7 +1806,21 @@ namespace glz
                            return get_member(root, get<I>(reflect<U>::values));
                         }
                      }();
+                     using raw_member_type = std::decay_t<decltype(raw_member_obj)>;
 
+                     decltype(auto) member_obj = [&]() -> decltype(auto) {
+                        if constexpr (nullable_like<raw_member_type>) {
+                           if (!raw_member_obj) {
+                              if (!nullable_emplace<Opts>(raw_member_obj, ctx)) {
+                                 success = false;
+                              }
+                           }
+                           return *raw_member_obj;
+                        }
+                        else {
+                           return raw_member_obj;
+                        }
+                     }();
                      using member_type = std::decay_t<decltype(member_obj)>;
 
                      if (path.size() == 1) {
@@ -1666,7 +1849,8 @@ namespace glz
                            }
                            success = resolve_array_of_tables<Opts>(member_obj.back(), path.subspan(1), ctx, it, end);
                         }
-                        else if constexpr (glz::reflectable<member_type> || glz::glaze_object_t<member_type>) {
+                        else if constexpr (glz::reflectable<member_type> || glz::glaze_object_t<member_type> ||
+                                           nullable_like<member_type>) {
                            success = resolve_array_of_tables<Opts>(member_obj, path.subspan(1), ctx, it, end);
                         }
                         else {
@@ -1684,12 +1868,24 @@ namespace glz
                ctx.error = error_code::unknown_key;
                return false;
             }
-
-            // Skip unknown key's content
-            skip_value<TOML>::template op<Opts>(ctx, it, end);
-            return !bool(ctx.error);
+            else { // else used to fix MSVC unreachable code warning
+               // Skip unknown key's content
+               skip_value<TOML>::template op<Opts>(ctx, it, end);
+               return !bool(ctx.error);
+            }
          }
       }
+   }
+
+   template <auto Opts, nullable_like T>
+   inline bool resolve_array_of_tables(T& root, std::span<std::string> path, auto& ctx, auto& it, auto& end)
+   {
+      if (!root) {
+         if (!nullable_emplace<Opts>(root, ctx)) {
+            return false;
+         }
+      }
+      return resolve_array_of_tables<Opts>(*root, path, ctx, it, end);
    }
 
    // ============================================
@@ -1723,91 +1919,145 @@ namespace glz
 
       // Helper to resolve a dotted key path into a nested map, creating entries as needed
       // Returns a reference to the innermost value where data should be stored
-      // Note: Not GLZ_ALWAYS_INLINE because this function is recursive
+      // Note: Not inline because this function is recursive
       template <auto Opts, class T>
       bool resolve_nested_map(T& root, std::span<std::string> path, auto& ctx, auto& it, auto& end)
       {
+         // A dotted key recurses one frame per path segment, with nothing else bounding the
+         // descent, so an adversarial key like "a.a.a.…=1" otherwise overflows the stack. Share
+         // the same depth budget the variant reader uses so combined nesting is bounded too.
+         depth_guard guard{ctx};
+         if (!guard) [[unlikely]] {
+            return false;
+         }
+
          if (path.empty()) {
             ctx.error = error_code::syntax_error;
             return false;
          }
 
          using Value = typename T::mapped_type;
+         const auto map_it = root.find(path.front());
+         const bool exists = (map_it != root.end());
 
          if (path.size() == 1) {
-            // Last key in path - parse the value directly
-            from<TOML, Value>::template op<toml::is_internal_on<Opts>()>(root[path.front()], ctx, it, end);
-            return !bool(ctx.error);
-         }
-         else {
-            // Navigate/create nested map
-            auto& nested_value = root[path.front()];
-
-            // Handle different value types for nested navigation
-            if constexpr (is_variant<Value>) {
-               // Direct variant type - emplace the map alternative
-               constexpr auto map_idx = find_map_alternative_index<Value>();
-               if constexpr (map_idx != std::variant_npos) {
-                  using MapType = std::variant_alternative_t<map_idx, Value>;
-                  if (!std::holds_alternative<MapType>(nested_value)) {
-                     nested_value.template emplace<map_idx>();
-                  }
-                  return resolve_nested_map<Opts>(std::get<MapType>(nested_value), path.subspan(1), ctx, it, end);
-               }
-               else {
-                  ctx.error = error_code::no_matching_variant_type;
-                  return false;
-               }
-            }
-            else if constexpr (has_variant_data_member<Value>) {
-               // Types like generic_json that wrap a variant in a 'data' member
-               using DataType = decltype(nested_value.data);
-               constexpr auto map_idx = find_map_alternative_index<std::remove_reference_t<DataType>>();
-               if constexpr (map_idx != std::variant_npos) {
-                  using MapType = std::variant_alternative_t<map_idx, std::remove_reference_t<DataType>>;
-                  if (!std::holds_alternative<MapType>(nested_value.data)) {
-                     nested_value.data.template emplace<map_idx>();
-                  }
-                  return resolve_nested_map<Opts>(std::get<MapType>(nested_value.data), path.subspan(1), ctx, it, end);
-               }
-               else {
-                  ctx.error = error_code::no_matching_variant_type;
-                  return false;
-               }
-            }
-            else if constexpr (readable_map_t<Value>) {
-               return resolve_nested_map<Opts>(nested_value, path.subspan(1), ctx, it, end);
-            }
-            else {
-               // Value type doesn't support nesting
+            // Duplicate assignment for an already-defined key is invalid.
+            if (exists) {
                ctx.error = error_code::syntax_error;
                return false;
             }
+
+            // Last key in path - parse the value directly.
+            from<TOML, Value>::template op<toml::is_internal_on<Opts>()>(root[path.front()], ctx, it, end);
+            return !bool(ctx.error);
+         }
+
+         // Navigate/create nested map
+         if constexpr (is_variant<Value>) {
+            constexpr auto map_idx = find_map_alternative_index<Value>();
+            if constexpr (map_idx != std::variant_npos) {
+               using MapType = std::variant_alternative_t<map_idx, Value>;
+
+               if (!exists) {
+                  auto& nested_value = root[path.front()];
+                  nested_value.template emplace<map_idx>();
+                  return resolve_nested_map<Opts>(std::get<MapType>(nested_value), path.subspan(1), ctx, it, end);
+               }
+
+               auto& nested_value = map_it->second;
+               if (!std::holds_alternative<MapType>(nested_value)) {
+                  ctx.error = error_code::syntax_error;
+                  return false;
+               }
+
+               return resolve_nested_map<Opts>(std::get<MapType>(nested_value), path.subspan(1), ctx, it, end);
+            }
+            else {
+               ctx.error = error_code::no_matching_variant_type;
+               return false;
+            }
+         }
+         else if constexpr (has_variant_data_member<Value>) {
+            using DataType = decltype(std::declval<Value&>().data);
+            constexpr auto map_idx = find_map_alternative_index<std::remove_reference_t<DataType>>();
+            if constexpr (map_idx != std::variant_npos) {
+               using MapType = std::variant_alternative_t<map_idx, std::remove_reference_t<DataType>>;
+
+               if (!exists) {
+                  auto& nested_value = root[path.front()];
+                  nested_value.data.template emplace<map_idx>();
+                  return resolve_nested_map<Opts>(std::get<MapType>(nested_value.data), path.subspan(1), ctx, it, end);
+               }
+
+               auto& nested_value = map_it->second;
+               if (!std::holds_alternative<MapType>(nested_value.data)) {
+                  ctx.error = error_code::syntax_error;
+                  return false;
+               }
+
+               return resolve_nested_map<Opts>(std::get<MapType>(nested_value.data), path.subspan(1), ctx, it, end);
+            }
+            else {
+               ctx.error = error_code::no_matching_variant_type;
+               return false;
+            }
+         }
+         else if constexpr (readable_map_t<Value>) {
+            if (!exists) {
+               return resolve_nested_map<Opts>(root[path.front()], path.subspan(1), ctx, it, end);
+            }
+
+            return resolve_nested_map<Opts>(map_it->second, path.subspan(1), ctx, it, end);
+         }
+         else {
+            // Value type doesn't support nesting.
+            ctx.error = error_code::syntax_error;
+            return false;
          }
       }
 
       // Helper to ensure a path of nested maps exists (for table section headers)
       // This creates the nested map structure without parsing a value
-      // Note: Not GLZ_ALWAYS_INLINE because this function is recursive
+      // Note: Not inline because this function is recursive
       template <auto Opts, class T>
       bool ensure_map_path(T& root, std::span<std::string> path, auto& ctx)
       {
+         // A table header "[a.a.a.…]" recurses one frame per path segment with nothing bounding
+         // the descent, so cap it on the shared depth budget to avoid a stack overflow.
+         depth_guard guard{ctx};
+         if (!guard) [[unlikely]] {
+            return false;
+         }
+
          if (path.empty()) {
             return true;
          }
 
          using Value = typename T::mapped_type;
-         auto& nested_value = root[path.front()];
+         const auto map_it = root.find(path.front());
+         const bool exists = (map_it != root.end());
 
          if (path.size() == 1) {
             // Last key in path - just ensure the map exists at this location
             if constexpr (is_variant<Value>) {
                constexpr auto map_idx = find_map_alternative_index<Value>();
                if constexpr (map_idx != std::variant_npos) {
-                  if (!std::holds_alternative<std::variant_alternative_t<map_idx, Value>>(nested_value)) {
+                  using MapType = std::variant_alternative_t<map_idx, Value>;
+
+                  if (!exists) {
+                     auto& nested_value = root[path.front()];
                      nested_value.template emplace<map_idx>();
+                     return true;
                   }
-                  return true;
+
+                  if (!std::holds_alternative<MapType>(map_it->second)) {
+                     ctx.error = error_code::syntax_error;
+                     return false;
+                  }
+
+                  // Re-defining an already-defined table is invalid.
+                  ctx.error = error_code::syntax_error;
+                  return false;
                }
                else {
                   ctx.error = error_code::no_matching_variant_type;
@@ -1815,13 +2065,25 @@ namespace glz
                }
             }
             else if constexpr (has_variant_data_member<Value>) {
-               using DataType = std::remove_reference_t<decltype(nested_value.data)>;
+               using DataType = std::remove_reference_t<decltype(std::declval<Value&>().data)>;
                constexpr auto map_idx = find_map_alternative_index<DataType>();
                if constexpr (map_idx != std::variant_npos) {
-                  if (!std::holds_alternative<std::variant_alternative_t<map_idx, DataType>>(nested_value.data)) {
+                  using MapType = std::variant_alternative_t<map_idx, DataType>;
+
+                  if (!exists) {
+                     auto& nested_value = root[path.front()];
                      nested_value.data.template emplace<map_idx>();
+                     return true;
                   }
-                  return true;
+
+                  if (!std::holds_alternative<MapType>(map_it->second.data)) {
+                     ctx.error = error_code::syntax_error;
+                     return false;
+                  }
+
+                  // Re-defining an already-defined table is invalid.
+                  ctx.error = error_code::syntax_error;
+                  return false;
                }
                else {
                   ctx.error = error_code::no_matching_variant_type;
@@ -1829,7 +2091,13 @@ namespace glz
                }
             }
             else if constexpr (readable_map_t<Value>) {
-               return true; // Already a map type, nothing to do
+               if (exists) {
+                  ctx.error = error_code::syntax_error;
+                  return false;
+               }
+
+               root[path.front()];
+               return true;
             }
             else {
                ctx.error = error_code::syntax_error;
@@ -1842,9 +2110,19 @@ namespace glz
                constexpr auto map_idx = find_map_alternative_index<Value>();
                if constexpr (map_idx != std::variant_npos) {
                   using MapType = std::variant_alternative_t<map_idx, Value>;
-                  if (!std::holds_alternative<MapType>(nested_value)) {
+
+                  if (!exists) {
+                     auto& nested_value = root[path.front()];
                      nested_value.template emplace<map_idx>();
+                     return ensure_map_path<Opts>(std::get<MapType>(nested_value), path.subspan(1), ctx);
                   }
+
+                  auto& nested_value = map_it->second;
+                  if (!std::holds_alternative<MapType>(nested_value)) {
+                     ctx.error = error_code::syntax_error;
+                     return false;
+                  }
+
                   return ensure_map_path<Opts>(std::get<MapType>(nested_value), path.subspan(1), ctx);
                }
                else {
@@ -1853,13 +2131,23 @@ namespace glz
                }
             }
             else if constexpr (has_variant_data_member<Value>) {
-               using DataType = std::remove_reference_t<decltype(nested_value.data)>;
+               using DataType = std::remove_reference_t<decltype(std::declval<Value&>().data)>;
                constexpr auto map_idx = find_map_alternative_index<DataType>();
                if constexpr (map_idx != std::variant_npos) {
                   using MapType = std::variant_alternative_t<map_idx, DataType>;
-                  if (!std::holds_alternative<MapType>(nested_value.data)) {
+
+                  if (!exists) {
+                     auto& nested_value = root[path.front()];
                      nested_value.data.template emplace<map_idx>();
+                     return ensure_map_path<Opts>(std::get<MapType>(nested_value.data), path.subspan(1), ctx);
                   }
+
+                  auto& nested_value = map_it->second;
+                  if (!std::holds_alternative<MapType>(nested_value.data)) {
+                     ctx.error = error_code::syntax_error;
+                     return false;
+                  }
+
                   return ensure_map_path<Opts>(std::get<MapType>(nested_value.data), path.subspan(1), ctx);
                }
                else {
@@ -1868,7 +2156,11 @@ namespace glz
                }
             }
             else if constexpr (readable_map_t<Value>) {
-               return ensure_map_path<Opts>(nested_value, path.subspan(1), ctx);
+               if (!exists) {
+                  return ensure_map_path<Opts>(root[path.front()], path.subspan(1), ctx);
+               }
+
+               return ensure_map_path<Opts>(map_it->second, path.subspan(1), ctx);
             }
             else {
                ctx.error = error_code::syntax_error;
@@ -1879,7 +2171,7 @@ namespace glz
 
       // Parse inline table {...} into a map
       template <auto Opts, class T>
-      GLZ_ALWAYS_INLINE void parse_toml_inline_table_map(T& value, auto& it, auto& end, auto& ctx)
+      inline void parse_toml_inline_table_map(T& value, auto& it, auto& end, auto& ctx)
       {
          // Already consumed the opening '{'
          skip_ws_and_comments(it, end);
@@ -1893,6 +2185,16 @@ namespace glz
             skip_ws_and_comments(it, end);
             if (it == end) {
                ctx.error = error_code::unexpected_end;
+               return;
+            }
+
+            if (*it == '\n' || *it == '\r') {
+               skip_to_next_line(ctx, it, end);
+               continue;
+            }
+
+            if (*it == '}') {
+               ++it;
                return;
             }
 
@@ -1929,6 +2231,7 @@ namespace glz
             }
             else if (*it == ',') {
                ++it;
+               skip_ws_and_comments(it, end);
             }
             else {
                ctx.error = error_code::syntax_error;
@@ -1938,6 +2241,10 @@ namespace glz
       }
    } // namespace detail
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4702) // unreachable code from if constexpr
+#endif
    template <class T>
       requires(readable_map_t<T> && not glaze_object_t<T> && not reflectable<T> && not custom_read<T>)
    struct from<TOML, T>
@@ -2035,6 +2342,9 @@ namespace glz
             }
          }
       }
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
    };
 
    template <class T>
@@ -2065,7 +2375,10 @@ namespace glz
                }
                // TODO: Rewrite logic here, for now it works just fine so we leave it.
                detail::parse_toml_object_members<Opts>(value, it, end, ctx, true); // true for is_inline_table
-               // The parse_toml_object_members should consume the final '}' if successful
+               // parse_toml_object_members consumes the final '}'. The inline table is the
+               // entire value for this struct, so return rather than looping; otherwise an
+               // enclosing inline table's ',' or '}' would be misparsed as the start of a key.
+               return;
             }
             else if (*it == '[') { // Normal table or array of tables
                std::vector<std::string> path;
@@ -2391,6 +2704,13 @@ namespace glz
             return;
          }
 
+         // Nested arrays and inline tables recurse back through this reader, so cap the depth
+         // here; a deeply nested value (e.g. "a=[[[[...") otherwise overflows the stack.
+         depth_guard guard{ctx};
+         if (!guard) [[unlikely]] {
+            return;
+         }
+
          skip_ws_and_comments(it, end);
 
          if (it == end) [[unlikely]] {
@@ -2598,6 +2918,34 @@ namespace glz
                ctx.error = error_code::syntax_error;
             }
          }
+      }
+   };
+
+   // Nullable types: std::optional, std::unique_ptr, std::shared_ptr, raw pointers
+   template <nullable_like T>
+   struct from<TOML, T>
+   {
+      template <auto Opts, class It>
+      static void op(auto&& value, is_context auto&& ctx, It&& it, auto end) noexcept
+      {
+         if (bool(ctx.error)) [[unlikely]]
+            return;
+
+         skip_ws_and_comments(it, end);
+
+         if (it == end) {
+            value = {};
+            return;
+         }
+
+         if (!value) {
+            if (!nullable_emplace<Opts>(value, ctx)) {
+               return;
+            }
+         }
+
+         using V = std::remove_cvref_t<decltype(*value)>;
+         from<TOML, V>::template op<Opts>(*value, ctx, it, end);
       }
    };
 

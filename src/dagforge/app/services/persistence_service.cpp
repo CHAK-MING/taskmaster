@@ -1,4 +1,5 @@
 #include "dagforge/app/services/persistence_service.hpp"
+#include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/util/log.hpp"
 
 #include <algorithm>
@@ -17,6 +18,226 @@ constexpr std::array<std::uint64_t, 15> kIoLatencyBucketsNs{
     2'500'000ULL,     5'000'000ULL,     10'000'000ULL,    25'000'000ULL,
     50'000'000ULL,    100'000'000ULL,   250'000'000ULL,   500'000'000ULL,
     1'000'000'000ULL, 2'500'000'000ULL, 10'000'000'000ULL};
+
+enum class BatchCollectFailureStage {
+  Receive,
+  LingerWait,
+};
+
+template <typename RequestPtr> struct PendingBatch {
+  std::vector<RequestPtr> requests;
+  std::chrono::steady_clock::time_point first_enqueued_at{};
+};
+
+struct BatchWriterCompletionGuard {
+  std::atomic<std::size_t> &inflight;
+
+  ~BatchWriterCompletionGuard() {
+    inflight.fetch_sub(1, std::memory_order_acq_rel);
+  }
+};
+
+auto track_batch_writer(spawn_task writer, std::atomic<std::size_t> &inflight)
+    -> spawn_task {
+  BatchWriterCompletionGuard completion{inflight};
+  co_await std::move(writer);
+}
+
+struct TaskUpdateDedupKey {
+  int64_t task_rowid{0};
+  int attempt{0};
+
+  [[nodiscard]] friend auto operator==(const TaskUpdateDedupKey &lhs,
+                                       const TaskUpdateDedupKey &rhs) noexcept
+      -> bool = default;
+};
+
+struct TaskUpdateDedupKeyHash {
+  [[nodiscard]] auto operator()(const TaskUpdateDedupKey &key) const noexcept
+      -> std::size_t {
+    const auto rowid_hash = std::hash<int64_t>{}(key.task_rowid);
+    const auto attempt_hash = std::hash<int>{}(key.attempt);
+    return rowid_hash ^
+           (attempt_hash + 0x9e3779b97f4a7c15ULL + (rowid_hash << 6) +
+            (rowid_hash >> 2));
+  }
+};
+
+template <typename Queue, typename RequestPtr>
+auto drain_ready_batch(Queue &queue, std::atomic<std::size_t> &queue_depth,
+                       std::vector<RequestPtr> &batch,
+                       std::size_t max_batch_size) -> void {
+  while (batch.size() < max_batch_size) {
+    bool drained = false;
+    queue.try_receive([&](boost::system::error_code ec, RequestPtr req) {
+      if (ec || !req) {
+        return;
+      }
+      queue_depth.fetch_sub(1, std::memory_order_relaxed);
+      batch.push_back(std::move(req));
+      drained = true;
+    });
+    if (!drained) {
+      break;
+    }
+  }
+}
+
+template <typename Queue, typename RequestPtr>
+auto collect_pending_batch(Queue &queue, std::atomic<std::size_t> &queue_depth,
+                           std::atomic<bool> &running,
+                           boost::asio::steady_timer &timer,
+                           std::size_t max_batch_size,
+                           std::chrono::milliseconds linger,
+                           BatchCollectFailureStage &failure_stage)
+    -> task<Result<PendingBatch<RequestPtr>>> {
+  failure_stage = BatchCollectFailureStage::Receive;
+  auto first_res = co_await co_as_result(queue.async_receive(use_nothrow));
+  if (!first_res) {
+    co_return fail(first_res.error());
+  }
+
+  queue_depth.fetch_sub(1, std::memory_order_relaxed);
+
+  PendingBatch<RequestPtr> batch;
+  batch.requests.reserve(max_batch_size);
+  batch.requests.push_back(std::move(*first_res));
+  batch.first_enqueued_at = std::chrono::steady_clock::now();
+
+  drain_ready_batch(queue, queue_depth, batch.requests, max_batch_size);
+  if (batch.requests.size() >= max_batch_size) {
+    co_return ok(std::move(batch));
+  }
+
+  if (batch.requests.size() >= std::max<std::size_t>(1, max_batch_size / 2)) {
+    co_return ok(std::move(batch));
+  }
+
+  if (queue_depth.load(std::memory_order_acquire) == 0) {
+    co_return ok(std::move(batch));
+  }
+
+  failure_stage = BatchCollectFailureStage::LingerWait;
+  timer.expires_after(linger);
+  auto linger_res = co_await co_as_result(timer.async_wait(use_nothrow));
+  if (!linger_res && running.load(std::memory_order_relaxed)) {
+    co_return fail(linger_res.error());
+  }
+
+  drain_ready_batch(queue, queue_depth, batch.requests, max_batch_size);
+  co_return ok(std::move(batch));
+}
+
+auto wait_batch_writer_backoff(boost::asio::steady_timer &timer,
+                               std::atomic<bool> &running,
+                               const char *writer_name) -> task<void> {
+  timer.expires_after(std::chrono::milliseconds(10));
+  const auto operation_aborted =
+      std::error_code{boost::asio::error::make_error_code(
+          boost::asio::error::operation_aborted)};
+  auto backoff_res = co_await co_as_result(timer.async_wait(use_nothrow));
+  if (!backoff_res && backoff_res.error() != operation_aborted &&
+      running.load(std::memory_order_relaxed)) {
+    log::error("{} backoff wait failed: {}", writer_name,
+               backoff_res.error().message());
+  }
+}
+
+template <typename T>
+auto wait_for_counter_zero(std::atomic<T> &counter,
+                           std::chrono::steady_clock::time_point deadline)
+    -> task<Result<void>> {
+  auto executor = co_await boost::asio::this_coro::executor;
+  boost::asio::steady_timer timer(executor);
+  while (counter.load(std::memory_order_acquire) > 0 &&
+         std::chrono::steady_clock::now() < deadline) {
+    timer.expires_after(std::chrono::milliseconds(5));
+    auto wait_res = co_await co_as_result(timer.async_wait(use_nothrow));
+    if (!wait_res) {
+      co_return fail(wait_res.error());
+    }
+  }
+  if (counter.load(std::memory_order_acquire) > 0) {
+    co_return fail(Error::Timeout);
+  }
+  co_return ok();
+}
+
+template <typename Queue, typename RequestPtr, typename FlushFn>
+auto run_batch_writer_loop(storage::MySQLDatabase &db, Queue &queue,
+                           std::atomic<bool> &running,
+                           std::atomic<std::size_t> &queue_depth,
+                           std::atomic<std::uint64_t> &acquire_failures_total,
+                           const char *writer_name,
+                           std::size_t max_batch_size,
+                           FlushFn flush_batch) -> spawn_task {
+  constexpr auto kLinger = std::chrono::milliseconds(1);
+  auto executor = co_await boost::asio::this_coro::executor;
+  boost::asio::steady_timer timer(executor);
+  std::optional<boost::mysql::pooled_connection> dedicated_conn;
+
+  while (running.load(std::memory_order_relaxed)) {
+    bool should_backoff = false;
+    try {
+      if (!dedicated_conn.has_value()) {
+        auto conn_res = co_await db.acquire_batch_writer_connection();
+        if (!conn_res) {
+          if (!running.load(std::memory_order_relaxed)) {
+            break;
+          }
+          log::error("{} failed to acquire connection: {}", writer_name,
+                     conn_res.error().message());
+          acquire_failures_total.fetch_add(1, std::memory_order_relaxed);
+          should_backoff = true;
+        } else {
+          dedicated_conn.emplace(std::move(*conn_res));
+        }
+      }
+
+      if (!should_backoff) {
+        auto failure_stage = BatchCollectFailureStage::Receive;
+        auto batch_res = co_await collect_pending_batch<Queue, RequestPtr>(
+            queue, queue_depth, running, timer, max_batch_size, kLinger,
+            failure_stage);
+        if (!batch_res) {
+          if (!running.load(std::memory_order_relaxed)) {
+            break;
+          }
+          const char *stage_name =
+              failure_stage == BatchCollectFailureStage::Receive
+                  ? "receive"
+                  : "linger wait";
+          log::error("{} {} failed: {}", writer_name, stage_name,
+                     batch_res.error().message());
+          dedicated_conn.reset();
+          should_backoff = true;
+        } else {
+          co_await flush_batch(dedicated_conn->get(),
+                               std::move(batch_res->requests),
+                               batch_res->first_enqueued_at);
+        }
+      }
+    } catch (const std::exception &e) {
+      if (!running.load(std::memory_order_relaxed)) {
+        break;
+      }
+      log::error("{} loop failed: {}", writer_name, e.what());
+      dedicated_conn.reset();
+      should_backoff = true;
+    } catch (...) {
+      if (!running.load(std::memory_order_relaxed)) {
+        break;
+      }
+      log::error("{} loop failed", writer_name);
+      dedicated_conn.reset();
+      should_backoff = true;
+    }
+
+    if (should_backoff) {
+      co_await wait_batch_writer_backoff(timer, running, writer_name);
+    }
+  }
+}
 
 #define DAGFORGE_DB_RETURN(expr, count_transaction)                            \
   do {                                                                         \
@@ -54,17 +275,44 @@ PersistenceService::PersistenceService(Runtime &runtime,
       db_(db_pool_.get_executor(), cfg) {}
 
 PersistenceService::~PersistenceService() {
-  trigger_batch_writer_running_.store(false, std::memory_order_relaxed);
-  task_update_batch_writer_running_.store(false, std::memory_order_relaxed);
-  create_run_batch_queue_.cancel();
-  task_update_batch_queue_.cancel();
-  wait_for_task_update_submitters_blocking();
+  trigger_batch_writer_running_.store(false, std::memory_order_release);
+  task_update_batch_writer_running_.store(false, std::memory_order_release);
+  // close() rejects receives started after this point. cancel() only wakes
+  // operations that were already pending and leaves a shutdown race window.
+  create_run_batch_queue_.close();
+  task_update_batch_queue_.close();
+
+  while (task_update_async_inflight_.load(std::memory_order_acquire) > 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  db_.shutdown();
+  while (batch_writer_inflight_.load(std::memory_order_acquire) > 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  db_.wait_for_shutdown();
+  db_pool_.join();
 }
 
 // ── Lifecycle
 // ──────────────────────────────────────────────────────────────────
 
 auto PersistenceService::open() -> task<Result<void>> {
+  const bool reset_trigger_queue = !create_run_batch_queue_.is_open();
+  const bool reset_task_update_queue = !task_update_batch_queue_.is_open();
+  if (reset_trigger_queue || reset_task_update_queue) {
+    if (batch_writer_inflight_.load(std::memory_order_acquire) != 0 ||
+        task_update_async_inflight_.load(std::memory_order_acquire) != 0) {
+      co_return fail(Error::InvalidState);
+    }
+    if (reset_trigger_queue) {
+      create_run_batch_queue_.reset();
+    }
+    if (reset_task_update_queue) {
+      task_update_batch_queue_.reset();
+    }
+  }
+
   const auto started_at = std::chrono::steady_clock::now();
   auto open_res = co_await db_.open();
   const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -78,33 +326,76 @@ auto PersistenceService::open() -> task<Result<void>> {
   }
   db_transactions_total_.fetch_add(1, std::memory_order_relaxed);
 
+  auto spawn_writer = [this](spawn_task writer) {
+    batch_writer_inflight_.fetch_add(1, std::memory_order_acq_rel);
+    try {
+      boost::asio::co_spawn(
+          db_pool_,
+          track_batch_writer(std::move(writer), batch_writer_inflight_),
+          boost::asio::detached);
+    } catch (...) {
+      batch_writer_inflight_.fetch_sub(1, std::memory_order_acq_rel);
+      throw;
+    }
+  };
+
   if (!trigger_batch_writer_running_.exchange(true,
-                                              std::memory_order_relaxed)) {
-    boost::asio::co_spawn(db_pool_, trigger_batch_writer_loop(),
-                          boost::asio::detached);
+                                              std::memory_order_acq_rel)) {
+    spawn_writer(trigger_batch_writer_loop());
   }
   if (!task_update_batch_writer_running_.exchange(true,
-                                                  std::memory_order_relaxed)) {
-    boost::asio::co_spawn(db_pool_, task_update_batch_writer_loop(),
-                          boost::asio::detached);
+                                                  std::memory_order_acq_rel)) {
+    spawn_writer(task_update_batch_writer_loop());
   }
   co_return open_res;
 }
 
-auto PersistenceService::close() -> task<void> {
+auto PersistenceService::close() -> task<Result<void>> {
+  auto close_res = co_await close(std::chrono::steady_clock::time_point::max());
+  if (!close_res) {
+    co_return fail(close_res.error());
+  }
+  co_return ok();
+}
+
+auto PersistenceService::close(std::chrono::steady_clock::time_point deadline)
+    -> task<Result<void>> {
   const auto started_at = std::chrono::steady_clock::now();
-  trigger_batch_writer_running_.store(false, std::memory_order_relaxed);
-  task_update_batch_writer_running_.store(false, std::memory_order_relaxed);
-  create_run_batch_queue_.cancel();
-  task_update_batch_queue_.cancel();
-  co_await wait_for_task_update_submitters_async();
-  co_await db_.close();
+  trigger_batch_writer_running_.store(false, std::memory_order_release);
+  task_update_batch_writer_running_.store(false, std::memory_order_release);
+  // A writer may have passed its loop condition but not started receive yet.
+  // Closing the channel makes that later receive fail immediately.
+  create_run_batch_queue_.close();
+  task_update_batch_queue_.close();
+
+  auto submitter_wait =
+      co_await wait_for_counter_zero(task_update_async_inflight_, deadline);
+  if (!submitter_wait) {
+    co_return fail(submitter_wait.error());
+  }
+
+  auto db_close_res = co_await db_.close();
+  if (!db_close_res) {
+    co_return fail(db_close_res.error());
+  }
+
+  auto writer_wait =
+      co_await wait_for_counter_zero(batch_writer_inflight_, deadline);
+  if (!writer_wait) {
+    co_return fail(writer_wait.error());
+  }
+
+  db_.wait_for_shutdown();
+  create_run_batch_queue_.reset();
+  task_update_batch_queue_.reset();
+
   const auto elapsed_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
                               std::chrono::steady_clock::now() - started_at)
                               .count();
   db_query_duration_.observe_ns(
       static_cast<std::uint64_t>(elapsed_ns > 0 ? elapsed_ns : 0));
   db_transactions_total_.fetch_add(1, std::memory_order_relaxed);
+  co_return ok();
 }
 
 auto PersistenceService::is_open() const noexcept -> bool {
@@ -220,7 +511,8 @@ auto PersistenceService::upsert_dag_info(const DAGId &dag_id, DAGInfo dag_info,
   dag_info.dag_rowid = *rowid_res;
 
   started_at = std::chrono::steady_clock::now();
-  auto existing_tasks_res = co_await db_.get_tasks(dag_id);
+  auto existing_tasks_res =
+      co_await db_.get_tasks_on_connection(conn, dag_info.dag_rowid);
   observe_elapsed(started_at);
   if (!existing_tasks_res) {
     finalize_transaction();
@@ -238,7 +530,8 @@ auto PersistenceService::upsert_dag_info(const DAGId &dag_id, DAGInfo dag_info,
       continue;
     }
     started_at = std::chrono::steady_clock::now();
-    auto del_task = co_await db_.delete_task(dag_id, existing_task.task_id);
+    auto del_task = co_await db_.delete_task_on_connection(
+        conn, dag_info.dag_rowid, existing_task.task_id);
     observe_elapsed(started_at);
     if (!del_task && del_task.error() != make_error_code(Error::NotFound)) {
       finalize_transaction();
@@ -348,44 +641,23 @@ auto PersistenceService::create_run_with_task_instances(
         static_cast<std::uint64_t>(elapsed_ns > 0 ? elapsed_ns : 0));
     if (fallback_result) {
       db_transactions_total_.fetch_add(1, std::memory_order_relaxed);
-    } else {
-      db_errors_total_.fetch_add(1, std::memory_order_relaxed);
+      co_return ok(*fallback_result);
     }
-    co_return fallback_result;
+    db_errors_total_.fetch_add(1, std::memory_order_relaxed);
+    co_return fail(fallback_result.error());
   }
 
   trigger_batch_requests_total_.fetch_add(1, std::memory_order_relaxed);
   trigger_batch_queue_depth_.fetch_add(1, std::memory_order_relaxed);
 
-  bool receive_failed = false;
-  try {
-    co_return co_await reply->async_receive(use_awaitable);
-  } catch (const std::exception &e) {
-    log::error("Trigger batch reply receive failed: {}", e.what());
-    receive_failed = true;
-  } catch (...) {
-    log::error("Trigger batch reply receive failed");
-    receive_failed = true;
+  auto reply_res = co_await co_as_result(reply->async_receive(use_nothrow));
+  if (reply_res) {
+    co_return std::move(*reply_res);
   }
-  if (receive_failed) {
-    trigger_batch_fallback_total_.fetch_add(1, std::memory_order_relaxed);
-    const auto started_at = std::chrono::steady_clock::now();
-    auto fallback_result =
-        co_await db_.create_run_with_task_instances_transaction(
-            request->bundle.run, request->bundle.instances);
-    const auto elapsed_ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - started_at)
-            .count();
-    db_query_duration_.observe_ns(
-        static_cast<std::uint64_t>(elapsed_ns > 0 ? elapsed_ns : 0));
-    if (fallback_result) {
-      db_transactions_total_.fetch_add(1, std::memory_order_relaxed);
-    } else {
-      db_errors_total_.fetch_add(1, std::memory_order_relaxed);
-    }
-    co_return fallback_result;
-  }
+
+  log::error("Trigger batch reply receive failed: {}",
+             reply_res.error().message());
+  db_errors_total_.fetch_add(1, std::memory_order_relaxed);
   co_return fail(Error::DatabaseQueryFailed);
 }
 
@@ -492,85 +764,21 @@ auto PersistenceService::task_update_batch_writer_acquire_failures_total()
 }
 
 auto PersistenceService::trigger_batch_writer_loop() -> spawn_task {
-  constexpr auto kLinger = std::chrono::milliseconds(1);
-  // Cap single-transaction burst size to avoid inflating trigger tail latency
-  // when many DAG runs are triggered at once (e.g. 100-way benchmark fanout).
-  constexpr std::size_t kMaxBatchSize = 32;
-  auto executor = co_await boost::asio::this_coro::executor;
-  boost::asio::steady_timer timer(executor);
-  std::optional<boost::mysql::pooled_connection> dedicated_conn;
-
-  while (trigger_batch_writer_running_.load(std::memory_order_relaxed)) {
-    bool should_backoff = false;
-    try {
-      bool acquired = true;
-      if (!dedicated_conn.has_value()) {
-        auto conn_res = co_await db_.acquire_batch_writer_connection();
-        if (!conn_res) {
-          log::error("Trigger batch writer failed to acquire connection: {}",
-                     conn_res.error().message());
-          trigger_batch_writer_acquire_failures_total_.fetch_add(
-              1, std::memory_order_relaxed);
-          should_backoff = true;
-          acquired = false;
-        } else {
-          dedicated_conn.emplace(std::move(*conn_res));
-        }
-      }
-
-      if (acquired) {
-        auto first =
-            co_await create_run_batch_queue_.async_receive(use_awaitable);
-        trigger_batch_queue_depth_.fetch_sub(1, std::memory_order_relaxed);
-        auto first_enqueued_at = std::chrono::steady_clock::now();
-
-        std::vector<CreateRunBatchRequestPtr> batch;
-        batch.reserve(kMaxBatchSize);
-        batch.push_back(std::move(first));
-
-        timer.expires_after(kLinger);
-        co_await timer.async_wait(use_awaitable);
-
-        while (batch.size() < kMaxBatchSize) {
-          bool drained = false;
-          create_run_batch_queue_.try_receive(
-              [&](boost::system::error_code ec, CreateRunBatchRequestPtr req) {
-                if (ec || !req) {
-                  return;
-                }
-                trigger_batch_queue_depth_.fetch_sub(1,
-                                                     std::memory_order_relaxed);
-                batch.push_back(std::move(req));
-                drained = true;
-              });
-          if (!drained) {
-            break;
-          }
-        }
-
-        co_await flush_trigger_batch(dedicated_conn->get(), std::move(batch),
-                                     first_enqueued_at);
-      }
-    } catch (const std::exception &e) {
-      if (!trigger_batch_writer_running_.load(std::memory_order_relaxed)) {
-        break;
-      }
-      log::error("Trigger batch writer loop failed: {}", e.what());
-      dedicated_conn.reset();
-      should_backoff = true;
-    } catch (...) {
-      if (!trigger_batch_writer_running_.load(std::memory_order_relaxed)) {
-        break;
-      }
-      log::error("Trigger batch writer loop failed");
-      dedicated_conn.reset();
-      should_backoff = true;
-    }
-    if (should_backoff) {
-      timer.expires_after(std::chrono::milliseconds(10));
-      co_await timer.async_wait(use_awaitable);
-    }
-  }
+  // Trigger bursts in the benchmark commonly enqueue around 100 DAG runs at
+  // once. Using a slightly larger cap cuts the number of sequential flushes in
+  // half while the backlog-aware collector still returns early for low-load and
+  // latency-sensitive cases.
+  constexpr std::size_t kMaxBatchSize = 64;
+  co_await run_batch_writer_loop<CreateRunBatchQueue, CreateRunBatchRequestPtr>(
+      db_, create_run_batch_queue_, trigger_batch_writer_running_,
+      trigger_batch_queue_depth_, trigger_batch_writer_acquire_failures_total_,
+      "Trigger batch writer", kMaxBatchSize,
+      [this](boost::mysql::any_connection &conn,
+             std::vector<CreateRunBatchRequestPtr> batch,
+             std::chrono::steady_clock::time_point first_enqueued_at)
+          -> task<void> {
+        co_await flush_trigger_batch(conn, std::move(batch), first_enqueued_at);
+      });
 }
 
 auto PersistenceService::flush_trigger_batch(
@@ -643,99 +851,35 @@ auto PersistenceService::flush_trigger_batch(
 auto PersistenceService::publish_batch_result(
     const CreateRunBatchRequestPtr &request, Result<int64_t> result,
     std::chrono::steady_clock::time_point commit_done) -> void {
-  boost::asio::post(request->caller_executor, [this, reply = request->reply,
-                                               result = std::move(result),
-                                               commit_done]() mutable {
-    trigger_batch_wakeup_lag_us_.store(
-        std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - commit_done)
-            .count(),
-        std::memory_order_relaxed);
-    if (!reply->try_send(boost::system::error_code{}, std::move(result))) {
-      log::warn("Trigger batch reply channel was full");
-    }
-  });
+  boost::asio::post(request->caller_executor,
+                    [this, reply = request->reply,
+                     result = std::move(result), commit_done]() mutable {
+                      trigger_batch_wakeup_lag_us_.store(
+                          std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - commit_done)
+                              .count(),
+                          std::memory_order_relaxed);
+                      if (!reply->try_send(boost::system::error_code{},
+                                           std::move(result))) {
+                        log::warn("Trigger batch reply channel was full");
+                      }
+                    });
 }
 
 auto PersistenceService::task_update_batch_writer_loop() -> spawn_task {
-  constexpr auto kLinger = std::chrono::milliseconds(1);
   constexpr std::size_t kMaxBatchSize = 128;
-  auto executor = co_await boost::asio::this_coro::executor;
-  boost::asio::steady_timer timer(executor);
-  std::optional<boost::mysql::pooled_connection> dedicated_conn;
-
-  while (task_update_batch_writer_running_.load(std::memory_order_relaxed)) {
-    bool should_backoff = false;
-    try {
-      bool acquired = true;
-      if (!dedicated_conn.has_value()) {
-        auto conn_res = co_await db_.acquire_batch_writer_connection();
-        if (!conn_res) {
-          log::error(
-              "Task update batch writer failed to acquire connection: {}",
-              conn_res.error().message());
-          task_update_batch_writer_acquire_failures_total_.fetch_add(
-              1, std::memory_order_relaxed);
-          should_backoff = true;
-          acquired = false;
-        } else {
-          dedicated_conn.emplace(std::move(*conn_res));
-        }
-      }
-
-      if (acquired) {
-        auto first =
-            co_await task_update_batch_queue_.async_receive(use_awaitable);
-        task_update_batch_queue_depth_.fetch_sub(1, std::memory_order_relaxed);
-        auto first_enqueued_at = std::chrono::steady_clock::now();
-
-        std::vector<TaskUpdateRequestPtr> batch;
-        batch.reserve(kMaxBatchSize);
-        batch.push_back(std::move(first));
-
-        timer.expires_after(kLinger);
-        co_await timer.async_wait(use_awaitable);
-
-        while (batch.size() < kMaxBatchSize) {
-          bool drained = false;
-          task_update_batch_queue_.try_receive([&](boost::system::error_code ec,
-                                                   TaskUpdateRequestPtr req) {
-            if (ec || !req) {
-              return;
-            }
-            task_update_batch_queue_depth_.fetch_sub(1,
-                                                     std::memory_order_relaxed);
-            batch.push_back(std::move(req));
-            drained = true;
-          });
-          if (!drained) {
-            break;
-          }
-        }
-
-        co_await flush_task_update_batch(dedicated_conn->get(),
-                                         std::move(batch), first_enqueued_at);
-      }
-    } catch (const std::exception &e) {
-      if (!task_update_batch_writer_running_.load(std::memory_order_relaxed)) {
-        break;
-      }
-      log::error("Task update batch writer loop failed: {}", e.what());
-      dedicated_conn.reset();
-      should_backoff = true;
-    } catch (...) {
-      if (!task_update_batch_writer_running_.load(std::memory_order_relaxed)) {
-        break;
-      }
-      log::error("Task update batch writer loop failed");
-      dedicated_conn.reset();
-      should_backoff = true;
-    }
-    if (should_backoff) {
-      timer.expires_after(std::chrono::milliseconds(10));
-      co_await timer.async_wait(use_awaitable);
-    }
-  }
+  co_await run_batch_writer_loop<TaskUpdateQueue, TaskUpdateRequestPtr>(
+      db_, task_update_batch_queue_, task_update_batch_writer_running_,
+      task_update_batch_queue_depth_,
+      task_update_batch_writer_acquire_failures_total_,
+      "Task update batch writer", kMaxBatchSize,
+      [this](boost::mysql::any_connection &conn,
+             std::vector<TaskUpdateRequestPtr> batch,
+             std::chrono::steady_clock::time_point first_enqueued_at)
+          -> task<void> {
+        co_await flush_task_update_batch(conn, std::move(batch),
+                                         first_enqueued_at);
+      });
 }
 
 auto PersistenceService::flush_task_update_batch(
@@ -753,30 +897,41 @@ auto PersistenceService::flush_task_update_batch(
           .count(),
       std::memory_order_relaxed);
 
-  std::unordered_map<std::string, std::vector<TaskUpdateRequestPtr>> by_run;
+  std::unordered_map<std::string_view, std::vector<TaskUpdateRequestPtr>> by_run;
   by_run.reserve(batch.size());
 
   for (auto &request : batch) {
     if (!request) {
       continue;
     }
-    by_run[request->run_id.str()].push_back(request);
+    by_run[request->run_id.value()].push_back(request);
+  }
+
+  std::unordered_map<TaskUpdateDedupKey, TaskInstanceInfo, TaskUpdateDedupKeyHash>
+      latest_by_task;
+  latest_by_task.reserve(batch.size());
+
+  for (auto &request : batch) {
+    if (!request) {
+      continue;
+    }
+    latest_by_task.insert_or_assign(TaskUpdateDedupKey{request->info.task_rowid,
+                                                       request->info.attempt},
+                                    request->info);
   }
 
   const auto db_started_at = std::chrono::steady_clock::now();
   bool flush_ok = true;
   for (auto &[run_id_str, requests] : by_run) {
-    std::unordered_map<std::string, TaskInstanceInfo> latest_by_task;
-    latest_by_task.reserve(requests.size());
+    std::vector<TaskInstanceInfo> infos;
+    infos.reserve(requests.size());
     for (const auto &req : requests) {
-      const auto key =
-          std::format("{}:{}", req->info.task_rowid, req->info.attempt);
-      latest_by_task.insert_or_assign(key, req->info);
+      auto it = latest_by_task.find(
+          TaskUpdateDedupKey{req->info.task_rowid, req->info.attempt});
+      if (it != latest_by_task.end()) {
+        infos.push_back(it->second);
+      }
     }
-
-    auto infos =
-        latest_by_task | std::views::values | std::ranges::to<std::vector>();
-
     auto result = co_await db_.save_task_instances_batch_on_connection(
         conn, DAGRunId{run_id_str}, infos,
         infos.empty() ? -1 : infos.front().run_rowid, -1);
@@ -838,18 +993,20 @@ auto PersistenceService::publish_task_update_result(
     }
     return;
   }
-  boost::asio::post(request->caller_executor, [this, reply = request->reply,
-                                               result = std::move(result),
-                                               commit_done]() mutable {
-    task_update_batch_wakeup_lag_us_.store(
-        std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now() - commit_done)
-            .count(),
-        std::memory_order_relaxed);
-    if (!reply->try_send(boost::system::error_code{}, std::move(result))) {
-      log::warn("Task update batch reply channel was full");
-    }
-  });
+
+  boost::asio::post(request->caller_executor,
+                    [this, reply = request->reply,
+                     result = std::move(result), commit_done]() mutable {
+                      task_update_batch_wakeup_lag_us_.store(
+                          std::chrono::duration_cast<std::chrono::microseconds>(
+                              std::chrono::steady_clock::now() - commit_done)
+                              .count(),
+                          std::memory_order_relaxed);
+                      if (!reply->try_send(boost::system::error_code{},
+                                           std::move(result))) {
+                        log::warn("Task update batch reply channel was full");
+                      }
+                    });
 }
 
 // ── Task instance persistence
@@ -874,11 +1031,10 @@ auto PersistenceService::send_task_update_request(
     co_return ok();
   }
 
-  boost::system::error_code ec;
-  co_await task_update_batch_queue_.async_send(
-      boost::system::error_code{}, request,
-      boost::asio::redirect_error(use_awaitable, ec));
-  if (ec) {
+  auto send_res = co_await co_as_result(
+      task_update_batch_queue_.async_send(boost::system::error_code{}, request,
+                                          use_nothrow));
+  if (!send_res) {
     co_return fail(Error::DatabaseQueryFailed);
   }
 
@@ -900,27 +1056,8 @@ auto PersistenceService::submit_task_update_async(TaskUpdateRequestPtr request)
   finish();
 }
 
-auto PersistenceService::wait_for_task_update_submitters_async() -> task<void> {
-  const auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (task_update_async_inflight_.load(std::memory_order_acquire) > 0 &&
-         std::chrono::steady_clock::now() < deadline) {
-    co_await async_sleep(std::chrono::milliseconds(5));
-  }
-}
-
-auto PersistenceService::wait_for_task_update_submitters_blocking() noexcept
-    -> void {
-  const auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (task_update_async_inflight_.load(std::memory_order_acquire) > 0 &&
-         std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
-}
-
 auto PersistenceService::update_task_instance(const DAGRunId &run_id,
-                                              const TaskInstanceInfo &ti)
+                                             const TaskInstanceInfo &ti)
     -> task<Result<void>> {
   auto caller_executor = co_await boost::asio::this_coro::executor;
   auto reply = std::make_shared<TaskUpdateReply>(caller_executor, 1);
@@ -936,20 +1073,14 @@ auto PersistenceService::update_task_instance(const DAGRunId &run_id,
     co_return fail(send_result.error());
   }
 
-  bool receive_failed = false;
-  try {
-    co_return co_await reply->async_receive(use_awaitable);
-  } catch (const std::exception &e) {
-    log::error("Task update batch reply receive failed: {}", e.what());
-    receive_failed = true;
-  } catch (...) {
-    log::error("Task update batch reply receive failed");
-    receive_failed = true;
+  auto reply_res = co_await co_as_result(reply->async_receive(use_nothrow));
+  if (reply_res) {
+    co_return std::move(*reply_res);
   }
-  if (receive_failed) {
-    db_errors_total_.fetch_add(1, std::memory_order_relaxed);
-    co_return fail(Error::DatabaseQueryFailed);
-  }
+
+  log::error("Task update batch reply receive failed: {}",
+             reply_res.error().message());
+  db_errors_total_.fetch_add(1, std::memory_order_relaxed);
   co_return fail(Error::DatabaseQueryFailed);
 }
 

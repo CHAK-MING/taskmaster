@@ -1,0 +1,33 @@
+id = "release_parent"
+name = "Release Parent"
+description = "Parent DAG that builds a release payload and triggers release_child"
+
+[[tasks]]
+id = "prepare_release"
+name = "Prepare Release Metadata"
+executor = "lua"
+max_instructions = 4096
+max_memory_mb = 8
+script = """
+  dagforge.xcom_push("release_request", {
+    version = "v2026.04.04",
+    environment = "staging",
+    requested_by = "release-bot",
+  })
+  return "release payload prepared"
+"""
+
+[tasks.trigger_dag]
+target_dag_id = "release_child"
+mode = "wait"
+
+[[tasks.trigger_dag.payload]]
+key = "release"
+source_task = "prepare_release"
+source_key = "release_request"
+
+[[tasks]]
+id = "announce"
+name = "Announce Release Completion"
+command = "echo 'child DAG completed, release may continue'"
+dependencies = ["prepare_release"]

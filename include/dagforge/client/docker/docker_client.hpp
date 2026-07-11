@@ -167,13 +167,7 @@ struct WaitContainerResponseJson {
 template <typename T>
 inline auto read_json_body(const std::vector<std::uint8_t> &body) -> Result<T> {
   const auto *ptr = reinterpret_cast<const char *>(body.data());
-  std::string_view text{ptr, body.size()};
-  T out{};
-  constexpr auto kOpts = glz::opts{.null_terminated = false};
-  if (auto ec = glz::read<kOpts>(out, text); ec) {
-    return fail(Error::ParseError);
-  }
-  return out;
+  return parse_json_as<T>(std::string_view{ptr, body.size()});
 }
 } // namespace detail
 
@@ -283,7 +277,13 @@ public:
                      dagforge::util::url_encode(name));
     }
 
-    auto response = co_await connector_->post_json(path, dump_json(body));
+    auto response_res = co_await connector_->post_json(path, dump_json(body));
+    if (!response_res) {
+      log::error("Failed to create container request: {}",
+                 response_res.error().message());
+      co_return fail(make_error_code(DockerError::ConnectionFailed));
+    }
+    auto &response = *response_res;
 
     if (response.status == http::HttpStatus::NotFound) {
       log::error("Docker image not found: {}", config.image);
@@ -339,7 +339,13 @@ public:
 
     log::info("DockerClient: pulling image {}:{}", image_name, tag);
 
-    auto response = co_await connector_->post(path, {});
+    auto response_res = co_await connector_->post(path, {});
+    if (!response_res) {
+      log::error("Failed to pull image {}:{}: {}", image_name, tag,
+                 response_res.error().message());
+      co_return fail(make_error_code(DockerError::ConnectionFailed));
+    }
+    auto &response = *response_res;
 
     if (response.status == http::HttpStatus::NotFound) {
       log::error("Image not found: {}:{}", image_name, tag);
@@ -368,7 +374,13 @@ public:
 
     std::string path = std::format("/{}/containers/{}/start",
                                    config_.api_version, container_id);
-    auto response = co_await connector_->post(path, {});
+    auto response_res = co_await connector_->post(path, {});
+    if (!response_res) {
+      log::error("Failed to start container {}: {}", container_id,
+                 response_res.error().message());
+      co_return fail(make_error_code(DockerError::ConnectionFailed));
+    }
+    auto &response = *response_res;
 
     if (response.status == http::HttpStatus::NotFound) {
       log::error("Container not found: {}", container_id);
@@ -397,7 +409,13 @@ public:
 
     std::string path = std::format("/{}/containers/{}/wait",
                                    config_.api_version, container_id);
-    auto response = co_await connector_->post(path, {});
+    auto response_res = co_await connector_->post(path, {});
+    if (!response_res) {
+      log::error("Failed to wait on container {}: {}", container_id,
+                 response_res.error().message());
+      co_return fail(make_error_code(DockerError::ConnectionFailed));
+    }
+    auto &response = *response_res;
 
     if (response.status == http::HttpStatus::NotFound) {
       log::error("Container not found: {}", container_id);
@@ -436,7 +454,13 @@ public:
     std::string path =
         std::format("/{}/containers/{}/logs?stdout=true&stderr=true",
                     config_.api_version, container_id);
-    auto response = co_await connector_->get(path);
+    auto response_res = co_await connector_->get(path);
+    if (!response_res) {
+      log::error("Failed to get logs for container {}: {}", container_id,
+                 response_res.error().message());
+      co_return fail(make_error_code(DockerError::ConnectionFailed));
+    }
+    auto &response = *response_res;
 
     if (response.status == http::HttpStatus::NotFound) {
       log::error("Container not found: {}", container_id);
@@ -469,7 +493,13 @@ public:
     std::string path =
         std::format("/{}/containers/{}/stop?t={}", config_.api_version,
                     container_id, timeout.count());
-    auto response = co_await connector_->post(path, {});
+    auto response_res = co_await connector_->post(path, {});
+    if (!response_res) {
+      log::error("Failed to stop container {}: {}", container_id,
+                 response_res.error().message());
+      co_return fail(make_error_code(DockerError::ConnectionFailed));
+    }
+    auto &response = *response_res;
 
     if (response.status == http::HttpStatus::NotFound) {
       log::error("Container not found: {}", container_id);
@@ -499,7 +529,13 @@ public:
     std::string path =
         std::format("/{}/containers/{}?force={}", config_.api_version,
                     container_id, force ? "true" : "false");
-    auto response = co_await connector_->delete_(path);
+    auto response_res = co_await connector_->delete_(path);
+    if (!response_res) {
+      log::error("Failed to remove container {}: {}", container_id,
+                 response_res.error().message());
+      co_return fail(make_error_code(DockerError::ConnectionFailed));
+    }
+    auto &response = *response_res;
 
     if (response.status == http::HttpStatus::NotFound) {
       co_return ok();

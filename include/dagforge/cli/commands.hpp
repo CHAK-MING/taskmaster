@@ -1,6 +1,8 @@
 #pragma once
 
+#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/cli/command_types.hpp"
+#endif
 
 namespace dagforge::cli {
 

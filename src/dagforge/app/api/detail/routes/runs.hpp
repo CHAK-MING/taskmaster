@@ -23,16 +23,7 @@ inline auto register_run_routes(ApiContext &ctx) -> void {
             api_dto::HistoryResponseDto dto;
             dto.runs.reserve(res->size());
             for (const auto &run : *res) {
-              dto.runs.emplace_back(api_dto::RunHistoryEntryDto{
-                  .dag_run_id = run.entry.dag_run_id.str(),
-                  .dag_id = run.entry.dag_id.str(),
-                  .state = enum_to_string(run.state),
-                  .trigger_type = enum_to_string(run.entry.trigger_type),
-                  .started_at = util::format_iso8601(run.entry.started_at),
-                  .finished_at = util::format_iso8601(run.entry.finished_at),
-                  .execution_date =
-                      util::format_iso8601(run.entry.execution_date),
-              });
+              dto.runs.emplace_back(to_dto(run.entry, run.state));
             }
             co_return json_response_glz(dto);
           }));
@@ -51,16 +42,7 @@ inline auto register_run_routes(ApiContext &ctx) -> void {
             if (!res) {
               co_return to_result_response(res.error()).value();
             }
-            co_return json_response_glz(api_dto::RunHistoryEntryDto{
-                .dag_run_id = res->entry.dag_run_id.str(),
-                .dag_id = res->entry.dag_id.str(),
-                .state = enum_to_string(res->state),
-                .trigger_type = enum_to_string(res->entry.trigger_type),
-                .started_at = util::format_iso8601(res->entry.started_at),
-                .finished_at = util::format_iso8601(res->entry.finished_at),
-                .execution_date =
-                    util::format_iso8601(res->entry.execution_date),
-            });
+            co_return json_response_glz(to_dto(res->entry, res->state));
           }));
 
   router.get(

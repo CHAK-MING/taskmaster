@@ -14,8 +14,6 @@
 #include "dagforge/executor/executor.hpp"
 #endif
 
-#include <ankerl/unordered_dense.h>
-
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -30,10 +28,11 @@ namespace dagforge {
 class ApiServer;
 class ConfigWatcher;
 class DAGRun;
-class Engine;
 class DagCatalogService;
+class DAGOrchestrator;
 class ExecutionEventBridge;
 class ExecutionService;
+class LifecycleManager;
 class PersistenceService;
 class SchedulerService;
 
@@ -78,7 +77,8 @@ public:
       const DAGId &dag_id, TriggerType trigger = TriggerType::Manual,
       std::optional<std::chrono::system_clock::time_point> execution_date =
           std::nullopt) -> Result<DAGRunId>;
-  auto wait_for_completion_async(int timeout_ms = 60000) -> task<void>;
+  [[nodiscard]] auto wait_for_completion_async(int timeout_ms = 60000)
+      -> task<Result<void>>;
   auto wait_for_completion(int timeout_ms = 60000) -> void;
   [[nodiscard]] auto has_active_runs() const -> bool;
   [[nodiscard]] auto active_coroutines() const -> int;
@@ -115,10 +115,9 @@ public:
   [[nodiscard]] auto shard_stall_age_ms(shard_id id) const -> std::uint64_t;
   [[nodiscard]] auto get_run_state(const DAGRunId &dag_run_id) const
       -> Result<DAGRunState>;
-  [[nodiscard]] auto get_run_state_async(const DAGRunId &dag_run_id) const
+  [[nodiscard]] auto get_run_state_async(const DAGRunId &run_id) const
       -> task<Result<DAGRunState>>;
 
-  // DAG state management (pause/unpause — propagates to DB, memory, scheduler)
   [[nodiscard]] auto set_dag_paused(const DAGId &dag_id, bool paused)
       -> task<Result<void>>;
 
@@ -132,10 +131,6 @@ public:
 
   // Recovery
   [[nodiscard]] auto recover_from_crash() -> Result<void>;
-
-  [[nodiscard]] auto persistence() -> PersistenceService * {
-    return persistence_service();
-  }
   // Service access
   [[nodiscard]] auto dag_manager() -> DAGManager &;
   [[nodiscard]] auto dag_manager() const -> const DAGManager &;
@@ -143,75 +138,23 @@ public:
   [[nodiscard]] auto execution_service() const -> const ExecutionService *;
   [[nodiscard]] auto scheduler_service() -> SchedulerService *;
   [[nodiscard]] auto scheduler_service() const -> const SchedulerService *;
-  [[nodiscard]] auto engine() -> Engine &;
   [[nodiscard]] auto persistence_service() -> PersistenceService *;
   [[nodiscard]] auto persistence_service() const
       -> const PersistenceService *;
   [[nodiscard]] auto api_server() -> ApiServer *;
   [[nodiscard]] auto api_server() const -> const ApiServer *;
-  [[nodiscard]] auto get_active_dag_run(DAGRunId dag_run_id) -> DAGRun *;
   [[nodiscard]] auto runtime() -> Runtime &;
   [[nodiscard]] auto runtime() const -> const Runtime &;
 
-  // Debug
-  auto list_tasks() const -> void;
-  auto show_status() const -> void;
-
 private:
-  using DagStateIndex = ankerl::unordered_dense::map<DAGId, DagStateRecord>;
-
-  struct RunLaunchPlan {
-    DAGId dag_id;
-    int64_t dag_rowid{0};
-    int version{1};
-    std::shared_ptr<const DAG> graph;
-    std::shared_ptr<const std::vector<ExecutorConfig>> executor_configs;
-    std::shared_ptr<const std::vector<TaskConfig::Compiled>>
-        indexed_task_configs;
-  };
-
-  struct DagOwnerState {
-    int active_runs{0};
-  };
-
-  struct DagOwnerShardState {
-    ankerl::unordered_dense::map<DAGId, DagOwnerState> dags;
-  };
-
+  [[nodiscard]] auto resolve_dag_id_for_event(const DAGRunId &dag_run_id) const
+      -> std::optional<DAGId>;
   auto rebuild_execution_event_bridge() -> void;
   auto record_dag_run_metrics(const DAGRunId &dag_run_id,
                               const DAGRun &run) -> void;
-  [[nodiscard]] auto owner_shard(const DAGId &dag_id) const noexcept
-      -> shard_id;
-  [[nodiscard]] auto owner_shard(const DAGRunId &dag_run_id) const noexcept
-      -> shard_id;
-  auto trigger_scheduled_on_owner_shard(
-      DAGId dag_id,
-      std::chrono::system_clock::time_point execution_date) -> spawn_task;
-  auto trigger_run_on_dag_owner_shard(
-      DAGId dag_id, TriggerType trigger,
-      std::optional<std::chrono::system_clock::time_point> execution_date,
-      std::chrono::system_clock::time_point request_now)
-      -> task<Result<DAGRunId>>;
-  auto trigger_run_on_owner_shard(
-      RunLaunchPlan plan, TriggerType trigger,
-      std::optional<std::chrono::system_clock::time_point> execution_date,
-      DAGRunId dag_run_id, std::chrono::system_clock::time_point request_now)
-      -> task<Result<DAGRunId>>;
-  [[nodiscard]] auto try_acquire_dag_run_slot(const DAGInfo &info)
-      -> Result<void>;
-  auto release_dag_run_slot(const DAGId &dag_id) -> void;
-  auto on_run_finished(const DAGRunId &dag_run_id, DAGRunState status) -> void;
-  [[nodiscard]] auto resolve_dag_id(const DAGRunId &dag_run_id) const
-      -> std::optional<DAGId>;
   auto setup_config_watcher() -> void;
-  auto get_max_retries(const DAGRunId &dag_run_id, NodeIndex idx) const -> int;
-  auto get_retry_interval(const DAGRunId &dag_run_id, NodeIndex idx) const
-      -> std::chrono::seconds;
-
   auto rebuild_services_from_config() -> void;
   auto ensure_services_initialized() -> void;
-  auto rollback_partial_start(bool log_started) noexcept -> void;
   std::atomic<bool> running_{false};
   SystemConfig config_;
 
@@ -225,12 +168,13 @@ private:
   std::unique_ptr<PersistenceService> persistence_;
   std::unique_ptr<SchedulerService> scheduler_;
   std::unique_ptr<ExecutionService> execution_;
+  std::unique_ptr<LifecycleManager> lifecycle_manager_;
   std::unique_ptr<ExecutionEventBridge> execution_event_bridge_;
   std::unique_ptr<DagCatalogService> dag_catalog_;
+  std::unique_ptr<DAGOrchestrator> dag_orchestrator_;
   detail::DagRunMetricsRegistry dag_run_metrics_;
 
   DAGManager dag_manager_;
-  std::vector<DagOwnerShardState> dag_owner_states_;
 
   std::unique_ptr<ApiServer> api_;
 

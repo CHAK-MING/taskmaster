@@ -1,13 +1,14 @@
 #include "dagforge/app/services/scheduler_service.hpp"
+
+#include "dagforge/io/timing_wheel.hpp"
 #include "dagforge/util/hash.hpp"
 #include "dagforge/util/log.hpp"
 
-
 #include <algorithm>
 #include <chrono>
+#include <future>
 #include <optional>
 #include <thread>
-
 
 namespace dagforge {
 
@@ -21,12 +22,13 @@ SchedulerService::SchedulerService(Runtime &runtime, unsigned scheduler_shards)
   engine_shards_.reserve(shard_count);
   for (unsigned sid = 0; sid < shard_count; ++sid) {
     auto engine_shard = static_cast<shard_id>(sid);
-    engines_.emplace_back(std::make_unique<Engine>(
-        runtime_, runtime_.shard(engine_shard).ctx()));
+    engines_.emplace_back(std::make_unique<Engine>(runtime_, engine_shard));
     engine_shards_.push_back(engine_shard);
   }
   refresh_engine_callbacks();
 }
+
+SchedulerService::~SchedulerService() { (void)stop(); }
 
 auto SchedulerService::set_on_dag_trigger(DAGTriggerCallback callback) -> void {
   if (!can_update_callbacks("set_on_dag_trigger")) {
@@ -79,7 +81,7 @@ auto SchedulerService::set_zombie_reaper_callback(ZombieReaperCallback callback)
         "SchedulerService::set_zombie_reaper_callback ignored while running");
     return;
   }
-  zombie_reaper_callback_ = std::move(callback);
+  zombie_reaper_state_->callback = std::move(callback);
 }
 
 auto SchedulerService::set_zombie_reaper_config(int interval_sec,
@@ -90,16 +92,13 @@ auto SchedulerService::set_zombie_reaper_config(int interval_sec,
               "running");
     return;
   }
-  zombie_reaper_interval_sec_ = interval_sec;
-  zombie_heartbeat_timeout_sec_ = heartbeat_timeout_sec;
+  zombie_reaper_state_->interval_sec = interval_sec;
+  zombie_reaper_state_->heartbeat_timeout_sec = heartbeat_timeout_sec;
 }
 
 auto SchedulerService::register_dag(DAGId dag_id, const DAGInfo &dag_info)
     -> void {
-  if (dag_info.cron.empty()) {
-    return;
-  }
-  if (!is_running()) {
+  if (dag_info.cron.empty() || !is_running()) {
     return;
   }
 
@@ -151,7 +150,7 @@ auto SchedulerService::unregister_dag(const DAGId &dag_id) -> void {
       .or_else([&](std::error_code ec) -> Result<void> {
         log::warn("Failed to unregister DAG schedule: {} - error: {}", dag_id,
                   ec.message());
-        return ok(); // Non-fatal for unregister
+        return ok();
       });
   registered_root_tasks_.erase(it);
 }
@@ -161,44 +160,55 @@ auto SchedulerService::start() -> void {
     engine->start();
   }
 
-  if (zombie_reaper_interval_sec_ <= 0 || zombie_heartbeat_timeout_sec_ <= 0) {
-    zombie_reaper_running_.store(false, std::memory_order_release);
+  auto state = zombie_reaper_state_;
+  if (state->interval_sec <= 0 || state->heartbeat_timeout_sec <= 0) {
+    state->running.store(false, std::memory_order_release);
     return;
   }
-  zombie_reaper_running_.store(true, std::memory_order_release);
+  if (state->running.exchange(true, std::memory_order_acq_rel)) {
+    return;
+  }
 
-  auto reaper_loop = [](SchedulerService *self) -> task<void> {
-    while (self->zombie_reaper_running_.load(std::memory_order_acquire)) {
+  const auto generation =
+      state->generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+  auto reaper_loop = [](std::shared_ptr<ZombieReaperState> state,
+                        std::uint64_t generation) -> task<void> {
+    const auto is_active = [&]() {
+      return state->running.load(std::memory_order_acquire) &&
+             state->generation.load(std::memory_order_acquire) == generation;
+    };
+
+    while (is_active()) {
       try {
-        co_await async_sleep(
-            std::chrono::seconds(self->zombie_reaper_interval_sec_));
+        co_await async_sleep_on_timing_wheel(
+            std::chrono::seconds(state->interval_sec));
       } catch (const std::exception &e) {
         log::debug("Zombie reaper sleep cancelled/stopped: {}", e.what());
         break;
       }
-      if (!self->zombie_reaper_running_.load(std::memory_order_acquire)) {
+      if (!is_active()) {
         break;
       }
-      if (!self->zombie_reaper_callback_) {
+      if (!state->callback) {
         continue;
       }
 
-      const auto timeout_ms = static_cast<std::int64_t>(
-          self->zombie_heartbeat_timeout_sec_ * 1000LL);
+      const auto timeout_ms =
+          static_cast<std::int64_t>(state->heartbeat_timeout_sec * 1000LL);
       Result<std::size_t> reaped = fail(Error::Cancelled);
-      self->zombie_reaper_inflight_.fetch_add(1, std::memory_order_acq_rel);
+      state->inflight.fetch_add(1, std::memory_order_acq_rel);
       try {
-        reaped = co_await self->zombie_reaper_callback_(timeout_ms);
+        reaped = co_await state->callback(timeout_ms);
       } catch (const std::exception &e) {
-        self->zombie_reaper_inflight_.fetch_sub(1, std::memory_order_acq_rel);
+        state->inflight.fetch_sub(1, std::memory_order_acq_rel);
         log::error("Zombie reaper callback threw exception: {}", e.what());
         break;
       } catch (...) {
-        self->zombie_reaper_inflight_.fetch_sub(1, std::memory_order_acq_rel);
+        state->inflight.fetch_sub(1, std::memory_order_acq_rel);
         log::error("Zombie reaper callback threw non-standard exception");
         break;
       }
-      self->zombie_reaper_inflight_.fetch_sub(1, std::memory_order_acq_rel);
+      state->inflight.fetch_sub(1, std::memory_order_acq_rel);
       if (!reaped) {
         log::warn("Zombie reaper failed: {}", reaped.error().message());
         continue;
@@ -208,18 +218,35 @@ auto SchedulerService::start() -> void {
       }
     }
   };
-  runtime_.spawn_external(reaper_loop(this));
+  runtime_.spawn_on(zombie_reaper_shard_,
+                    reaper_loop(std::move(state), generation));
 }
 
-auto SchedulerService::stop() -> void {
-  zombie_reaper_running_.store(false, std::memory_order_release);
+auto SchedulerService::stop(std::chrono::steady_clock::time_point deadline)
+    -> Result<void> {
+  auto state = zombie_reaper_state_;
+  state->running.store(false, std::memory_order_release);
+  state->generation.fetch_add(1, std::memory_order_acq_rel);
 
-  // Best-effort drain: avoid tearing down persistence/runtime while a reaper
-  // callback is still awaiting DB I/O (prevents shutdown races in parallel
-  // integration tests).
-  const auto deadline =
-      std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
-  while (zombie_reaper_inflight_.load(std::memory_order_acquire) > 0 &&
+  bool barrier_complete = true;
+  if (runtime_.is_running() &&
+      (!runtime_.is_current_shard() ||
+       runtime_.current_shard() != zombie_reaper_shard_)) {
+    std::promise<void> barrier;
+    auto barrier_future = barrier.get_future();
+    runtime_.post_to(
+        zombie_reaper_shard_,
+        [barrier = std::move(barrier)]() mutable { barrier.set_value(); });
+    if (deadline == std::chrono::steady_clock::time_point::max()) {
+      barrier_future.wait();
+    } else {
+      barrier_complete =
+          barrier_future.wait_until(deadline) == std::future_status::ready;
+    }
+  }
+
+  while (barrier_complete &&
+         state->inflight.load(std::memory_order_acquire) > 0 &&
          std::chrono::steady_clock::now() < deadline) {
     std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
@@ -227,6 +254,12 @@ auto SchedulerService::stop() -> void {
   for (auto &engine : engines_) {
     engine->stop();
   }
+
+  if (!barrier_complete ||
+      state->inflight.load(std::memory_order_acquire) > 0) {
+    return fail(Error::Timeout);
+  }
+  return ok();
 }
 
 auto SchedulerService::is_running() const -> bool {
@@ -255,8 +288,6 @@ auto SchedulerService::missed_schedules_total() const -> std::uint64_t {
 auto SchedulerService::cron_parse_errors_total() const -> std::uint64_t {
   return cron_parse_errors_total_.load(std::memory_order_relaxed);
 }
-
-auto SchedulerService::engine() -> Engine & { return *engines_.front(); }
 
 auto SchedulerService::owner_engine_index(const DAGId &dag_id) const noexcept
     -> std::size_t {
@@ -296,11 +327,10 @@ auto SchedulerService::refresh_engine_callbacks() -> void {
 
     if (run_exists_callback_) {
       engine->set_run_exists_callback(
-          [this](
-              const DAGId &dag_id,
-              std::chrono::system_clock::time_point execution_date)
+          [this](const DAGId &dag_id,
+                 std::chrono::system_clock::time_point execution_date)
               -> task<Result<bool>> {
-            co_return co_await run_exists_callback_(dag_id, execution_date);
+            return run_exists_callback_(dag_id, execution_date);
           });
     } else {
       engine->set_run_exists_callback({});
@@ -311,9 +341,9 @@ auto SchedulerService::refresh_engine_callbacks() -> void {
           [this](const DAGId &dag_id,
                  std::chrono::system_clock::time_point start,
                  std::chrono::system_clock::time_point end)
-              -> task<Result<std::vector<std::chrono::system_clock::time_point>>> {
-            co_return co_await list_run_execution_dates_callback_(dag_id, start,
-                                                                  end);
+              -> task<
+                  Result<std::vector<std::chrono::system_clock::time_point>>> {
+            return list_run_execution_dates_callback_(dag_id, start, end);
           });
     } else {
       engine->set_list_run_execution_dates_callback({});
@@ -322,9 +352,9 @@ auto SchedulerService::refresh_engine_callbacks() -> void {
     if (get_watermark_callback_) {
       engine->set_get_watermark_callback(
           [this](const DAGId &dag_id)
-              -> task<
-              Result<std::optional<std::chrono::system_clock::time_point>>> {
-            co_return co_await get_watermark_callback_(dag_id);
+              -> task<Result<
+                  std::optional<std::chrono::system_clock::time_point>>> {
+            return get_watermark_callback_(dag_id);
           });
     } else {
       engine->set_get_watermark_callback({});
@@ -332,11 +362,10 @@ auto SchedulerService::refresh_engine_callbacks() -> void {
 
     if (save_watermark_callback_) {
       engine->set_save_watermark_callback(
-          [this](
-              const DAGId &dag_id,
-              std::chrono::system_clock::time_point watermark)
+          [this](const DAGId &dag_id,
+                 std::chrono::system_clock::time_point watermark)
               -> task<Result<void>> {
-            co_return co_await save_watermark_callback_(dag_id, watermark);
+            return save_watermark_callback_(dag_id, watermark);
           });
     } else {
       engine->set_save_watermark_callback({});

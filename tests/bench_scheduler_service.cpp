@@ -131,8 +131,14 @@ void BM_SchedulerCatchupBatchTrigger(benchmark::State &state) {
     }
 
     state.PauseTiming();
-    scheduler.stop();
+    auto stop_res = scheduler.stop();
+    runtime_guard.runtime.stop();
     state.ResumeTiming();
+    if (!stop_res) {
+      const auto msg = stop_res.error().message();
+      state.SkipWithError(msg.c_str());
+      return;
+    }
 
     total_processed += dag_count;
     ++run_id;
@@ -148,7 +154,8 @@ BENCHMARK(BM_SchedulerCatchupBatchTrigger)
     ->Args({1, 1000})
     ->Args({2, 1000})
     ->Args({4, 1000})
-    ->Args({8, 1000});
+    ->Args({8, 1000})
+    ->UseRealTime();
 
 struct DispatchBenchState {
   std::atomic<int> fired{0};
@@ -422,8 +429,14 @@ void BM_SchedulerCatchupScheduleAndExecute(benchmark::State &state) {
     }
 
     state.PauseTiming();
-    scheduler.stop();
+    auto stop_res = scheduler.stop();
+    runtime_guard.runtime.stop();
     state.ResumeTiming();
+    if (!stop_res) {
+      const auto msg = stop_res.error().message();
+      state.SkipWithError(msg.c_str());
+      return;
+    }
 
     total_processed += dag_count;
     ++run_id;
@@ -462,8 +475,14 @@ void BM_CronRegisterThroughput(benchmark::State &state) {
     }
 
     state.PauseTiming();
-    scheduler.stop();
+    auto stop_res = scheduler.stop();
+    runtime_guard.runtime.stop();
     state.ResumeTiming();
+    if (!stop_res) {
+      const auto msg = stop_res.error().message();
+      state.SkipWithError(msg.c_str());
+      return;
+    }
 
     total_processed += dag_count;
     ++run_id;
@@ -524,6 +543,7 @@ void BM_CronFireThroughput(benchmark::State &state) {
 
     state.PauseTiming();
     timers.clear();
+    runtime_guard.runtime.stop();
     state.ResumeTiming();
 
     total_processed += dag_count;
@@ -598,6 +618,7 @@ void BM_CronTriggerRunHandoffThroughput(benchmark::State &state) {
 
     state.PauseTiming();
     timers.clear();
+    runtime_guard.runtime.stop();
     state.ResumeTiming();
 
     total_processed += dag_count;
@@ -656,8 +677,14 @@ void BM_CronProductionPathThroughput(benchmark::State &state) {
     }
 
     state.PauseTiming();
-    scheduler.stop();
+    auto stop_res = scheduler.stop();
+    runtime_guard.runtime.stop();
     state.ResumeTiming();
+    if (!stop_res) {
+      const auto msg = stop_res.error().message();
+      state.SkipWithError(msg.c_str());
+      return;
+    }
 
     total_processed += dag_count;
     ++run_id;
@@ -747,8 +774,14 @@ void BM_FullPathFakeExecutorThroughput(benchmark::State &state) {
     }
 
     state.PauseTiming();
-    scheduler.stop();
+    auto stop_res = scheduler.stop();
+    runtime_guard.runtime.stop();
     state.ResumeTiming();
+    if (!stop_res) {
+      const auto msg = stop_res.error().message();
+      state.SkipWithError(msg.c_str());
+      return;
+    }
 
     for (unsigned sid = 0; sid < shards; ++sid) {
       state.counters[std::format("dag_owner_shard_{}", sid)] =
@@ -847,6 +880,7 @@ void BM_ExecutionDispatchStorm(benchmark::State &state) {
         benchmark::Counter::kAvgThreads);
     state.counters["executor_starts"] =
         shared->executor_starts.load(std::memory_order_relaxed);
+    runtime_guard.runtime.stop();
     state.ResumeTiming();
 
     total_processed += run_count;
@@ -860,44 +894,51 @@ BENCHMARK(BM_SchedulerCatchupScheduleAndExecute)
     ->Args({2, 1000, 0})
     ->Args({4, 1000, 0})
     ->Args({8, 1000, 0})
-    ->Iterations(1);
+    ->Iterations(1)
+    ->UseRealTime();
 
 BENCHMARK(BM_CronRegisterThroughput)
     ->Args({1, 1000})
     ->Args({4, 1000})
     ->Args({8, 1000})
-    ->Args({16, 1000});
+    ->Args({16, 1000})
+    ->UseRealTime();
 
 BENCHMARK(BM_CronFireThroughput)
     ->Args({1, 1000})
     ->Args({4, 1000})
     ->Args({8, 1000})
     ->Args({16, 1000})
-    ->Iterations(1);
+    ->Iterations(1)
+    ->UseRealTime();
 
 BENCHMARK(BM_CronTriggerRunHandoffThroughput)
     ->Args({1, 1000})
     ->Args({4, 1000})
     ->Args({8, 1000})
     ->Args({16, 1000})
-    ->Iterations(1);
+    ->Iterations(1)
+    ->UseRealTime();
 
 BENCHMARK(BM_CronProductionPathThroughput)
     ->Args({1, 1000})
     ->Args({4, 1000})
     ->Args({8, 1000})
     ->Args({16, 1000})
-    ->Iterations(1);
+    ->Iterations(1)
+    ->UseRealTime();
 
 BENCHMARK(BM_FullPathFakeExecutorThroughput)
     ->Args({8, 1000})
     ->Args({16, 1000})
-    ->Iterations(1);
+    ->Iterations(1)
+    ->UseRealTime();
 
 BENCHMARK(BM_ExecutionDispatchStorm)
     ->Args({1, 1000, 100, 8})
     ->Args({4, 1000, 100, 8})
-    ->Iterations(1);
+    ->Iterations(1)
+    ->UseRealTime();
 
 } // namespace
 } // namespace dagforge

@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -88,6 +89,12 @@ private:
     }
   }
 
+  auto persist_task_log(DAGRunId run_id, TaskId task_id, int attempt,
+                        std::string stream, std::string message)
+      -> task<Result<void>>;
+  auto persist_run(std::shared_ptr<const DAGRun> run) -> task<Result<int64_t>>;
+  auto persist_xcom(DAGRunId run_id, TaskId task_id, std::string key,
+                    std::string value_json) -> task<Result<void>>;
   auto spawn_persistence_task(spawn_task task) -> void;
 
   Dependencies deps_;

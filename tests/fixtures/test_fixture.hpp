@@ -42,7 +42,8 @@ protected:
 
   void TearDown() override {
     if (service_ && db_ready_) {
-      run_coro(service_->close());
+      auto close_res = run_coro(service_->close());
+      EXPECT_TRUE(close_res.has_value()) << close_res.error().message();
     }
     service_.reset();
     runtime_.stop();

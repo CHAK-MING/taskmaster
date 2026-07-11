@@ -177,6 +177,28 @@ public:
 
   int cancel_count_{0};
 };
+
+auto run_shell_affinity_probe(
+    Runtime &runtime, IExecutor &executor,
+    std::shared_ptr<std::promise<shard_id>> completion_shard_promise)
+    -> spawn_task {
+  ExecutionSink sink;
+  sink.on_complete = [&runtime, completion_shard_promise](const InstanceId &,
+                                                          ExecutorResult) mutable {
+    completion_shard_promise->set_value(runtime.current_shard());
+  };
+
+  auto start = executor.start(
+      ExecutorRequest{
+          .instance_id = InstanceId{"affinity_instance"},
+          .command = "echo hello",
+          .execution_timeout = std::chrono::seconds(5),
+          .config = ShellExecutorConfig{.env = {}},
+          .memory_resource = {}},
+      std::move(sink));
+  EXPECT_TRUE(start.has_value());
+  co_return;
+}
 } // namespace
 
 TEST(CompositeExecutorTest, CancelWithoutMappingBroadcastsToAllExecutors) {
@@ -478,27 +500,11 @@ TEST(ShellExecutorAffinityTest, ExecutorRunsOnCallingShard) {
 
   auto executor = create_shell_executor(runtime);
 
-  std::promise<shard_id> completion_shard_promise;
-  auto completion_shard = completion_shard_promise.get_future();
-  runtime.spawn_on(shard_id{1}, [&]() -> spawn_task {
-    ExecutionSink sink;
-    sink.on_complete = [&runtime,
-                        &completion_shard_promise](const InstanceId &,
-                                                   ExecutorResult) mutable {
-      completion_shard_promise.set_value(runtime.current_shard());
-    };
-
-    auto start = executor->start(
-        ExecutorRequest{
-            .instance_id = InstanceId{"affinity_instance"},
-            .command = "echo hello",
-            .execution_timeout = std::chrono::seconds(5),
-            .config = ShellExecutorConfig{.env = {}},
-            .memory_resource = {}},
-        std::move(sink));
-    EXPECT_TRUE(start.has_value());
-    co_return;
-  }());
+  auto completion_shard_promise = std::make_shared<std::promise<shard_id>>();
+  auto completion_shard = completion_shard_promise->get_future();
+  runtime.spawn_on(shard_id{1}, run_shell_affinity_probe(
+                                    runtime, *executor,
+                                    std::move(completion_shard_promise)));
 
   ASSERT_EQ(completion_shard.wait_for(std::chrono::seconds(5)),
             std::future_status::ready);

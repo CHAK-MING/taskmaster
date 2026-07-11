@@ -1,15 +1,13 @@
 #pragma once
 
-#if !defined(DAGFORGE_CONSUME_NAMED_MODULES) ||                                  \
-    !DAGFORGE_CONSUME_NAMED_MODULES
+#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/enum.hpp"
-#endif
-
 #if __has_include(<boost/mysql/format_sql.hpp>)
 #include <boost/mysql/format_sql.hpp>
 #endif
 
 #include <boost/describe/enum.hpp>
+#endif
 
 #if __has_include(<boost/mysql/format_sql.hpp>)
 namespace boost::mysql {

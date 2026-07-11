@@ -21,7 +21,17 @@ namespace dagforge {
 
 enum class XComSource : std::uint8_t { Stdout, Stderr, ExitCode, Json };
 BOOST_DESCRIBE_ENUM(XComSource, Stdout, Stderr, ExitCode, Json)
-DAGFORGE_DEFINE_ENUM_SERDE(XComSource, XComSource::Stdout)
+
+[[nodiscard]] constexpr auto to_string_view(XComSource value) noexcept
+    -> std::string_view {
+  return ::dagforge::util::enum_to_snake_case_view(value);
+}
+
+template <>
+[[nodiscard]] inline auto parse<XComSource>(std::string_view s) noexcept
+    -> XComSource {
+  return ::dagforge::util::parse_enum(s, XComSource::Stdout);
+}
 
 struct XComPushConfig {
   std::string key;

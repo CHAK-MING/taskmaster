@@ -122,6 +122,7 @@ namespace glz
       std::string current_file; // top level file path
       // NOTE: The default constructor is valid for std::string_view, so we use this rather than {}
       // because debuggers like jumping to std::string_view initialization calls
+      std::string scratch{}; // Reusable scratch buffer for intermediate parsing (key lookup, etc.)
    };
 
    // Concept for any context type (base or streaming)
@@ -129,6 +130,32 @@ namespace glz
    concept is_context = requires(T& ctx) {
       { ctx.error } -> std::same_as<error_code&>;
       { ctx.depth } -> std::same_as<uint32_t&>;
+   };
+
+   // RAII guard for recursive descent: bumps ctx.depth on entry and restores it on exit,
+   // erroring out before the nesting reaches max_recursive_depth_limit so adversarial deeply
+   // nested input can't overflow the stack. Mirrors the per-reader guards already used by the
+   // BSON and JSONB binary readers; placed here so the text-format readers can share one copy.
+   template <class Ctx>
+   struct depth_guard
+   {
+      Ctx& ctx;
+      bool entered = false;
+
+      depth_guard(Ctx& c) noexcept : ctx(c)
+      {
+         if (ctx.depth >= max_recursive_depth_limit) [[unlikely]] {
+            ctx.error = error_code::exceeded_max_recursive_depth;
+            return;
+         }
+         ++ctx.depth;
+         entered = true;
+      }
+      ~depth_guard()
+      {
+         if (entered) --ctx.depth;
+      }
+      explicit operator bool() const noexcept { return entered; }
    };
 
    // Runtime constraint concepts

@@ -1,6 +1,6 @@
 module;
 
-#include "dagforge/util/enum.hpp"
+#include <boost/describe/enum.hpp>
 
 #include <chrono>
 #include <cstdint>
@@ -10,6 +10,8 @@ module;
 #include <string>
 
 export module dagforge.executor;
+
+export import dagforge.util;
 
 export {
 #define DAGFORGE_BUILDING_MODULE_INTERFACE 1

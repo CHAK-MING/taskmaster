@@ -1,0 +1,25 @@
+# build2 is now the primary build path. Keep default compile flags friendly to
+# the existing textual codebase, then opt specific module targets into stricter
+# module-consumer behavior where needed.
+
+cxx.std = 23
+cxx.features.modules = true
+
+using c
+using cxx
+
+c{*}: extension = c
+hxx{*}: extension = hpp
+ixx{*}: extension = ixx
+txx{*}: extension = txx
+mxx{*}: extension = cppm
+cxx{*}: extension = cpp
+
+cxx.poptions =+ "-I$src_root/include" \
+                "-I$src_root/third_party/CLI11/include" \
+                "-I$src_root/third_party/prometheus-cpp-core/include" \
+                "-I$src_root/third_party/unordered_dense/include" \
+                "-I$src_root/third_party/glaze/include" \
+                "-DDAGFORGE_USE_STDLIB_MODULES=0"
+
+test.target = $cxx.target

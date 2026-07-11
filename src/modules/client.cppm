@@ -14,7 +14,7 @@ module;
 #include <utility>
 #include <vector>
 
-export module dagforge.client;
+export module dagforge.http;
 
 export import dagforge.base;
 export import dagforge.util;

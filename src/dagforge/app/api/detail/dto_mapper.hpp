@@ -185,6 +185,20 @@ inline auto to_run_history_entry(const DAGRun &run, const DAGId &dag_id)
   };
 }
 
+inline auto to_dto(const DatabaseService::RunHistoryEntry &entry,
+                   DAGRunState resolved_state)
+    -> api_dto::RunHistoryEntryDto {
+  return api_dto::RunHistoryEntryDto{
+      .dag_run_id = entry.dag_run_id.str(),
+      .dag_id = entry.dag_id.str(),
+      .state = enum_to_string(resolved_state),
+      .trigger_type = enum_to_string(entry.trigger_type),
+      .started_at = util::format_iso8601(entry.started_at),
+      .finished_at = util::format_iso8601(entry.finished_at),
+      .execution_date = util::format_iso8601(entry.execution_date),
+  };
+}
+
 inline auto to_dto(const TaskConfig &task) -> api_dto::TaskDetailDto {
   api_dto::TaskDetailDto dto{
       .task_id = task.task_id.str(),

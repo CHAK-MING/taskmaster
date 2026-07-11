@@ -5,6 +5,7 @@
 #endif
 
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -29,7 +30,10 @@ public:
   auto operator=(const ConfigWatcher &) -> ConfigWatcher & = delete;
 
   [[nodiscard]] auto start() -> Result<void>;
-  auto stop() noexcept -> void;
+  [[nodiscard]] auto
+  stop(std::chrono::steady_clock::time_point deadline =
+           std::chrono::steady_clock::time_point::max()) noexcept
+      -> Result<void>;
   [[nodiscard]] auto is_running() const noexcept -> bool;
 
   auto set_on_file_changed(FileChangeCallback cb) -> void;

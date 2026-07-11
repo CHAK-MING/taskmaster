@@ -203,15 +203,17 @@ auto Router::route(HttpRequest req) -> dagforge::task<HttpResponse> {
 
   if (auto it = method_routes.static_lookup.find(std::string(route_path));
       it != method_routes.static_lookup.end()) {
-    co_return co_await method_routes.static_routes[it->second].handler(
-        std::move(req));
+    auto response =
+        co_await method_routes.static_routes[it->second].handler(std::move(req));
+    co_return response;
   }
 
   auto dyn_it = method_routes.dynamic_by_segments.find(path_segments.size());
   if (dyn_it != method_routes.dynamic_by_segments.end()) {
     for (auto &route : dyn_it->second) {
       if (Impl::match_route(route.parsed, path_segments, req)) {
-        co_return co_await route.handler(std::move(req));
+        auto response = co_await route.handler(std::move(req));
+        co_return response;
       }
     }
   }

@@ -92,7 +92,7 @@ TEST_F(SchedulerServiceTest, ZombieReaperCallbackRunsWhenEnabled) {
       [&]() { return calls.load(std::memory_order_acquire) >= 1; }, 2500ms,
       20ms));
 
-  scheduler_->stop();
+  ASSERT_TRUE(scheduler_->stop().has_value());
 
   EXPECT_EQ(last_timeout_ms.load(std::memory_order_acquire), 2000);
 }
@@ -112,7 +112,7 @@ TEST_F(SchedulerServiceTest, StopPreventsAdditionalZombieReaperCallbacks) {
       [&]() { return calls.load(std::memory_order_acquire) >= 1; }, 2500ms,
       20ms));
 
-  scheduler_->stop();
+  ASSERT_TRUE(scheduler_->stop().has_value());
   const auto after_stop = calls.load(std::memory_order_acquire);
   std::this_thread::sleep_for(1200ms);
 

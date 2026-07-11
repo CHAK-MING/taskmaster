@@ -1,10 +1,9 @@
 #include "dagforge/io/timing_wheel.hpp"
+#include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/core/runtime.hpp"
 
-#include <boost/asio/as_tuple.hpp>
 #include <boost/asio/experimental/channel.hpp>
 #include <boost/asio/post.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <boost/system/system_error.hpp>
 
 #include <algorithm>
@@ -37,6 +36,7 @@ auto TimingWheel::stop() -> void {
     bucket.clear();
   }
   locations_.clear();
+  pending_count_snapshot_.store(0, std::memory_order_relaxed);
   cursor_ = 0;
 }
 
@@ -58,6 +58,7 @@ auto TimingWheel::schedule_after(std::chrono::nanoseconds delay,
   auto it = std::prev(bucket.end());
   locations_.emplace(handle.value,
                      EntryLocation{.bucket_index = bucket_index, .iterator = it});
+  pending_count_snapshot_.store(locations_.size(), std::memory_order_relaxed);
 
   if (!armed_) {
     arm_next_tick();
@@ -73,11 +74,12 @@ auto TimingWheel::cancel(Handle handle) -> bool {
 
   buckets_[found->second.bucket_index].erase(found->second.iterator);
   locations_.erase(found);
+  pending_count_snapshot_.store(locations_.size(), std::memory_order_relaxed);
   return true;
 }
 
 auto TimingWheel::pending_count() const noexcept -> std::size_t {
-  return locations_.size();
+  return pending_count_snapshot_.load(std::memory_order_relaxed);
 }
 
 auto TimingWheel::tick_count_for_delay(std::chrono::nanoseconds delay,
@@ -123,6 +125,7 @@ auto TimingWheel::handle_tick(const boost::system::error_code &ec) -> void {
 
     auto callback = std::move(it->callback);
     locations_.erase(it->handle.value);
+    pending_count_snapshot_.store(locations_.size(), std::memory_order_relaxed);
     bucket.erase(it);
     if (callback) {
       callback();
@@ -173,10 +176,12 @@ auto async_sleep_on_timing_wheel(std::chrono::nanoseconds duration)
         runtime->cancel_after_on(shard, handle);
       });
 
-  auto [ec] =
-      co_await gate->async_receive(boost::asio::as_tuple(boost::asio::use_awaitable));
-  if (ec && ec != boost::asio::error::operation_aborted) {
-    throw boost::system::system_error(ec);
+  const auto operation_aborted =
+      std::error_code{boost::asio::error::make_error_code(
+          boost::asio::error::operation_aborted)};
+  auto wait_res = co_await co_as_result(gate->async_receive(use_nothrow));
+  if (!wait_res && wait_res.error() != operation_aborted) {
+    throw boost::system::system_error(wait_res.error());
   }
 }
 

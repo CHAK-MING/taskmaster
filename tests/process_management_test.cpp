@@ -52,7 +52,7 @@ TEST(ProcessManagementTest, TerminateAndReapProcessMarksTimeout) {
   io::IoContext io;
   boost::process::v2::process proc(io, "/bin/sh", {"-c", "sleep 30"});
 
-  std::optional<ProcessWaitResult> result;
+  Result<ProcessWaitResult> result = fail(Error::Unknown);
   std::exception_ptr eptr;
   boost::asio::co_spawn(
       io,
@@ -64,6 +64,6 @@ TEST(ProcessManagementTest, TerminateAndReapProcessMarksTimeout) {
   (void)io.run_for(std::chrono::seconds(5));
 
   ASSERT_FALSE(eptr);
-  ASSERT_TRUE(result.has_value());
+  ASSERT_TRUE(result);
   EXPECT_TRUE(result->timed_out);
 }

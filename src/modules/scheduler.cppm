@@ -20,13 +20,10 @@ module;
 #include <utility>
 #include <vector>
 
-#define DAGFORGE_BUILDING_MODULE_INTERFACE 1
-#include "dagforge/util/enum.hpp"
-#undef DAGFORGE_BUILDING_MODULE_INTERFACE
-
 export module dagforge.scheduler;
 
 export import dagforge.base;
+export import dagforge.util;
 
 #define DAGFORGE_BUILDING_MODULE_INTERFACE 1
 export {

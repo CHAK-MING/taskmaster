@@ -16,6 +16,7 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <cstdint>
 #include <deque>
 #include <flat_map>
 #include <functional>
@@ -88,7 +89,7 @@ struct ExecutionCallbacks {
 
 class ExecutionService {
 public:
-  enum class XComMetricSource : std::size_t {
+  enum class XComMetricSource : std::uint8_t {
     Cache = 0,
     RunBatch,
     TaskBatch,
@@ -112,6 +113,8 @@ public:
     std::shared_ptr<const std::vector<ExecutorConfig>> executor_configs;
     std::shared_ptr<const std::vector<TaskConfig::Compiled>> task_configs;
     std::optional<DAGId> dag_id;
+    std::unordered_map<std::string, std::string, StringHash, StringEqual>
+        conf_values;
   };
 
   auto start_run(const DAGRunId &dag_run_id, RunContext ctx) -> void;
@@ -125,7 +128,8 @@ public:
 
   [[nodiscard]] auto has_active_runs() const -> bool;
 
-  auto wait_for_completion_async(int timeout_ms) -> task<void>;
+  [[nodiscard]] auto wait_for_completion_async(int timeout_ms)
+      -> task<Result<void>>;
 
   [[nodiscard]] auto coro_count() const -> int;
   [[nodiscard]] auto dispatch_invocations() const -> std::uint64_t;
@@ -233,6 +237,8 @@ private:
     std::shared_ptr<const std::vector<ExecutorConfig>> executor_configs;
     std::shared_ptr<const std::vector<TaskConfig::Compiled>> task_configs;
     std::optional<DAGId> dag_id;
+    std::unordered_map<std::string, std::string, StringHash, StringEqual>
+        conf_values;
     XComTaskCache xcom_cache;
     DispatchState dispatch_state{DispatchState::Idle};
   };
@@ -345,9 +351,10 @@ private:
   auto notify_capacity_available() -> void;
   auto schedule_dispatch_scan(shard_id sid) -> void;
   auto schedule_dispatch(const DAGRunId &dag_run_id) -> void;
-  auto enqueue_ready_run(ShardState &state, const DAGRunId &dag_run_id) -> bool;
-  auto schedule_dispatch_on_owner(ShardState &state, const DAGRunId &dag_run_id)
-      -> void;
+  auto enqueue_ready_run(ShardState &state, ActiveRunState &run_state,
+                         const DAGRunId &dag_run_id) -> bool;
+  auto schedule_dispatch_on_owner(ActiveRunState &run_state,
+                                  const DAGRunId &dag_run_id) -> void;
   auto finish_dispatch_cycle(shard_id sid, const DAGRunId &dag_run_id) -> void;
 
   Runtime &runtime_;
@@ -358,6 +365,7 @@ private:
   std::vector<ShardState> shard_states_;
   std::vector<QueueSizeCounter> ready_run_queue_sizes_;
   std::atomic<std::uint32_t> notify_rr_{0};
+  std::shared_ptr<int> lifetime_token_{std::make_shared<int>(0)};
   std::atomic<int> active_run_count_{0};
   std::atomic<int> coro_count_{0};
   std::atomic<int> running_tasks_{0};
@@ -375,8 +383,8 @@ private:
   std::atomic<std::uint64_t> task_failures_total_{0};
   std::array<std::atomic<std::uint64_t>, 9> task_failure_error_type_totals_{};
   std::atomic<std::uint64_t> task_skipped_total_{0};
-  std::array<std::atomic<std::uint64_t>, 4> executor_active_counts_{};
-  std::array<std::atomic<std::uint64_t>, 4> executor_start_totals_{};
+  std::array<std::atomic<std::uint64_t>, 5> executor_active_counts_{};
+  std::array<std::atomic<std::uint64_t>, 5> executor_start_totals_{};
   std::array<std::atomic<std::uint64_t>,
              static_cast<std::size_t>(XComMetricSource::Count)>
       xcom_prefetch_requests_{};

@@ -275,6 +275,9 @@ auto make_single_task_run_context(
   case ExecutorType::Noop:
     executor_configs.emplace_back(NoopExecutorConfig{});
     break;
+  case ExecutorType::Lua:
+    executor_configs.emplace_back(LuaExecutorConfig{.script = "return 0"});
+    break;
   }
 
   std::vector<TaskConfig::Compiled> task_configs;

@@ -138,12 +138,14 @@ struct WsOpResult {
 
 template <typename WsStreamT>
 auto ws_async_accept(WsStreamT &ws, UpgradeRequest req) -> task<Result<void>> {
-  co_return co_await co_as_result(ws.async_accept(std::move(req), use_nothrow));
+  auto accept_res = co_await co_as_result(ws.async_accept(std::move(req), use_nothrow));
+  co_return accept_res;
 }
 
 template <typename WsStreamT>
 auto ws_async_accept_no_req(WsStreamT &ws) -> task<Result<void>> {
-  co_return co_await co_as_result(ws.async_accept(use_nothrow));
+  auto accept_res = co_await co_as_result(ws.async_accept(use_nothrow));
+  co_return accept_res;
 }
 
 template <typename WsStreamT>
@@ -162,14 +164,16 @@ auto ws_async_write(WsStreamT &ws, boost::asio::const_buffer buffer)
 
 template <typename WsStreamT>
 auto ws_async_close(WsStreamT &ws) -> task<Result<void>> {
-  co_return co_await co_as_result(
+  auto close_res = co_await co_as_result(
       ws.async_close(beast_ws::close_code::normal, use_nothrow));
+  co_return close_res;
 }
 
 template <typename WsStreamT>
 auto ws_async_pong(WsStreamT &ws, std::string data) -> task<Result<void>> {
-  co_return co_await co_as_result(
+  auto pong_res = co_await co_as_result(
       ws.async_pong(beast_ws::ping_data{std::move(data)}, use_nothrow));
+  co_return pong_res;
 }
 
 template <typename ImplT> auto drain_writes(ImplT impl) -> spawn_task {
@@ -336,8 +340,8 @@ auto WebSocketConnection::send_text(std::string text) -> spawn_task {
     co_return;
   }
   record_websocket_sent(text.size());
-  enqueue_write(std::move(impl), WriteText{std::move(text)},
-                impl->ws.get_executor());
+  auto ex = impl->ws.get_executor();
+  enqueue_write(std::move(impl), WriteText{std::move(text)}, ex);
 }
 
 auto WebSocketConnection::send_binary(std::vector<std::byte> data)
@@ -350,8 +354,8 @@ auto WebSocketConnection::send_binary(std::vector<std::byte> data)
     co_return;
   }
   record_websocket_sent(data.size());
-  enqueue_write(std::move(impl), WriteBinary{std::move(data)},
-                impl->ws.get_executor());
+  auto ex = impl->ws.get_executor();
+  enqueue_write(std::move(impl), WriteBinary{std::move(data)}, ex);
 }
 
 auto WebSocketConnection::send_close() -> spawn_task {
@@ -360,7 +364,8 @@ auto WebSocketConnection::send_close() -> spawn_task {
     co_return;
   }
   record_websocket_sent(0);
-  enqueue_write(std::move(impl), WriteClose{}, impl->ws.get_executor());
+  auto ex = impl->ws.get_executor();
+  enqueue_write(std::move(impl), WriteClose{}, ex);
 }
 
 auto WebSocketConnection::send_pong(std::vector<std::byte> data) -> spawn_task {
@@ -374,8 +379,8 @@ auto WebSocketConnection::send_pong(std::vector<std::byte> data) -> spawn_task {
     payload[i] = static_cast<char>(std::to_integer<unsigned char>(data[i]));
   }
   record_websocket_sent(payload.size());
-  enqueue_write(std::move(impl), WritePong{std::move(payload)},
-                impl->ws.get_executor());
+  auto ex = impl->ws.get_executor();
+  enqueue_write(std::move(impl), WritePong{std::move(payload)}, ex);
 }
 
 auto WebSocketConnection::handle_frames(
@@ -465,10 +470,13 @@ auto WebSocketConnection::force_close() -> void {
     return;
   if (impl->closed.exchange(true, std::memory_order_acq_rel))
     return;
-  boost::system::error_code ec;
-  impl->ws.next_layer().cancel(ec);
-  impl->ws.next_layer().close(ec);
-  impl->notify_waiters();
+  auto ex = impl->ws.get_executor();
+  boost::asio::dispatch(ex, [impl = std::move(impl)]() mutable {
+    boost::system::error_code ec;
+    impl->ws.next_layer().cancel(ec);
+    impl->ws.next_layer().close(ec);
+    impl->notify_waiters();
+  });
 }
 
 struct TlsWebSocketConnection::Impl {
@@ -547,8 +555,8 @@ auto TlsWebSocketConnection::send_text(std::string text) -> spawn_task {
     co_return;
   }
   record_websocket_sent(text.size());
-  enqueue_write(std::move(impl), WriteText{std::move(text)},
-                impl->ws.get_executor());
+  auto ex = impl->ws.get_executor();
+  enqueue_write(std::move(impl), WriteText{std::move(text)}, ex);
 }
 
 auto TlsWebSocketConnection::send_binary(std::vector<std::byte> data)
@@ -561,8 +569,8 @@ auto TlsWebSocketConnection::send_binary(std::vector<std::byte> data)
     co_return;
   }
   record_websocket_sent(data.size());
-  enqueue_write(std::move(impl), WriteBinary{std::move(data)},
-                impl->ws.get_executor());
+  auto ex = impl->ws.get_executor();
+  enqueue_write(std::move(impl), WriteBinary{std::move(data)}, ex);
 }
 
 auto TlsWebSocketConnection::send_close() -> spawn_task {
@@ -571,7 +579,8 @@ auto TlsWebSocketConnection::send_close() -> spawn_task {
     co_return;
   }
   record_websocket_sent(0);
-  enqueue_write(std::move(impl), WriteClose{}, impl->ws.get_executor());
+  auto ex = impl->ws.get_executor();
+  enqueue_write(std::move(impl), WriteClose{}, ex);
 }
 
 auto TlsWebSocketConnection::send_pong(std::vector<std::byte> data)
@@ -585,8 +594,8 @@ auto TlsWebSocketConnection::send_pong(std::vector<std::byte> data)
     payload[i] = static_cast<char>(std::to_integer<unsigned char>(data[i]));
   }
   record_websocket_sent(payload.size());
-  enqueue_write(std::move(impl), WritePong{std::move(payload)},
-                impl->ws.get_executor());
+  auto ex = impl->ws.get_executor();
+  enqueue_write(std::move(impl), WritePong{std::move(payload)}, ex);
 }
 
 auto TlsWebSocketConnection::handle_frames(
@@ -674,10 +683,13 @@ auto TlsWebSocketConnection::force_close() -> void {
     return;
   if (impl->closed.exchange(true, std::memory_order_acq_rel))
     return;
-  boost::system::error_code ec;
-  impl->ws.next_layer().next_layer().cancel(ec);
-  impl->ws.next_layer().next_layer().close(ec);
-  impl->notify_waiters();
+  auto ex = impl->ws.get_executor();
+  boost::asio::dispatch(ex, [impl = std::move(impl)]() mutable {
+    boost::system::error_code ec;
+    impl->ws.next_layer().next_layer().cancel(ec);
+    impl->ws.next_layer().next_layer().close(ec);
+    impl->notify_waiters();
+  });
 }
 
 struct WebSocketHub::Impl : std::enable_shared_from_this<WebSocketHub::Impl> {

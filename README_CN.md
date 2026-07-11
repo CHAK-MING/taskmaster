@@ -13,7 +13,7 @@
 
 ---
 
-[![DAGForge Web UI](./image/web-ui.png)](#)
+[![DAGForge Web UI](./image/web-ui-chinese.png)](#)
 
 </div>
 
@@ -57,8 +57,14 @@ DAGForge 为速度而生。在最新一轮按 NUMA node 0 绑定的 5 轮基准�
 
 ### 1) 环境准备
 - **Linux** (x86-64 或 ARM64)
+  - 当前发布的 Linux 压缩包在 Ubuntu 26.04 LTS 上构建并完成 smoke test。
+    包内 `BUILD-INFO` 与 `RUNTIME-DEPENDENCIES` 记录精确工具链和动态库契约。
 - **MySQL 8.0+** 或 **MariaDB 11+**
-- **build2 0.17+** (源码编译必选)
+- **GCC 15+** 与 **build2 0.17+** (源码编译必选)
+
+> [!NOTE]
+> DAGForge 当前仅提供 **build2** 源码构建流程，仓库中没有受支持的
+> `CMakeLists.txt`/CMake 工作流。
 
 ### 2) 下载并运行
 使用 **[Release 压缩包](https://github.com/CHAK-MING/dagforge/releases)** 是最快的上手方式。
@@ -66,7 +72,7 @@ DAGForge 为速度而生。在最新一轮按 NUMA node 0 绑定的 5 轮基准�
 ```bash
 # 1. 下载并解压
 curl -LO https://github.com/CHAK-MING/dagforge/releases/download/0.3.0/dagforge-0.3.0-linux-x86_64.tar.gz
-tar -xzf dagforge-0.3.0-linux-x86_64.tar.gz && cd dagforge-0.3.0
+tar -xzf dagforge-0.3.0-linux-x86_64.tar.gz && cd dagforge-0.3.0-linux-x86_64
 
 # 2. 初始化数据库 (确保 MySQL 已启动)
 ./bin/dagforge db init
@@ -79,13 +85,17 @@ tar -xzf dagforge-0.3.0-linux-x86_64.tar.gz && cd dagforge-0.3.0
 
 ### 3) 备选方案：源码编译 (build2)
 ```bash
-# 初始化构建配置
-bdep init -C build @gcc cc config.cxx=g++
+# 在 ~/.local/share/build2-configs 下初始化稳定的 build2 配置
+./scripts/setup-build2.sh
 # 更新并构建
-bdep update @gcc
+./scripts/build.sh
 # 启动服务
 ./bin/dagforge serve start -c system_config.toml
 ```
+
+VS Code 和 clangd 用户可运行 `scripts/setup-clangd.sh`，生成独立的 Clang
+PCM 图和 compilation database。详见
+[`docs/CLANGD_SETUP.md`](docs/CLANGD_SETUP.md)。
 
 ### 4) 备选方案：Docker Compose
 ```bash

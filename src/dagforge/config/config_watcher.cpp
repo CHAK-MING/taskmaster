@@ -1,4 +1,5 @@
 #include "dagforge/config/config_watcher.hpp"
+#include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/core/constants.hpp"
 #include "dagforge/core/runtime.hpp"
 #include "dagforge/util/log.hpp"
@@ -8,8 +9,6 @@
 #include <boost/asio/detached.hpp>
 #include <boost/asio/posix/stream_descriptor.hpp>
 #include <boost/asio/post.hpp>
-#include <boost/asio/redirect_error.hpp>
-#include <boost/asio/use_awaitable.hpp>
 
 #include <sys/inotify.h>
 #include <unistd.h>
@@ -37,7 +36,9 @@ struct ConfigWatcher::WatchState {
 ConfigWatcher::ConfigWatcher(Runtime &runtime, std::string_view directory)
     : runtime_(&runtime), directory_(directory) {}
 
-ConfigWatcher::~ConfigWatcher() { stop(); }
+ConfigWatcher::~ConfigWatcher() {
+  (void)stop();
+}
 
 auto ConfigWatcher::start() -> Result<void> {
   if (running_.exchange(true)) {
@@ -85,19 +86,26 @@ auto ConfigWatcher::start() -> Result<void> {
           if (!state->inotify_stream) {
             break;
           }
-          boost::system::error_code ec;
-          auto bytes_read = co_await state->inotify_stream->async_read_some(
-              boost::asio::buffer(buffer),
-              boost::asio::redirect_error(boost::asio::use_awaitable, ec));
-          if (ec == boost::asio::error::operation_aborted) {
-            break;
-          }
-          if (ec) {
-            if (ec != boost::asio::error::bad_descriptor) {
-              log::warn("ConfigWatcher async_read error: {}", ec.message());
+          const auto operation_aborted =
+              std::error_code{boost::asio::error::make_error_code(
+                  boost::asio::error::operation_aborted)};
+          const auto bad_descriptor =
+              std::error_code{boost::asio::error::make_error_code(
+                  boost::asio::error::bad_descriptor)};
+          auto read_res = co_await co_as_result(
+              state->inotify_stream->async_read_some(boost::asio::buffer(buffer),
+                                                     use_nothrow));
+          if (!read_res) {
+            if (read_res.error() == operation_aborted) {
+              break;
+            }
+            if (read_res.error() != bad_descriptor) {
+              log::warn("ConfigWatcher async_read error: {}",
+                        read_res.error().message());
             }
             break;
           }
+          auto bytes_read = *read_res;
           if (bytes_read > 0) {
             process_events(*state, buffer.data(),
                            static_cast<ssize_t>(bytes_read));
@@ -135,14 +143,15 @@ auto ConfigWatcher::stop_state(WatchState &state) noexcept -> void {
   }
 }
 
-auto ConfigWatcher::stop() noexcept -> void {
+auto ConfigWatcher::stop(std::chrono::steady_clock::time_point deadline) noexcept
+    -> Result<void> {
   if (!running_.exchange(false)) {
-    return;
+    return ok();
   }
 
   auto state = std::move(watch_state_);
   if (!state) {
-    return;
+    return ok();
   }
   state->running.store(false, std::memory_order_release);
 
@@ -156,13 +165,13 @@ auto ConfigWatcher::stop() noexcept -> void {
 
   if (runtime_ == nullptr || !runtime_->is_running()) {
     shutdown();
-    return;
+    return ok();
   }
 
   if (runtime_->is_current_shard() &&
       runtime_->current_shard() == shard_id{0}) {
     shutdown();
-    return;
+    return ok();
   }
 
   std::promise<void> done;
@@ -172,7 +181,16 @@ auto ConfigWatcher::stop() noexcept -> void {
     shutdown();
     done.set_value();
   });
-  done_fut.wait();
+
+  if (deadline == std::chrono::steady_clock::time_point::max()) {
+    done_fut.wait();
+    return ok();
+  }
+
+  if (done_fut.wait_until(deadline) == std::future_status::ready) {
+    return ok();
+  }
+  return fail(Error::Timeout);
 }
 
 auto ConfigWatcher::is_running() const noexcept -> bool {

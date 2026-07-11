@@ -11,6 +11,7 @@
 #include <ankerl/unordered_dense.h>
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -129,7 +130,7 @@ private:
     ankerl::unordered_dense::map<DAGId, DAGInfo> dags;
   };
 
-  enum class DagMutationMode {
+  enum class DagMutationMode : std::uint8_t {
     RebuildArtifacts,
     BroadcastOnly,
     LocalRebuildArtifacts,

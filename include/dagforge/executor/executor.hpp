@@ -5,6 +5,7 @@
 #include "dagforge/core/runtime.hpp"
 #include "dagforge/executor/executor_types.hpp"
 #include "dagforge/util/id.hpp"
+#include "dagforge/util/string_hash.hpp"
 #endif
 #include "dagforge/util/log.hpp"
 
@@ -13,7 +14,9 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -31,6 +34,7 @@ struct ExecutorResult {
   pmr::string stdout_output{current_memory_resource_or_default()};
   pmr::string stderr_output{current_memory_resource_or_default()};
   pmr::string error{current_memory_resource_or_default()};
+  std::vector<std::pair<std::string, std::string>> xcom_outputs;
   bool timed_out{false};
   bool stdout_streamed{false};
   bool stderr_streamed{false};
@@ -47,12 +51,29 @@ struct ExecutorResult {
 }
 
 struct ExecutorRequest {
+  struct LuaRuntimeContext {
+    using TaskXComMap =
+        std::unordered_map<std::string, std::string, StringHash, StringEqual>;
+    using RunXComMap = std::unordered_map<std::string, std::shared_ptr<TaskXComMap>,
+                                          StringHash, StringEqual>;
+
+    DAGId dag_id;
+    DAGRunId dag_run_id;
+    TaskId task_id;
+    std::string execution_date;
+    std::unordered_map<std::string, std::string, StringHash, StringEqual>
+        conf_values;
+    RunXComMap xcom_values;
+    std::move_only_function<void(std::string_view)> on_log;
+  };
+
   InstanceId instance_id;
   std::string command;
   std::string working_dir;
   std::chrono::seconds execution_timeout{std::chrono::seconds(3600)};
   ExecutorConfig config;
   std::shared_ptr<pmr::memory_resource> memory_resource;
+  std::shared_ptr<LuaRuntimeContext> lua_context;
 
   [[nodiscard]] auto resource() const noexcept -> pmr::memory_resource * {
     return memory_resource != nullptr ? memory_resource.get()
@@ -88,6 +109,9 @@ class IExecutor;
 [[nodiscard]] auto create_sensor_executor(Runtime &rt)
     -> std::unique_ptr<IExecutor>;
 
+[[nodiscard]] auto create_lua_executor(Runtime &rt)
+    -> std::unique_ptr<IExecutor>;
+
 [[nodiscard]] auto create_noop_executor(Runtime &rt)
     -> std::unique_ptr<IExecutor>;
 
@@ -105,15 +129,10 @@ class ExecutorRegistry {
 public:
   using Creator =
       std::move_only_function<std::unique_ptr<IExecutor>(Runtime &) const>;
-  using ConfigBuilder =
-      std::move_only_function<Result<ExecutorConfig>(const TaskConfig &) const>;
-  using ConfigSerializer =
-      std::move_only_function<std::string(const ExecutorConfig &) const>;
-  using ConfigParser = std::move_only_function<Result<ExecutorConfig>(
-      std::string_view persisted_config) const>;
-  using TaskValidator =
-      std::move_only_function<void(const TaskConfig &,
-                                   std::vector<std::string> &) const>;
+  using ConfigBuilder = Result<ExecutorConfig> (*)(const TaskConfig &);
+  using ConfigSerializer = std::string (*)(const ExecutorConfig &);
+  using ConfigParser = Result<ExecutorConfig> (*)(std::string_view);
+  using TaskValidator = void (*)(const TaskConfig &, std::vector<std::string> &);
 
   static auto instance() -> ExecutorRegistry &;
 
@@ -150,17 +169,6 @@ private:
   std::flat_map<ExecutorType, Entry> entries_;
 };
 
-template <typename T, typename... Args>
-auto log_result_error(const Result<T> &result,
-                      std::format_string<Args...> fmt, Args &&...args)
-    -> const Result<T> & {
-  if (!result) {
-    log::error("{}: {}", std::format(fmt, std::forward<Args>(args)...),
-               result.error().message());
-  }
-  return result;
-}
-
 inline auto execute_async(Runtime & /*runtime*/, IExecutor &executor,
                           ExecutorRequest req,
                           std::shared_ptr<pmr::memory_resource>
@@ -170,18 +178,17 @@ inline auto execute_async(Runtime & /*runtime*/, IExecutor &executor,
                           std::move_only_function<void(std::string_view)>
                               on_stderr = {},
                           ExecutorHeartbeatCallback on_heartbeat = {})
-    -> task<ExecutorResult> {
+    -> task<Result<ExecutorResult>> {
   req.memory_resource = std::move(memory_resource);
 
   return boost::asio::async_initiate<const boost::asio::use_awaitable_t<>,
-                                     void(ExecutorResult)>(
+                                     void(Result<ExecutorResult>)>(
       [&executor, req = std::move(req), on_stdout = std::move(on_stdout),
        on_stderr = std::move(on_stderr),
        on_heartbeat = std::move(on_heartbeat)](auto handler) mutable {
         ExecutionSink sink;
         // Capture handler by shared_ptr so we can call it on start failure too.
         auto shared_h = std::make_shared<decltype(handler)>(std::move(handler));
-        auto *resource = req.resource();
         if (on_stdout) {
           sink.on_stdout =
               [cb = std::move(on_stdout)](const InstanceId &,
@@ -204,17 +211,12 @@ inline auto execute_async(Runtime & /*runtime*/, IExecutor &executor,
         }
         sink.on_complete = [shared_h](const InstanceId &,
                                       ExecutorResult res) mutable {
-          std::move(*shared_h)(std::move(res));
+          std::move(*shared_h)(ok(std::move(res)));
         };
 
         auto start_res = executor.start(std::move(req), std::move(sink));
         if (!start_res) {
-          // start() failed before scheduling; on_complete will never fire.
-          ExecutorResult err_result = make_executor_result(resource);
-          err_result.exit_code = 1;
-          err_result.error =
-              pmr::string(start_res.error().message(), resource);
-          std::move(*shared_h)(std::move(err_result));
+          std::move(*shared_h)(fail(start_res.error()));
         }
       },
       boost::asio::use_awaitable);
@@ -233,14 +235,15 @@ inline auto execute_async(Runtime &runtime, IExecutor &executor,
                           std::string working_dir = {},
                           std::chrono::seconds execution_timeout =
                               std::chrono::seconds(3600))
-    -> task<ExecutorResult> {
+    -> task<Result<ExecutorResult>> {
   return execute_async(runtime, executor,
                        ExecutorRequest{.instance_id = std::move(instance_id),
                                        .command = std::move(command),
                                        .working_dir = std::move(working_dir),
                                        .execution_timeout = execution_timeout,
                                        .config = std::move(config),
-                                       .memory_resource = {}},
+                                       .memory_resource = {},
+                                       .lua_context = {}},
                        std::move(memory_resource), std::move(on_stdout),
                        std::move(on_stderr), std::move(on_heartbeat));
 }

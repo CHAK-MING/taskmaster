@@ -10,7 +10,7 @@ import {
 import { useI18n } from "@/contexts/I18nContext";
 
 export function ThemeToggle() {
-    const { setTheme, theme } = useTheme();
+    const { setTheme } = useTheme();
     const { t } = useI18n();
 
     return (

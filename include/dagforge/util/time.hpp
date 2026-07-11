@@ -1,10 +1,10 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <ctime>
-#include <format>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -13,6 +13,13 @@
 namespace dagforge::util {
 
 namespace detail {
+
+[[nodiscard]] inline auto format_tm(const std::tm &tm,
+                                    const char *pattern) -> std::string {
+  std::array<char, 64> buffer{};
+  auto written = std::strftime(buffer.data(), buffer.size(), pattern, &tm);
+  return written == 0 ? std::string{} : std::string(buffer.data(), written);
+}
 
 template <typename FormatFn>
 [[nodiscard]] inline auto format_time_or(
@@ -30,8 +37,10 @@ template <typename FormatFn>
 format_iso8601(std::chrono::system_clock::time_point tp) -> std::string {
   return detail::format_time_or(
       tp, "", [](std::chrono::system_clock::time_point value) {
-        auto const sec_tp = std::chrono::floor<std::chrono::seconds>(value);
-        return std::format("{:%Y-%m-%dT%H:%M:%SZ}", sec_tp);
+        auto t = std::chrono::system_clock::to_time_t(value);
+        std::tm tm{};
+        gmtime_r(&t, &tm);
+        return detail::format_tm(tm, "%Y-%m-%dT%H:%M:%SZ");
       });
 }
 
@@ -44,7 +53,10 @@ format_local_timestamp(std::chrono::system_clock::time_point tp)
     -> std::string {
   return detail::format_time_or(
       tp, "-", [](std::chrono::system_clock::time_point value) {
-        return std::format("{:%Y-%m-%d %H:%M:%S}", value);
+        auto t = std::chrono::system_clock::to_time_t(value);
+        std::tm tm{};
+        localtime_r(&t, &tm);
+        return detail::format_tm(tm, "%Y-%m-%d %H:%M:%S");
       });
 }
 
@@ -53,7 +65,10 @@ format_local_timestamp_short(std::chrono::system_clock::time_point tp)
     -> std::string {
   return detail::format_time_or(
       tp, "-", [](std::chrono::system_clock::time_point value) {
-        return std::format("{:%Y-%m-%d %H:%M}", value);
+        auto t = std::chrono::system_clock::to_time_t(value);
+        std::tm tm{};
+        localtime_r(&t, &tm);
+        return detail::format_tm(tm, "%Y-%m-%d %H:%M");
       });
 }
 

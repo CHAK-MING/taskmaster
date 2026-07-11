@@ -1,21 +1,7 @@
 #include <cstdint>
 #include <span>
 
-import dagforge.base;
-import dagforge.app;
-import dagforge.client;
-import dagforge.cli;
-import dagforge.config;
-import dagforge.core;
-import dagforge.dag;
-import dagforge.domain;
-import dagforge.executor;
-import dagforge.io;
-import dagforge.scheduler;
-import dagforge.storage;
-import dagforge.task_types;
-import dagforge.util;
-import dagforge.xcom;
+import dagforge.foundation;
 
 auto main() -> int {
   auto result = dagforge::ok(42);
@@ -53,7 +39,7 @@ auto main() -> int {
     return 6;
   }
   dagforge::SystemConfig config;
-  if (config.database.port != 3306 || config.api.port != 8080) {
+  if (config.database.port != 3306 || config.api.port != 8888) {
     return 7;
   }
   dagforge::TaskConfig task{};

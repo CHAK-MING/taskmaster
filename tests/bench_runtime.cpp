@@ -103,6 +103,36 @@ auto contention_source(Runtime &rt, shard_id target, int n,
   co_return;
 }
 
+void BM_RuntimeStopLatency(benchmark::State &state) {
+  const auto shards = static_cast<unsigned>(state.range(0));
+  if (shards == 0) {
+    state.SkipWithError("requires >= 1 shards");
+    return;
+  }
+
+  for (auto _ : state) {
+    state.PauseTiming();
+    Runtime runtime(shards);
+    auto start_res = runtime.start();
+    if (!start_res) {
+      const auto msg = start_res.error().message();
+      state.SkipWithError(msg.c_str());
+      return;
+    }
+
+    std::latch ready{static_cast<std::ptrdiff_t>(shards)};
+    for (shard_id sid = 0; sid < shards; ++sid) {
+      runtime.post_to(sid, [&ready] { ready.count_down(); });
+    }
+    ready.wait();
+    state.ResumeTiming();
+
+    runtime.stop();
+  }
+
+  state.SetItemsProcessed(state.iterations());
+}
+
 void BM_RuntimeTaskCreateDestroy(benchmark::State &state) {
   const auto count = static_cast<int>(state.range(0));
   bench::RuntimeGuard guard(1);
@@ -257,49 +287,63 @@ void BM_RuntimeCrossShardContention(benchmark::State &state) {
                           state.iterations());
 }
 
+BENCHMARK(BM_RuntimeStopLatency)
+    ->Arg(1)
+    ->Arg(8)
+    ->Arg(16)
+    ->Unit(benchmark::kMicrosecond)
+    ->UseRealTime();
+
 BENCHMARK(BM_RuntimeTaskCreateDestroy)
     ->RangeMultiplier(10)
     ->Range(1000, 100000)
-    ->Unit(benchmark::kMicrosecond);
+    ->Unit(benchmark::kMicrosecond)
+    ->UseRealTime();
 
 BENCHMARK(BM_RuntimeCoroutineSuspendResume)
     ->RangeMultiplier(10)
     ->Range(1000, 100000)
-    ->Unit(benchmark::kMicrosecond);
+    ->Unit(benchmark::kMicrosecond)
+    ->UseRealTime();
 
 BENCHMARK(BM_RuntimeCrossShardLatency)
     ->Args({2})
     ->Args({4})
     ->Args({8})
     ->Args({16})
-    ->Unit(benchmark::kNanosecond);
+    ->Unit(benchmark::kNanosecond)
+    ->UseRealTime();
 
 BENCHMARK(BM_RuntimeSameShardLatency)
     ->Args({1})
     ->Args({4})
     ->Args({8})
     ->Args({16})
-    ->Unit(benchmark::kNanosecond);
+    ->Unit(benchmark::kNanosecond)
+    ->UseRealTime();
 
 BENCHMARK(BM_RuntimeShardThroughput)
     ->Args({1, 100000})
     ->Args({2, 100000})
     ->Args({4, 100000})
     ->Args({8, 100000})
-    ->Unit(benchmark::kMillisecond);
+    ->Unit(benchmark::kMillisecond)
+    ->UseRealTime();
 
 BENCHMARK(BM_RuntimeExternalInjection)
     ->Args({4, 4, 25000})
     ->Args({4, 8, 12500})
     ->Args({8, 8, 12500})
     ->Args({16, 16, 6250})
-    ->Unit(benchmark::kMillisecond);
+    ->Unit(benchmark::kMillisecond)
+    ->UseRealTime();
 
 BENCHMARK(BM_RuntimeCrossShardContention)
     ->Args({4, 1000})
     ->Args({8, 500})
     ->Args({16, 250})
-    ->Unit(benchmark::kMillisecond);
+    ->Unit(benchmark::kMillisecond)
+    ->UseRealTime();
 
 } // namespace
 } // namespace dagforge

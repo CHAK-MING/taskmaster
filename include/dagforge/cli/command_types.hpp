@@ -1,8 +1,10 @@
 #pragma once
 
+#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <cstddef>
 #include <optional>
 #include <string>
+#endif
 
 namespace dagforge::cli {
 

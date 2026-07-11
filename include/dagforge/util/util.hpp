@@ -1,16 +1,15 @@
 #pragma once
 
 
-#if !defined(DAGFORGE_CONSUME_NAMED_MODULES) ||                                  \
-    !DAGFORGE_CONSUME_NAMED_MODULES
+#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/conv.hpp"
 #include "dagforge/util/enum.hpp"
 #include "dagforge/util/hash.hpp"
 #include "dagforge/util/time.hpp"
-#endif
 #include "dagforge/util/encoding.hpp"
 #include "dagforge/util/string_hash.hpp"
 #include "dagforge/util/url.hpp"
+#endif
 
 namespace dagforge {
 

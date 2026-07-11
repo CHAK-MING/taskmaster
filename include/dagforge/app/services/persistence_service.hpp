@@ -56,7 +56,9 @@ public:
   // Lifecycle
   // -------------------------------------------------------------------
   [[nodiscard]] auto open() -> task<Result<void>>;
-  auto close() -> task<void>;
+  [[nodiscard]] auto close() -> task<Result<void>>;
+  [[nodiscard]] auto
+  close(std::chrono::steady_clock::time_point deadline) -> task<Result<void>>;
   [[nodiscard]] auto is_open() const noexcept -> bool;
   template <typename T>
   [[nodiscard]] auto sync_wait(task<Result<T>> op) -> Result<T> {
@@ -284,8 +286,6 @@ private:
       -> task<Result<void>>;
   auto submit_task_update_async(TaskUpdateRequestPtr request)
       -> spawn_task;
-  auto wait_for_task_update_submitters_async() -> task<void>;
-  auto wait_for_task_update_submitters_blocking() noexcept -> void;
 
   auto trigger_batch_writer_loop() -> spawn_task;
   auto
@@ -309,6 +309,7 @@ private:
   boost::asio::thread_pool db_pool_;
   CreateRunBatchQueue create_run_batch_queue_;
   std::atomic<bool> trigger_batch_writer_running_{false};
+  std::atomic<std::size_t> batch_writer_inflight_{0};
   std::atomic<std::size_t> trigger_batch_queue_depth_{0};
   std::atomic<std::size_t> trigger_batch_last_size_{0};
   std::atomic<std::uint64_t> trigger_batch_last_linger_us_{0};

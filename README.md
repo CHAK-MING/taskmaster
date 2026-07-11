@@ -57,8 +57,15 @@ DAGForge is built for speed. In the latest NUMA-local 5-run benchmark sweep, it 
 
 ### 1) Prerequisites
 - **Linux** (x86-64 or ARM64)
+  - Published Linux archives are currently built and smoke-tested on Ubuntu
+    26.04 LTS. See the packaged `BUILD-INFO` and `RUNTIME-DEPENDENCIES` files
+    for the exact toolchain and shared-library contract.
 - **MySQL 8.0+** or **MariaDB 11+**
-- **build2 0.17+** (Mandatory for building from source)
+- **GCC 15+** and **build2 0.17+** (required for building from source)
+
+> [!NOTE]
+> DAGForge currently ships a **build2-only** source build. There is no supported
+> `CMakeLists.txt`/CMake workflow in this repository.
 
 ### 2) Download & Run
 The fastest way to get started is by using our **[Release Package](https://github.com/CHAK-MING/dagforge/releases)**.
@@ -66,7 +73,7 @@ The fastest way to get started is by using our **[Release Package](https://githu
 ```bash
 # 1. Download & Extract
 curl -LO https://github.com/CHAK-MING/dagforge/releases/download/0.3.0/dagforge-0.3.0-linux-x86_64.tar.gz
-tar -xzf dagforge-0.3.0-linux-x86_64.tar.gz && cd dagforge-0.3.0
+tar -xzf dagforge-0.3.0-linux-x86_64.tar.gz && cd dagforge-0.3.0-linux-x86_64
 
 # 2. Init DB (ensure MySQL is running)
 ./bin/dagforge db init
@@ -79,13 +86,17 @@ Visit **[http://localhost:8888](http://localhost:8888)** to view your dashboard.
 
 ### 3) Alternative: Build From Source (build2)
 ```bash
-# Initialize build configuration
-bdep init -C build @gcc cc config.cxx=g++
+# Bootstrap a stable build2 config under ~/.local/share/build2-configs
+./scripts/setup-build2.sh
 # Build and update
-bdep update @gcc
+./scripts/build.sh
 # Start the service
 ./bin/dagforge serve start -c system_config.toml
 ```
+
+For VS Code and clangd, generate the dedicated Clang PCM graph and compilation
+database with `scripts/setup-clangd.sh`. See
+[`docs/CLANGD_SETUP.md`](docs/CLANGD_SETUP.md).
 
 ### 4) Alternative: Docker Compose
 ```bash

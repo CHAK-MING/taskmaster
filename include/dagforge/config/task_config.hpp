@@ -4,13 +4,12 @@
 #include "dagforge/config/task_types.hpp"
 #include "dagforge/config/task_policies.hpp"
 #include "dagforge/executor/executor_types.hpp"
-#endif
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/id.hpp"
-#endif
+
 #include <chrono>
 #include <string>
 #include <vector>
+#endif
 
 
 namespace dagforge {
@@ -154,6 +153,7 @@ struct TaskConfig::Builder {
       config_.task_id = TaskId{config_.name};
     }
     if (config_.command.empty() && config_.executor != ExecutorType::Sensor &&
+        config_.executor != ExecutorType::Lua &&
         config_.executor != ExecutorType::Noop) {
       return fail(Error::InvalidArgument);
     }

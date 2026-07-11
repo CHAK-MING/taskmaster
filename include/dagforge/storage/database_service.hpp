@@ -53,7 +53,7 @@ public:
 
   // Lifecycle
   virtual auto open() -> task<Result<void>> = 0;
-  virtual auto close() -> task<void> = 0;
+  virtual auto close() -> task<Result<void>> = 0;
   [[nodiscard]] virtual auto is_open() const noexcept -> bool = 0;
 
   // === DAG CRUD ===

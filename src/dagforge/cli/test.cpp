@@ -93,15 +93,21 @@ auto cmd_test_task(const TestTaskOptions &opts) -> int {
                                     .memory_resource = {}}),
       boost::asio::use_future);
 
-  ExecutorResult result;
+  Result<ExecutorResult> result_res = fail(Error::Unknown);
   try {
-    result = fut.get();
+    result_res = fut.get();
   } catch (const std::exception &e) {
     runtime.stop();
     std::println(stderr, "Error: task test execution failed: {}", e.what());
     return 1;
   }
   runtime.stop();
+  if (!result_res) {
+    std::println(stderr, "Error: task test execution failed: {}",
+                 result_res.error().message());
+    return 1;
+  }
+  auto &result = *result_res;
 
   if (opts.json) {
     JsonValue out{

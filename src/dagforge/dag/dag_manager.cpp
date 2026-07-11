@@ -17,6 +17,17 @@ namespace {
 
 using DagMap = ankerl::unordered_dense::map<DAGId, DAGInfo>;
 
+template <typename T, typename... Args>
+auto log_result_error(const Result<T> &result,
+                      std::format_string<Args...> fmt,
+                      Args &&...args) -> void {
+  if (result) {
+    return;
+  }
+  log::error("{}: {}", std::format(fmt, std::forward<Args>(args)...),
+             result.error().message());
+}
+
 template <typename Map>
 [[nodiscard]] auto find_dag_in(Map &dags, const DAGId &dag_id)
     -> std::conditional_t<

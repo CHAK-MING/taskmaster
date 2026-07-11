@@ -9,10 +9,12 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <experimental/scope>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -42,6 +44,9 @@ constexpr std::array<std::uint64_t, 15> kIoPollDurationBucketsNs{
     2'500'000ULL, 5'000'000ULL, 10'000'000ULL, 25'000'000ULL,
     50'000'000ULL, 100'000'000ULL, 250'000'000ULL, 500'000'000ULL,
     1'000'000'000ULL, 2'500'000'000ULL, 10'000'000'000ULL};
+constexpr auto kShardProgressInterval = std::chrono::milliseconds(50);
+constexpr auto kWatchdogPollInterval = std::chrono::milliseconds(100);
+constexpr std::uint64_t kStallThresholdMs = 200;
 
 template <typename F>
 concept ShardVisitor = std::invocable<F, unsigned>;
@@ -140,8 +145,6 @@ auto Runtime::start() -> Result<void> {
   if (running_.exchange(true))
     return ok();
 
-  stop_requested_.store(false);
-
   log::debug("Starting runtime with {} shards", shards_.size());
 
   threads_.reserve(num_shards_);
@@ -160,13 +163,12 @@ auto Runtime::start() -> Result<void> {
 auto Runtime::stop() noexcept -> void {
   if (!running_.exchange(false))
     return;
-  stop_requested_.store(true);
   stop_stall_detection();
 
   for (auto i : std::views::iota(0U, num_shards_)) {
-    if (work_guards_[i].has_value()) {
-      work_guards_[i]->reset();
-      work_guards_[i].reset();
+    auto work_guard = std::exchange(work_guards_[i], std::nullopt);
+    if (work_guard.has_value()) {
+      work_guard.value().reset();
     }
     shards_[i]->ctx().stop();
   }
@@ -230,24 +232,26 @@ auto Runtime::run_shard(shard_id id) -> void {
 
   auto &ctx = shards_[id]->ctx();
   start_timing_wheel_on_shard(id);
-  start_heartbeat_on_shard(id);
   // Drain any cross-shard work that arrived before this shard entered run().
   drain_inbound(id);
-  while (running_.load(std::memory_order_acquire) &&
-         !ctx.stopped()) {
+  while (running_.load(std::memory_order_acquire) && !ctx.stopped()) {
     const auto poll_started = std::chrono::steady_clock::now();
-    const auto handlers = ctx.run_one();
+    (void)ctx.run_one_for(kShardProgressInterval);
+    const auto poll_finished = std::chrono::steady_clock::now();
     const auto poll_elapsed_ns =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - poll_started)
+        std::chrono::duration_cast<std::chrono::nanoseconds>(poll_finished -
+                                                            poll_started)
             .count();
+    shard_last_tick_ms_[id].value.store(
+        static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                poll_finished.time_since_epoch())
+                .count()),
+        std::memory_order_release);
     if (id < io_context_poll_duration_histograms_.size() &&
         io_context_poll_duration_histograms_[id]) {
       io_context_poll_duration_histograms_[id]->observe_ns(
           static_cast<std::uint64_t>(poll_elapsed_ns > 0 ? poll_elapsed_ns : 0));
-    }
-    if (handlers == 0) {
-      break;
     }
   }
 }
@@ -306,7 +310,7 @@ auto Runtime::enqueue_cross_shard(shard_id source, shard_id target,
     }
     return false;
   }
-  item.release();
+  [[maybe_unused]] auto *released = item.release();
   if (source < cross_shard_messages_total_.size() &&
       target < cross_shard_messages_total_[source].size()) {
     cross_shard_messages_total_[source][target].value.fetch_add(
@@ -530,19 +534,6 @@ auto Runtime::pinned_cpu_for_shard(shard_id id) const noexcept -> int {
   return pinned_cpus_[id];
 }
 
-auto Runtime::start_heartbeat_on_shard(shard_id id) -> void {
-  auto heartbeat = [](Runtime *self, shard_id s_id) -> spawn_task {
-    constexpr auto kHeartbeatInterval = std::chrono::milliseconds(50);
-    while (self->running_.load(std::memory_order_acquire)) {
-      self->shard_last_tick_ms_[s_id].value.store(now_monotonic_ms(),
-                                                  std::memory_order_release);
-      co_await async_sleep(kHeartbeatInterval);
-    }
-    co_return;
-  };
-  spawn_on(id, heartbeat(this, id));
-}
-
 auto Runtime::start_timing_wheel_on_shard(shard_id id) -> void {
   if (id >= timing_wheels_.size() || !timing_wheels_[id]) {
     return;
@@ -557,12 +548,17 @@ auto Runtime::start_stall_detection() -> void {
   }
 
   stall_watchdog_thread_ = std::jthread([this](const std::stop_token &st) {
-    constexpr auto kWatchdogPollInterval = std::chrono::milliseconds(100);
-    constexpr std::uint64_t kStallThresholdMs = 200;
+    std::condition_variable_any wakeup;
+    std::mutex wakeup_mutex;
     std::vector<bool> warned(num_shards_, false);
     while (!st.stop_requested() && running_.load(std::memory_order_acquire)) {
-      std::this_thread::sleep_for(kWatchdogPollInterval);
-      if (!running_.load(std::memory_order_acquire)) {
+      {
+        std::unique_lock lock(wakeup_mutex);
+        (void)wakeup.wait_for(lock, st, kWatchdogPollInterval, [this] {
+          return !running_.load(std::memory_order_acquire);
+        });
+      }
+      if (st.stop_requested() || !running_.load(std::memory_order_acquire)) {
         break;
       }
 

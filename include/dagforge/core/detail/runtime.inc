@@ -189,8 +189,14 @@ private:
         if (enqueue_cross_shard(source, target, thunk)) {
           return;
         }
-        // Enqueue failed (queue full): run directly on target shard.
-        thunk->run(*this, target);
+        // The bounded mailbox is full. Preserve target-shard ownership by
+        // handing the already materialized thunk to Asio's target queue. Never
+        // execute it inline on the source shard.
+        boost::asio::post(
+            shards_[target]->ctx().get_executor(),
+            [this, target, thunk = std::move(thunk)]() mutable {
+              thunk->run(*this, target);
+            });
         return;
       }
     }
@@ -223,7 +229,6 @@ private:
   auto bind_shard_thread_to_cpu(shard_id id) -> void;
   auto start_stall_detection() -> void;
   auto stop_stall_detection() -> void;
-  auto start_heartbeat_on_shard(shard_id id) -> void;
   auto start_timing_wheel_on_shard(shard_id id) -> void;
 
   alignas(64) std::atomic<bool> running_{false};
@@ -251,7 +256,6 @@ private:
   std::vector<std::unique_ptr<metrics::Histogram>>
       io_context_poll_duration_histograms_;
   std::vector<int> pinned_cpus_;
-  alignas(64) std::atomic<bool> stop_requested_{false};
   alignas(64) std::atomic<std::uint64_t> external_rr_{0};
 };
 
@@ -268,7 +272,11 @@ inline thread_local Runtime *current_runtime = nullptr;
 /// Yield execution back to the current shard's event loop (one cycle).
 [[nodiscard]] inline auto async_yield() -> spawn_task {
   auto executor = co_await boost::asio::this_coro::executor;
-  co_await boost::asio::post(executor, boost::asio::use_awaitable);
+  auto post_res =
+      co_await co_as_result(boost::asio::post(executor, dagforge::use_nothrow));
+  if (!post_res) {
+    co_return;
+  }
 }
 
 [[nodiscard]] inline auto current_io_context() noexcept -> io::IoContext & {

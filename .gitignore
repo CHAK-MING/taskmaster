@@ -1,21 +1,50 @@
-web-ui/node_modules
-web-ui/dist
-web-ui/package-lock.json
+# Frontend dependencies and build output.
+/web-ui/node_modules/
+/web-ui/dist/
 
-.vscode
-.codex
-bin/
-build
-build-*
-.bdep/
-.bpkg/
-gcm.cache/
+# Local editor and assistant configuration.
+/.vscode/*
+!/.vscode/settings.json
+!/.vscode/extensions.json
+!/.vscode/tasks.json
+/.codex/
+/.claude/
+/.mcp.json
 
-.cache
+# build2 and compiler-generated output.
+/bin/*
+!/bin/buildfile
+/build/*
+!/build/bootstrap.build
+!/build/export.build
+!/build/root.build
+/build-*
+/.bdep/
+/.bpkg/
+/.build2-configs/
+/gcm.cache/
+/.cache/
+/.clangd-tools/
+/compile_commands.json
+/compile_commands.json.tmp
+/dist/
+
+# Local runtime data.
 *.db
-!bin/buildfile
 
-dist/
-tests/__pycache__/
-bench/scripts/__pycache__/
-bench/scripts/benchlib/
+# Python caches.
+__pycache__/
+/.ruff_cache/
+
+# Generated benchmark inputs and results.
+/bench/airflow_dags/
+/bench_results/
+
+# Artifacts produced by the vendored Lua Makefile.
+/third_party/lua-5.4.8/src/*.o
+/third_party/lua-5.4.8/src/liblua.a
+/third_party/lua-5.4.8/src/lua
+/third_party/lua-5.4.8/src/luac
+
+docs/ai/*
+AGENTS.md

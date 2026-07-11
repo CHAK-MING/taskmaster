@@ -1,3 +1,6 @@
+import foundation = ../src/lib{dagforge-foundation}
+import dagforge = ../src/lib{dagforge}
+
 ./: ../bin/exe{modules-foundation-smoke} \
     ../bin/exe{core-unit-tests}          \
     ../bin/exe{unit-domain-tests}        \
@@ -9,4 +12,16 @@
     ../bin/exe{bench-core}               \
     ../bin/exe{bench-storage}            \
     ../bin/exe{bench-app}                \
-    ../bin/exe{all-benchmarks}
+    ../bin/exe{all-benchmarks}           \
+    exe{glaze-security-tests}
+
+exe{glaze-security-tests}: cxx{test_main glaze_security_test} $dagforge $foundation
+{
+  test = true
+  cxx.libs += -lgtest -pthread
+}
+
+exe{glaze-parser-fuzz}: cxx{glaze_parser_fuzz} $dagforge $foundation
+{
+  cxx.loptions += "-fsanitize=fuzzer,address,undefined"
+}

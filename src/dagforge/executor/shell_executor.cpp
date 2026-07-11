@@ -137,9 +137,16 @@ auto run_executor_heartbeat(
   };
 
   while (true) {
-    auto [ec, bytes] = co_await pipe.async_read_some(
+    auto read_res = co_await co_as_result(pipe.async_read_some(
         boost::asio::buffer(buffer.data(), buffer.size()),
-        boost::asio::bind_cancellation_slot(cancel_sig.slot(), use_nothrow));
+        boost::asio::bind_cancellation_slot(cancel_sig.slot(), use_nothrow)));
+    if (!read_res) {
+      if (!pending_line.empty()) {
+        emit_stream_line(sink, instance_id, stream, pending_line, streamed_any);
+      }
+      co_return;
+    }
+    const auto bytes = *read_res;
     if (bytes > 0 && out.size() < kMaxOutputSize) {
       const auto remaining = kMaxOutputSize - out.size();
       const auto to_append = std::min<std::size_t>(remaining, bytes);
@@ -149,19 +156,13 @@ auto run_executor_heartbeat(
       pending_line.append(buffer.data(), bytes);
       flush_complete_lines();
     }
-    if (ec) {
-      if (!pending_line.empty()) {
-        emit_stream_line(sink, instance_id, stream, pending_line, streamed_any);
-      }
-      co_return;
-    }
   }
 }
 
 [[nodiscard]] auto
 wait_process_with_timeout(bp::process &proc, std::chrono::seconds timeout,
                           boost::asio::cancellation_signal &cancel_sig)
-    -> task<ProcessWaitResult> {
+    -> task<Result<ProcessWaitResult>> {
   using namespace boost::asio::experimental::awaitable_operators;
 
   auto outcome = co_await (reap_process(proc) ||
@@ -171,9 +172,13 @@ wait_process_with_timeout(bp::process &proc, std::chrono::seconds timeout,
   }
 
   cancel_sig.emit(boost::asio::cancellation_type::total);
-  auto result = co_await terminate_and_reap_process(proc, true);
+  auto result_res = co_await terminate_and_reap_process(proc, true);
+  if (!result_res) {
+    co_return fail(result_res.error());
+  }
+  auto result = std::move(*result_res);
   result.exit_code = kTimeoutExitCode;
-  co_return result;
+  co_return ok(std::move(result));
 }
 
 auto execute_command(std::string cmd, std::string working_dir,
@@ -238,22 +243,32 @@ auto execute_command(std::string cmd, std::string working_dir,
                               stderr_streamed) &&
                 wait_process_with_timeout(*proc, timeout, cancel_sig));
 
-  result.timed_out = wait_result.timed_out;
-  result.exit_code = wait_result.exit_code;
   result.stdout_streamed = stdout_streamed;
   result.stderr_streamed = stderr_streamed;
-  if (result.timed_out) {
-    result.error = pmr::string("Execution timeout", resource);
-    if (wait_result.error) {
-      result.error = pmr::string(
-          std::format("Execution timeout: {}", wait_result.error.message()),
-          resource);
-    }
-  } else if (wait_result.error) {
+  if (!wait_result) {
+    result.exit_code = -1;
     result.error = pmr::string(
         std::format("Failed to wait for process: {}",
-                    wait_result.error.message()),
+                    wait_result.error().message()),
         resource);
+  } else {
+    auto &process_result = *wait_result;
+    result.timed_out = process_result.timed_out;
+    result.exit_code = process_result.exit_code;
+    if (result.timed_out) {
+      result.error = pmr::string("Execution timeout", resource);
+      if (process_result.error) {
+        result.error = pmr::string(
+            std::format("Execution timeout: {}",
+                        process_result.error.message()),
+            resource);
+      }
+    } else if (process_result.error) {
+      result.error = pmr::string(
+          std::format("Failed to wait for process: {}",
+                      process_result.error.message()),
+          resource);
+    }
   }
 
   ctx.unregister_process(instance_id);

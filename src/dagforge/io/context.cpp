@@ -1,9 +1,8 @@
 #include "dagforge/io/context.hpp"
+#include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/core/runtime.hpp"
 
-#include <boost/asio/as_tuple.hpp>
 #include <boost/asio/steady_timer.hpp>
-#include <boost/asio/use_awaitable.hpp>
 #include <boost/system/system_error.hpp>
 
 #include <chrono>
@@ -33,11 +32,12 @@ auto async_sleep(IoContext &ctx, std::chrono::duration<Rep, Period> duration)
     }
   });
 
-  auto [ec] = co_await timer.async_wait(
-      boost::asio::as_tuple(boost::asio::use_awaitable));
-
-  if (ec && ec != boost::asio::error::operation_aborted) {
-    throw boost::system::system_error(ec);
+  const auto operation_aborted =
+      std::error_code{boost::asio::error::make_error_code(
+          boost::asio::error::operation_aborted)};
+  auto wait_res = co_await co_as_result(timer.async_wait(use_nothrow));
+  if (!wait_res && wait_res.error() != operation_aborted) {
+    throw boost::system::system_error(wait_res.error());
   }
 }
 

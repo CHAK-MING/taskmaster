@@ -28,7 +28,9 @@ inline auto sync_wait_on_runtime(Runtime &runtime, task<void> op) -> void {
   try {
     fut.get();
   } catch (const std::future_error &) {
+    return;
   } catch (const std::exception &) {
+    return;
   }
 }
 

@@ -50,19 +50,25 @@ inline auto terminate_process_group_or_process(bp::process &proc) noexcept
 }
 
 [[nodiscard]] inline auto reap_process(bp::process &proc)
-    -> task<ProcessWaitResult> {
-  auto [wait_ec, exit_code] = co_await proc.async_wait(use_nothrow);
-  ProcessWaitResult result{.exit_code = exit_code, .error = wait_ec};
-  co_return result;
+    -> task<Result<ProcessWaitResult>> {
+  auto wait_res = co_await co_as_result(proc.async_wait(use_nothrow));
+  if (!wait_res) {
+    co_return fail(wait_res.error());
+  }
+  co_return ok(ProcessWaitResult{.exit_code = *wait_res});
 }
 
 [[nodiscard]] inline auto terminate_and_reap_process(bp::process &proc,
                                                      bool timed_out = false)
-    -> task<ProcessWaitResult> {
+    -> task<Result<ProcessWaitResult>> {
   terminate_process_group_or_process(proc);
-  auto result = co_await reap_process(proc);
+  auto result_res = co_await reap_process(proc);
+  if (!result_res) {
+    co_return fail(result_res.error());
+  }
+  auto result = std::move(*result_res);
   result.timed_out = timed_out;
-  co_return result;
+  co_return ok(std::move(result));
 }
 
 } // namespace dagforge

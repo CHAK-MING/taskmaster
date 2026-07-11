@@ -1,11 +1,9 @@
 #pragma once
 
-
+#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/scheduler/execution_info.hpp"
 #include "dagforge/scheduler/task.hpp"
-
-#include <variant>
-
+#endif
 
 namespace dagforge {
 
@@ -17,10 +15,5 @@ struct RemoveTaskEvent {
   DAGId dag_id;
   TaskId task_id;
 };
-
-struct ShutdownEvent {};
-
-using SchedulerEvent =
-    std::variant<AddTaskEvent, RemoveTaskEvent, ShutdownEvent>;
 
 } // namespace dagforge

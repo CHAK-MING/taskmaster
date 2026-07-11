@@ -93,7 +93,7 @@ namespace glz::yaml
       while (it != end) {
          // Measure indent of current line
          auto line_start = it;
-         int32_t line_indent = measure_indent(it, end, ctx);
+         int32_t line_indent = measure_indent<false>(it, end, ctx);
          if (bool(ctx.error)) [[unlikely]]
             return;
 
@@ -131,6 +131,14 @@ namespace glz::yaml
    template <class It, class End, class Ctx>
    inline void skip_flow_content(It& it, End end, Ctx& ctx, char open, char close) noexcept
    {
+      // Nested flow collections with alternating delimiters ("[{[{...") recurse one frame per
+      // delimiter, so bound the recursion to stop adversarial skipped input from overflowing the
+      // stack. Same-delimiter nesting ("[[[[") is handled by the loop below without recursing.
+      depth_guard guard{ctx};
+      if (!guard) [[unlikely]] {
+         return;
+      }
+
       if (it == end || *it != open) [[unlikely]] {
          ctx.error = error_code::syntax_error;
          return;
@@ -248,13 +256,22 @@ namespace glz::yaml
          return;
       }
 
-      const char c = *it;
+      // Handle anchor: skip name, then continue to skip the actual value
+      if (*it == '&') {
+         ++it;
+         parse_anchor_name(it, end);
+         skip_inline_ws(it, end);
+         if (it == end) return;
+      }
 
-      // Anchors and aliases are not supported
-      if (c == '&' || c == '*') {
-         ctx.error = error_code::feature_not_supported;
+      // Handle alias: skip name and we're done (alias is a leaf reference)
+      if (*it == '*') {
+         ++it;
+         parse_anchor_name(it, end);
          return;
       }
+
+      const char c = *it;
 
       // Double-quoted string
       if (c == '"') {
@@ -310,10 +327,18 @@ namespace glz::yaml
                break;
             }
 
-            // If dedented or not a sequence item, we're done
-            if (line_indent <= current_indent) {
+            // If dedented past current indent, we're done
+            if (line_indent < current_indent) {
                it = line_start;
                break;
+            }
+
+            // At current indent: continue only if it's another sequence item (indentless sequence)
+            if (line_indent == current_indent) {
+               if (!(*it == '-' && ((it + 1) == end || *(it + 1) == ' ' || *(it + 1) == '\t' || *(it + 1) == '\n'))) {
+                  it = line_start;
+                  break;
+               }
             }
 
             // Continue with next line
@@ -327,12 +352,79 @@ namespace glz::yaml
       // Check if this is followed by a colon (nested mapping)
       skip_inline_ws(it, end);
       if (it != end && *it == ':') {
-         // This was a key - skip the value too
-         ++it;
-         skip_inline_ws(it, end);
+         if (!in_flow) {
+            // Block context: skip rest of current line and all deeply-indented
+            // continuation lines. This handles the value after the colon as well
+            // as any remaining sibling entries in the nested block mapping.
+            while (it != end && *it != '\n' && *it != '\r') ++it;
+            while (it != end) {
+               if (!skip_newline(it, end)) break;
 
-         if (it != end && !at_newline_or_end(it, end)) {
-            skip_yaml_value<Opts>(ctx, it, end, current_indent, in_flow);
+               auto line_start = it;
+               int32_t line_indent = measure_indent(it, end, ctx);
+               if (bool(ctx.error)) [[unlikely]]
+                  return;
+
+               if (it == end) break;
+               if (*it == '\n' || *it == '\r') continue; // blank line
+               if (*it == '#') {
+                  // Skip comment content to reach end of line
+                  while (it != end && *it != '\n' && *it != '\r') ++it;
+                  continue;
+               }
+
+               if (at_document_end(it, end) || at_document_start(it, end)) {
+                  it = line_start;
+                  break;
+               }
+
+               if (line_indent <= current_indent) {
+                  it = line_start;
+                  break;
+               }
+
+               // Content at deeper indent - skip this line
+               while (it != end && *it != '\n' && *it != '\r') ++it;
+            }
+         }
+         else {
+            // Flow context: use recursive parsing for proper handling
+            ++it;
+            skip_inline_ws(it, end);
+
+            if (it != end && !at_newline_or_end(it, end)) {
+               skip_yaml_value<Opts>(ctx, it, end, current_indent, in_flow);
+            }
+         }
+      }
+      else if (!in_flow) {
+         // No colon found: plain scalar value.
+         // Skip any continuation lines at deeper indentation.
+         while (it != end) {
+            while (it != end && *it != '\n' && *it != '\r') ++it;
+            if (!skip_newline(it, end)) break;
+
+            auto line_start = it;
+            int32_t line_indent = measure_indent(it, end, ctx);
+            if (bool(ctx.error)) [[unlikely]]
+               return;
+
+            if (it == end) break;
+            if (*it == '\n' || *it == '\r') continue; // blank line
+            if (*it == '#') continue; // comment line, will be skipped next iteration
+
+            if (at_document_end(it, end) || at_document_start(it, end)) {
+               it = line_start;
+               break;
+            }
+
+            if (line_indent <= current_indent) {
+               it = line_start;
+               break;
+            }
+
+            // Continuation line at deeper indent - skip
+            while (it != end && *it != '\n' && *it != '\r') ++it;
          }
       }
    }
@@ -345,7 +437,7 @@ namespace glz
    struct skip_value<YAML>
    {
       template <auto Opts>
-      GLZ_ALWAYS_INLINE static void op(is_context auto&& ctx, auto&& it, auto end) noexcept
+      static void op(is_context auto&& ctx, auto&& it, auto end) noexcept
       {
          yaml::skip_yaml_value<Opts>(ctx, it, end, 0, false);
       }
