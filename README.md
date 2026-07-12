@@ -33,7 +33,6 @@ Whether you're managing complex data pipelines, orchestrating microservices, or 
 - **🛠️ Declarative Pipelines:** Express complex logic via clean **TOML** definitions with native support for task dependencies, conditional branching, and polling sensors.
 - **🔌 Pluggable Executors:** Orchestrate diverse workloads with first-class support for **Shell**, **Docker**, and **Sensor** execution modes in isolated environments.
 - **📡 Interactive Control Plane:** A high-fidelity **React 19** dashboard powered by **React Flow** for dynamic DAG exploration and **WebSockets** for sub-second, live log telemetry.
-- **🔄 Seamless Data Exchange:** Robust **XCom** mechanism for task-to-task communication with flexible template variable support (e.g., `{{xcom.task.key}}`).
 - **📊 Cloud-Native Observability:** Native **Prometheus** metrics, rich REST APIs, and structured JSON logging designed for seamless integration with modern monitoring stacks.
 
 ---
@@ -110,7 +109,7 @@ docker compose up -d
 Detailed guides and references are available in the **[`docs/`](docs/)** directory:
 
 - **[Getting Started Guide](docs/USER_GUIDE.md#1-first-time-setup)** - Step-by-step setup and configuration.
-- **[Core Features Guide](docs/USER_GUIDE.md#5-trigger-rules--when-to-use-each)** - Trigger rules, XCom, Sensors, and Docker tasks.
+- **[Core Features Guide](docs/USER_GUIDE.md#5-trigger-rules--when-to-use-each)** - Trigger rules, Sensors, and Docker tasks.
 - **[API Reference](docs/API.md)** - Explore our REST and WebSocket endpoints.
 - **[CLI Cheatsheet](docs/USER_GUIDE.md#16-cli-cheatsheet)** - Master the `dagforge` command-line tool.
 

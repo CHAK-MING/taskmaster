@@ -716,8 +716,6 @@ void BM_FullPathFakeExecutorThroughput(benchmark::State &state) {
     SchedulerService scheduler(runtime_guard.runtime, 1);
 
     ExecutionCallbacks callbacks;
-    callbacks.get_dag_id_by_run =
-        [](const DAGRunId &) -> task<Result<DAGId>> { co_return fail(Error::NotFound); };
     callbacks.get_max_retries = [](const DAGRunId &, NodeIndex) { return 0; };
     callbacks.get_retry_interval = [](const DAGRunId &, NodeIndex) {
       return std::chrono::seconds(0);
@@ -829,8 +827,6 @@ void BM_ExecutionDispatchStorm(benchmark::State &state) {
     execution.set_max_concurrency(max_concurrency);
 
     ExecutionCallbacks callbacks;
-    callbacks.get_dag_id_by_run =
-        [](const DAGRunId &) -> task<Result<DAGId>> { co_return ok(DAGId{"bench_exec"}); };
     callbacks.get_max_retries = [](const DAGRunId &, NodeIndex) { return 0; };
     callbacks.get_retry_interval = [](const DAGRunId &, NodeIndex) {
       return std::chrono::seconds(0);

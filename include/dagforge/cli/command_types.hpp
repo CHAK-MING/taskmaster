@@ -93,7 +93,6 @@ struct InspectOptions {
   std::string dag_id;
   std::string run_id;
   bool latest{false};
-  bool xcom{false};
   bool details{false};
   bool json{false};
 };

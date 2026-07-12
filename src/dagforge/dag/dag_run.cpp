@@ -402,7 +402,7 @@ struct DAGRun::Impl {
         assert(transition_res.has_value());
       } else if (status == TriggerStatus::Skipped) {
         [[maybe_unused]] auto transition_res =
-            mark_task_branch_skipped(dep, delta);
+            mark_task_skipped_internal(dep, delta);
         assert(transition_res.has_value());
       }
     }
@@ -446,7 +446,7 @@ struct DAGRun::Impl {
     return ok();
   }
 
-  auto mark_task_branch_skipped(NodeIndex idx, DAGRun::TransitionDelta *delta)
+  auto mark_task_skipped_internal(NodeIndex idx, DAGRun::TransitionDelta *delta)
       -> Result<void> {
     if (static_cast<std::size_t>(idx) >= task_info_.size())
       return fail(Error::NotFound);
@@ -723,48 +723,6 @@ auto DAGRun::mark_task_completed(NodeIndex task_idx, int exit_code)
   info.state = TaskState::Success;
   info.exit_code = exit_code;
   info.finished_at = std::chrono::system_clock::now();
-
-  impl_->update_dependent_counters(task_idx, TaskState::Success, +1);
-  impl_->propagate_terminal_to_downstream(task_idx, &delta);
-  impl_->update_state();
-  return ok(std::move(delta));
-}
-
-auto DAGRun::mark_task_completed_with_branch(
-    NodeIndex task_idx, int exit_code,
-    std::span<const TaskId> selected_branches) -> Result<TransitionDelta> {
-  TransitionDelta delta;
-  if (static_cast<std::size_t>(task_idx) >= impl_->task_info_.size())
-    return fail(Error::NotFound);
-  if (impl_->task_info_[task_idx].state != TaskState::Running)
-    return fail(Error::InvalidState);
-
-  --impl_->runtime_.running_count;
-  ++impl_->runtime_.completed_count;
-
-  auto &info = impl_->task_info_[task_idx];
-  info.state = TaskState::Success;
-  info.exit_code = exit_code;
-  info.finished_at = std::chrono::system_clock::now();
-
-  if (impl_->dag_->is_branch_task(task_idx) && !selected_branches.empty()) {
-    for (NodeIndex dep_idx : impl_->dag_->get_dependents_view(task_idx)) {
-      TaskId dep_id = impl_->dag_->get_key(dep_idx);
-      bool selected = false;
-      for (const auto &branch_id : selected_branches) {
-        if (branch_id == dep_id) {
-          selected = true;
-          break;
-        }
-      }
-
-      if (!selected) {
-        [[maybe_unused]] auto transition_res =
-            impl_->mark_task_branch_skipped(dep_idx, &delta);
-        assert(transition_res.has_value());
-      }
-    }
-  }
 
   impl_->update_dependent_counters(task_idx, TaskState::Success, +1);
   impl_->propagate_terminal_to_downstream(task_idx, &delta);

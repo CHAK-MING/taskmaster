@@ -2,10 +2,8 @@
 #include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/scheduler/retry_policy.hpp"
 #include "dagforge/util/hash.hpp"
-#include "dagforge/util/json.hpp"
 #include "dagforge/util/log.hpp"
 #include "dagforge/util/string_hash.hpp"
-#include "dagforge/xcom/xcom_extractor.hpp"
 
 #include <boost/asio/post.hpp>
 #include <boost/asio/this_coro.hpp>
@@ -19,7 +17,6 @@
 #include <memory_resource>
 #include <ranges>
 #include <span>
-#include <unordered_map>
 #include <unordered_set>
 
 namespace dagforge {
@@ -40,23 +37,6 @@ namespace {
     return 4;
   }
   return 0;
-}
-
-template <typename T, typename... Args>
-auto log_result_error(const Result<T> &result,
-                      std::format_string<Args...> fmt,
-                      Args &&...args) -> void {
-  if (result) {
-    return;
-  }
-  log::error("{}: {}", std::format(fmt, std::forward<Args>(args)...),
-             result.error().message());
-}
-
-[[nodiscard]] auto
-xcom_metric_source_index(ExecutionService::XComMetricSource source)
-    -> std::size_t {
-  return static_cast<std::size_t>(source);
 }
 
 constexpr std::size_t kCompletedRunCacheLimit = 8;
@@ -141,7 +121,7 @@ private:
 } // namespace
 
 ExecutionService::ExecutionService(Runtime &runtime, IExecutor &executor)
-    : runtime_(runtime), executor_(executor), template_resolver_(),
+    : runtime_(runtime), executor_(executor),
       shard_states_(runtime_.shard_count()),
       ready_run_queue_sizes_(runtime_.shard_count()),
       dispatch_duration_histogram_(
@@ -413,7 +393,6 @@ auto ExecutionService::notify_capacity_available() -> void {
 
 auto ExecutionService::set_callbacks(ExecutionCallbacks callbacks) -> void {
   callbacks_ = std::move(callbacks);
-  template_resolver_.set_xcom_lookup(nullptr);
 }
 
 auto ExecutionService::set_local_task_lease_timeout(
@@ -433,8 +412,7 @@ auto ExecutionService::start_run(const DAGRunId &dag_run_id, RunContext ctx)
         ActiveRunState{.run = std::move(ctx.run),
                        .executor_configs = std::move(ctx.executor_configs),
                        .task_configs = std::move(ctx.task_configs),
-                       .dag_id = std::move(ctx.dag_id),
-                       .xcom_cache = {}})
+                       .dag_id = std::move(ctx.dag_id)})
                   .first;
     if (!it->second.run || it->second.run->is_complete()) {
       return;
@@ -571,7 +549,6 @@ auto ExecutionService::finalize_task_execution(
 
   const auto &task_id = job.task_id();
   const auto &cfg = job.cfg();
-  const auto &xcom_push = job.xcom_push();
   running_tasks_--;
   log::debug(
       "run_task: completed dag_run_id={} task={} inst_id={} exit_code={} "
@@ -602,29 +579,6 @@ auto ExecutionService::finalize_task_execution(
 
   if (result.exit_code == 0 && result.error.empty()) {
     task_successes_total_.fetch_add(1, std::memory_order_relaxed);
-    if (!xcom_push.empty()) {
-      auto xcoms = xcom::extract(result, xcom_push);
-      if (xcoms) {
-        xcom_push_entries_total_.fetch_add(xcoms->size(),
-                                           std::memory_order_relaxed);
-        auto &state = shard_state(dag_run_id);
-        for (const auto &xcom : *xcoms) {
-          if (auto it = state.runs.find(dag_run_id); it != state.runs.end()) {
-            it->second.xcom_cache[task_id.value()][xcom.key] = xcom.value;
-          }
-          if (callbacks_.on_persist_xcom) {
-            callbacks_.on_persist_xcom(dag_run_id, task_id, xcom.key,
-                                       xcom.value);
-          }
-        }
-      } else {
-        xcom_push_extraction_failures_total_.fetch_add(
-            1, std::memory_order_relaxed);
-        log::warn("XCom extraction failed for {} {}: {}", dag_run_id, task_id,
-                  xcoms.error().message());
-      }
-    }
-
     if (callbacks_.on_task_status) {
       callbacks_.on_task_status(dag_run_id, task_id, TaskState::Success);
     }
@@ -800,27 +754,6 @@ auto ExecutionService::executor_start_total(ExecutorType type) const
 auto ExecutionService::task_duration_histogram() const
     -> metrics::Histogram::Snapshot {
   return task_duration_histogram_.snapshot();
-}
-
-auto ExecutionService::xcom_prefetch_requests_total(
-    XComMetricSource source) const -> std::uint64_t {
-  return xcom_prefetch_requests_[xcom_metric_source_index(source)].load(
-      std::memory_order_relaxed);
-}
-
-auto ExecutionService::xcom_prefetch_hits_total(XComMetricSource source) const
-    -> std::uint64_t {
-  return xcom_prefetch_hits_[xcom_metric_source_index(source)].load(
-      std::memory_order_relaxed);
-}
-
-auto ExecutionService::xcom_push_entries_total() const -> std::uint64_t {
-  return xcom_push_entries_total_.load(std::memory_order_relaxed);
-}
-
-auto ExecutionService::xcom_push_extraction_failures_total() const
-    -> std::uint64_t {
-  return xcom_push_extraction_failures_total_.load(std::memory_order_relaxed);
 }
 
 auto ExecutionService::record_task_failure_error_type(
@@ -1358,7 +1291,6 @@ struct ExecutionVisitor {
   ExecutionService &service;
   const DAGRunId &dag_run_id;
   ExecutionService::TaskJob &job;
-  DAGId dag_id; // pre-fetched by run_task via co_await get_dag_id_by_run
   std::shared_ptr<pmr::memory_resource> task_resource_owner;
   pmr::memory_resource *task_resource;
 
@@ -1383,66 +1315,19 @@ private:
     service.on_executor_heartbeat(dag_run_id, job.inst_id);
   }
 
-  [[nodiscard]] static auto has_template_markers(std::string_view value)
-      -> bool {
-    return value.find("{{") != std::string_view::npos;
-  }
-
-  template <typename MapLike>
-  [[nodiscard]] static auto env_has_template_markers(const MapLike &env)
-      -> bool {
-    return std::ranges::any_of(env, [](const auto &entry) {
-      return has_template_markers(entry.second);
-    });
-  }
-
   auto execute_shell() const -> task<Result<ExecutorResult>> {
-    auto *cfg = job.cfg().as<ShellExecutorConfig>();
-    if (cfg == nullptr) {
+    if (job.cfg().as<ShellExecutorConfig>() == nullptr) {
       return invalid_config_task("shell");
     }
-    if (job.xcom_pull().empty() &&
-        !has_template_markers(job.task_config->command) &&
-        !env_has_template_markers(cfg->env)) {
-      return execute_async(
-          service.runtime(), service.executor(),
-          ExecutorRequest{.instance_id = job.inst_id.clone(),
-                          .command = job.task_config->command,
-                          .working_dir = job.task_config->working_dir,
-                          .execution_timeout =
-                              job.task_config->execution_timeout,
-                          .config = job.cfg(),
-                          .memory_resource = {}},
-          task_resource_owner,
-          [this](std::string_view chunk) {
-            service.emit_log_chunk(dag_run_id, job.task_id(), job.attempt,
-                                   "stdout", chunk);
-          },
-          [this](std::string_view chunk) {
-            service.emit_log_chunk(dag_run_id, job.task_id(), job.attempt,
-                                   "stderr", chunk);
-          },
-          [this](const InstanceId &) { refresh_heartbeat(); });
-    }
-    auto command = job.task_config->command;
-    auto env = cfg->env;
-    apply_templates(command);
-    apply_xcom_pull(env);
-    auto req =
+    return execute_async(
+        service.runtime(), service.executor(),
         ExecutorRequest{.instance_id = job.inst_id.clone(),
-                        .command = std::move(command),
+                        .command = job.task_config->command,
                         .working_dir = job.task_config->working_dir,
                         .execution_timeout = job.task_config->execution_timeout,
                         .config = job.cfg(),
-                        .memory_resource = {}};
-    auto *resolved = req.config.as<ShellExecutorConfig>();
-    if (resolved == nullptr) {
-      return invalid_config_task("shell");
-    }
-    resolved->env = std::move(env);
-    return execute_async(
-        service.runtime(), service.executor(), std::move(req),
-        make_task_memory_resource(),
+                        .memory_resource = {}},
+        task_resource_owner,
         [this](std::string_view chunk) {
           service.emit_log_chunk(dag_run_id, job.task_id(), job.attempt,
                                  "stdout", chunk);
@@ -1459,40 +1344,16 @@ private:
     if (cfg == nullptr) {
       return invalid_config_task("docker");
     }
-    if (job.xcom_pull().empty() &&
-        !has_template_markers(job.task_config->command) &&
-        !env_has_template_markers(cfg->env)) {
-      return execute_async(
-          service.runtime(), service.executor(),
-          ExecutorRequest{.instance_id = job.inst_id.clone(),
-                          .command = job.task_config->command,
-                          .working_dir = job.task_config->working_dir,
-                          .execution_timeout =
-                              job.task_config->execution_timeout,
-                          .config = job.cfg(),
-                          .memory_resource = {}},
-          task_resource_owner, {}, {},
-          [this](const InstanceId &) { refresh_heartbeat(); });
-    }
-    auto command = job.task_config->command;
-    auto env = cfg->env;
-    apply_templates(command);
-    apply_xcom_pull(env);
-    auto req =
+    return execute_async(
+        service.runtime(), service.executor(),
         ExecutorRequest{.instance_id = job.inst_id.clone(),
-                        .command = std::move(command),
+                        .command = job.task_config->command,
                         .working_dir = job.task_config->working_dir,
                         .execution_timeout = job.task_config->execution_timeout,
                         .config = job.cfg(),
-                        .memory_resource = {}};
-    auto *resolved = req.config.as<DockerExecutorConfig>();
-    if (resolved == nullptr) {
-      return invalid_config_task("docker");
-    }
-    resolved->env = std::move(env);
-    return execute_async(service.runtime(), service.executor(), std::move(req),
-                         make_task_memory_resource(), {}, {},
-                         [this](const InstanceId &) { refresh_heartbeat(); });
+                        .memory_resource = {}},
+        task_resource_owner, {}, {},
+        [this](const InstanceId &) { refresh_heartbeat(); });
   }
 
   auto execute_sensor() const -> task<Result<ExecutorResult>> {
@@ -1500,36 +1361,16 @@ private:
     if (cfg == nullptr) {
       return invalid_config_task("sensor");
     }
-    if (!has_template_markers(cfg->target)) {
-      return execute_async(
-          service.runtime(), service.executor(),
-          ExecutorRequest{.instance_id = job.inst_id.clone(),
-                          .command = job.task_config->command,
-                          .working_dir = job.task_config->working_dir,
-                          .execution_timeout =
-                              job.task_config->execution_timeout,
-                          .config = job.cfg(),
-                          .memory_resource = {}},
-          task_resource_owner, {}, {},
-          [this](const InstanceId &) { refresh_heartbeat(); });
-    }
-    auto target = cfg->target;
-    apply_templates(target);
-    auto req =
+    return execute_async(
+        service.runtime(), service.executor(),
         ExecutorRequest{.instance_id = job.inst_id.clone(),
                         .command = job.task_config->command,
                         .working_dir = job.task_config->working_dir,
                         .execution_timeout = job.task_config->execution_timeout,
                         .config = job.cfg(),
-                        .memory_resource = {}};
-    auto *resolved = req.config.as<SensorExecutorConfig>();
-    if (resolved == nullptr) {
-      return invalid_config_task("sensor");
-    }
-    resolved->target = std::move(target);
-    return execute_async(service.runtime(), service.executor(), std::move(req),
-                         make_task_memory_resource(), {}, {},
-                         [this](const InstanceId &) { refresh_heartbeat(); });
+                        .memory_resource = {}},
+        task_resource_owner, {}, {},
+        [this](const InstanceId &) { refresh_heartbeat(); });
   }
 
   auto execute_noop() const -> task<Result<ExecutorResult>> {
@@ -1540,15 +1381,6 @@ private:
     ExecutorResult result = make_executor_result(task_resource);
     result.exit_code = cfg->exit_code;
     return ready_result(std::move(result));
-  }
-
-  [[nodiscard]] auto make_task_memory_resource() const
-      -> std::shared_ptr<pmr::memory_resource> {
-    return std::make_shared<pmr::monotonic_buffer_resource>(
-        task_resource_owner ? task_resource_owner.get()
-                            : (task_resource != nullptr
-                                   ? task_resource
-                                   : current_memory_resource_or_default()));
   }
 
   [[nodiscard]] auto invalid_config(std::string_view executor_name) const
@@ -1570,50 +1402,6 @@ private:
       -> task<Result<ExecutorResult>> {
     co_return ok(invalid_config(executor_name));
   }
-
-  [[nodiscard]] auto make_template_ctx() const -> TemplateContext {
-    return TemplateContext{
-        .dag_run_id = dag_run_id,
-        .dag_id = dag_id,
-        .task_id = job.task_id(),
-        .execution_date = job.execution_date,
-        .data_interval_start = job.data_interval_start,
-        .data_interval_end = job.data_interval_end,
-    };
-  }
-
-  void apply_templates(std::string &target) const {
-    ScopedMemoryResourceOverride scoped_resource(task_resource);
-    auto ctx = make_template_ctx();
-    auto result = service.template_resolver().resolve_template(target, ctx,
-                                                               job.xcom_pull());
-    if (!result) {
-      log_result_error(result, "template resolution failed");
-      return;
-    }
-    target = std::move(*result);
-  }
-
-  void apply_xcom_pull(std::flat_map<std::string, std::string> &env) const {
-    const auto &xcom_pull = job.xcom_pull();
-    if (xcom_pull.empty())
-      return;
-
-    ScopedMemoryResourceOverride scoped_resource(task_resource);
-    auto ctx = make_template_ctx();
-    auto resolved_env =
-        service.template_resolver().resolve_env_vars(ctx, xcom_pull);
-    if (!resolved_env) {
-      log_result_error(resolved_env, "xcom_pull resolution failed for task {}",
-                       job.task_id().value());
-      return;
-    }
-
-    for (auto &[name, value] : *resolved_env) {
-      env[name] = std::move(value);
-      log::debug("xcom_pull: {} injected", name);
-    }
-  }
 };
 
 } // namespace
@@ -1630,180 +1418,6 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job)
 
   const auto task_started_at = begin_task_execution(dag_run_id, job);
 
-  // --- Pre-fetch dag_id asynchronously (used by ExecutionVisitor) ---
-  DAGId dag_id;
-  if (auto cached = get_cached_dag_id(dag_run_id)) {
-    dag_id = std::move(*cached);
-  } else if (callbacks_.get_dag_id_by_run) {
-    if (auto r = co_await callbacks_.get_dag_id_by_run(dag_run_id)) {
-      dag_id = std::move(*r);
-      if (const auto &resolved_dag_id = dag_id.value();
-          !resolved_dag_id.empty()) {
-        auto &state = shard_state(dag_run_id);
-        if (auto it = state.runs.find(dag_run_id); it != state.runs.end()) {
-          it->second.dag_id = dag_id;
-        }
-      }
-    } else {
-      log::warn("run_task: could not resolve dag_id for run {}: {}", dag_run_id,
-                r.error().message());
-    }
-  }
-
-  // --- Pre-fetch XCom pulls into resolver cache (synchronous visitor reads
-  // cache) ---
-  const auto &xcom_pull = job.xcom_pull();
-  if (!xcom_pull.empty()) {
-    using MissingKeySet =
-        std::unordered_set<std::string, StringHash, StringEqual>;
-    using MissingKeyMap =
-        std::unordered_map<std::string, MissingKeySet, StringHash, StringEqual>;
-
-    MissingKeyMap missing_keys_by_task;
-    missing_keys_by_task.reserve(xcom_pull.size());
-    for (const auto &pull : xcom_pull) {
-      missing_keys_by_task[std::string(pull.ref.task_id.value())].insert(
-          pull.ref.key);
-    }
-
-    auto erase_task_if_empty = [&](std::string_view task_id_str) {
-      auto it = missing_keys_by_task.find(task_id_str);
-      if (it != missing_keys_by_task.end() && it->second.empty()) {
-        missing_keys_by_task.erase(it);
-      }
-    };
-
-    // Fast path: owner-shard local XCom cache (same-run produced values).
-    auto &state = shard_state(dag_run_id);
-    if (auto run_it = state.runs.find(dag_run_id); run_it != state.runs.end()) {
-      pmr::vector<std::pair<std::string, std::string>> cache_hits{
-          current_memory_resource_or_default()};
-      cache_hits.reserve(xcom_pull.size());
-      for (const auto &[task_id_str, keys] : missing_keys_by_task) {
-        for (const auto &key : keys) {
-          xcom_prefetch_requests_[xcom_metric_source_index(
-                                      XComMetricSource::Cache)]
-              .fetch_add(1, std::memory_order_relaxed);
-          auto task_it = run_it->second.xcom_cache.find(task_id_str);
-          if (task_it == run_it->second.xcom_cache.end()) {
-            continue;
-          }
-          auto cache_it = task_it->second.find(key);
-          if (cache_it != task_it->second.end()) {
-            xcom_prefetch_hits_[xcom_metric_source_index(
-                                    XComMetricSource::Cache)]
-                .fetch_add(1, std::memory_order_relaxed);
-            template_resolver_.prefetch_xcom(dag_run_id, TaskId{task_id_str},
-                                             key, cache_it->second);
-            cache_hits.emplace_back(task_id_str, key);
-          }
-        }
-      }
-      for (const auto &[task_id_str, key] : cache_hits) {
-        if (auto it = missing_keys_by_task.find(task_id_str);
-            it != missing_keys_by_task.end()) {
-          if (auto key_it = it->second.find(key); key_it != it->second.end()) {
-            it->second.erase(key_it);
-          }
-          erase_task_if_empty(task_id_str);
-        }
-      }
-    }
-
-    // Batch path: fetch all run XCom rows once.
-    if (!missing_keys_by_task.empty() && callbacks_.get_run_xcoms) {
-      xcom_prefetch_requests_[xcom_metric_source_index(
-                                  XComMetricSource::RunBatch)]
-          .fetch_add(1, std::memory_order_relaxed);
-      auto run_xcoms = co_await callbacks_.get_run_xcoms(dag_run_id);
-      if (run_xcoms) {
-        for (const auto &entry : *run_xcoms) {
-          const auto task_id_str = entry.task_id.value();
-          auto it = missing_keys_by_task.find(task_id_str);
-          if (it == missing_keys_by_task.end()) {
-            continue;
-          }
-          if (!it->second.contains(entry.key)) {
-            continue;
-          }
-          xcom_prefetch_hits_[xcom_metric_source_index(
-                                  XComMetricSource::RunBatch)]
-              .fetch_add(1, std::memory_order_relaxed);
-          template_resolver_.prefetch_xcom(dag_run_id, entry.task_id, entry.key,
-                                           entry.value);
-          it->second.erase(entry.key);
-          erase_task_if_empty(task_id_str);
-        }
-      } else if (run_xcoms.error() != make_error_code(Error::NotFound)) {
-        log::warn("run_task: run-level xcom prefetch failed for {}: {}",
-                  dag_run_id, run_xcoms.error().message());
-      }
-    }
-
-    // Fallback path: fetch task-level sets.
-    if (!missing_keys_by_task.empty() && callbacks_.get_task_xcoms) {
-      std::vector<std::string> source_tasks;
-      source_tasks.reserve(missing_keys_by_task.size());
-      for (const auto &[task_id_str, _] : missing_keys_by_task) {
-        source_tasks.push_back(task_id_str);
-      }
-      for (const auto &task_id_str : source_tasks) {
-        auto it = missing_keys_by_task.find(task_id_str);
-        if (it == missing_keys_by_task.end() || it->second.empty()) {
-          continue;
-        }
-        TaskId source_task{task_id_str};
-        xcom_prefetch_requests_[xcom_metric_source_index(
-                                    XComMetricSource::TaskBatch)]
-            .fetch_add(1, std::memory_order_relaxed);
-        auto task_xcoms =
-            co_await callbacks_.get_task_xcoms(dag_run_id, source_task);
-        if (!task_xcoms) {
-          if (task_xcoms.error() != make_error_code(Error::NotFound)) {
-            log::warn("run_task: task-level xcom prefetch failed for {}: {}",
-                      source_task, task_xcoms.error().message());
-          }
-          continue;
-        }
-        for (const auto &entry : *task_xcoms) {
-          if (it->second.contains(entry.key)) {
-            xcom_prefetch_hits_[xcom_metric_source_index(
-                                    XComMetricSource::TaskBatch)]
-                .fetch_add(1, std::memory_order_relaxed);
-            template_resolver_.prefetch_xcom(dag_run_id, source_task, entry.key,
-                                             entry.value);
-            it->second.erase(entry.key);
-          }
-        }
-        erase_task_if_empty(task_id_str);
-      }
-    }
-
-    // Final fallback: remaining single-key reads.
-    if (!missing_keys_by_task.empty() && callbacks_.get_xcom) {
-      for (const auto &[task_id_str, keys] : missing_keys_by_task) {
-        TaskId source_task{task_id_str};
-        for (const auto &key : keys) {
-          xcom_prefetch_requests_[xcom_metric_source_index(
-                                      XComMetricSource::Single)]
-              .fetch_add(1, std::memory_order_relaxed);
-          auto xcom =
-              co_await callbacks_.get_xcom(dag_run_id, source_task, key);
-          if (xcom) {
-            xcom_prefetch_hits_[xcom_metric_source_index(
-                                    XComMetricSource::Single)]
-                .fetch_add(1, std::memory_order_relaxed);
-            template_resolver_.prefetch_xcom(dag_run_id, source_task, key,
-                                             xcom->value);
-          } else if (xcom.error() != make_error_code(Error::NotFound)) {
-            log::warn("run_task: xcom_pull prefetch failed for {}/{}: {}",
-                      source_task, key, xcom.error().message());
-          }
-        }
-      }
-    }
-  }
-
   const auto target = owner_shard(dag_run_id);
   arm_local_task_lease(dag_run_id, job, task_started_at);
   auto task_resource = std::make_shared<pmr::monotonic_buffer_resource>(
@@ -1812,7 +1426,6 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job)
       co_await ExecutionVisitor{.service = *this,
                                 .dag_run_id = dag_run_id,
                                 .job = job,
-                                .dag_id = std::move(dag_id),
                                 .task_resource_owner = task_resource,
                                 .task_resource = task_resource.get()}();
   ExecutorResult result = make_executor_result(task_resource.get());
@@ -1914,91 +1527,23 @@ auto ExecutionService::on_task_success(const DAGRunId &dag_run_id,
   auto &state = shard_state(dag_run_id);
   log::debug("on_task_success: dag_run_id={} idx={}", dag_run_id, idx);
 
-  bool is_branch = false;
-  std::string branch_key = "branch";
-  TaskId task_id_for_branch;
-  {
-    auto it = state.runs.find(dag_run_id);
-    if (it == state.runs.end())
-      co_return ok();
-
-    auto &run = *it->second.run;
-    task_id_for_branch = run.dag().get_key(idx);
-
-    if (const auto *task_cfgs = it->second.task_configs.get();
-        task_cfgs != nullptr && idx < task_cfgs->size()) {
-      is_branch = (*task_cfgs)[idx].is_branch;
-      branch_key = (*task_cfgs)[idx].branch_xcom_key;
-    }
+  auto it = state.runs.find(dag_run_id);
+  if (it == state.runs.end()) {
+    co_return ok();
   }
 
-  std::vector<TaskId> branch_selected;
-  if (is_branch) {
-    xcom_prefetch_requests_[xcom_metric_source_index(
-                                XComMetricSource::BranchCache)]
-        .fetch_add(1, std::memory_order_relaxed);
-    auto &state2 = shard_state(dag_run_id);
-    auto run_it = state2.runs.find(dag_run_id);
-    if (run_it != state2.runs.end()) {
-      auto task_it = run_it->second.xcom_cache.find(task_id_for_branch.value());
-      if (task_it != run_it->second.xcom_cache.end()) {
-        auto cache_it = task_it->second.find(branch_key);
-        if (cache_it != task_it->second.end()) {
-          xcom_prefetch_hits_[xcom_metric_source_index(
-                                  XComMetricSource::BranchCache)]
-              .fetch_add(1, std::memory_order_relaxed);
-          const auto &val = cache_it->second;
-          if (auto parsed = parse_json(val); parsed && parsed->is_array()) {
-            for (const auto &item : parsed->get_array()) {
-              if (item.is_string()) {
-                branch_selected.emplace_back(item.as<std::string>());
-              }
-            }
-          }
-        }
-      }
-    }
-    if (branch_selected.empty()) {
-      log::debug("Branch task {} for run {} has no in-memory branch decision "
-                 "under key '{}'; using empty selection",
-                 task_id_for_branch, dag_run_id, branch_key);
-    }
+  auto &run = *it->second.run;
+  auto delta = run.mark_task_completed(idx, 0);
+  if (!delta) {
+    log::error("on_task_success: failed to mark task {}: {}", idx,
+               delta.error().message());
+    co_return fail(delta.error());
   }
 
-  {
-    auto it = state.runs.find(dag_run_id);
-    if (it == state.runs.end())
-      co_return ok();
-
-    auto &run = *it->second.run;
-    DAGRun::TransitionDelta delta;
-
-    if (is_branch) {
-      auto delta_result =
-          run.mark_task_completed_with_branch(idx, 0, branch_selected);
-      if (!delta_result) {
-        log::error("on_task_success: failed to mark branch task {}: {}", idx,
-                   delta_result.error().message());
-        co_return fail(delta_result.error());
-      }
-      delta = std::move(*delta_result);
-    } else {
-      auto delta_result = run.mark_task_completed(idx, 0);
-      if (!delta_result) {
-        log::error("on_task_success: failed to mark task {}: {}", idx,
-                   delta_result.error().message());
-        co_return fail(delta_result.error());
-      }
-      delta = std::move(*delta_result);
-    }
-
-    record_task_snapshot(run, idx, effects);
-    collect_transition_delta(run, delta, effects);
-    complete_transition_if_needed(state, it, effects);
-  }
-
+  record_task_snapshot(run, idx, effects);
+  collect_transition_delta(run, *delta, effects);
+  complete_transition_if_needed(state, it, effects);
   finalize_task_transition(dag_run_id, std::move(effects));
-
   co_return ok();
 }
 

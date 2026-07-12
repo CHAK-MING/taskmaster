@@ -23,10 +23,7 @@ export interface TaskDefinitionDialogTask {
   sensorType?: string;
   sensorTarget?: string;
   triggerRule?: string;
-  isBranch?: boolean;
   dependsOnPast?: boolean;
-  xcomPushCount?: number;
-  xcomPullCount?: number;
   dependsOn?: string[];
   triggerDagTarget?: string;
   triggerDagMode?: string;
@@ -149,14 +146,6 @@ export function TaskDefinitionDialog({
                 <Badge variant="outline">
                   {sensorTypeLabels[task.sensorType] ?? task.sensorType}
                 </Badge>
-              </DetailField>
-            ) : null}
-            {typeof task?.xcomPushCount === "number" || typeof task?.xcomPullCount === "number" ? (
-              <DetailField label={t.dagDetail.xcomStats}>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="outline">push {task?.xcomPushCount ?? 0}</Badge>
-                  <Badge variant="outline">pull {task?.xcomPullCount ?? 0}</Badge>
-                </div>
               </DetailField>
             ) : null}
             {task?.triggerDagTarget ? (

@@ -29,8 +29,8 @@ namespace dagforge {
 class DAG {
 public:
   [[nodiscard]] auto add_node(const TaskId &task_id,
-                              TriggerRule rule = TriggerRule::AllSuccess,
-                              bool is_branch = false) -> Result<NodeIndex> {
+                              TriggerRule rule = TriggerRule::AllSuccess)
+      -> Result<NodeIndex> {
     auto it = key_to_idx_.find(task_id);
     if (it != key_to_idx_.end()) {
       return ok(it->second);
@@ -44,7 +44,6 @@ public:
     NodeIndex idx = static_cast<NodeIndex>(nodes_.size());
     Node node;
     node.trigger_rule = rule;
-    node.is_branch = is_branch;
     nodes_.emplace_back(std::move(node));
     keys_.emplace_back(task_id);
     key_to_idx_.emplace(task_id, idx);
@@ -191,13 +190,6 @@ public:
     }
     return nodes_[idx].trigger_rule;
   }
-  [[nodiscard]] auto is_branch_task(NodeIndex idx) const noexcept -> bool {
-    if (idx >= nodes_.size()) {
-      return false;
-    }
-    return nodes_[idx].is_branch;
-  }
-
   [[nodiscard]] auto size() const noexcept -> std::size_t {
     return nodes_.size();
   }
@@ -226,7 +218,6 @@ private:
     std::vector<NodeIndex> deps;
     std::vector<NodeIndex> dependents;
     TriggerRule trigger_rule{TriggerRule::AllSuccess};
-    bool is_branch{false};
   };
 
   std::vector<Node> nodes_;

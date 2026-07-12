@@ -43,12 +43,6 @@ BENCH_SPECS: dict[int, BenchSpec] = {
         benchmark_filter="BM_CronProductionPathThroughput/8/10",
         description="Scheduler trigger to run handoff path",
     ),
-    4: BenchSpec(
-        config_id=4,
-        label="xcom_async_persistence_mysql",
-        benchmark_filter="BM_XCom_AsyncPersistence_MySQL/4",
-        description="XCom persistence pressure under real MySQL writes",
-    ),
     5: BenchSpec(
         config_id=5,
         label="scheduler_catchup_schedule_execute",

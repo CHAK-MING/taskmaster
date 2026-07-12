@@ -47,63 +47,6 @@ inline auto register_run_routes(ApiContext &ctx) -> void {
           }));
 
   router.get(
-      "/api/runs/{dag_run_id}/tasks/{task_id}/xcom",
-      ctx.make_instrumented_route(
-          http::HttpMethod::GET, "/api/runs/{dag_run_id}/tasks/{task_id}/xcom",
-          [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
-            auto dag_run_id = req.path_param("dag_run_id");
-            auto task_id = req.path_param("task_id");
-            if (!dag_run_id || !task_id) {
-              co_return error_response(400, "Missing dag_run_id or task_id");
-            }
-
-            auto res = co_await ctx.get_task_xcoms_async(DAGRunId{*dag_run_id},
-                                                         TaskId{*task_id});
-            co_return res
-                .transform([&](const auto &xcoms) {
-                  return json_response(
-                      {{"task_id", *task_id},
-                       {"xcom", xcom_entries_to_json_object(xcoms)}});
-                })
-                .or_else(to_result_response)
-                .value();
-          }));
-
-  router.get("/api/runs/{dag_run_id}/xcom",
-             ctx.make_instrumented_route(
-                 http::HttpMethod::GET, "/api/runs/{dag_run_id}/xcom",
-                 [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
-                   auto dag_run_id = req.path_param("dag_run_id");
-                   if (!dag_run_id) {
-                     co_return error_response(400, "Missing dag_run_id");
-                   }
-
-                   auto run_id = DAGRunId{*dag_run_id};
-                   auto run_res = co_await ctx.get_run_history_async(run_id);
-                   if (!run_res) {
-                     co_return to_result_response(run_res.error()).value();
-                   }
-
-                   auto dag_res =
-                       co_await ctx.get_dag_snapshot_async(run_res->dag_id);
-                   if (!dag_res) {
-                     co_return to_result_response(dag_res.error()).value();
-                   }
-
-                   json all_xcoms = json::object_t{};
-                   for (const auto &task : dag_res->tasks) {
-                     auto xcoms_res = co_await ctx.get_task_xcoms_async(
-                         run_id, task.task_id);
-                     if (xcoms_res && !xcoms_res->empty()) {
-                       all_xcoms[task.task_id.str()] =
-                           xcom_entries_to_json_object(*xcoms_res);
-                     }
-                   }
-                   co_return json_response(
-                       {{"dag_run_id", *dag_run_id}, {"xcom", all_xcoms}});
-                 }));
-
-  router.get(
       "/api/runs/{dag_run_id}/tasks",
       ctx.make_instrumented_route(
           http::HttpMethod::GET, "/api/runs/{dag_run_id}/tasks",

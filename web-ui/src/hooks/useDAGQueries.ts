@@ -9,13 +9,11 @@ import {
   getRunDetail,
   getRunTasks,
   getRunLogs,
-  getRunXCom,
   DAGInfo,
   RunRecord,
   RunDetail,
   TaskRunRecord,
   TaskLogEntry,
-  RunXComResponse,
 } from "@/lib/api";
 import { toast } from "sonner";
 import { useI18n } from "@/contexts/I18nContext";
@@ -119,15 +117,6 @@ export function useRunLogsQuery(runId: string | undefined, limit: number = 10000
     enabled: !!runId,
     staleTime: 2000,
     refetchInterval,
-  });
-}
-
-export function useRunXComQuery(runId: string | undefined) {
-  return useQuery<RunXComResponse>({
-    queryKey: ['run-xcom', runId],
-    queryFn: () => getRunXCom(runId!),
-    enabled: !!runId,
-    staleTime: 5000,
   });
 }
 

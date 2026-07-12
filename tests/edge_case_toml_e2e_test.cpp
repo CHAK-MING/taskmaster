@@ -154,48 +154,6 @@ TEST_F(EdgeCaseTomlE2ETest, TriggerRuleBoundaryScenario) {
   std::filesystem::remove_all(dag_dir);
 }
 
-TEST_F(EdgeCaseTomlE2ETest, XComDefaultValueScenario) {
-  const auto port = dagforge::test::pick_unused_tcp_port_or_zero();
-  ASSERT_NE(port, 0);
-
-  auto validation = DAGInfoLoader::load_from_file(
-      fixture_path("scene09_xcom_default_value.toml").string());
-  ASSERT_TRUE(validation.has_value()) << validation.error().message();
-
-  const auto dag_id = std::format("scene09_xcom_default_value_{}", port);
-  const auto dag_dir = load_fixture_to_temp_dir(
-      "scene09_xcom_default_value.toml", dag_id);
-  auto cfg = make_test_config(port);
-  cfg.dag_source.directory = dag_dir.string();
-  Application app(cfg);
-  auto init_res = app.init();
-  ASSERT_TRUE(init_res) << init_res.error().message();
-
-  auto start_res = app.start();
-  if (!start_res) {
-    GTEST_SKIP() << "MySQL unavailable for xcom default-value E2E: "
-                 << start_res.error().message();
-  }
-
-  ASSERT_TRUE(wait_api_ready(port));
-
-  const auto run_id = trigger_dag(port, dag_id);
-  ASSERT_TRUE(
-      dagforge::test::poll_until([&]() { return fetch_run_state(port, run_id) == "success"; },
-                                 std::chrono::seconds(30), std::chrono::milliseconds(100)));
-
-  const auto tasks = fetch_run_tasks(port, run_id);
-  ASSERT_EQ(tasks.size(), 5U);
-  EXPECT_EQ(tasks.at("seed").state, "success");
-  EXPECT_EQ(tasks.at("default_string").state, "success");
-  EXPECT_EQ(tasks.at("default_empty_string").state, "success");
-  EXPECT_EQ(tasks.at("default_array").state, "success");
-  EXPECT_EQ(tasks.at("default_object").state, "success");
-
-  app.stop();
-  std::filesystem::remove_all(dag_dir);
-}
-
 TEST_F(EdgeCaseTomlE2ETest, RetryTimeoutScenario) {
   const auto port = dagforge::test::pick_unused_tcp_port_or_zero();
   ASSERT_NE(port, 0);
@@ -337,48 +295,6 @@ TEST_F(EdgeCaseTomlE2ETest, DockerTimeoutScenario) {
   std::filesystem::remove_all(dag_dir);
 }
 
-TEST_F(EdgeCaseTomlE2ETest, SensorXComPipelineScenario) {
-  const auto port = dagforge::test::pick_unused_tcp_port_or_zero();
-  ASSERT_NE(port, 0);
-
-  auto validation = DAGInfoLoader::load_from_file(
-      fixture_path("scene13_sensor_xcom_pipeline.toml").string());
-  ASSERT_TRUE(validation.has_value()) << validation.error().message();
-
-  const auto dag_id = std::format("scene13_sensor_xcom_pipeline_{}", port);
-  const auto dag_dir =
-      load_fixture_to_temp_dir("scene13_sensor_xcom_pipeline.toml", dag_id);
-  auto cfg = make_test_config(port);
-  cfg.dag_source.directory = dag_dir.string();
-  Application app(cfg);
-  auto init_res = app.init();
-  ASSERT_TRUE(init_res) << init_res.error().message();
-
-  auto start_res = app.start();
-  if (!start_res) {
-    GTEST_SKIP() << "MySQL unavailable for sensor+xcom E2E: "
-                 << start_res.error().message();
-  }
-
-  ASSERT_TRUE(wait_api_ready(port));
-
-  const auto run_id = trigger_dag(port, dag_id);
-  ASSERT_TRUE(dagforge::test::poll_until(
-      [&]() { return fetch_run_state(port, run_id) == "success"; },
-      std::chrono::seconds(30), std::chrono::milliseconds(100)));
-  ASSERT_TRUE(wait_for_all_tasks_terminal(port, run_id));
-
-  const auto tasks = fetch_run_tasks(port, run_id);
-  ASSERT_EQ(tasks.size(), 4U);
-  EXPECT_EQ(tasks.at("prepare").state, "success");
-  EXPECT_EQ(tasks.at("wait_ready").state, "success");
-  EXPECT_EQ(tasks.at("consume").state, "success");
-  EXPECT_EQ(tasks.at("cleanup").state, "success");
-
-  app.stop();
-  std::filesystem::remove_all(dag_dir);
-}
-
 TEST_F(EdgeCaseTomlE2ETest, SensorSoftFailScenario) {
   const auto port = dagforge::test::pick_unused_tcp_port_or_zero();
   ASSERT_NE(port, 0);
@@ -416,49 +332,6 @@ TEST_F(EdgeCaseTomlE2ETest, SensorSoftFailScenario) {
   EXPECT_EQ(tasks.at("core").state, "success");
   EXPECT_EQ(tasks.at("none_failed_tail").state, "success");
   EXPECT_EQ(tasks.at("all_success_tail").state, "skipped");
-
-  app.stop();
-  std::filesystem::remove_all(dag_dir);
-}
-
-TEST_F(EdgeCaseTomlE2ETest, XComTriggerRuleJoinScenario) {
-  const auto port = dagforge::test::pick_unused_tcp_port_or_zero();
-  ASSERT_NE(port, 0);
-
-  auto validation = DAGInfoLoader::load_from_file(
-      fixture_path("scene15_xcom_trigger_join.toml").string());
-  ASSERT_TRUE(validation.has_value()) << validation.error().message();
-
-  const auto dag_id = std::format("scene15_xcom_trigger_join_{}", port);
-  const auto dag_dir =
-      load_fixture_to_temp_dir("scene15_xcom_trigger_join.toml", dag_id);
-  auto cfg = make_test_config(port);
-  cfg.dag_source.directory = dag_dir.string();
-  Application app(cfg);
-  auto init_res = app.init();
-  ASSERT_TRUE(init_res) << init_res.error().message();
-
-  auto start_res = app.start();
-  if (!start_res) {
-    GTEST_SKIP() << "MySQL unavailable for xcom trigger-rule join E2E: "
-                 << start_res.error().message();
-  }
-
-  ASSERT_TRUE(wait_api_ready(port));
-
-  const auto run_id = trigger_dag(port, dag_id);
-  ASSERT_TRUE(dagforge::test::poll_until(
-      [&]() { return fetch_run_state(port, run_id) == "failed"; },
-      std::chrono::seconds(30), std::chrono::milliseconds(100)));
-  ASSERT_TRUE(wait_for_all_tasks_terminal(port, run_id));
-
-  const auto tasks = fetch_run_tasks(port, run_id);
-  ASSERT_EQ(tasks.size(), 5U);
-  EXPECT_EQ(tasks.at("alpha").state, "success");
-  EXPECT_EQ(tasks.at("beta").state, "success");
-  EXPECT_EQ(tasks.at("summary").state, "success");
-  EXPECT_EQ(tasks.at("failing_probe").state, "failed");
-  EXPECT_EQ(tasks.at("audit").state, "success");
 
   app.stop();
   std::filesystem::remove_all(dag_dir);

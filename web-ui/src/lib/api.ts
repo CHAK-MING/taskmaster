@@ -12,10 +12,7 @@ export interface TaskConfig {
     retry_interval_sec: number;
     max_retries: number;
     trigger_rule: string;
-    is_branch: boolean;
     depends_on_past: boolean;
-    xcom_push_count: number;
-    xcom_pull_count: number;
     dependencies: TaskDependency[];
 }
 
@@ -173,20 +170,6 @@ export async function getRunDetail(runId: string): Promise<RunDetail> {
     return handleResponse<RunDetail>(response);
 }
 
-export interface XComValue {
-    [key: string]: unknown;
-}
-
-export interface TaskXComResponse {
-    task_id: string;
-    xcom: XComValue;
-}
-
-export interface RunXComResponse {
-    dag_run_id: string;
-    xcom: { [taskId: string]: XComValue };
-}
-
 export interface RunTasksResponse {
     dag_run_id: string;
     tasks: TaskRunRecord[];
@@ -203,16 +186,6 @@ export interface TaskLogEntry {
 export interface RunLogsResponse {
     dag_run_id: string;
     logs: TaskLogEntry[];
-}
-
-export async function getTaskXCom(runId: string, taskId: string): Promise<TaskXComResponse> {
-    const response = await fetch(`${API_BASE}/runs/${runId}/tasks/${taskId}/xcom`);
-    return handleResponse<TaskXComResponse>(response);
-}
-
-export async function getRunXCom(runId: string): Promise<RunXComResponse> {
-    const response = await fetch(`${API_BASE}/runs/${runId}/xcom`);
-    return handleResponse<RunXComResponse>(response);
 }
 
 export async function getRunTasks(runId: string): Promise<TaskRunRecord[]> {

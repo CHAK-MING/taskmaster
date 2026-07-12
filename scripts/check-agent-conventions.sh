@@ -63,11 +63,6 @@ report_matches \
   'BOOST_DESCRIBE_ENUM|boost/describe/|boost/mp11/'
 
 report_matches \
-  "removed XCom json_path must not be reintroduced; use RFC 6901 json_pointer:" \
-  '\bjson_path\b' \
-  --glob '!tests/**'
-
-report_matches \
   "use std::filesystem rather than Boost.Filesystem:" \
   'boost::filesystem|boost/filesystem'
 

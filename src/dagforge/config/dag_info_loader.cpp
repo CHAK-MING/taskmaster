@@ -4,15 +4,15 @@
 #include "dagforge/dag/dag_validator.hpp"
 #include "dagforge/scheduler/cron.hpp"
 #include "dagforge/util/log.hpp"
-#include "dagforge/util/json.hpp"
-#include "dagforge/xcom/xcom_util.hpp"
 
 #include <glaze/toml.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <format>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -37,8 +37,6 @@ struct ParsedTaskConfig {
   TaskConfig task{};
   TaskFieldPresence presence{};
   std::vector<std::variant<std::string, TaskDependency>> dependencies;
-  std::vector<XComPushConfig> xcom_push;
-  std::vector<XComPullConfig> xcom_pull;
 };
 
 struct ParsedDagToml {
@@ -62,37 +60,6 @@ template <> struct meta<dagforge::TaskDependency> {
   };
   static constexpr auto value =
       object("task", custom<read_task, nullptr>, "label", &T::label);
-};
-
-template <> struct meta<dagforge::XComPushConfig> {
-  using T = dagforge::XComPushConfig;
-  static constexpr auto read_source = [](T &value, const std::string &input) {
-    value.source = dagforge::parse<dagforge::XComSource>(input);
-  };
-  static constexpr auto value =
-      object("key", &T::key, "source", custom<read_source, nullptr>,
-             "json_pointer", &T::json_pointer, "regex", &T::regex_pattern,
-             "regex_group", &T::regex_group);
-};
-
-template <> struct meta<dagforge::XComPullConfig> {
-  using T = dagforge::XComPullConfig;
-  static constexpr auto read_key = [](T &value, const std::string &input) {
-    value.ref.key = input;
-  };
-  static constexpr auto read_from = [](T &value, const std::string &input) {
-    value.ref.task_id = dagforge::TaskId{input};
-  };
-  static constexpr auto read_default_value = [](T &value,
-                                                const dagforge::JsonValue &input) {
-    value.default_value_json = dagforge::dump_json(input);
-    value.has_default_value = true;
-  };
-  static constexpr auto value = object("key", custom<read_key, nullptr>, "from",
-                                       custom<read_from, nullptr>, "env",
-                                       &T::env_var, "required", &T::required,
-                                       "default_value",
-                                       custom<read_default_value, nullptr>);
 };
 
 template <> struct meta<dagforge::TaskDefaults> {
@@ -155,13 +122,6 @@ template <> struct meta<dagforge::detail::ParsedTaskConfig> {
                                                const std::string &input) {
     value.task.trigger_rule = dagforge::parse<dagforge::TriggerRule>(input);
     value.presence.trigger_rule = true;
-  };
-  static constexpr auto read_is_branch = [](T &value, const bool input) {
-    value.task.is_branch = input;
-  };
-  static constexpr auto read_branch_xcom_key = [](T &value,
-                                                  const std::string &input) {
-    value.task.branch_xcom_key = input;
   };
   static constexpr auto read_depends_on_past = [](T &value, const bool input) {
     value.task.depends_on_past = input;
@@ -290,12 +250,9 @@ template <> struct meta<dagforge::detail::ParsedTaskConfig> {
       custom<read_executor, nullptr>, "timeout", custom<read_timeout, nullptr>,
       "retry_interval", custom<read_retry_interval, nullptr>, "max_retries",
       custom<read_max_retries, nullptr>, "trigger_rule",
-      custom<read_trigger_rule, nullptr>, "is_branch",
-      custom<read_is_branch, nullptr>, "branch_xcom_key",
-      custom<read_branch_xcom_key, nullptr>, "depends_on_past",
+      custom<read_trigger_rule, nullptr>, "depends_on_past",
       custom<read_depends_on_past, nullptr>, "dependencies", &T::dependencies,
-      "xcom_push", &T::xcom_push, "xcom_pull", &T::xcom_pull, "docker_image",
-      custom<read_docker_image, nullptr>, "docker_socket",
+      "docker_image", custom<read_docker_image, nullptr>, "docker_socket",
       custom<read_docker_socket, nullptr>, "pull_policy",
       custom<read_pull_policy, nullptr>, "sensor_type",
       custom<read_sensor_type, nullptr>, "sensor_interval",
@@ -341,6 +298,63 @@ template <> struct meta<dagforge::detail::ParsedDagToml> {
 
 namespace dagforge {
 namespace {
+
+[[nodiscard]] auto removed_task_field(std::string_view text)
+    -> std::optional<std::string_view> {
+  constexpr std::array<std::string_view, 4> kRemovedFields{
+      "xcom_push", "xcom_pull", "is_branch", "branch_xcom_key"};
+  constexpr std::string_view kBasicMultiline = "\"\"\"";
+  constexpr std::string_view kLiteralMultiline = "'''";
+
+  std::string_view multiline_delimiter;
+  while (!text.empty()) {
+    const auto newline = text.find('\n');
+    auto line = text.substr(0, newline);
+    text = newline == std::string_view::npos ? std::string_view{}
+                                             : text.substr(newline + 1);
+
+    if (!multiline_delimiter.empty()) {
+      if (line.find(multiline_delimiter) != std::string_view::npos) {
+        multiline_delimiter = {};
+      }
+      continue;
+    }
+
+    const auto first = line.find_first_not_of(" \t\r");
+    if (first == std::string_view::npos || line[first] == '#') {
+      continue;
+    }
+    line.remove_prefix(first);
+
+    for (const auto field : kRemovedFields) {
+      const auto table = std::format("[[tasks.{}]]", field);
+      if (line.starts_with(table)) {
+        return field;
+      }
+      if (!line.starts_with(field)) {
+        continue;
+      }
+      const auto tail = line.substr(field.size());
+      const auto value_start = tail.find_first_not_of(" \t");
+      if (value_start != std::string_view::npos && tail[value_start] == '=') {
+        return field;
+      }
+    }
+
+    for (const auto delimiter : {kBasicMultiline, kLiteralMultiline}) {
+      const auto open = line.find(delimiter);
+      if (open == std::string_view::npos) {
+        continue;
+      }
+      if (line.find(delimiter, open + delimiter.size()) ==
+          std::string_view::npos) {
+        multiline_delimiter = delimiter;
+      }
+      break;
+    }
+  }
+  return std::nullopt;
+}
 
 auto apply_task_defaults(TaskConfig &task, const TaskDefaults &defaults,
                          const detail::TaskFieldPresence &presence) -> void {
@@ -495,12 +509,6 @@ auto append_task_toml(std::string &out, const TaskConfig &task) -> void {
                      static_cast<int>(task.retry_interval.count()));
   append_toml_scalar(out, "max_retries", task.max_retries);
   append_toml_string(out, "trigger_rule", enum_to_string(task.trigger_rule));
-  if (task.is_branch) {
-    append_toml_bool(out, "is_branch", true);
-  }
-  if (!task.branch_xcom_key.empty() && task.branch_xcom_key != "branch") {
-    append_toml_string(out, "branch_xcom_key", task.branch_xcom_key);
-  }
   if (task.depends_on_past) {
     append_toml_bool(out, "depends_on_past", true);
   }
@@ -644,6 +652,16 @@ auto append_task_toml(std::string &out, const TaskConfig &task) -> void {
 [[nodiscard]] auto parse_dag_info_from_text(std::string_view text,
                                             std::string *diagnostic)
     -> Result<DAGInfo> {
+  if (const auto field = removed_task_field(text)) {
+    const auto message = std::format(
+        "DAG parse error: removed task field '{}' is not supported", *field);
+    log::error("{}", message);
+    if (diagnostic) {
+      *diagnostic = message;
+    }
+    return fail(Error::InvalidArgument);
+  }
+
   auto raw_result =
       toml_util::parse_toml<detail::ParsedDagToml>(text, diagnostic);
   if (!raw_result)
@@ -687,30 +705,6 @@ auto append_task_toml(std::string &out, const TaskConfig &task) -> void {
                         parsed_task.presence);
     parsed_task.task.dependencies =
         materialize_task_dependencies(parsed_task.dependencies);
-    parsed_task.task.xcom_push = std::move(parsed_task.xcom_push);
-    for (auto &push : parsed_task.task.xcom_push) {
-      if (auto prepared = push.prepare(); !prepared) {
-        if (diagnostic) {
-          *diagnostic =
-              "DAG parse error: invalid xcom_push json_pointer or regex";
-        }
-        return fail(prepared.error());
-      }
-    }
-    parsed_task.task.xcom_pull = std::move(parsed_task.xcom_pull);
-    for (auto &pull : parsed_task.task.xcom_pull) {
-      if (!pull.has_default_value) {
-        continue;
-      }
-      auto rendered = xcom::render_serialized_json(pull.default_value_json);
-      if (!rendered) {
-        if (diagnostic) {
-          *diagnostic = "DAG parse error: invalid xcom_pull default_value";
-        }
-        return fail(rendered.error());
-      }
-      pull.default_value_rendered = std::move(*rendered);
-    }
     finalize_task(parsed_task.task);
     dag.tasks.emplace_back(std::move(parsed_task.task));
   }

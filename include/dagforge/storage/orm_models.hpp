@@ -107,24 +107,6 @@ struct TaskInstanceRow {
 };
 
 // ============================================================================
-// Table: xcom_values (Cross-task Communication)
-// Primary Key: xcom_rowid (BIGINT UNSIGNED AUTO_INCREMENT)
-// Unique: (run_rowid, task_rowid, key)
-// Foreign Keys: run_rowid -> dag_runs, task_rowid -> dag_tasks
-// ============================================================================
-struct XComValueRow {
-  int64_t xcom_rowid{0};  // PRIMARY KEY AUTO_INCREMENT
-  int64_t run_rowid{0};   // FK -> dag_runs.run_rowid
-  int64_t task_rowid{0};  // FK -> dag_tasks.task_rowid
-  std::string key;        // NOT NULL - XCom key
-  std::string value;      // NOT NULL - JSON serialized value
-  std::string value_type; // 'text', 'json', 'blob'
-  int byte_size{0};       // Value size in bytes
-  int64_t created_at{0};  // Unix timestamp (milliseconds)
-  int64_t expires_at{0};  // Auto-expiry timestamp (0 = no expiry)
-};
-
-// ============================================================================
 // Table: dag_watermarks (Scheduling watermark tracking)
 // Primary Key: dag_rowid (BIGINT UNSIGNED)
 // Foreign Key: dag_rowid -> dags.dag_rowid

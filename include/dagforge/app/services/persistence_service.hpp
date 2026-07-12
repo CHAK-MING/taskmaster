@@ -13,7 +13,6 @@
 #include "dagforge/storage/mysql_database.hpp"
 #include "dagforge/util/id.hpp"
 #include "dagforge/util/log.hpp"
-#include "dagforge/xcom/xcom_types.hpp"
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/experimental/concurrent_channel.hpp>
@@ -179,19 +178,6 @@ public:
   [[nodiscard]] auto
   reap_zombie_task_instances(std::int64_t heartbeat_timeout_ms)
       -> task<Result<std::size_t>>;
-
-  // XCom
-  // ------------------------------------------------------------------------
-  [[nodiscard]] auto save_xcom(const DAGRunId &run_id, const TaskId &task_id,
-                               std::string key, std::string value_json)
-      -> task<Result<void>>;
-  [[nodiscard]] auto get_xcom(const DAGRunId &run_id, const TaskId &task_id,
-                              std::string key) -> task<Result<XComEntry>>;
-  [[nodiscard]] auto get_task_xcoms(const DAGRunId &run_id,
-                                    const TaskId &task_id)
-      -> task<Result<std::vector<XComEntry>>>;
-  [[nodiscard]] auto get_run_xcoms(const DAGRunId &run_id)
-      -> task<Result<std::vector<XComTaskEntry>>>;
 
   // History / scheduling queries
   // ------------------------------------------------

@@ -70,8 +70,6 @@ This document describes the currently implemented HTTP and WebSocket APIs.
 - `GET /api/history`
 - `GET /api/history/{dag_run_id}`
 - `GET /api/runs/{dag_run_id}/tasks`
-- `GET /api/runs/{dag_run_id}/xcom`
-- `GET /api/runs/{dag_run_id}/tasks/{task_id}/xcom`
 - `GET /api/runs/{dag_run_id}/logs?limit=10000`
 - `GET /api/runs/{dag_run_id}/tasks/{task_id}/logs?attempt=1&limit=5000`
 

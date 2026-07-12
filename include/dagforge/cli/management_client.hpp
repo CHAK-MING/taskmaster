@@ -9,7 +9,6 @@
 #include "dagforge/storage/database_service.hpp"
 #include "dagforge/storage/mysql_database.hpp"
 #include "dagforge/storage/orm_models.hpp"
-#include "dagforge/xcom/xcom_types.hpp"
 #endif
 
 #include <cstddef>
@@ -44,10 +43,6 @@ public:
 
   [[nodiscard]] auto get_task_instances(const DAGRunId &run_id) const
       -> Result<std::vector<TaskInstanceInfo>>;
-
-  [[nodiscard]] auto get_task_xcoms(const DAGRunId &run_id,
-                                    const TaskId &task_id) const
-      -> Result<std::vector<XComEntry>>;
 
   [[nodiscard]] auto get_run_logs(const DAGRunId &run_id,
                                   std::size_t limit = 10000) const

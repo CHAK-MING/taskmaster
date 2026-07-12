@@ -26,7 +26,6 @@ SCENE_CLASSIFICATION: dict[str, str] = {
     "scene9_fanin_100x10": "扇入 DAG / 多前驱汇聚敏感",
     "scene10_mesh_100x10": "网状 DAG / 密集依赖传播敏感",
     "scene12_perf_pipeline_1x3": "真实场景 / perf pipeline stability",
-    "scene13_perf_pipeline_mixed_1x21": "真实场景 / perf + XCom + sensor + trigger rules",
 }
 
 BURST_SWEEP_SCENARIOS = [

@@ -21,18 +21,16 @@ In-depth usage, patterns, and troubleshooting. For a quick overview see the [REA
 3. [Viewing Logs](#3-viewing-logs)
 4. [DAG Hot-Reload](#4-dag-hot-reload)
 5. [Trigger Rules — When to Use Each](#5-trigger-rules--when-to-use-each)
-6. [XCom — Complete Examples](#6-xcom--complete-examples)
-7. [Sensor Tasks](#7-sensor-tasks)
-8. [Docker Tasks](#8-docker-tasks)
-9. [Retries and Timeouts](#9-retries-and-timeouts)
-10. [Branching DAGs](#10-branching-dags)
-11. [Inspecting Runs](#11-inspecting-runs)
-12. [Testing Individual Tasks](#12-testing-individual-tasks)
-13. [Re-running Failed Tasks](#13-re-running-failed-tasks)
-14. [Database Maintenance](#14-database-maintenance)
-15. [Scripting / JSON Output](#15-scripting--json-output)
-16. [CLI Cheatsheet](#16-cli-cheatsheet)
-17. [Troubleshooting](#17-troubleshooting)
+7. [Sensor Tasks](#6-sensor-tasks)
+8. [Docker Tasks](#7-docker-tasks)
+9. [Retries and Timeouts](#8-retries-and-timeouts)
+11. [Inspecting Runs](#9-inspecting-runs)
+12. [Testing Individual Tasks](#10-testing-individual-tasks)
+13. [Re-running Failed Tasks](#11-re-running-failed-tasks)
+14. [Database Maintenance](#12-database-maintenance)
+15. [Scripting / JSON Output](#13-scripting--json-output)
+16. [CLI Cheatsheet](#14-cli-cheatsheet)
+17. [Troubleshooting](#15-troubleshooting)
 
 ---
 
@@ -329,14 +327,14 @@ dependencies = ["extract", "transform", "load"]
 trigger_rule = "one_failed"
 ```
 
-### Pattern: fan-in after branching
+### Pattern: fan-in after optional paths
 
 ```toml
 [[tasks]]
 id           = "merge"
 command      = "./merge.sh"
 dependencies = ["branch_large", "branch_small"]
-trigger_rule = "one_success"   # whichever branch ran
+trigger_rule = "one_success"   # runs after at least one upstream succeeds
 ```
 
 ### Pattern: lenient pipeline (skips are OK)
@@ -351,86 +349,7 @@ trigger_rule = "none_failed"   # runs if core_transform succeeded, even if optio
 
 ---
 
-## 6. XCom — Complete Examples
-
-XCom (cross-communication) lets tasks share data. Values are stored in MySQL (`xcom_values` table) and resolved at task startup via template substitution.
-
-### Example 1: Pass a count between tasks
-
-```toml
-id = "count_pipeline"
-
-[[tasks]]
-id      = "count_rows"
-command = "wc -l < /data/input.csv | tr -d ' '"
-
-[[tasks.xcom_push]]
-key    = "row_count"
-source = "stdout"       # captures the last non-empty stdout line
-
-[[tasks]]
-id           = "process"
-command      = "echo Processing {{xcom.count_rows.row_count}} rows"
-dependencies = ["count_rows"]
-```
-
-### Example 2: Inject XCom as environment variable
-
-```toml
-[[tasks]]
-id      = "get_api_token"
-command = "vault read -field=token secret/api"
-
-[[tasks.xcom_push]]
-key    = "token"
-source = "stdout"
-
-[[tasks]]
-id           = "call_api"
-command      = "curl -H \"Authorization: Bearer $API_TOKEN\" https://api.example.com/data"
-dependencies = ["get_api_token"]
-
-[[tasks.xcom_pull]]
-key      = "token"
-from     = "get_api_token"
-env      = "API_TOKEN"
-required = true           # task fails immediately if key is missing
-```
-
-### Example 3: Extract with regex
-
-```toml
-[[tasks]]
-id      = "build"
-command = "make && echo 'Build version: 1.4.2'"
-
-[[tasks.xcom_push]]
-key   = "version"
-source = "stdout"
-regex = "Build version: (\\S+)"   # capture group 1 is stored
-```
-
-### 📋 XCom Push Fields
-
-| Field | Description |
-|---|---|
-| `key` | Key name to store the value under |
-| `source` | `stdout` \| `stderr` \| `json` \| `exit_code` |
-| `regex` | Regex pattern; capture group 1 is stored |
-| `json_pointer` | RFC 6901 JSON Pointer, for example `/result/items/0` |
-
-### 🔍 XCom Sources
-
-| `source` | What is captured |
-|---|---|
-| `stdout` | Last non-empty line of stdout |
-| `stderr` | Last non-empty line of stderr |
-| `json` | Full stdout parsed as JSON (used for branching) |
-| `exit_code` | Task exit code as a string |
-
----
-
-## 7. Sensor Tasks
+## 6. Sensor Tasks
 
 Sensors poll an external condition and block until it is met (or timeout).
 
@@ -499,7 +418,7 @@ trigger_rule = "none_failed"   # runs even if sensor was skipped
 
 ---
 
-## 8. Docker Tasks
+## 7. Docker Tasks
 
 Run tasks inside a Docker container. Docker fields are set directly on the task:
 
@@ -513,11 +432,11 @@ pull_policy  = "IfNotPresent"   # Never | IfNotPresent | Always
 docker_socket = "/var/run/docker.sock"   # optional, default shown
 ```
 
-Logs are captured from the container's stdout/stderr. There is no volume or env mapping in the TOML format; pass environment via the command string or use XCom.
+Logs are captured from the container's stdout/stderr. There is no volume or env mapping in the TOML format; pass environment via the command string.
 
 ---
 
-## 9. Retries and Timeouts
+## 8. Retries and Timeouts
 
 Default values (applied unless overridden per-task or via `[default_args]`):
 - `max_retries = 3`
@@ -539,55 +458,7 @@ When all retries are exhausted, the task state becomes `failed` and downstream t
 
 ---
 
-## 10. Branching DAGs
-
-A branch task outputs a JSON array of task IDs to run. All other downstream tasks are skipped.
-
-```toml
-id = "branching_example"
-
-[[tasks]]
-id        = "decide"
-command   = '''
-SIZE=$(wc -l < /data/input.csv)
-if [ $SIZE -gt 10000 ]; then
-  echo '["process_large"]'
-else
-  echo '["process_small"]'
-fi
-'''
-is_branch = true
-
-[[tasks.xcom_push]]
-key    = "branch"
-source = "json"
-
-[[tasks]]
-id           = "process_large"
-command      = "./batch_process.sh --mode large"
-dependencies = ["decide"]
-
-[[tasks]]
-id           = "process_small"
-command      = "./batch_process.sh --mode small"
-dependencies = ["decide"]
-
-[[tasks]]
-id           = "finalize"
-command      = "./finalize.sh"
-dependencies = ["process_large", "process_small"]
-trigger_rule = "one_success"   # whichever branch ran
-```
-
-**Rules for branch tasks:**
-- `is_branch = true` must be set.
-- The command must print a JSON array of task IDs to stdout on its last line.
-- Task IDs in the array must be direct downstream dependents.
-- Non-selected tasks are marked `skipped`.
-
----
-
-## 11. Inspecting Runs
+## 9. Inspecting Runs
 
 ### Quick status check
 
@@ -596,14 +467,6 @@ dagforge inspect hello_world --latest
 ```
 
 Output shows run state, start/finish times, and a table of task states.
-
-### With XCom values
-
-```bash
-dagforge inspect daily_etl --latest --xcom
-```
-
-Shows XCom key-value pairs pushed by each task.
 
 ### With execution time histogram
 
@@ -627,7 +490,7 @@ dagforge inspect hello_world --latest --json | jq '.tasks[] | select(.state == "
 
 ---
 
-## 12. Testing Individual Tasks
+## 10. Testing Individual Tasks
 
 For development and debugging, you can test a single task in isolation without running the entire DAG. This ignores dependencies and runs the task immediately (similar to Airflow's `test` command).
 
@@ -638,7 +501,7 @@ dagforge test my_pipeline process_data --json
 
 ---
 
-## 13. Re-running Failed Tasks
+## 11. Re-running Failed Tasks
 
 After fixing the underlying issue, clear the failed tasks and let the scheduler retry:
 
@@ -664,7 +527,7 @@ dagforge inspect daily_etl --latest   # shows run ID at the top
 
 ---
 
-## 14. Database Maintenance
+## 12. Database Maintenance
 
 ### Apply schema migrations after upgrade
 
@@ -688,7 +551,7 @@ A DAG is considered stale if it exists in the database but has no corresponding 
 
 ---
 
-## 15. Scripting / JSON Output
+## 13. Scripting / JSON Output
 
 Service startup messages (e.g. `MySQL database opened`) go to **stderr**. CLI commands that support `--json` write structured output to **stdout** and diagnostics to **stderr**.
 
@@ -709,7 +572,7 @@ Commands with `--json` support: `trigger`, `test`, `list dags`, `list runs`, `li
 
 ---
 
-## 16. CLI Cheatsheet
+## 14. CLI Cheatsheet
 
 ```bash
 # Service Management
@@ -727,7 +590,7 @@ dagforge list runs  [dag_id] [--state failed|success|running] [--limit N] [--out
 dagforge list tasks [dag_id] [--output table|json] [--json]
 
 # Inspection and Logs
-dagforge inspect <dag_id> [--run id|--latest] [--xcom] [--details] [--json]
+dagforge inspect <dag_id> [--run id|--latest] [--details] [--json]
 dagforge logs <dag_id> [--run id|--latest] [--task task_id] [--attempt N] [-f|--follow] [--short-time] [--json]
 
 # DAG Control
@@ -746,7 +609,7 @@ dagforge validate [-c file | -f dag.toml] [--json]
 
 ---
 
-## 17. Troubleshooting
+## 15. Troubleshooting
 
 ### `logs` shows no output after a successful run
 

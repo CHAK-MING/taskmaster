@@ -92,7 +92,7 @@ TEST(ModulesCoreSmokeTest, ImportsDagAndConfigValueModulesWithoutDagforgeHeaders
 }
 
 TEST(ModulesCoreSmokeTest, ImportsStorageSchemaWithoutDagforgeHeaders) {
-  EXPECT_EQ(dagforge::schema::CURRENT_SCHEMA_VERSION, 3);
+  EXPECT_EQ(dagforge::schema::CURRENT_SCHEMA_VERSION, 4);
   EXPECT_NE(dagforge::schema::V1_SCHEMA.find("CREATE TABLE IF NOT EXISTS dags"),
             std::string_view::npos);
 }

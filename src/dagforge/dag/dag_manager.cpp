@@ -81,7 +81,7 @@ auto DAGInfo::prepare_runtime_artifacts() -> Result<void> {
   auto graph = std::make_shared<DAG>();
   for (const auto &task : tasks) {
     if (auto r =
-            graph->add_node(task.task_id, task.trigger_rule, task.is_branch);
+            graph->add_node(task.task_id, task.trigger_rule);
         !r) {
       return fail(r.error());
     }
@@ -802,7 +802,7 @@ auto DAGManager::build_dag_graph(const DAGId &dag_id) const -> Result<DAG> {
 
   DAG dag;
   for (const auto &task : dag_info->tasks) {
-    if (auto r = dag.add_node(task.task_id, task.trigger_rule, task.is_branch);
+    if (auto r = dag.add_node(task.task_id, task.trigger_rule);
         !r) {
       return fail(r.error());
     }

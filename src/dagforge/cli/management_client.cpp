@@ -158,12 +158,6 @@ auto ManagementClient::get_task_instances(const DAGRunId &run_id) const
   return run_task(io_, db_.get_task_instances(run_id));
 }
 
-auto ManagementClient::get_task_xcoms(const DAGRunId &run_id,
-                                      const TaskId &task_id) const
-    -> Result<std::vector<XComEntry>> {
-  return run_task(io_, db_.get_task_xcoms(run_id, task_id));
-}
-
 auto ManagementClient::clear_failed_tasks(const DAGRunId &run_id)
     -> Result<void> {
   return rebuild_run_after_clear(io_, db_, run_id, [](std::vector<TaskInstanceInfo> &tasks) {

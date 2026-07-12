@@ -10,7 +10,6 @@
 #include "dagforge/executor/executor.hpp"
 #include "dagforge/io/timing_wheel.hpp"
 #include "dagforge/util/id.hpp"
-#include "dagforge/xcom/template_resolver.hpp"
 
 #include <array>
 #include <atomic>
@@ -36,7 +35,6 @@ namespace dagforge {
 class Runtime;
 class IExecutor;
 struct TaskConfig;
-struct XComPushConfig;
 
 struct ExecutionCallbacks {
   std::move_only_function<void(const DAGRunId &dag_run_id, const TaskId &task,
@@ -60,23 +58,6 @@ struct ExecutionCallbacks {
   std::move_only_function<void(const DAGRunId &dag_run_id,
                                const TaskInstanceInfo &info)>
       on_persist_task;
-  // Fire-and-forget: XCom values are sent to the persistence actor.
-  std::move_only_function<void(const DAGRunId &dag_run_id, const TaskId &task,
-                               std::string_view key,
-                               std::string_view value_json)>
-      on_persist_xcom;
-  // Async reads — all go through the persistence Actor (ask pattern).
-  std::move_only_function<task<Result<XComEntry>>(
-      const DAGRunId &dag_run_id, const TaskId &task, std::string key)>
-      get_xcom;
-  std::move_only_function<task<Result<std::vector<XComEntry>>>(
-      const DAGRunId &dag_run_id, const TaskId &task)>
-      get_task_xcoms;
-  std::move_only_function<task<Result<std::vector<XComTaskEntry>>>(
-      const DAGRunId &dag_run_id)>
-      get_run_xcoms;
-  std::move_only_function<task<Result<DAGId>>(const DAGRunId &dag_run_id)>
-      get_dag_id_by_run;
   std::move_only_function<task<Result<TaskState>>(
       std::int64_t task_rowid,
       std::chrono::system_clock::time_point execution_date,
@@ -93,16 +74,6 @@ struct ExecutionCallbacks {
 
 class ExecutionService {
 public:
-  enum class XComMetricSource : std::uint8_t {
-    Cache = 0,
-    RunBatch,
-    TaskBatch,
-    Single,
-    BranchCache,
-    BranchSingle,
-    Count,
-  };
-
   ExecutionService(Runtime &runtime, IExecutor &executor);
   ~ExecutionService();
 
@@ -165,21 +136,10 @@ public:
       -> std::uint64_t;
   [[nodiscard]] auto task_duration_histogram() const
       -> metrics::Histogram::Snapshot;
-  [[nodiscard]] auto xcom_prefetch_requests_total(XComMetricSource source) const
-      -> std::uint64_t;
-  [[nodiscard]] auto xcom_prefetch_hits_total(XComMetricSource source) const
-      -> std::uint64_t;
-  [[nodiscard]] auto xcom_push_entries_total() const -> std::uint64_t;
-  [[nodiscard]] auto xcom_push_extraction_failures_total() const
-      -> std::uint64_t;
-
   auto set_max_concurrency(int max_concurrency) -> void;
 
   [[nodiscard]] auto runtime() noexcept -> Runtime & { return runtime_; }
   [[nodiscard]] auto executor() noexcept -> IExecutor & { return executor_; }
-  [[nodiscard]] auto template_resolver() noexcept -> TemplateResolver & {
-    return template_resolver_;
-  }
   auto emit_log_chunk(const DAGRunId &dag_run_id, const TaskId &task_id,
                       int attempt, std::string_view stream,
                       std::string_view msg) -> void;
@@ -206,14 +166,6 @@ public:
     [[nodiscard]] auto cfg() const noexcept -> const ExecutorConfig & {
       return *executor_config;
     }
-    [[nodiscard]] auto xcom_push() const noexcept
-        -> const std::vector<XComPushConfig> & {
-      return task_config->xcom_push;
-    }
-    [[nodiscard]] auto xcom_pull() const noexcept
-        -> const std::vector<XComPullConfig> & {
-      return task_config->xcom_pull;
-    }
   };
 
 private:
@@ -231,19 +183,12 @@ private:
   };
 
   struct ActiveRunState {
-    using XComValueMap =
-        std::unordered_map<std::string, std::string, StringHash, StringEqual>;
-    using XComTaskCache =
-        std::unordered_map<std::string_view, XComValueMap, StringHash,
-                           StringEqual>;
-
     std::unique_ptr<DAGRun> run;
     std::shared_ptr<const std::vector<ExecutorConfig>> executor_configs;
     std::shared_ptr<const std::vector<TaskConfig::Compiled>> task_configs;
     std::optional<DAGId> dag_id;
     std::unordered_map<std::string, std::string, StringHash, StringEqual>
         conf_values;
-    XComTaskCache xcom_cache;
     DispatchState dispatch_state{DispatchState::Idle};
   };
 
@@ -364,7 +309,6 @@ private:
   Runtime &runtime_;
   IExecutor &executor_;
   ExecutionCallbacks callbacks_;
-  TemplateResolver template_resolver_;
 
   std::vector<ShardState> shard_states_;
   std::vector<QueueSizeCounter> ready_run_queue_sizes_;
@@ -389,14 +333,6 @@ private:
   std::atomic<std::uint64_t> task_skipped_total_{0};
   std::array<std::atomic<std::uint64_t>, 5> executor_active_counts_{};
   std::array<std::atomic<std::uint64_t>, 5> executor_start_totals_{};
-  std::array<std::atomic<std::uint64_t>,
-             static_cast<std::size_t>(XComMetricSource::Count)>
-      xcom_prefetch_requests_{};
-  std::array<std::atomic<std::uint64_t>,
-             static_cast<std::size_t>(XComMetricSource::Count)>
-      xcom_prefetch_hits_{};
-  std::atomic<std::uint64_t> xcom_push_entries_total_{0};
-  std::atomic<std::uint64_t> xcom_push_extraction_failures_total_{0};
   metrics::Histogram task_duration_histogram_{
       {1'000'000ULL, 5'000'000ULL, 10'000'000ULL, 25'000'000ULL, 50'000'000ULL,
        100'000'000ULL, 250'000'000ULL, 500'000'000ULL, 1'000'000'000ULL,

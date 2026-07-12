@@ -149,72 +149,6 @@ auto ExecutionEventBridge::wire() -> void {
     deps_.mysql_batch_write_ops->fetch_add(1, std::memory_order_relaxed);
   };
 
-  callbacks.on_persist_xcom = [this](const DAGRunId &dag_run_id,
-                                     const TaskId &task_id,
-                                     std::string_view key,
-                                     std::string_view value_json) {
-    if (!deps_.persistence) {
-      return;
-    }
-    enqueue_persistence(
-        [this, run_id = dag_run_id.clone(), task_id = task_id.clone(),
-         key = std::string(key), value = std::string(value_json)]() mutable {
-          return persist_xcom(std::move(run_id), std::move(task_id),
-                              std::move(key), std::move(value));
-        });
-  };
-
-  callbacks.get_xcom = [this](const DAGRunId &dag_run_id, const TaskId &task_id,
-                              std::string key) -> task<Result<XComEntry>> {
-    if (!deps_.persistence) {
-      co_return fail(Error::NotFound);
-    }
-    auto xcom_res = co_await deps_.persistence->get_xcom(
-        dag_run_id, task_id, std::move(key));
-    if (!xcom_res) {
-      co_return fail(xcom_res.error());
-    }
-    co_return ok(std::move(*xcom_res));
-  };
-
-  callbacks.get_task_xcoms =
-      [this](const DAGRunId &dag_run_id,
-             const TaskId &task_id) -> task<Result<std::vector<XComEntry>>> {
-    if (!deps_.persistence) {
-      co_return fail(Error::NotFound);
-    }
-    auto xcoms_res =
-        co_await deps_.persistence->get_task_xcoms(dag_run_id, task_id);
-    if (!xcoms_res) {
-      co_return fail(xcoms_res.error());
-    }
-    co_return ok(std::move(*xcoms_res));
-  };
-
-  callbacks.get_run_xcoms = [this](const DAGRunId &dag_run_id)
-      -> task<Result<std::vector<XComTaskEntry>>> {
-    if (!deps_.persistence) {
-      co_return fail(Error::NotFound);
-    }
-    auto xcoms_res = co_await deps_.persistence->get_run_xcoms(dag_run_id);
-    if (!xcoms_res) {
-      co_return fail(xcoms_res.error());
-    }
-    co_return ok(std::move(*xcoms_res));
-  };
-
-  callbacks.get_dag_id_by_run =
-      [this](const DAGRunId &dag_run_id) -> task<Result<DAGId>> {
-    if (!deps_.persistence) {
-      co_return fail(Error::NotFound);
-    }
-    auto entry = co_await deps_.persistence->get_run_history(dag_run_id);
-    if (!entry) {
-      co_return fail(entry.error());
-    }
-    co_return ok(entry->dag_id.clone());
-  };
-
   callbacks.get_max_retries = [this](const DAGRunId &dag_run_id,
                                      NodeIndex idx) {
     return deps_.get_max_retries(dag_run_id, idx);
@@ -360,21 +294,6 @@ auto ExecutionEventBridge::persist_run(std::shared_ptr<const DAGRun> run)
     co_return fail(result.error());
   }
   co_return ok(*result);
-}
-
-auto ExecutionEventBridge::persist_xcom(DAGRunId run_id, TaskId task_id,
-                                        std::string key,
-                                        std::string value_json)
-    -> task<Result<void>> {
-  if (!deps_.persistence) {
-    co_return fail(Error::SystemNotRunning);
-  }
-  auto result = co_await deps_.persistence->save_xcom(
-      run_id, task_id, std::move(key), std::move(value_json));
-  if (!result) {
-    co_return fail(result.error());
-  }
-  co_return ok();
 }
 
 auto ExecutionEventBridge::spawn_persistence_task(spawn_task task) -> void {

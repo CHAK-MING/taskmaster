@@ -131,16 +131,6 @@ public:
   auto get_run_history(const DAGRunId &run_id)
       -> task<Result<RunHistoryEntry>> override;
 
-  auto save_xcom(const DAGRunId &run_id, const TaskId &task_id, std::string key,
-                 std::string value_json) -> task<Result<void>> override;
-  auto get_xcom(const DAGRunId &run_id, const TaskId &task_id,
-                std::string key) -> task<Result<XComEntry>> override;
-  auto get_task_xcoms(const DAGRunId &run_id, const TaskId &task_id)
-      -> task<Result<std::vector<XComEntry>>> override;
-  auto get_run_xcoms(const DAGRunId &run_id)
-      -> task<Result<std::vector<XComTaskEntry>>> override;
-  auto delete_run_xcoms(const DAGRunId &run_id) -> task<Result<void>> override;
-
   auto get_last_execution_date(const DAGId &dag_id)
       -> task<Result<TimePoint>> override;
   auto run_exists(const DAGId &dag_id, TimePoint execution_time)

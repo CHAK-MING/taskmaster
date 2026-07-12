@@ -91,15 +91,12 @@ export interface Translations {
     runInstances: string;
     logs: string;
     logsDescription: string;
-    xcomData: string;
-    xcomDescription: string;
     selectRun: string;
     selectTask: string;
     task: string;
     time: string;
     noRuns: string;
     clickTrigger: string;
-    noXcom: string;
     noLogs: string;
     waitingLogs: string;
     showingRunStatus: string;
@@ -108,7 +105,6 @@ export interface Translations {
     finished: string;
     dependsOn: string;
     dependenciesShort: string;
-    branch: string;
     executor: string;
     sensorType: string;
     sensorTarget: string;
@@ -336,15 +332,12 @@ const zhTranslations: Translations = {
     runInstances: '运行实例',
     logs: '日志',
     logsDescription: '查看任务输出与实时日志流',
-    xcomData: 'XCom 数据',
-    xcomDescription: '任务间传递的数据',
     selectRun: '选择运行实例',
     selectTask: '选择任务',
     task: '任务',
     time: '时间',
     noRuns: '暂无运行实例',
     clickTrigger: '点击“触发运行”开始执行',
-    noXcom: '该实例没有 XCom 数据',
     noLogs: '该运行实例暂无日志',
     waitingLogs: '等待日志输出…',
     showingRunStatus: '显示 Run #{number} 的执行状态',
@@ -353,7 +346,6 @@ const zhTranslations: Translations = {
     finished: '结束',
     dependsOn: '依赖任务',
     dependenciesShort: '依赖',
-    branch: '分支',
     executor: '执行器',
     sensorType: '传感器类型',
     sensorTarget: '探测目标',
@@ -374,7 +366,6 @@ const zhTranslations: Translations = {
     exitCode: '退出码',
     error: '错误信息',
     command: '命令',
-    xcomStats: 'XCom',
     executionTime: '执行时长',
     variables: '个变量',
   },
@@ -587,15 +578,12 @@ const enTranslations: Translations = {
     runInstances: 'DAG Runs',
     logs: 'Logs',
     logsDescription: 'View task instance logs and real-time output',
-    xcomData: 'XCom',
-    xcomDescription: 'Cross-communication data between tasks',
     selectRun: 'Select Run',
     selectTask: 'Select Task',
     task: 'Task',
     time: 'Time',
     noRuns: 'No run history available',
     clickTrigger: 'Click “Trigger DAG” to start execution',
-    noXcom: 'No XCom data for this run',
     noLogs: 'No logs for this run',
     waitingLogs: 'Waiting for logs…',
     showingRunStatus: 'Status for Run #{number}',
@@ -604,7 +592,6 @@ const enTranslations: Translations = {
     finished: 'End Date',
     dependsOn: 'Dependencies',
     dependenciesShort: 'deps',
-    branch: 'Branch',
     executor: 'Executor',
     sensorType: 'Sensor Type',
     sensorTarget: 'Sensor Target',
@@ -625,7 +612,6 @@ const enTranslations: Translations = {
     exitCode: 'Exit Code',
     error: 'Error',
     command: 'Command',
-    xcomStats: 'XCom',
     executionTime: 'Duration',
     variables: 'variables',
   },

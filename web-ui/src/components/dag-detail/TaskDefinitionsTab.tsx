@@ -56,9 +56,6 @@ export function TaskDefinitionsTab({ tasks }: TaskDefinitionsTabProps) {
                       <Badge variant="outline" className="text-xs">
                         {triggerRuleLabels[task.trigger_rule || "all_success"] || task.trigger_rule || "All success"}
                       </Badge>
-                      {task.is_branch && (
-                        <Badge variant="outline" className="text-xs">{t.dagDetail.branch}</Badge>
-                      )}
                       {dependsTasks.length > 0 && (
                         <Badge variant="outline" className="text-xs">
                           {t.dagDetail.dependsOn}: {dependsTasks.join(", ")}

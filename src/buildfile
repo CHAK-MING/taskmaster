@@ -99,5 +99,4 @@ mxx{modules/executor}@modules/: cxx.module_name = dagforge.executor
 mxx{modules/task_types}@modules/: cxx.module_name = dagforge.task_types
 mxx{modules/app}@modules/: cxx.module_name = dagforge.metrics
 mxx{modules/cli}@modules/: cxx.module_name = dagforge.cli
-mxx{modules/xcom}@modules/: cxx.module_name = dagforge.xcom
 mxx{modules/workflow}@modules/: cxx.module_name = dagforge.workflow

@@ -6,7 +6,7 @@ All notable changes to DAGForge will be documented in this file.
 
 ### Breaking Changes
 - DAG `start_date` and `end_date` now use native TOML Local Date values such as `2026-07-12`; quoted date strings are rejected.
-- XCom extraction now uses RFC 6901 `json_pointer`; the former `json_path` field and dot/bracket syntax are removed.
+- Removed XCom and XCom-based branching from the C++ runtime, including persistence, APIs, CLI, metrics, modules, tests, and examples.
 - Unknown TOML fields are rejected instead of being silently ignored.
 - Newly generated DAG run IDs use standard UUIDv7 suffixes.
 

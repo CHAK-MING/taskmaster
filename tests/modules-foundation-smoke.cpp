@@ -50,32 +50,10 @@ auto main() -> int {
           dagforge::task_defaults::kExecutionTimeout.count()) {
     return 18;
   }
-  dagforge::XComPushConfig push{.key = "result", .regex_pattern = "ok"};
-  if (!push.prepare()) {
-    return 8;
-  }
   dagforge::ShellExecutorConfig shell_cfg{};
   dagforge::ExecutorConfig exec_cfg{shell_cfg};
   if (exec_cfg.type() != dagforge::ExecutorType::Shell) {
     return 19;
-  }
-  dagforge::TaskId producer{"producer"};
-  dagforge::XComPullConfig pull{
-      .ref = dagforge::XComRef{.task_id = producer, .key = "payload"},
-      .env_var = "PAYLOAD",
-      .required = false,
-      .default_value_json = "\"fallback\"",
-      .default_value_rendered = "fallback",
-      .has_default_value = true,
-  };
-  if (pull.source_task().empty() || pull.key().empty()) {
-    return 16;
-  }
-  if (!pull.has_default_value || pull.default_value_json.size() != 10 ||
-      pull.default_value_rendered.compare("fallback") != 0 ||
-      pull.default_value_json.front() != '"' ||
-      pull.default_value_json.back() != '"') {
-    return 20;
   }
   if (dagforge::to_string_view(dagforge::DAGRunState::Running).size() != 7) {
     return 9;
@@ -111,15 +89,6 @@ auto main() -> int {
   serve_opts.config_file = "system_config.toml";
   if (serve_opts.config_file.empty()) {
     return 28;
-  }
-  dagforge::XComCache xcom_cache;
-  xcom_cache.set(dagforge::DAGRunId{"run-1"}, dagforge::TaskId{"task-1"},
-                 "payload", R"("hello-xcom")");
-  auto cached_xcom =
-      xcom_cache.get(dagforge::DAGRunId{"run-1"}, dagforge::TaskId{"task-1"},
-                     "payload");
-  if (!cached_xcom || cached_xcom->get().compare(R"("hello-xcom")") != 0) {
-    return 30;
   }
   return 0;
 }

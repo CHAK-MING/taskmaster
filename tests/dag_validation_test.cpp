@@ -5,11 +5,14 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
+#include <string_view>
+#include <utility>
 
 namespace dagforge {
 namespace {
@@ -162,22 +165,71 @@ command = "echo hello"
   EXPECT_FALSE(result.has_value());
 }
 
-TEST_F(DAGValidationTest, RejectRemovedJsonPathField) {
-  std::string toml = R"(
-id = "xcom_dag"
-
+TEST_F(DAGValidationTest, RejectRemovedXComAndBranchFields) {
+  constexpr std::array cases{
+      std::pair{
+          std::string_view{"xcom_push"},
+          std::string_view{R"(id = "removed_xcom_push"
 [[tasks]]
 id = "producer"
-command = "echo '{\"items\":[1]}'"
-
+command = "echo producer"
 [[tasks.xcom_push]]
-key = "item"
-source = "json"
-json_path = "items[0]"
+key = "payload"
+source = "stdout"
+)"}},
+      std::pair{
+          std::string_view{"xcom_pull"},
+          std::string_view{R"(id = "removed_xcom_pull"
+[[tasks]]
+id = "consumer"
+command = "echo consumer"
+[[tasks.xcom_pull]]
+from = "producer"
+key = "payload"
+)"}},
+      std::pair{
+          std::string_view{"is_branch"},
+          std::string_view{R"(id = "removed_branch"
+[[tasks]]
+id = "router"
+command = "echo router"
+is_branch = true
+)"}},
+      std::pair{
+          std::string_view{"branch_xcom_key"},
+          std::string_view{R"(id = "removed_branch_key"
+[[tasks]]
+id = "router"
+command = "echo router"
+branch_xcom_key = "branch"
+)"}},
+  };
+
+  for (const auto &[field, toml] : cases) {
+    std::string diagnostic;
+    auto result = DAGInfoLoader::load_from_string(toml, &diagnostic);
+    EXPECT_FALSE(result.has_value()) << field;
+    EXPECT_NE(diagnostic.find(field), std::string::npos) << diagnostic;
+  }
+}
+
+TEST_F(DAGValidationTest, RemovedFieldNamesInsideLuaScriptAreAllowed) {
+  constexpr std::string_view toml = R"(id = "lua_names"
+[[tasks]]
+id = "lua_task"
+executor = "lua"
+script = """
+  local xcom_push = "ordinary variable"
+  local xcom_pull = xcom_push
+  local is_branch = false
+  local branch_xcom_key = "ordinary variable"
+  return xcom_pull
+"""
 )";
 
-  auto result = DAGInfoLoader::load_from_string(toml);
-  EXPECT_FALSE(result.has_value());
+  std::string diagnostic;
+  auto result = DAGInfoLoader::load_from_string(toml, &diagnostic);
+  EXPECT_TRUE(result.has_value()) << diagnostic;
 }
 
 TEST_F(DAGValidationTest, RejectUnknownFields) {
@@ -724,27 +776,11 @@ TEST_F(DAGValidationTest, ToStringRoundTripsTaskMetadata) {
   task.retry_interval = std::chrono::seconds(15);
   task.max_retries = 2;
   task.trigger_rule = TriggerRule::AllDone;
-  task.is_branch = true;
-  task.branch_xcom_key = "next_branch";
   task.depends_on_past = true;
   task.dependencies = {
       TaskDependency{.task_id = TaskId{"upstream_a"}, .label = "success"},
       TaskDependency{.task_id = TaskId{"upstream_b"}, .label = ""},
   };
-  task.xcom_push.push_back(XComPushConfig{
-      .key = "payload",
-      .source = XComSource::Json,
-      .json_pointer = "/items/0",
-      .regex_pattern = "",
-      .regex_group = 0,
-  });
-  task.xcom_pull.push_back(XComPullConfig{
-      .ref = XComRef{.task_id = TaskId{"upstream_a"}, .key = "payload"},
-      .env_var = "PAYLOAD",
-      .required = true,
-      .default_value_json = "",
-      .has_default_value = false,
-  });
   task.executor_config = SensorExecutorConfig{
       .type = SensorType::Http,
       .target = "http://example.com/health",
@@ -779,51 +815,16 @@ TEST_F(DAGValidationTest, ToStringRoundTripsTaskMetadata) {
   EXPECT_EQ(reparsed->dag_id, dag.dag_id);
   EXPECT_EQ(reparsed->start_date, dag.start_date);
   EXPECT_EQ(reparsed->end_date, dag.end_date);
-  EXPECT_EQ(task_out.branch_xcom_key, "next_branch");
-  EXPECT_TRUE(task_out.is_branch);
   EXPECT_TRUE(task_out.depends_on_past);
   ASSERT_EQ(task_out.dependencies.size(), 2);
   EXPECT_TRUE(task_out.dependencies[0].label.empty());
   EXPECT_TRUE(task_out.dependencies[1].label.empty());
-  EXPECT_TRUE(task_out.xcom_push.empty());
-  EXPECT_TRUE(task_out.xcom_pull.empty());
   const auto *sensor = task_out.executor_config.as<SensorExecutorConfig>();
   ASSERT_NE(sensor, nullptr);
   EXPECT_EQ(sensor->type, SensorType::Http);
   EXPECT_EQ(sensor->target, "http://example.com/health");
   EXPECT_EQ(sensor->http_method, "HEAD");
   EXPECT_EQ(sensor->expected_status, 204);
-}
-
-TEST_F(DAGValidationTest, LoadFromStringPrecomputesRenderedXComPullDefault) {
-  std::string toml = R"(
-id = "xcom_default_dag"
-name = "xcom_default_dag"
-
-[[tasks]]
-id = "producer"
-command = "echo producer"
-
-[[tasks]]
-id = "consumer"
-command = "echo consumer"
-
-[[tasks.xcom_pull]]
-from = "producer"
-key = "payload"
-env = "PAYLOAD"
-required = false
-default_value = "fallback"
-)";
-
-  auto result = DAGInfoLoader::load_from_string(toml);
-  ASSERT_TRUE(result.has_value()) << result.error().message();
-  ASSERT_EQ(result->tasks.size(), 2U);
-
-  const auto &pull = result->tasks[1].xcom_pull.front();
-  EXPECT_TRUE(pull.has_default_value);
-  EXPECT_EQ(pull.default_value_json, R"("fallback")");
-  EXPECT_EQ(pull.default_value_rendered, "fallback");
 }
 
 TEST_F(DependencyLabelTest, LoadFromString_MixedFormsParse) {

@@ -33,7 +33,6 @@
 - **🛠️ 基于 TOML 的工作流：** 简洁、声明式的 DAG 定义，支持依赖关系、触发规则和传感器。
 - **🔌 多执行器支持：** 原生支持 **Shell** 命令、**Docker** 容器以及 **Sensor**（轮询）执行模式。
 - **📡 实时可视化：** 采用 **React 19** 和 **React Flow** 构建的现代化控制台，支持 **WebSocket** 实时日志流。
-- **🔄 智能数据共享：** 通过 MySQL/MariaDB 实现的 **XCom** 机制，支持模板变量（如 `{{xcom.task.key}}`）。
 - **📊 可观测性：** 内置 **Prometheus** 指标、HTTP REST API 和结构化 JSON 日志，实现无缝集成。
 
 ---
@@ -109,7 +108,7 @@ docker compose up -d
 详细指南和参考文档可在 **[`docs/`](docs/)** 目录中找到：
 
 - **[新手入门指南](docs/USER_GUIDE.md#1-first-time-setup)** - 逐步安装与配置。
-- **[核心功能指南](docs/USER_GUIDE.md#5-trigger-rules--when-to-use-each)** - 触发规则、XCom、传感器与 Docker 任务。
+- **[核心功能指南](docs/USER_GUIDE.md#5-trigger-rules--when-to-use-each)** - 触发规则、传感器与 Docker 任务。
 - **[API 参考](docs/API.md)** - 探索 REST 和 WebSocket 接口。
 - **[CLI 速查表](docs/USER_GUIDE.md#16-cli-cheatsheet)** - 掌握 `dagforge` 命令行工具。
 

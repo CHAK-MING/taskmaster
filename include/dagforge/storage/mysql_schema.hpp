@@ -52,11 +52,7 @@ CREATE TABLE IF NOT EXISTS dag_tasks (
     retry_interval INT NOT NULL DEFAULT 60,
     max_retries INT NOT NULL DEFAULT 3,
     trigger_rule VARCHAR(64) NOT NULL DEFAULT 'all_success',
-    is_branch TINYINT NOT NULL DEFAULT 0,
-    branch_xcom_key VARCHAR(255) NOT NULL DEFAULT 'branch',
     depends_on_past TINYINT NOT NULL DEFAULT 0,
-    xcom_push JSON NOT NULL DEFAULT ('[]'),
-    xcom_pull JSON NOT NULL DEFAULT ('[]'),
     UNIQUE KEY uq_dag_task (dag_rowid, task_id),
     CONSTRAINT fk_task_dag FOREIGN KEY (dag_rowid) REFERENCES dags(dag_rowid) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
@@ -114,21 +110,6 @@ CREATE TABLE IF NOT EXISTS task_instances (
     CONSTRAINT fk_ti_task FOREIGN KEY (task_rowid) REFERENCES dag_tasks(task_rowid) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
-CREATE TABLE IF NOT EXISTS xcom_values (
-    xcom_rowid BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    run_rowid BIGINT UNSIGNED NOT NULL,
-    task_rowid BIGINT UNSIGNED NOT NULL,
-    `key` VARCHAR(255) NOT NULL,
-    value JSON NOT NULL,
-    value_type VARCHAR(16) NOT NULL DEFAULT 'json',
-    byte_size INT NOT NULL DEFAULT 0,
-    created_at BIGINT NOT NULL DEFAULT 0,
-    expires_at BIGINT NOT NULL DEFAULT 0,
-    UNIQUE KEY uq_xcom (run_rowid, task_rowid, `key`),
-    CONSTRAINT fk_xcom_run FOREIGN KEY (run_rowid) REFERENCES dag_runs(run_rowid) ON DELETE CASCADE,
-    CONSTRAINT fk_xcom_task FOREIGN KEY (task_rowid) REFERENCES dag_tasks(task_rowid) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
 CREATE TABLE IF NOT EXISTS dag_watermarks (
     dag_rowid BIGINT UNSIGNED NOT NULL PRIMARY KEY,
     last_scheduled_at BIGINT NOT NULL DEFAULT 0,
@@ -153,6 +134,6 @@ CREATE TABLE IF NOT EXISTS task_logs (
 
 )SQL";
 
-inline constexpr int CURRENT_SCHEMA_VERSION = 3;
+inline constexpr int CURRENT_SCHEMA_VERSION = 4;
 
 } // namespace dagforge::schema

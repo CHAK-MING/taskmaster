@@ -6,7 +6,6 @@
 #include "dagforge/util/enum_mysql_formatter.hpp"
 #include "dagforge/util/log.hpp"
 #include "dagforge/util/time.hpp"
-#include "dagforge/xcom/xcom_codec.hpp"
 
 #include <boost/asio/cancel_after.hpp>
 #include <boost/asio/detached.hpp>
@@ -392,19 +391,7 @@ summarize_task_instance_batch(std::span<const TaskInstanceInfo> instances)
   auto task = std::move(*task_res);
   task.task_rowid = as_i64(row.at(0));
   task.trigger_rule = parse<TriggerRule>(as_sv(row.at(11)));
-  task.is_branch = as_bool(row.at(12));
-  task.branch_xcom_key = as_str(row.at(13));
-  task.depends_on_past = as_bool(row.at(14));
-  if (auto pushes = xcom::parse_push_configs(as_sv(row.at(15))); pushes) {
-    task.xcom_push = std::move(*pushes);
-  } else {
-    return fail(pushes.error());
-  }
-  if (auto pulls = xcom::parse_pull_configs(as_sv(row.at(16))); pulls) {
-    task.xcom_pull = std::move(*pulls);
-  } else {
-    return fail(pulls.error());
-  }
+  task.depends_on_past = as_bool(row.at(12));
   return ok(std::move(task));
 }
 
@@ -791,32 +778,18 @@ auto MySQLDatabase::ensure_schema(boost::mysql::any_connection &conn)
     DAGFORGE_TRY_MYSQL(execute_mysql(
         conn,
         "ALTER TABLE dag_tasks "
-        "ADD COLUMN IF NOT EXISTS is_branch TINYINT NOT NULL DEFAULT 0 "
+        "ADD COLUMN IF NOT EXISTS depends_on_past TINYINT NOT NULL DEFAULT 0 "
         "AFTER trigger_rule",
         alter_res));
     DAGFORGE_TRY_MYSQL(execute_mysql(
-        conn,
-        "ALTER TABLE dag_tasks "
-        "ADD COLUMN IF NOT EXISTS branch_xcom_key VARCHAR(255) NOT NULL "
-        "DEFAULT 'branch' AFTER is_branch",
-        alter_res));
+        conn, "DROP TABLE IF EXISTS xcom_values", alter_res));
     DAGFORGE_TRY_MYSQL(execute_mysql(
         conn,
         "ALTER TABLE dag_tasks "
-        "ADD COLUMN IF NOT EXISTS depends_on_past TINYINT NOT NULL DEFAULT 0 "
-        "AFTER branch_xcom_key",
-        alter_res));
-    DAGFORGE_TRY_MYSQL(execute_mysql(
-        conn,
-        "ALTER TABLE dag_tasks "
-        "ADD COLUMN IF NOT EXISTS xcom_push JSON NOT NULL DEFAULT ('[]') "
-        "AFTER depends_on_past",
-        alter_res));
-    DAGFORGE_TRY_MYSQL(execute_mysql(
-        conn,
-        "ALTER TABLE dag_tasks "
-        "ADD COLUMN IF NOT EXISTS xcom_pull JSON NOT NULL DEFAULT ('[]') "
-        "AFTER xcom_push",
+        "DROP COLUMN IF EXISTS xcom_pull, "
+        "DROP COLUMN IF EXISTS xcom_push, "
+        "DROP COLUMN IF EXISTS branch_xcom_key, "
+        "DROP COLUMN IF EXISTS is_branch",
         alter_res));
     if (auto r =
             co_await validate_integer_enum_column(conn, "dag_runs", "state");
@@ -1128,8 +1101,7 @@ auto MySQLDatabase::get_tasks_on_connection(
           "SELECT task_rowid, task_id, name, command, working_dir, "
           "dag_rowid, executor, "
           "executor_config, timeout, retry_interval, max_retries, "
-          "trigger_rule, is_branch, branch_xcom_key, depends_on_past, "
-          "xcom_push, xcom_pull "
+          "trigger_rule, depends_on_past "
           "FROM dag_tasks WHERE dag_rowid = {} ORDER BY task_rowid",
           dag_rowid),
       res));
@@ -1323,8 +1295,7 @@ auto MySQLDatabase::list_dags() -> task<Result<std::vector<DAGInfo>>> {
           conn_res->get(),
           "SELECT task_rowid, task_id, name, command, working_dir, "
           "dag_rowid, executor, executor_config, timeout, retry_interval, "
-          "max_retries, trigger_rule, is_branch, branch_xcom_key, "
-          "depends_on_past, xcom_push, xcom_pull "
+          "max_retries, trigger_rule, depends_on_past "
           "FROM dag_tasks ORDER BY dag_rowid, task_rowid",
           task_res));
 
@@ -1476,10 +1447,8 @@ auto MySQLDatabase::save_task_on_connection(boost::mysql::any_connection &conn,
           "INSERT INTO dag_tasks(dag_rowid, task_id, name, command, "
           "working_dir, executor, "
           "executor_config, timeout, retry_interval, max_retries, "
-          "trigger_rule, is_branch, branch_xcom_key, depends_on_past, "
-          "xcom_push, xcom_pull) "
-          "VALUES({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, "
-          "{}, {}) "
+          "trigger_rule, depends_on_past) "
+          "VALUES({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}) "
           "ON DUPLICATE KEY UPDATE "
           "task_rowid=LAST_INSERT_ID(task_rowid), "
           "name=VALUES(name), command=VALUES(command), "
@@ -1488,20 +1457,14 @@ auto MySQLDatabase::save_task_on_connection(boost::mysql::any_connection &conn,
           "retry_interval=VALUES(retry_interval), "
           "max_retries=VALUES(max_retries), "
           "trigger_rule=VALUES(trigger_rule), "
-          "is_branch=VALUES(is_branch), "
-          "branch_xcom_key=VALUES(branch_xcom_key), "
-          "depends_on_past=VALUES(depends_on_past), "
-          "xcom_push=VALUES(xcom_push), xcom_pull=VALUES(xcom_pull)",
+          "depends_on_past=VALUES(depends_on_past)",
           dag_rowid, task_cfg.task_id.str(), task_cfg.name, task_cfg.command,
           task_cfg.working_dir, task_cfg.executor,
           ExecutorRegistry::instance().serialize_config(task_cfg.executor_config),
           static_cast<int>(task_cfg.execution_timeout.count()),
           static_cast<int>(task_cfg.retry_interval.count()),
           task_cfg.max_retries, enum_to_string(task_cfg.trigger_rule),
-          task_cfg.is_branch, task_cfg.branch_xcom_key,
-          task_cfg.depends_on_past,
-          xcom::serialize_push_configs(task_cfg.xcom_push),
-          xcom::serialize_pull_configs(task_cfg.xcom_pull)),
+          task_cfg.depends_on_past),
       res));
   co_return ok(static_cast<int64_t>(res.last_insert_id()));
 }
@@ -1517,15 +1480,13 @@ auto MySQLDatabase::save_tasks_on_connection(boost::mysql::any_connection &conn,
   auto format_task = [dag_rowid](const TaskConfig &task,
                                  boost::mysql::format_context_base &ctx) {
     boost::mysql::format_sql_to(
-        ctx, "({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
+        ctx, "({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
         dag_rowid, task.task_id.str(), task.name, task.command, task.working_dir,
         task.executor,
         ExecutorRegistry::instance().serialize_config(task.executor_config),
         static_cast<int>(task.execution_timeout.count()),
         static_cast<int>(task.retry_interval.count()), task.max_retries,
-        enum_to_string(task.trigger_rule), task.is_branch, task.branch_xcom_key,
-        task.depends_on_past, xcom::serialize_push_configs(task.xcom_push),
-        xcom::serialize_pull_configs(task.xcom_pull));
+        enum_to_string(task.trigger_rule), task.depends_on_past);
   };
 
   boost::mysql::results upsert_res;
@@ -1534,18 +1495,14 @@ auto MySQLDatabase::save_tasks_on_connection(boost::mysql::any_connection &conn,
       boost::mysql::with_params(
           "INSERT INTO dag_tasks(dag_rowid, task_id, name, command, "
           "working_dir, executor, executor_config, timeout, retry_interval, "
-          "max_retries, trigger_rule, is_branch, branch_xcom_key, "
-          "depends_on_past, xcom_push, xcom_pull) VALUES {} "
+          "max_retries, trigger_rule, depends_on_past) VALUES {} "
           "ON DUPLICATE KEY UPDATE "
           "name=VALUES(name), command=VALUES(command), "
           "working_dir=VALUES(working_dir), executor=VALUES(executor), "
           "executor_config=VALUES(executor_config), timeout=VALUES(timeout), "
           "retry_interval=VALUES(retry_interval), "
           "max_retries=VALUES(max_retries), trigger_rule=VALUES(trigger_rule), "
-          "is_branch=VALUES(is_branch), "
-          "branch_xcom_key=VALUES(branch_xcom_key), "
-          "depends_on_past=VALUES(depends_on_past), "
-          "xcom_push=VALUES(xcom_push), xcom_pull=VALUES(xcom_pull)",
+          "depends_on_past=VALUES(depends_on_past)",
           boost::mysql::sequence(std::cref(tasks), format_task)),
       upsert_res));
 
@@ -2382,204 +2339,6 @@ auto MySQLDatabase::get_run_history(const DAGRunId &run_id)
   });
 }
 
-auto MySQLDatabase::save_xcom(const DAGRunId &run_id, const TaskId &task_id,
-                              std::string key, std::string value_json)
-    -> task<Result<void>> {
-  co_return co_await mysql_try(
-      [&]() -> task<Result<void>> {
-        auto conn_res = co_await get_connection();
-        if (!conn_res) {
-          co_return fail(conn_res.error());
-        }
-
-        boost::mysql::results key_res;
-        DAGFORGE_TRY_MYSQL(execute_mysql(
-            conn_res->get(),
-            boost::mysql::with_params(
-                "SELECT r.run_rowid, t.task_rowid "
-                "FROM dag_runs r "
-                "JOIN dags d ON d.dag_rowid = r.dag_rowid "
-                "JOIN dag_tasks t ON t.dag_rowid = d.dag_rowid "
-                "WHERE r.dag_run_id = {} AND t.task_id = {}",
-                run_id.str(), task_id.str()),
-            key_res));
-        if (key_res.rows().empty()) {
-          co_return fail(Error::NotFound);
-        }
-
-        const auto run_rowid = as_i64(key_res.rows().at(0).at(0));
-        const auto task_rowid = as_i64(key_res.rows().at(0).at(1));
-
-        boost::mysql::results res;
-        DAGFORGE_TRY_MYSQL(execute_mysql(
-            conn_res->get(),
-            boost::mysql::with_params(
-                "INSERT INTO xcom_values(run_rowid, task_rowid, `key`, value, "
-                "value_type, byte_size, "
-                "created_at, expires_at) VALUES({}, {}, {}, {}, "
-                "'json', {}, {}, 0) "
-                "ON DUPLICATE KEY UPDATE value=VALUES(value), "
-                "byte_size=VALUES(byte_size), "
-                "created_at=VALUES(created_at)",
-                run_rowid, task_rowid, key, value_json,
-                static_cast<int>(value_json.size()),
-                to_millis(std::chrono::system_clock::now())),
-            res));
-
-        conn_res->return_without_reset();
-        co_return ok();
-      },
-      "save_xcom",
-      std::format("dag_run_id={} task_id={} key={} payload_bytes={}", run_id,
-                  task_id, key, value_json.size()));
-}
-
-auto MySQLDatabase::get_xcom(const DAGRunId &run_id, const TaskId &task_id,
-                             std::string key) -> task<Result<XComEntry>> {
-  co_return co_await mysql_try([&]() -> task<Result<XComEntry>> {
-    auto conn_res = co_await get_connection();
-    if (!conn_res) {
-      co_return fail(conn_res.error());
-    }
-
-    boost::mysql::results res;
-    DAGFORGE_TRY_MYSQL(execute_mysql(
-        conn_res->get(),
-        boost::mysql::with_params(
-            "SELECT x.`key`, CAST(x.value AS CHAR), x.byte_size, x.created_at "
-            "FROM xcom_values x "
-            "JOIN dag_runs r ON r.run_rowid = x.run_rowid "
-            "JOIN dag_tasks t ON t.task_rowid = x.task_rowid "
-            "WHERE r.dag_run_id = {} AND t.task_id = {} AND x.`key` = {}",
-            run_id.str(), task_id.str(), key),
-        res));
-
-    if (res.rows().empty()) {
-      co_return fail(Error::NotFound);
-    }
-
-    const auto &row = res.rows().at(0);
-    XComEntry entry;
-    entry.key = as_str(row.at(0));
-    entry.value = as_str(row.at(1));
-    entry.byte_size = static_cast<std::size_t>(as_i64(row.at(2)));
-    entry.created_at = from_millis(as_i64(row.at(3)));
-
-    conn_res->return_without_reset();
-    co_return ok(std::move(entry));
-  });
-}
-
-auto MySQLDatabase::get_task_xcoms(const DAGRunId &run_id,
-                                   const TaskId &task_id)
-    -> task<Result<std::vector<XComEntry>>> {
-  co_return co_await mysql_try([&]() -> task<Result<std::vector<XComEntry>>> {
-    auto conn_res = co_await get_connection();
-    if (!conn_res) {
-      co_return fail(conn_res.error());
-    }
-
-    boost::mysql::results res;
-    DAGFORGE_TRY_MYSQL(execute_mysql(
-        conn_res->get(),
-        boost::mysql::with_params(
-            "SELECT x.`key`, CAST(x.value AS CHAR), x.byte_size, x.created_at "
-            "FROM xcom_values x "
-            "JOIN dag_runs r ON r.run_rowid = x.run_rowid "
-            "JOIN dag_tasks t ON t.task_rowid = x.task_rowid "
-            "WHERE r.dag_run_id = {} AND t.task_id = {}",
-            run_id.str(), task_id.str()),
-        res));
-
-    std::vector<XComEntry> out;
-    out.reserve(res.rows().size());
-
-    for (auto row : res.rows()) {
-      out.emplace_back(XComEntry{
-          .key = as_str(row.at(0)),
-          .value = as_str(row.at(1)),
-          .byte_size = static_cast<std::size_t>(as_i64(row.at(2))),
-          .created_at = from_millis(as_i64(row.at(3))),
-      });
-    }
-
-    conn_res->return_without_reset();
-    co_return ok(std::move(out));
-  });
-}
-
-auto MySQLDatabase::get_run_xcoms(const DAGRunId &run_id)
-    -> task<Result<std::vector<XComTaskEntry>>> {
-  co_return co_await mysql_try(
-      [&]() -> task<Result<std::vector<XComTaskEntry>>> {
-        auto conn_res = co_await get_connection();
-        if (!conn_res) {
-          co_return fail(conn_res.error());
-        }
-
-        boost::mysql::results res;
-        DAGFORGE_TRY_MYSQL(execute_mysql(
-            conn_res->get(),
-            boost::mysql::with_params(
-                "SELECT t.task_id, x.`key`, CAST(x.value AS CHAR), "
-                "x.byte_size, x.created_at "
-                "FROM xcom_values x "
-                "JOIN dag_runs r ON r.run_rowid = x.run_rowid "
-                "JOIN dag_tasks t ON t.task_rowid = x.task_rowid "
-                "WHERE r.dag_run_id = {}",
-                run_id.str()),
-            res));
-
-        std::vector<XComTaskEntry> out;
-        out.reserve(res.rows().size());
-
-        for (auto row : res.rows()) {
-          out.emplace_back(XComTaskEntry{
-              .task_id = TaskId{as_str(row.at(0))},
-              .key = as_str(row.at(1)),
-              .value = as_str(row.at(2)),
-              .byte_size = static_cast<std::size_t>(as_i64(row.at(3))),
-              .created_at = from_millis(as_i64(row.at(4))),
-          });
-        }
-
-        conn_res->return_without_reset();
-        co_return ok(std::move(out));
-      });
-}
-
-auto MySQLDatabase::delete_run_xcoms(const DAGRunId &run_id)
-    -> task<Result<void>> {
-  co_return co_await mysql_try([&]() -> task<Result<void>> {
-    auto conn_res = co_await get_connection();
-    if (!conn_res) {
-      co_return fail(conn_res.error());
-    }
-
-    boost::mysql::results run_res;
-    DAGFORGE_TRY_MYSQL(execute_mysql(
-        conn_res->get(),
-        boost::mysql::with_params(
-            "SELECT run_rowid FROM dag_runs WHERE dag_run_id = {}",
-            run_id.str()),
-        run_res));
-    if (run_res.rows().empty()) {
-      co_return fail(Error::NotFound);
-    }
-
-    boost::mysql::results del_res;
-    DAGFORGE_TRY_MYSQL(execute_mysql(
-        conn_res->get(),
-        boost::mysql::with_params(
-            "DELETE FROM xcom_values WHERE run_rowid = {}",
-            as_i64(run_res.rows().at(0).at(0))),
-        del_res));
-
-    conn_res->return_without_reset();
-    co_return ok();
-  });
-}
-
 auto MySQLDatabase::get_last_execution_date(const DAGId &dag_id)
     -> task<Result<TimePoint>> {
   co_return co_await mysql_try([&]() -> task<Result<TimePoint>> {
@@ -2822,7 +2581,7 @@ auto MySQLDatabase::clear_all_dag_data() -> task<Result<void>> {
 
     boost::mysql::pipeline_request req;
     for (const auto *sql :
-         {"DELETE FROM xcom_values", "DELETE FROM task_instances",
+         {"DELETE FROM task_instances",
           "DELETE FROM dag_runs", "DELETE FROM task_dependencies",
           "DELETE FROM dag_tasks", "DELETE FROM dag_watermarks",
           "DELETE FROM dags"}) {

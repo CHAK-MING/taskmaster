@@ -59,10 +59,7 @@ struct TaskDetailDto {
   int retry_interval_sec{0};
   int max_retries{0};
   std::string trigger_rule;
-  bool is_branch{false};
   bool depends_on_past{false};
-  std::size_t xcom_push_count{0};
-  std::size_t xcom_pull_count{0};
   std::vector<TaskDependencyDto> dependencies;
 };
 
@@ -164,10 +161,8 @@ template <> struct meta<dagforge::api_dto::TaskDetailDto> {
              "sensor_target", &T::sensor_target, "execution_timeout_sec",
              &T::execution_timeout_sec, "retry_interval_sec",
              &T::retry_interval_sec, "max_retries", &T::max_retries,
-             "trigger_rule", &T::trigger_rule, "is_branch", &T::is_branch,
-             "depends_on_past", &T::depends_on_past, "xcom_push_count",
-             &T::xcom_push_count, "xcom_pull_count", &T::xcom_pull_count,
-             "dependencies", &T::dependencies);
+             "trigger_rule", &T::trigger_rule, "depends_on_past",
+             &T::depends_on_past, "dependencies", &T::dependencies);
 };
 
 template <> struct meta<dagforge::api_dto::DagRunSummaryDto> {

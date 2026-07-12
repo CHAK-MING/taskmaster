@@ -7,7 +7,6 @@
 #include "dagforge/dag/dag_run.hpp"
 #include "dagforge/storage/orm_models.hpp"
 #include "dagforge/util/id.hpp"
-#include "dagforge/xcom/xcom_types.hpp"
 
 #include <chrono>
 #include <cstddef>
@@ -126,19 +125,6 @@ public:
       -> task<Result<std::vector<RunHistoryEntry>>> = 0;
   virtual auto get_run_history(const DAGRunId &run_id)
       -> task<Result<RunHistoryEntry>> = 0;
-
-  // === XCom ===
-  virtual auto save_xcom(const DAGRunId &run_id, const TaskId &task_id,
-                         std::string key, std::string value_json)
-      -> task<Result<void>> = 0;
-  virtual auto get_xcom(const DAGRunId &run_id, const TaskId &task_id,
-                        std::string key) -> task<Result<XComEntry>> = 0;
-  virtual auto get_task_xcoms(const DAGRunId &run_id, const TaskId &task_id)
-      -> task<Result<std::vector<XComEntry>>> = 0;
-  virtual auto get_run_xcoms(const DAGRunId &run_id)
-      -> task<Result<std::vector<XComTaskEntry>>> = 0;
-  virtual auto delete_run_xcoms(const DAGRunId &run_id)
-      -> task<Result<void>> = 0;
 
   // === Scheduling ===
   virtual auto get_last_execution_date(const DAGId &dag_id)

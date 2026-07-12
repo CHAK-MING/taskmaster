@@ -108,10 +108,7 @@ export function FlowGraphTab({
       sensorType: td.sensor_type,
       sensorTarget: td.sensor_target,
       triggerRule: td.trigger_rule || "all_success",
-      isBranch: td.is_branch,
       dependsOnPast: td.depends_on_past,
-      xcomPushCount: td.xcom_push_count ?? 0,
-      xcomPullCount: td.xcom_pull_count ?? 0,
     };
   }), [taskDefinitions, selectedRun, taskInstanceById]);
 

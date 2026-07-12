@@ -190,33 +190,6 @@ auto cmd_inspect(const InspectOptions &opts) -> int {
       j.get_object().emplace("tasks", std::move(task_arr));
     }
 
-    if (opts.xcom) {
-      JsonValue xcom_arr = std::vector<JsonValue>{};
-
-      if (auto tasks = client.get_task_instances(run.dag_run_id); tasks) {
-        for (const auto &t : *tasks) {
-          auto id_it = task_id_by_rowid.find(t.task_rowid);
-          if (id_it == task_id_by_rowid.end()) {
-            continue;
-          }
-          auto xcoms =
-              client.get_task_xcoms(run.dag_run_id, TaskId{id_it->second});
-          if (!xcoms) {
-            continue;
-          }
-          for (const auto &entry : *xcoms) {
-            xcom_arr.get_array().emplace_back(JsonValue{
-                {"task_id", id_it->second},
-                {"key", entry.key},
-                {"value", entry.value},
-                {"byte_size", static_cast<std::int64_t>(entry.byte_size)},
-            });
-          }
-        }
-      }
-      j.get_object().emplace("xcom", std::move(xcom_arr));
-    }
-
     std::println("{}", dump_json(j));
     return 0;
   }
@@ -296,38 +269,6 @@ auto cmd_inspect(const InspectOptions &opts) -> int {
             static_cast<double>(dur) / static_cast<double>(max_duration_ms);
         std::println("        {} {}ms", fmt::ascii_bar(fraction), dur);
       }
-    }
-  }
-
-  if (opts.xcom && tasks) {
-    std::println("\n{}", fmt::ansi::bold("XCom Values"));
-    bool found = false;
-
-    if (task_id_by_rowid.empty()) {
-      std::println("  (Failed to load DAG metadata for XCom resolution)");
-      return 0;
-    }
-    for (const auto &t : *tasks) {
-      auto id_it = task_id_by_rowid.find(t.task_rowid);
-      if (id_it == task_id_by_rowid.end()) {
-        continue;
-      }
-
-      TaskId task_id{id_it->second};
-      auto xcoms = client.get_task_xcoms(run.dag_run_id, task_id);
-      if (!xcoms || xcoms->empty()) {
-        continue;
-      }
-
-      found = true;
-      for (const auto &entry : *xcoms) {
-        std::println("  {}.{} = {}", task_id, entry.key,
-                     dump_json(entry.value));
-      }
-    }
-
-    if (!found) {
-      std::println("  (No XCom values found)");
     }
   }
 

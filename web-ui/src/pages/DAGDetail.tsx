@@ -15,7 +15,6 @@ import {
   usePauseDAGMutation,
   useRunsQuery,
   useRunTasksQuery,
-  useRunXComQuery,
   useTriggerDAGMutation,
   useUnpauseDAGMutation,
   useWebSocketQuerySync,
@@ -24,7 +23,6 @@ import {
 // Subcomponents
 import { RunHistoryTab } from "@/components/dag-detail/RunHistoryTab";
 import { FlowGraphTab } from "@/components/dag-detail/FlowGraphTab";
-import { XComTab } from "@/components/dag-detail/XComTab";
 import { TaskDefinitionsTab } from "@/components/dag-detail/TaskDefinitionsTab";
 import { RunLogsTab } from "@/components/dag-detail/RunLogsTab";
 
@@ -54,9 +52,6 @@ export default function DAGDetail() {
   // TanStack Query: Task Instances for selected run
   const { data: taskInstances = [] } = useRunTasksQuery(selectedRunId, 3000);
 
-  // TanStack Query: XCom data for selected run
-  const { data: xcomData } = useRunXComQuery(selectedRunId);
-
   // TanStack Query: Trigger DAG mutation
   const triggerDAGMutation = useTriggerDAGMutation();
   const pauseDAGMutation = usePauseDAGMutation();
@@ -84,10 +79,7 @@ export default function DAGDetail() {
             retry_interval_sec: 0,
             max_retries: 0,
             trigger_rule: "all_success",
-            is_branch: false,
             depends_on_past: false,
-            xcom_push_count: 0,
-            xcom_pull_count: 0,
             dependencies: [],
             dagId: id,
           };
@@ -237,7 +229,6 @@ export default function DAGDetail() {
           <TabsTrigger value="graph">{t.dagDetail.flowGraph}</TabsTrigger>
           <TabsTrigger value="runs">{t.dagDetail.runInstances}</TabsTrigger>
           <TabsTrigger value="logs">{t.dagDetail.logs}</TabsTrigger>
-          <TabsTrigger value="xcom">{t.dagDetail.xcomData}</TabsTrigger>
         </TabsList>
 
         <TabsContent value="tasks">
@@ -271,14 +262,6 @@ export default function DAGDetail() {
           />
         </TabsContent>
 
-        <TabsContent value="xcom">
-          <XComTab
-            runs={runs}
-            selectedRunId={selectedRunId}
-            xcomData={xcomData?.xcom || {}}
-            onSelectRun={handleSelectRun}
-          />
-        </TabsContent>
       </Tabs>
     </AppLayout>
   );

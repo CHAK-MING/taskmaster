@@ -63,10 +63,6 @@ public:
       -> Result<void>;
   [[nodiscard]] auto mark_task_completed(NodeIndex task_idx, int exit_code)
       -> Result<TransitionDelta>;
-  [[nodiscard]] auto
-  mark_task_completed_with_branch(NodeIndex task_idx, int exit_code,
-                                  std::span<const TaskId> selected_branches)
-      -> Result<TransitionDelta>;
   [[nodiscard]] auto mark_task_failed(NodeIndex task_idx,
                                       std::string_view error, int max_retries,
                                       int exit_code = 1)

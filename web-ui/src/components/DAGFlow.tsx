@@ -45,10 +45,7 @@ interface Task {
   sensorType?: string;
   sensorTarget?: string;
   triggerRule?: string;
-  isBranch?: boolean;
   dependsOnPast?: boolean;
-  xcomPushCount?: number;
-  xcomPullCount?: number;
 }
 
 interface FlowDependency {
@@ -549,14 +546,6 @@ export function DAGFlow({ tasks, dependencies, className, onTaskClick }: DAGFlow
                   <span>{selectedTask.duration}</span>
                 </DetailField>
               )}
-              {(selectedTask?.xcomPushCount || selectedTask?.xcomPullCount) ? (
-                <DetailField label={t.dagDetail.xcomStats}>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="outline">push {selectedTask?.xcomPushCount ?? 0}</Badge>
-                    <Badge variant="outline">pull {selectedTask?.xcomPullCount ?? 0}</Badge>
-                  </div>
-                </DetailField>
-              ) : null}
             </div>
 
             {selectedTask?.dependsOn && selectedTask.dependsOn.length > 0 && (

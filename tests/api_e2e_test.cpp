@@ -366,71 +366,6 @@ auto collect_ws_messages(std::uint16_t port,
 
 class ApiE2EIntegrationTest : public dagforge::test::MySqlIsolatedTest {};
 
-TEST_F(ApiE2EIntegrationTest, TriggerHistoryAndXComRoundtrip) {
-  const auto port = dagforge::test::pick_unused_tcp_port_or_zero();
-  ASSERT_NE(port, 0);
-
-  Application app(make_test_config(port));
-  ASSERT_TRUE(app.init().has_value());
-  auto start_res = app.start();
-  if (!start_res) {
-    GTEST_SKIP() << "MySQL unavailable for API E2E: "
-                 << start_res.error().message();
-  }
-
-  const auto dag_id = unique_token("bench_dag");
-
-  DAGInfo dag{};
-  dag.dag_id = DAGId{dag_id};
-  dag.name = dag_id;
-  dag.created_at = std::chrono::system_clock::now();
-  dag.updated_at = dag.created_at;
-
-  auto task_res = TaskConfig::builder()
-                      .id("worker")
-                      .name("worker")
-                      .command("echo '{\"answer\":42}'")
-                      .build();
-  ASSERT_TRUE(task_res.has_value());
-  task_res->xcom_push.push_back(XComPushConfig{
-      .key = "payload",
-      .source = XComSource::Json,
-      .json_pointer = "",
-      .regex_pattern = "",
-      .regex_group = 0,
-  });
-  dag.tasks.push_back(*task_res);
-  dag.rebuild_task_index();
-  ASSERT_TRUE(app.dag_manager().upsert_dag(dag.dag_id, dag).has_value());
-
-  auto trigger_resp = http_post_json(
-      app, port, std::format("/api/dags/{}/trigger", dag_id), "{}");
-  ASSERT_TRUE(trigger_resp.has_value());
-  ASSERT_EQ(trigger_resp->status, http::HttpStatus::Created);
-
-  auto trigger_json = parse_json(response_body_string(*trigger_resp));
-  ASSERT_TRUE(trigger_json.has_value());
-  ASSERT_TRUE(trigger_json->contains("dag_run_id"));
-  const auto run_id = (*trigger_json)["dag_run_id"].as<std::string>();
-
-  bool completed = poll_run_state(app, port, run_id, "success");
-  ASSERT_TRUE(completed);
-  ASSERT_TRUE(assert_all_tasks_terminal_or_expected(
-      app, port, run_id, {{"worker", "success"}}, true));
-
-  auto xcom_resp = http_get(
-      app, port, std::format("/api/runs/{}/tasks/worker/xcom", run_id));
-  ASSERT_TRUE(xcom_resp.has_value());
-  ASSERT_EQ(xcom_resp->status, http::HttpStatus::Ok);
-  auto xcom_json = parse_json(response_body_string(*xcom_resp));
-  ASSERT_TRUE(xcom_json.has_value());
-  ASSERT_TRUE(xcom_json->contains("xcom"));
-  ASSERT_TRUE((*xcom_json)["xcom"].contains("payload"));
-  ASSERT_EQ((*xcom_json)["xcom"]["payload"]["answer"].as<int>(), 42);
-
-  app.stop();
-}
-
 TEST_F(ApiE2EIntegrationTest, DagPauseAndUnpauseEndpointsReflectPausedState) {
   const auto port = dagforge::test::pick_unused_tcp_port_or_zero();
   ASSERT_NE(port, 0);
@@ -1209,8 +1144,8 @@ TEST_F(ApiE2EIntegrationTest, PublicExamplesCanTriggerAndComplete) {
   ASSERT_TRUE(history_after_json.has_value());
   ASSERT_EQ(dump_json(*history_before_json), dump_json(*history_after_json));
 
-  const std::array<std::string_view, 5> dag_ids = {
-      "hello_world", "xcom_pipeline", "branching", "daily_etl", "trigger_rules",
+  const std::array<std::string_view, 2> dag_ids = {
+      "hello_world", "daily_etl",
   };
 
   for (const auto dag_id : dag_ids) {
@@ -1224,8 +1159,7 @@ TEST_F(ApiE2EIntegrationTest, PublicExamplesCanTriggerAndComplete) {
     ASSERT_TRUE(trigger_json->contains("dag_run_id")) << dag_id;
     const auto run_id = (*trigger_json)["dag_run_id"].as<std::string>();
 
-    const auto expected_run_state =
-        dag_id == std::string_view{"trigger_rules"} ? "failed" : "success";
+    constexpr std::string_view expected_run_state = "success";
     ASSERT_TRUE(poll_run_state(app, port, run_id, expected_run_state))
         << dag_id;
 
@@ -1256,45 +1190,6 @@ TEST_F(ApiE2EIntegrationTest, PublicExamplesCanTriggerAndComplete) {
       EXPECT_EQ(task_state.size(), 2U);
       EXPECT_EQ(task_state["greet"], "success");
       EXPECT_EQ(task_state["complete"], "success");
-    } else if (dag_id == std::string_view{"xcom_pipeline"}) {
-      ASSERT_TRUE(
-          assert_all_tasks_terminal_or_expected(app, port, run_id,
-                                                {{"generate_data", "success"},
-                                                 {"process", "success"},
-                                                 {"report", "success"}},
-                                                true));
-      EXPECT_EQ(task_state.size(), 3U);
-      EXPECT_EQ(task_state["generate_data"], "success");
-      EXPECT_EQ(task_state["process"], "success");
-      EXPECT_EQ(task_state["report"], "success");
-
-      auto xcom_resp =
-          http_get(app, port, std::format("/api/runs/{}/xcom", run_id));
-      ASSERT_TRUE(xcom_resp.has_value());
-      ASSERT_EQ(xcom_resp->status, http::HttpStatus::Ok);
-      auto xcom_json = parse_json(response_body_string(*xcom_resp));
-      ASSERT_TRUE(xcom_json.has_value());
-      ASSERT_TRUE((*xcom_json)["xcom"].contains("generate_data"));
-      ASSERT_TRUE((*xcom_json)["xcom"]["generate_data"].contains("metadata"));
-      EXPECT_EQ((*xcom_json)["xcom"]["generate_data"]["metadata"]["records"]
-                    .as<int>(),
-                1000);
-      EXPECT_EQ((*xcom_json)["xcom"]["generate_data"]["metadata"]["source"]
-                    .as<std::string>(),
-                "api");
-    } else if (dag_id == std::string_view{"branching"}) {
-      ASSERT_TRUE(assert_all_tasks_terminal_or_expected(
-          app, port, run_id,
-          {{"check_size", "success"}, {"merge_results", "success"}}));
-      EXPECT_EQ(task_state.size(), 4U);
-      EXPECT_EQ(task_state["check_size"], "success");
-      EXPECT_EQ(task_state["merge_results"], "success");
-      const bool large_success = task_state["large_path"] == "success";
-      const bool small_success = task_state["small_path"] == "success";
-      const bool large_skipped = task_state["large_path"] == "skipped";
-      const bool small_skipped = task_state["small_path"] == "skipped";
-      EXPECT_TRUE((large_success && small_skipped) ||
-                  (small_success && large_skipped));
     } else if (dag_id == std::string_view{"daily_etl"}) {
       ASSERT_TRUE(
           assert_all_tasks_terminal_or_expected(app, port, run_id,
@@ -1310,22 +1205,6 @@ TEST_F(ApiE2EIntegrationTest, PublicExamplesCanTriggerAndComplete) {
       EXPECT_EQ(task_state["transform"], "success");
       EXPECT_EQ(task_state["load"], "success");
       EXPECT_EQ(task_state["notify"], "success");
-    } else if (dag_id == std::string_view{"trigger_rules"}) {
-      ASSERT_TRUE(assert_all_tasks_terminal_or_expected(
-          app, port, run_id,
-          {{"seed", "success"},
-           {"u_success", "success"},
-           {"u_failed", "failed"},
-           {"branch_pick", "success"},
-           {"b_kept", "success"},
-           {"b_skipped", "skipped"},
-           {"all_success__expect_success", "success"},
-           {"all_failed__expect_success", "success"},
-           {"one_success__expect_success", "success"},
-           {"one_failed__expect_success", "success"},
-           {"always__expect_success", "success"}},
-          false, std::chrono::seconds(20)));
-      EXPECT_GE(task_state.size(), 10U);
     }
 
     auto run_detail =
@@ -1601,134 +1480,6 @@ TEST_F(ApiE2EIntegrationTest, FailurePathPropagatesUpstreamFailedToDependents) {
 
   EXPECT_TRUE(failer_failed);
   EXPECT_TRUE(downstream_upstream_failed);
-  app.stop();
-}
-
-TEST_F(ApiE2EIntegrationTest,
-     BranchingRouterSkipsUnselectedPathAndCompletesJoin) {
-  const auto port = dagforge::test::pick_unused_tcp_port_or_zero();
-  ASSERT_NE(port, 0);
-
-  Application app(make_test_config(port));
-  ASSERT_TRUE(app.init().has_value());
-  auto start_res = app.start();
-  if (!start_res) {
-    GTEST_SKIP() << "MySQL unavailable for branching E2E: "
-                 << start_res.error().message();
-  }
-
-  const auto dag_id = unique_token("branch_path_dag");
-  DAGInfo dag{};
-  dag.dag_id = DAGId{dag_id};
-  dag.name = dag_id;
-  dag.created_at = std::chrono::system_clock::now();
-  dag.updated_at = dag.created_at;
-
-  auto router = TaskConfig::builder()
-                    .id("router")
-                    .name("router")
-                    .command("echo '[\"left\"]'")
-                    .branch(true, "branch")
-                    .build();
-  ASSERT_TRUE(router.has_value());
-  router->xcom_push.push_back(XComPushConfig{
-      .key = "branch",
-      .source = XComSource::Json,
-      .json_pointer = "",
-      .regex_pattern = "",
-      .regex_group = 0,
-  });
-
-  auto left = TaskConfig::builder()
-                  .id("left")
-                  .name("left")
-                  .command("echo left")
-                  .depends_on("router")
-                  .build();
-  ASSERT_TRUE(left.has_value());
-
-  auto right = TaskConfig::builder()
-                   .id("right")
-                   .name("right")
-                   .command("echo right")
-                   .depends_on("router")
-                   .build();
-  ASSERT_TRUE(right.has_value());
-
-  auto join = TaskConfig::builder()
-                  .id("join")
-                  .name("join")
-                  .command("echo joined")
-                  .depends_on("left")
-                  .depends_on("right")
-                  .trigger_rule(TriggerRule::OneSuccess)
-                  .build();
-  ASSERT_TRUE(join.has_value());
-
-  dag.tasks = {*router, *left, *right, *join};
-  dag.rebuild_task_index();
-  ASSERT_TRUE(app.dag_manager().upsert_dag(dag.dag_id, dag).has_value());
-
-  auto trigger_resp = http_post_json(
-      app, port, std::format("/api/dags/{}/trigger", dag_id), "{}");
-  ASSERT_TRUE(trigger_resp.has_value());
-  ASSERT_EQ(trigger_resp->status, http::HttpStatus::Created);
-  auto trigger_json = parse_json(response_body_string(*trigger_resp));
-  ASSERT_TRUE(trigger_json.has_value());
-  const auto run_id = (*trigger_json)["dag_run_id"].as<std::string>();
-
-  ASSERT_TRUE(poll_run_state(app, port, run_id, "success"));
-  ASSERT_TRUE(assert_all_tasks_terminal_or_expected(app, port, run_id,
-                                                    {{"router", "success"},
-                                                     {"left", "success"},
-                                                     {"right", "skipped"},
-                                                     {"join", "success"}},
-                                                    true));
-
-  auto tasks_resp =
-      http_get(app, port, std::format("/api/runs/{}/tasks", run_id));
-  ASSERT_TRUE(tasks_resp.has_value());
-  ASSERT_EQ(tasks_resp->status, http::HttpStatus::Ok);
-  auto tasks_json = parse_json(response_body_string(*tasks_resp));
-  ASSERT_TRUE(tasks_json.has_value());
-
-  ASSERT_TRUE(tasks_json->contains("tasks"));
-  std::string left_state;
-  std::string right_state;
-  std::string join_state;
-  const auto *branch_tasks_arr =
-      (*tasks_json)["tasks"].get_if<JsonValue::array_t>();
-  ASSERT_NE(branch_tasks_arr, nullptr) << "tasks field missing or not an array";
-  for (const auto &entry : *branch_tasks_arr) {
-    const auto *tid = entry["task_id"].get_if<std::string>();
-    const auto *st = entry["state"].get_if<std::string>();
-    if (!tid || !st)
-      continue;
-    if (*tid == "left") {
-      left_state = *st;
-    } else if (*tid == "right") {
-      right_state = *st;
-    } else if (*tid == "join") {
-      join_state = *st;
-    }
-  }
-
-  EXPECT_EQ(left_state, "success");
-  EXPECT_EQ(right_state, "skipped");
-  EXPECT_EQ(join_state, "success");
-  std::string router_state;
-  for (const auto &entry : *branch_tasks_arr) {
-    const auto *tid = entry["task_id"].get_if<std::string>();
-    const auto *st = entry["state"].get_if<std::string>();
-    if (!tid || !st)
-      continue;
-    if (*tid == "router") {
-      router_state = *st;
-      break;
-    }
-  }
-  EXPECT_EQ(router_state, "success");
-
   app.stop();
 }
 

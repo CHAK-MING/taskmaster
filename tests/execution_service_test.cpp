@@ -307,9 +307,6 @@ TEST(ExecutionServiceTest, CompletedSingleTaskRunPersistsOnlyFinalRunSnapshot) {
   bool completed = false;
 
   ExecutionCallbacks callbacks;
-  callbacks.get_dag_id_by_run = [](const DAGRunId &) -> task<Result<DAGId>> {
-    co_return ok(DAGId{"persist_test_dag"});
-  };
   callbacks.get_max_retries = [](const DAGRunId &, NodeIndex) { return 0; };
   callbacks.get_retry_interval = [](const DAGRunId &, NodeIndex) {
     return std::chrono::seconds(0);
@@ -356,9 +353,6 @@ TEST(ExecutionServiceTest, CompletedRunSnapshotIsReusedAfterCompletion) {
   bool completed = false;
 
   ExecutionCallbacks callbacks;
-  callbacks.get_dag_id_by_run = [](const DAGRunId &) -> task<Result<DAGId>> {
-    co_return ok(DAGId{"persist_test_dag"});
-  };
   callbacks.get_max_retries = [](const DAGRunId &, NodeIndex) { return 0; };
   callbacks.get_retry_interval = [](const DAGRunId &, NodeIndex) {
     return std::chrono::seconds(0);
@@ -410,9 +404,6 @@ TEST(ExecutionServiceTest, TimeoutFailsRunWithoutRetrying) {
   bool completed = false;
 
   ExecutionCallbacks callbacks;
-  callbacks.get_dag_id_by_run = [](const DAGRunId &) -> task<Result<DAGId>> {
-    co_return ok(DAGId{"persist_test_dag"});
-  };
   callbacks.get_max_retries = [](const DAGRunId &, NodeIndex) { return 3; };
   callbacks.get_retry_interval = [](const DAGRunId &, NodeIndex) {
     return std::chrono::seconds(0);
@@ -466,9 +457,6 @@ TEST(ExecutionServiceTest, ShellExit127DoesNotRetryEvenIfRetriesConfigured) {
   bool completed = false;
 
   ExecutionCallbacks callbacks;
-  callbacks.get_dag_id_by_run = [](const DAGRunId &) -> task<Result<DAGId>> {
-    co_return ok(DAGId{"persist_test_dag"});
-  };
   callbacks.get_max_retries = [](const DAGRunId &, NodeIndex) { return 3; };
   callbacks.get_retry_interval = [](const DAGRunId &, NodeIndex) {
     return std::chrono::seconds(0);
@@ -571,9 +559,6 @@ TEST(ExecutionServiceTest, ConsolidatesRetryWakeupsIntoFewIoTimers) {
   std::atomic<int> retrying_seen{0};
 
   ExecutionCallbacks callbacks;
-  callbacks.get_dag_id_by_run = [](const DAGRunId &) -> task<Result<DAGId>> {
-    co_return ok(DAGId{"persist_test_dag"});
-  };
   callbacks.get_max_retries = [](const DAGRunId &, NodeIndex) { return 1; };
   callbacks.get_retry_interval = [](const DAGRunId &, NodeIndex) {
     return std::chrono::seconds(2);
@@ -621,9 +606,6 @@ TEST(ExecutionServiceTest, RetryingTaskRestartsExactlyOnceAndSucceeds) {
   bool completed = false;
 
   ExecutionCallbacks callbacks;
-  callbacks.get_dag_id_by_run = [](const DAGRunId &) -> task<Result<DAGId>> {
-    co_return ok(DAGId{"persist_test_dag"});
-  };
   callbacks.get_max_retries = [](const DAGRunId &, NodeIndex) { return 1; };
   callbacks.get_retry_interval = [](const DAGRunId &, NodeIndex) {
     return std::chrono::seconds(0);
@@ -681,9 +663,6 @@ TEST(ExecutionServiceTest, MaxConcurrencyDelaysAdditionalRunsUntilCapacityFrees)
   int completed = 0;
 
   ExecutionCallbacks callbacks;
-  callbacks.get_dag_id_by_run = [](const DAGRunId &) -> task<Result<DAGId>> {
-    co_return ok(DAGId{"persist_test_dag"});
-  };
   callbacks.get_max_retries = [](const DAGRunId &, NodeIndex) { return 0; };
   callbacks.get_retry_interval = [](const DAGRunId &, NodeIndex) {
     return std::chrono::seconds(0);
@@ -740,9 +719,6 @@ TEST(ExecutionServiceTest, LocalLeaseExpiryFailsRunAndIgnoresLateCompletion) {
   bool completed = false;
 
   ExecutionCallbacks callbacks;
-  callbacks.get_dag_id_by_run = [](const DAGRunId &) -> task<Result<DAGId>> {
-    co_return ok(DAGId{"persist_test_dag"});
-  };
   callbacks.get_max_retries = [](const DAGRunId &, NodeIndex) { return 0; };
   callbacks.get_retry_interval = [](const DAGRunId &, NodeIndex) {
     return std::chrono::seconds(0);
@@ -809,9 +785,6 @@ TEST(ExecutionServiceTest, ExecutorHeartbeatPublishesTaskInstanceKey) {
   bool completed = false;
 
   ExecutionCallbacks callbacks;
-  callbacks.get_dag_id_by_run = [](const DAGRunId &) -> task<Result<DAGId>> {
-    co_return ok(DAGId{"persist_test_dag"});
-  };
   callbacks.get_max_retries = [](const DAGRunId &, NodeIndex) { return 0; };
   callbacks.get_retry_interval = [](const DAGRunId &, NodeIndex) {
     return std::chrono::seconds(0);
@@ -869,9 +842,6 @@ TEST(ExecutionServiceTest, DependsOnPastCallbackUsesTaskRowidFromRunSnapshot) {
   bool completed = false;
 
   ExecutionCallbacks callbacks;
-  callbacks.get_dag_id_by_run = [](const DAGRunId &) -> task<Result<DAGId>> {
-    co_return ok(DAGId{"persist_test_dag"});
-  };
   callbacks.get_max_retries = [](const DAGRunId &, NodeIndex) { return 0; };
   callbacks.get_retry_interval = [](const DAGRunId &, NodeIndex) {
     return std::chrono::seconds(0);

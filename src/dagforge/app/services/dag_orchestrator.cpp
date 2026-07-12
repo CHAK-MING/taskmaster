@@ -2,6 +2,7 @@
 
 #include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/util/log.hpp"
+#include "dagforge/util/hash.hpp"
 
 #include <algorithm>
 #include <format>

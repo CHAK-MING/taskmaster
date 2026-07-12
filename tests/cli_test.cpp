@@ -85,7 +85,6 @@ TEST(CLITest, PauseUnpauseOptionsDefaults) {
 TEST(CLITest, InspectOptionsDefaults) {
   InspectOptions opts;
   EXPECT_TRUE(opts.run_id.empty());
-  EXPECT_FALSE(opts.xcom);
   EXPECT_FALSE(opts.details);
   EXPECT_FALSE(opts.json);
 }

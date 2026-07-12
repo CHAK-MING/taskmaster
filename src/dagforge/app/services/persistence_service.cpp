@@ -1167,34 +1167,6 @@ auto PersistenceService::reap_zombie_task_instances(
                      true);
 }
 
-// ── XCom
-// ───────────────────────────────────────────────────────────────────────
-
-auto PersistenceService::save_xcom(const DAGRunId &run_id,
-                                   const TaskId &task_id, std::string key,
-                                   std::string value_json)
-    -> task<Result<void>> {
-  DAGFORGE_DB_RETURN(
-      db_.save_xcom(run_id, task_id, std::move(key), std::move(value_json)),
-      true);
-}
-
-auto PersistenceService::get_xcom(const DAGRunId &run_id, const TaskId &task_id,
-                                  std::string key) -> task<Result<XComEntry>> {
-  DAGFORGE_DB_RETURN(db_.get_xcom(run_id, task_id, std::move(key)), false);
-}
-
-auto PersistenceService::get_task_xcoms(const DAGRunId &run_id,
-                                        const TaskId &task_id)
-    -> task<Result<std::vector<XComEntry>>> {
-  DAGFORGE_DB_RETURN(db_.get_task_xcoms(run_id, task_id), false);
-}
-
-auto PersistenceService::get_run_xcoms(const DAGRunId &run_id)
-    -> task<Result<std::vector<XComTaskEntry>>> {
-  DAGFORGE_DB_RETURN(db_.get_run_xcoms(run_id), false);
-}
-
 // ── History / scheduling queries
 // ───────────────────────────────────────────────
 
