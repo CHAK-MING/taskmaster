@@ -303,6 +303,83 @@ auto render_prometheus_metrics(const Application &app) -> std::string {
                 shard.memory_oom_fallbacks_total());
   }
 
+  const auto compute_snapshot = app.runtime().compute_pool_snapshot();
+  auto &compute_threads = prom::BuildGauge()
+                              .Name("dagforge_compute_pool_threads")
+                              .Help("Configured compute worker threads")
+                              .Register(registry);
+  auto &compute_queue_capacity =
+      prom::BuildGauge()
+          .Name("dagforge_compute_queue_capacity")
+          .Help("Maximum number of queued compute tasks")
+          .Register(registry);
+  auto &compute_queue_depth = prom::BuildGauge()
+                                  .Name("dagforge_compute_queue_depth")
+                                  .Help("Current queued compute tasks")
+                                  .Register(registry);
+  auto &compute_active_tasks = prom::BuildGauge()
+                                   .Name("dagforge_compute_active_tasks")
+                                   .Help("Current running compute tasks")
+                                   .Register(registry);
+  set_gauge(compute_threads, {}, compute_snapshot.thread_count);
+  set_gauge(compute_queue_capacity, {}, compute_snapshot.queue_capacity);
+  set_gauge(compute_queue_depth, {}, compute_snapshot.queued_tasks);
+  set_gauge(compute_active_tasks, {}, compute_snapshot.active_tasks);
+
+  auto &compute_submitted_total =
+      prom::BuildCounter()
+          .Name("dagforge_compute_submitted_total")
+          .Help("Total compute tasks accepted")
+          .Register(registry);
+  auto &compute_completed_total =
+      prom::BuildCounter()
+          .Name("dagforge_compute_completed_total")
+          .Help("Total compute tasks completed without throwing")
+          .Register(registry);
+  auto &compute_rejected_total =
+      prom::BuildCounter()
+          .Name("dagforge_compute_rejected_total")
+          .Help("Total compute tasks rejected by admission control")
+          .Register(registry);
+  auto &compute_cancelled_total =
+      prom::BuildCounter()
+          .Name("dagforge_compute_cancelled_total")
+          .Help("Total compute tasks cancelled before execution")
+          .Register(registry);
+  auto &compute_timed_out_total =
+      prom::BuildCounter()
+          .Name("dagforge_compute_timed_out_total")
+          .Help("Total compute tasks missing their start deadline")
+          .Register(registry);
+  auto &compute_failed_total =
+      prom::BuildCounter()
+          .Name("dagforge_compute_failed_total")
+          .Help("Total compute work or callbacks that threw")
+          .Register(registry);
+  set_counter(compute_submitted_total, {}, compute_snapshot.submitted_total);
+  set_counter(compute_completed_total, {}, compute_snapshot.completed_total);
+  set_counter(compute_rejected_total, {}, compute_snapshot.rejected_total);
+  set_counter(compute_cancelled_total, {}, compute_snapshot.cancelled_total);
+  set_counter(compute_timed_out_total, {}, compute_snapshot.timed_out_total);
+  set_counter(compute_failed_total, {}, compute_snapshot.failed_total);
+
+  auto &compute_queue_wait_seconds = add_histogram_family(
+      registry, "dagforge_compute_queue_wait_seconds",
+      "Compute task queue wait duration in seconds");
+  auto &compute_execution_seconds = add_histogram_family(
+      registry, "dagforge_compute_execution_seconds",
+      "Compute task execution duration in seconds");
+  auto &compute_queue_wait = compute_queue_wait_seconds.Add(
+      {}, bucket_boundaries({0.000001, 0.000005, 0.00001, 0.000025, 0.00005,
+                             0.0001, 0.00025, 0.0005, 0.001, 0.005, 0.025,
+                             0.1}));
+  auto &compute_execution = compute_execution_seconds.Add(
+      {}, bucket_boundaries({0.00001, 0.00005, 0.0001, 0.00025, 0.0005,
+                             0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25,
+                             1.0, 10.0}));
+  set_histogram(compute_queue_wait, compute_snapshot.queue_wait_time);
+  set_histogram(compute_execution, compute_snapshot.execution_time);
+
   auto &cross_shard_messages_total =
       prom::BuildCounter()
           .Name("dagforge_cross_shard_messages_total")

@@ -2,7 +2,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <memory>
+#include <mutex>
 #include <thread>
+#include <vector>
 
 #include "gtest/gtest.h"
 
@@ -20,6 +23,278 @@ auto increment_counter(std::atomic<int> *count_ptr) -> spawn_task {
 }
 
 } // namespace
+
+TEST(ComputePoolTest, ExecutesWorkAndPublishesMetrics) {
+  ComputePool pool(ComputePoolConfig{.thread_count = 1, .queue_capacity = 4});
+  ASSERT_TRUE(pool.start().has_value());
+
+  std::atomic<int> value{0};
+  auto submitted = pool.submit(
+      {}, [&value](std::stop_token) { value.store(42); });
+  ASSERT_TRUE(submitted.has_value());
+
+  pool.stop(ComputeShutdownMode::Drain);
+
+  EXPECT_EQ(value.load(), 42);
+  const auto snapshot = pool.snapshot();
+  EXPECT_EQ(snapshot.thread_count, 1U);
+  EXPECT_EQ(snapshot.submitted_total, 1U);
+  EXPECT_EQ(snapshot.completed_total, 1U);
+  EXPECT_EQ(snapshot.queue_wait_time.count, 1U);
+  EXPECT_EQ(snapshot.execution_time.count, 1U);
+}
+
+TEST(ComputePoolTest, RejectsWhenBoundedQueueIsFull) {
+  ComputePool pool(ComputePoolConfig{.thread_count = 1, .queue_capacity = 1});
+  ASSERT_TRUE(pool.start().has_value());
+
+  std::atomic<bool> started{false};
+  std::atomic<bool> release{false};
+  auto running = pool.submit({}, [&](std::stop_token) {
+    started.store(true, std::memory_order_release);
+    while (!release.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+  });
+  ASSERT_TRUE(running.has_value());
+
+  auto deadline = std::chrono::steady_clock::now() + kTaskTimeout;
+  while (!started.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(kPollInterval);
+  }
+  ASSERT_TRUE(started.load(std::memory_order_acquire));
+
+  auto queued = pool.submit({}, [](std::stop_token) {});
+  ASSERT_TRUE(queued.has_value());
+  auto rejected = pool.submit({}, [](std::stop_token) {});
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(rejected.error(), make_error_code(Error::ResourceExhausted));
+
+  release.store(true, std::memory_order_release);
+  pool.stop(ComputeShutdownMode::Drain);
+  EXPECT_EQ(pool.snapshot().rejected_total, 1U);
+}
+
+TEST(ComputePoolTest, CancelsQueuedTaskBeforeExecution) {
+  ComputePool pool(ComputePoolConfig{.thread_count = 1, .queue_capacity = 2});
+  ASSERT_TRUE(pool.start().has_value());
+
+  std::atomic<bool> started{false};
+  std::atomic<bool> release{false};
+  auto running = pool.submit({}, [&](std::stop_token) {
+    started.store(true, std::memory_order_release);
+    while (!release.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+  });
+  ASSERT_TRUE(running.has_value());
+
+  auto deadline = std::chrono::steady_clock::now() + kTaskTimeout;
+  while (!started.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(kPollInterval);
+  }
+  ASSERT_TRUE(started.load(std::memory_order_acquire));
+
+  std::atomic<bool> executed{false};
+  std::atomic<int> discarded_error{-1};
+  auto queued = pool.submit(
+      {}, [&executed](std::stop_token) { executed.store(true); },
+      [&discarded_error](Error error) {
+        discarded_error.store(static_cast<int>(error),
+                              std::memory_order_release);
+      });
+  ASSERT_TRUE(queued.has_value());
+  EXPECT_TRUE(queued->request_stop());
+
+  release.store(true, std::memory_order_release);
+  pool.stop(ComputeShutdownMode::Drain);
+
+  EXPECT_FALSE(executed.load());
+  EXPECT_EQ(discarded_error.load(std::memory_order_acquire),
+            static_cast<int>(Error::Cancelled));
+  EXPECT_EQ(pool.snapshot().cancelled_total, 1U);
+}
+
+TEST(ComputePoolTest, ExpiresQueuedTaskAtDeadline) {
+  ComputePool pool(ComputePoolConfig{.thread_count = 1, .queue_capacity = 2});
+  ASSERT_TRUE(pool.start().has_value());
+
+  std::atomic<bool> started{false};
+  std::atomic<bool> release{false};
+  auto running = pool.submit({}, [&](std::stop_token) {
+    started.store(true, std::memory_order_release);
+    while (!release.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+  });
+  ASSERT_TRUE(running.has_value());
+
+  auto deadline = std::chrono::steady_clock::now() + kTaskTimeout;
+  while (!started.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(kPollInterval);
+  }
+  ASSERT_TRUE(started.load(std::memory_order_acquire));
+
+  std::atomic<int> discarded_error{-1};
+  ComputeOptions options{
+      .priority = ComputePriority::Normal,
+      .start_deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(10),
+  };
+  auto queued = pool.submit(
+      options, [](std::stop_token) {},
+      [&discarded_error](Error error) {
+        discarded_error.store(static_cast<int>(error),
+                              std::memory_order_release);
+      });
+  ASSERT_TRUE(queued.has_value());
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  release.store(true, std::memory_order_release);
+  pool.stop(ComputeShutdownMode::Drain);
+
+  EXPECT_EQ(discarded_error.load(std::memory_order_acquire),
+            static_cast<int>(Error::Timeout));
+  EXPECT_EQ(pool.snapshot().timed_out_total, 1U);
+}
+
+TEST(ComputePoolTest, CancelPendingStopsActiveAndDiscardsQueuedWork) {
+  ComputePool pool(ComputePoolConfig{.thread_count = 1, .queue_capacity = 2});
+  ASSERT_TRUE(pool.start().has_value());
+
+  std::atomic<bool> active_started{false};
+  std::atomic<bool> active_observed_stop{false};
+  auto active = pool.submit({}, [&](std::stop_token stop_token) {
+    active_started.store(true, std::memory_order_release);
+    while (!stop_token.stop_requested()) {
+      std::this_thread::yield();
+    }
+    active_observed_stop.store(true, std::memory_order_release);
+  });
+  ASSERT_TRUE(active.has_value());
+
+  auto deadline = std::chrono::steady_clock::now() + kTaskTimeout;
+  while (!active_started.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(kPollInterval);
+  }
+  ASSERT_TRUE(active_started.load(std::memory_order_acquire));
+
+  std::atomic<int> queued_discard{-1};
+  auto queued = pool.submit(
+      {}, [](std::stop_token) {},
+      [&queued_discard](Error error) {
+        queued_discard.store(static_cast<int>(error),
+                             std::memory_order_release);
+      });
+  ASSERT_TRUE(queued.has_value());
+
+  pool.stop(ComputeShutdownMode::CancelPending);
+
+  EXPECT_TRUE(active_observed_stop.load(std::memory_order_acquire));
+  EXPECT_EQ(queued_discard.load(std::memory_order_acquire),
+            static_cast<int>(Error::Cancelled));
+  EXPECT_EQ(pool.snapshot().cancelled_total, 1U);
+}
+
+TEST(ComputePoolTest, RunsHigherPriorityQueuedWorkFirst) {
+  ComputePool pool(ComputePoolConfig{.thread_count = 1, .queue_capacity = 4});
+  ASSERT_TRUE(pool.start().has_value());
+
+  std::atomic<bool> started{false};
+  std::atomic<bool> release{false};
+  auto running = pool.submit({}, [&](std::stop_token) {
+    started.store(true, std::memory_order_release);
+    while (!release.load(std::memory_order_acquire)) {
+      std::this_thread::yield();
+    }
+  });
+  ASSERT_TRUE(running.has_value());
+
+  auto deadline = std::chrono::steady_clock::now() + kTaskTimeout;
+  while (!started.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(kPollInterval);
+  }
+  ASSERT_TRUE(started.load(std::memory_order_acquire));
+
+  std::mutex order_mutex;
+  std::vector<int> order;
+  auto low = pool.submit(
+      ComputeOptions{.priority = ComputePriority::Low},
+      [&](std::stop_token) {
+        std::lock_guard lock(order_mutex);
+        order.push_back(1);
+      });
+  auto critical = pool.submit(
+      ComputeOptions{.priority = ComputePriority::Critical},
+      [&](std::stop_token) {
+        std::lock_guard lock(order_mutex);
+        order.push_back(2);
+      });
+  ASSERT_TRUE(low.has_value());
+  ASSERT_TRUE(critical.has_value());
+
+  release.store(true, std::memory_order_release);
+  pool.stop(ComputeShutdownMode::Drain);
+
+  ASSERT_EQ(order.size(), 2U);
+  EXPECT_EQ(order[0], 2);
+  EXPECT_EQ(order[1], 1);
+}
+
+TEST(RuntimeTest, ComputeCompletionReturnsToOwnerShard) {
+  Runtime rt(2, false, 0,
+             ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  ASSERT_TRUE(rt.start().has_value());
+
+  struct State {
+    std::atomic<bool> done{false};
+    std::atomic<bool> work_ran_on_shard{true};
+    std::atomic<shard_id> completion_shard{kInvalidShard};
+    std::atomic<int> value{0};
+    std::atomic<int> error{-1};
+  };
+  auto state = std::make_shared<State>();
+
+  auto submitted = rt.submit_compute(
+      1, {},
+      [&rt, state](std::stop_token) -> Result<int> {
+        state->work_ran_on_shard.store(rt.is_current_shard(),
+                                      std::memory_order_release);
+        return ok(42);
+      },
+      [&rt, state](Result<int> result) {
+        state->completion_shard.store(rt.current_shard(),
+                                      std::memory_order_release);
+        if (result) {
+          state->value.store(*result, std::memory_order_release);
+        } else {
+          state->error.store(result.error().value(),
+                             std::memory_order_release);
+        }
+        state->done.store(true, std::memory_order_release);
+      });
+  ASSERT_TRUE(submitted.has_value());
+
+  auto deadline = std::chrono::steady_clock::now() + kTaskTimeout;
+  while (!state->done.load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(kPollInterval);
+  }
+
+  EXPECT_TRUE(state->done.load(std::memory_order_acquire));
+  EXPECT_FALSE(state->work_ran_on_shard.load(std::memory_order_acquire));
+  EXPECT_EQ(state->completion_shard.load(std::memory_order_acquire), 1U);
+  EXPECT_EQ(state->value.load(std::memory_order_acquire), 42);
+  EXPECT_EQ(state->error.load(std::memory_order_acquire), -1);
+  EXPECT_EQ(rt.compute_pool_snapshot().submitted_total, 1U);
+
+  rt.stop();
+}
 
 TEST(RuntimeTest, BasicStartStop) {
   Runtime rt(1);

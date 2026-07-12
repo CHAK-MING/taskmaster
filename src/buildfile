@@ -34,6 +34,7 @@ mxx{modules/*}:
 
 lib{dagforge}:                                                   \
   cxx{dagforge/core/shard                                         \
+      dagforge/core/compute_pool                                  \
       dagforge/core/runtime                                       \
       dagforge/io/context                                         \
       dagforge/io/timing_wheel                                    \

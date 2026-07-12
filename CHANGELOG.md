@@ -10,11 +10,14 @@ All notable changes to DAGForge will be documented in this file.
 - Unknown TOML fields are rejected instead of being silently ignored.
 - Newly generated DAG run IDs use standard UUIDv7 suffixes.
 
+### Added
+- Added a dedicated bounded ComputePool for CPU-intensive work, with priority queues, cooperative cancellation, start deadlines, owner-shard completion routing, configuration, and Prometheus metrics.
+
 ### Changed
 - Enum metadata and JSON/TOML enum serialization now share Glaze `enumerate` definitions.
 - HTTP headers use Boost.Beast fields, preserving case-insensitive lookup and duplicate fields.
 - Shard and composite hashes use `ankerl::unordered_dense` hashing.
-- Removed Boost.Filesystem and Boost.Charconv runtime dependencies.
+- Removed the direct Boost.Filesystem dependency; Boost.Charconv remains linked because Boost.URL uses it in the current system build.
 
 ## [0.3.0] - 2026-03-30
 

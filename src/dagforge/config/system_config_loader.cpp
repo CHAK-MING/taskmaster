@@ -20,6 +20,7 @@ struct DAGSourceToml {
 
 struct SystemToml {
   DatabaseConfig database{};
+  ComputeConfig compute{};
   SchedulerConfig scheduler{};
   ApiConfig api{};
   DAGSourceToml dag_source{};
@@ -35,6 +36,14 @@ template <> struct meta<dagforge::DatabaseConfig> {
       object("host", &T::host, "port", &T::port, "username", &T::username,
              "password", &T::password, "database", &T::database, "pool_size",
              &T::pool_size, "connect_timeout", &T::connect_timeout);
+};
+
+template <> struct meta<dagforge::ComputeConfig> {
+  using T = dagforge::ComputeConfig;
+  static constexpr auto value = object(
+      "threads", &T::threads, "queue_capacity", &T::queue_capacity,
+      "pin_threads_to_cores", &T::pin_threads_to_cores,
+      "cpu_affinity_offset", &T::cpu_affinity_offset);
 };
 
 template <> struct meta<dagforge::SchedulerConfig> {
@@ -67,9 +76,9 @@ template <> struct meta<dagforge::detail::DAGSourceToml> {
 
 template <> struct meta<dagforge::detail::SystemToml> {
   using T = dagforge::detail::SystemToml;
-  static constexpr auto value =
-      object("database", &T::database, "scheduler", &T::scheduler, "api",
-             &T::api, "dag_source", &T::dag_source);
+  static constexpr auto value = object(
+      "database", &T::database, "compute", &T::compute, "scheduler",
+      &T::scheduler, "api", &T::api, "dag_source", &T::dag_source);
 };
 } // namespace glz
 
@@ -105,6 +114,7 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
 
   SystemConfig cfg{};
   cfg.database = std::move(raw.database);
+  cfg.compute = std::move(raw.compute);
   cfg.scheduler = std::move(raw.scheduler);
   cfg.api = std::move(raw.api);
 
@@ -119,6 +129,14 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
   apply_env_override_bool("DAGFORGE_API_TLS_ENABLED", cfg.api.tls_enabled);
   apply_env_override("DAGFORGE_API_TLS_CERT_FILE", cfg.api.tls_cert_file);
   apply_env_override("DAGFORGE_API_TLS_KEY_FILE", cfg.api.tls_key_file);
+
+  apply_env_override("DAGFORGE_COMPUTE_THREADS", cfg.compute.threads);
+  apply_env_override("DAGFORGE_COMPUTE_QUEUE_CAPACITY",
+                     cfg.compute.queue_capacity);
+  apply_env_override_bool("DAGFORGE_COMPUTE_PIN_THREADS",
+                          cfg.compute.pin_threads_to_cores);
+  apply_env_override("DAGFORGE_COMPUTE_CPU_AFFINITY_OFFSET",
+                     cfg.compute.cpu_affinity_offset);
 
   apply_env_override("DAGFORGE_SCHEDULER_SHARDS", cfg.scheduler.shards);
   apply_env_override("DAGFORGE_SCHEDULER_MAX_CONCURRENCY",
@@ -154,7 +172,9 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
       cfg.scheduler.zombie_heartbeat_timeout_sec >
           cfg.scheduler.zombie_reaper_interval_sec;
 
-  if (cfg.scheduler.tick_interval_ms <= 0 ||
+  if (cfg.compute.threads < 0 || cfg.compute.queue_capacity <= 0 ||
+      cfg.compute.cpu_affinity_offset < 0 ||
+      cfg.scheduler.tick_interval_ms <= 0 ||
       cfg.scheduler.max_concurrency <= 0 || cfg.scheduler.shards < 0 ||
       cfg.scheduler.scheduler_shards <= 0 ||
       cfg.scheduler.cpu_affinity_offset < 0 ||

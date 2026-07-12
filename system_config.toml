@@ -1,3 +1,9 @@
+[compute]
+threads = 0
+queue_capacity = 1024
+pin_threads_to_cores = false
+cpu_affinity_offset = 0
+
 [scheduler]
 log_level = "info"
 log_file = ""

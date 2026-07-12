@@ -13,6 +13,9 @@ TEST(MetricsExporterTest, RendersCoreMetricFamiliesWithoutStartingApp) {
 
   EXPECT_NE(text.find("dagforge_active_coroutines_total"), std::string::npos);
   EXPECT_NE(text.find("dagforge_event_bus_queue_length"), std::string::npos);
+  EXPECT_NE(text.find("dagforge_compute_queue_depth"), std::string::npos);
+  EXPECT_NE(text.find("dagforge_compute_execution_seconds"),
+            std::string::npos);
   EXPECT_NE(text.find("dagforge_scheduler_queue_depth"), std::string::npos);
   EXPECT_NE(text.find("dagforge_db_errors_total"), std::string::npos);
   EXPECT_NE(text.find("dagforge_executor_active_count"), std::string::npos);

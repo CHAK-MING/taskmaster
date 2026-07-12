@@ -15,6 +15,14 @@ TEST(ConfigTest, DatabaseDefaults) {
   EXPECT_EQ(db.database, "dagforge");
 }
 
+TEST(ConfigTest, ComputeDefaults) {
+  ComputeConfig cfg;
+  EXPECT_EQ(cfg.threads, 0);
+  EXPECT_EQ(cfg.queue_capacity, 1024);
+  EXPECT_FALSE(cfg.pin_threads_to_cores);
+  EXPECT_EQ(cfg.cpu_affinity_offset, 0);
+}
+
 TEST(ConfigTest, SchedulerDefaults) {
   SchedulerConfig cfg;
   EXPECT_EQ(cfg.log_level, "info");
@@ -43,6 +51,12 @@ database = "dagforge_test"
 pool_size = 4
 connect_timeout = 5
 
+[compute]
+threads = 3
+queue_capacity = 256
+pin_threads_to_cores = true
+cpu_affinity_offset = 2
+
 [scheduler]
 log_level = "debug"
 max_concurrency = 8
@@ -65,12 +79,32 @@ scan_interval_sec = 30
   ASSERT_TRUE(result.has_value()) << result.error().message();
 
   EXPECT_EQ(result->database.database, "dagforge_test");
+  EXPECT_EQ(result->compute.threads, 3);
+  EXPECT_EQ(result->compute.queue_capacity, 256);
+  EXPECT_TRUE(result->compute.pin_threads_to_cores);
+  EXPECT_EQ(result->compute.cpu_affinity_offset, 2);
   EXPECT_EQ(result->scheduler.log_level, "debug");
   EXPECT_EQ(result->scheduler.scheduler_shards, 2);
   EXPECT_TRUE(result->scheduler.pin_shards_to_cores);
   EXPECT_EQ(result->scheduler.cpu_affinity_offset, 1);
   EXPECT_TRUE(result->api.enabled);
   EXPECT_EQ(result->api.port, 9999);
+}
+
+TEST(ConfigTest, RejectsInvalidComputeConfiguration) {
+  auto negative_threads = SystemConfigLoader::load_from_string(R"(
+[compute]
+threads = -1
+)");
+  ASSERT_FALSE(negative_threads.has_value());
+  EXPECT_EQ(negative_threads.error(), make_error_code(Error::ParseError));
+
+  auto empty_queue = SystemConfigLoader::load_from_string(R"(
+[compute]
+queue_capacity = 0
+)");
+  ASSERT_FALSE(empty_queue.has_value());
+  EXPECT_EQ(empty_queue.error(), make_error_code(Error::ParseError));
 }
 
 TEST(ConfigTest, TaskConfigDefaults) {
@@ -82,10 +116,12 @@ TEST(ConfigTest, TaskConfigDefaults) {
 
 TEST(ConfigTest, EnvironmentOverridesTakePrecedence) {
   constexpr auto *kApiPort = "DAGFORGE_API_PORT";
+  constexpr auto *kComputeThreads = "DAGFORGE_COMPUTE_THREADS";
   constexpr auto *kDbHost = "DAGFORGE_DB_HOST";
   constexpr auto *kDagDir = "DAGFORGE_DAG_DIRECTORY";
 
   ::setenv(kApiPort, "7777", 1);
+  ::setenv(kComputeThreads, "6", 1);
   ::setenv(kDbHost, "db.internal", 1);
   ::setenv(kDagDir, "/tmp/dags-env", 1);
 
@@ -104,11 +140,13 @@ port = 8080
   auto result = SystemConfigLoader::load_from_string(toml);
 
   ::unsetenv(kApiPort);
+  ::unsetenv(kComputeThreads);
   ::unsetenv(kDbHost);
   ::unsetenv(kDagDir);
 
   ASSERT_TRUE(result.has_value()) << result.error().message();
   EXPECT_EQ(result->api.port, 7777);
+  EXPECT_EQ(result->compute.threads, 6);
   EXPECT_EQ(result->database.host, "db.internal");
   EXPECT_EQ(result->dag_source.directory, "/tmp/dags-env");
 }

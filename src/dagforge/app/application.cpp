@@ -84,7 +84,15 @@ auto Application::rebuild_services_from_config() -> void {
 
   runtime_.emplace(
       config_.scheduler.shards, config_.scheduler.pin_shards_to_cores,
-      static_cast<unsigned>(config_.scheduler.cpu_affinity_offset));
+      static_cast<unsigned>(config_.scheduler.cpu_affinity_offset),
+      ComputePoolConfig{
+          .thread_count = static_cast<std::size_t>(config_.compute.threads),
+          .queue_capacity =
+              static_cast<std::size_t>(config_.compute.queue_capacity),
+          .pin_threads_to_cores = config_.compute.pin_threads_to_cores,
+          .cpu_affinity_offset =
+              static_cast<unsigned>(config_.compute.cpu_affinity_offset),
+      });
   executor_ = create_composite_executor(*runtime_);
   persistence_ =
       std::make_unique<PersistenceService>(*runtime_, config_.database);

@@ -73,6 +73,12 @@ FLUSH PRIVILEGES;
 The `system_config.toml` file maps to the internal configuration structures.
 
 ```toml
+[compute]
+threads = 0                 # 0 = auto-detect, dedicated CPU workers
+queue_capacity = 1024       # bounded admission queue
+pin_threads_to_cores = false
+cpu_affinity_offset = 0
+
 [scheduler]
 log_level = "info"
 log_file = ""
