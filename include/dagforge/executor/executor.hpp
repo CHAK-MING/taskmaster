@@ -24,8 +24,6 @@
 
 namespace dagforge {
 
-struct TaskConfig;
-
 using ExecutorHeartbeatCallback =
     std::move_only_function<void(const InstanceId &instance_id)>;
 
@@ -50,23 +48,12 @@ struct ExecutorResult {
 }
 
 struct ExecutorRequest {
-  struct LuaRuntimeContext {
-    DAGId dag_id;
-    DAGRunId dag_run_id;
-    TaskId task_id;
-    std::string execution_date;
-    std::unordered_map<std::string, std::string, StringHash, StringEqual>
-        conf_values;
-    std::move_only_function<void(std::string_view)> on_log;
-  };
-
   InstanceId instance_id;
   std::string command;
   std::string working_dir;
   std::chrono::seconds execution_timeout{std::chrono::seconds(3600)};
   ExecutorConfig config;
   std::shared_ptr<pmr::memory_resource> memory_resource;
-  std::shared_ptr<LuaRuntimeContext> lua_context;
 
   [[nodiscard]] auto resource() const noexcept -> pmr::memory_resource * {
     return memory_resource != nullptr ? memory_resource.get()
@@ -119,41 +106,19 @@ class ExecutorRegistry {
 public:
   using Creator =
       std::move_only_function<std::unique_ptr<IExecutor>(Runtime &) const>;
-  using ConfigBuilder = Result<ExecutorConfig> (*)(const TaskConfig &);
-  using ConfigSerializer = std::string (*)(const ExecutorConfig &);
-  using ConfigParser = Result<ExecutorConfig> (*)(std::string_view);
-  using TaskValidator = void (*)(const TaskConfig &, std::vector<std::string> &);
 
   static auto instance() -> ExecutorRegistry &;
 
-  auto register_type(ExecutorType type, Creator creator,
-                     ConfigBuilder builder,
-                     ConfigSerializer serializer = {},
-                     ConfigParser parser = {}, TaskValidator validator = {})
-      -> void;
+  auto register_type(ExecutorType type, Creator creator) -> void;
 
   [[nodiscard]] auto create(ExecutorType type, Runtime &rt) const
       -> std::unique_ptr<IExecutor>;
-
-  [[nodiscard]] auto build_config(const TaskConfig &task) const
-      -> Result<ExecutorConfig>;
-  [[nodiscard]] auto serialize_config(const ExecutorConfig &config) const
-      -> std::string;
-  [[nodiscard]] auto parse_persisted_config(ExecutorType type,
-                                            std::string_view persisted_config)
-      const -> Result<ExecutorConfig>;
-  auto validate_task(const TaskConfig &task,
-                     std::vector<std::string> &errors) const -> void;
 
   [[nodiscard]] auto registered_types() const -> std::vector<ExecutorType>;
 
 private:
   struct Entry {
     Creator creator;
-    ConfigBuilder builder;
-    ConfigSerializer serializer;
-    ConfigParser parser;
-    TaskValidator validator;
   };
 
   std::flat_map<ExecutorType, Entry> entries_;
@@ -232,8 +197,7 @@ inline auto execute_async(Runtime &runtime, IExecutor &executor,
                                        .working_dir = std::move(working_dir),
                                        .execution_timeout = execution_timeout,
                                        .config = std::move(config),
-                                       .memory_resource = {},
-                                       .lua_context = {}},
+                                       .memory_resource = {}},
                        std::move(memory_resource), std::move(on_stdout),
                        std::move(on_stderr), std::move(on_heartbeat));
 }

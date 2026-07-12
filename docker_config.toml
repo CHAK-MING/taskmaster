@@ -1,29 +1,30 @@
-# DAGForge Docker Deployment Configuration
-# This configuration is optimized for running DAGForge in Docker with MySQL
+[runtime]
+shards = 0
+pin_shards_to_cores = false
+cpu_affinity_offset = 0
 
-[database]
-host      = "mysql"
-port      = 3306
-user      = "dagforge"
-password  = "dagforge"
-dbname    = "dagforge"
-pool_size = 4
+[compute]
+threads = 0
+queue_capacity = 1024
+pin_threads_to_cores = false
+cpu_affinity_offset = 0
+
+[workflow]
+enabled = true
+
+[[workflow.model_providers]]
+name = "openai"
+base_url = "https://api.openai.com"
+responses_path = "/v1/responses"
+api_key_env = "OPENAI_API_KEY"
+timeout_sec = 120
+max_response_bytes = 16777216
 
 [api]
-enabled    = true
-host       = "0.0.0.0"
-port       = 8888
-cors_origin = "*"
-
-[scheduler]
-log_level       = "info"
-tick_interval_ms = 1000
-max_concurrency  = 10
-shards          = 0  # 0 = auto-detect CPU cores
-
-[dag_source]
-directory       = "/opt/dagforge/dags"
-scan_interval_sec = 60
-
-[executor]
-default_docker_socket = "/var/run/docker.sock"
+enabled = true
+host = "0.0.0.0"
+port = 8888
+reuse_port = false
+tls_enabled = false
+tls_cert_file = ""
+tls_key_file = ""

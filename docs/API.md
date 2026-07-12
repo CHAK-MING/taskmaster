@@ -1,179 +1,175 @@
-> [!NOTE]
-> **API Stability**
-> API schemas are currently produced from code (`api_server.cpp`) and may evolve. For strict integration, pin your client to a specific DAGForge release tag.
+# DAGForge 0.4 HTTP API
 
-<div align="center">
+The API is available when `[api].enabled = true`. JSON responses use the
+standard HTTP status code for success or failure.
 
-# DAGForge API Reference
+## System endpoints
 
-</div>
+### `GET /api/health`
 
-This document describes the currently implemented HTTP and WebSocket APIs.
-
----
-
-## 📡 Base URL
-
-- Default: `http://127.0.0.1:8888`
-- API prefix: `/api`
-
-## 🔐 Auth and Versioning
-
-- Authentication: none (current implementation)
-- Versioning: none (current implementation)
-
-## 📋 Common Response Rules
-
-- Content type: `application/json` for API endpoints.
-- Success status codes:
-  - `200 OK`
-  - `201 Created` (trigger run)
-- Common error status codes:
-  - `400 Bad Request`
-  - `403 Forbidden`
-  - `404 Not Found`
-  - `409 Conflict`
-  - `500 Internal Server Error`
-  - `503 Service Unavailable`
-- Error body format:
+Returns:
 
 ```json
-{"error":"error message"}
+{"status":"healthy"}
 ```
 
----
+### `GET /api/status`
 
-## 🌐 HTTP Endpoints
+Returns runtime state, whether the workflow runtime is enabled, active run
+count, shard count, and a timestamp.
 
-### Health and Metrics
+### `GET /metrics`
 
-- `GET /api/health`
-- `GET /api/status`
-- `GET /metrics` (Prometheus text format)
+Returns Prometheus text format.
 
-### DAG Metadata
+## Plan endpoints
 
-- `GET /api/dags`
-- `GET /api/dags/{dag_id}`
-- `GET /api/dags/{dag_id}/tasks`
-- `GET /api/dags/{dag_id}/tasks/{task_id}`
-- `GET /api/dags/{dag_id}/history`
+### `POST /api/v1/workflows/plans`
 
-### DAG Control
+Registers a JSON Workflow Plan v1.
 
-- `POST /api/dags/{dag_id}/trigger`
-- `POST /api/dags/{dag_id}/pause`
-- `POST /api/dags/{dag_id}/unpause`
-
-### Run History and Runtime State
-
-- `GET /api/history`
-- `GET /api/history/{dag_run_id}`
-- `GET /api/runs/{dag_run_id}/tasks`
-- `GET /api/runs/{dag_run_id}/logs?limit=10000`
-- `GET /api/runs/{dag_run_id}/tasks/{task_id}/logs?attempt=1&limit=5000`
-
----
-
-## 📖 Request/Response Examples
-
-### 🚀 Trigger a DAG run
-
-```bash
-curl -X POST http://127.0.0.1:8888/api/dags/hello_world/trigger \
-  -H 'Content-Type: application/json' \
-  -d '{}'
-```
-
-**Response (`201`):**
-
-```json
-{"dag_run_id":"019c...","status":"triggered"}
-```
-
-### 📋 List runs
-
-```bash
-curl http://127.0.0.1:8888/api/history
-```
-
-**Response (`200`, abbreviated):**
+The response has status `201 Created`:
 
 ```json
 {
-  "runs": [
-    {
-      "dag_run_id": "019c...",
-      "dag_id": "hello_world",
-      "state": "success",
-      "trigger_type": "manual",
-      "started_at": "2026-02-23T04:55:08Z",
-      "finished_at": "2026-02-23T04:55:08Z",
-      "execution_date": "2026-02-23T04:55:08Z"
-    }
-  ]
+  "workflow_id": "example",
+  "plan_id": "019...",
+  "digest": "sha256...",
+  "nodes": 3
 }
 ```
 
-### 🔍 Get tasks for one run
+Plans with the same canonical digest are deduplicated in the current process.
 
-```bash
-curl http://127.0.0.1:8888/api/runs/<dag_run_id>/tasks
-```
+### `POST /api/v1/workflows/plans/toml`
 
-**Response (`200`, abbreviated):**
+Registers a TOML Workflow Plan v1. The request body is raw TOML, not JSON.
+
+### `GET /api/v1/workflows/plans`
+
+Lists plans currently registered in the in-memory control plane.
+
+## Run endpoints
+
+### `POST /api/v1/workflows/{workflow_id}/runs`
+
+Starts the latest registered plan for `workflow_id`.
+
+Optional body:
 
 ```json
 {
-  "dag_run_id": "019c...",
-  "tasks": [
-    {
-      "task_id": "greet",
-      "state": "success",
-      "attempt": 1,
-      "exit_code": 0,
-      "started_at": "2026-02-23T04:55:08Z",
-      "finished_at": "2026-02-23T04:55:08Z",
-      "error": ""
-    }
-  ]
+  "source": "api",
+  "event_type": "request",
+  "payload": {"request":"hello"},
+  "idempotency_key": "request-123",
+  "principal": {
+    "subject": "user-42",
+    "roles": ["operator"]
+  }
 }
 ```
 
----
+`Idempotency-Key` can be supplied as an HTTP header when the body field is
+empty.
 
-## 🔌 WebSocket API
-
-DAGForge accepts WebSocket upgrades when the HTTP server receives an upgrade request.  
-In practice, clients should use:
-
-- `ws://127.0.0.1:8888/ws`
-- or `ws://127.0.0.1:8888/ws/logs` (commonly used by UI)
-
-### Message Formats Sent by Server
-
-**Log message:**
+The response has status `202 Accepted`:
 
 ```json
 {
-  "type":"log",
-  "timestamp":"2026-02-23T04:55:08Z",
-  "dag_run_id":"019c...",
-  "task_id":"greet",
-  "stream":"stdout",
-  "content":"hello world"
+  "run_id": "example__019...",
+  "workflow_id": "example",
+  "plan_id": "019..."
 }
 ```
 
-**Event message:**
+### `GET /api/v1/workflow-runs/{run_id}`
+
+Returns the run state, node states, attempts, errors, and pending approval IDs.
+
+Run states:
+
+- `queued`
+- `running`
+- `awaiting_approval`
+- `success`
+- `failed`
+- `cancelled`
+
+Node states:
+
+- `pending`
+- `ready`
+- `running`
+- `awaiting_approval`
+- `success`
+- `failed`
+- `skipped`
+- `cancelled`
+
+### `GET /api/v1/workflow-runs/{run_id}/outputs/{node_id}/{port}`
+
+Returns a typed output value:
+
+```json
+{"value":true}
+```
+
+Artifact, evaluation, tool-result, model-response, and message-list values are
+encoded as structured JSON objects.
+
+### `GET /api/v1/workflow-runs/{run_id}/evidence`
+
+Returns evidence records for the run.
+
+### `POST /api/v1/workflow-runs/{run_id}/cancel`
+
+Requests cancellation and returns:
+
+```json
+{"status":"cancelled"}
+```
+
+## Approval endpoints
+
+### `GET /api/v1/workflow-runs/{run_id}/approvals`
+
+Lists pending approvals with approval ID, node ID, summary, and context.
+
+### `POST /api/v1/workflow-runs/{run_id}/approvals/{approval_id}`
+
+Body:
 
 ```json
 {
-  "type":"event",
-  "timestamp":"2026-02-23T04:55:08Z",
-  "event":"task_status_changed",
-  "dag_run_id":"019c...",
-  "task_id":"greet",
-  "data":"{\"state\":\"success\"}"
+  "approved": true,
+  "comment": "reviewed",
+  "principal": {
+    "subject": "reviewer-7",
+    "roles": ["reviewer"]
+  }
 }
 ```
+
+Returns `202 Accepted` when the decision is accepted.
+
+## Error behavior
+
+- `400`: invalid path parameter, body, plan, or strict parser failure.
+- `401`/`403`: mapped adapter or policy authorization failure.
+- `404`: plan, run, output, or approval not found.
+- `409`: state or duplicate conflict when mapped by the core error.
+- `503`: workflow runtime disabled.
+
+The current API has no authentication middleware. Bind to loopback or place it
+behind a trusted gateway when operating outside a development environment.
+
+## Current limitations
+
+- plan registration and run state are in-memory;
+- there is no endpoint to upload or download artifact bytes;
+- run creation selects the latest plan for a workflow instead of an explicit
+  plan ID;
+- there is no durable event stream or restart recovery.
+
+These are explicit 0.4 follow-up milestones rather than hidden guarantees.

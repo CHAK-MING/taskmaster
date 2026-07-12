@@ -1,55 +1,16 @@
-# version: '3.8'  # Version is optional in modern docker compose
-
 services:
-  mysql:
-    image: mysql:8.4
-    container_name: dagforge-mysql
-    restart: unless-stopped
-    environment:
-      MYSQL_ROOT_PASSWORD: root_password
-      MYSQL_DATABASE: dagforge
-      MYSQL_USER: dagforge
-      MYSQL_PASSWORD: dagforge
-    ports:
-      - "3306:3306"
-    volumes:
-      - mysql_data:/var/lib/mysql
-      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot_password"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    networks:
-      - dagforge-network
-
   dagforge:
     build:
       context: .
       dockerfile: Dockerfile
       args:
         BUILD_JOBS: ${DAGFORGE_BUILD_JOBS:-0}
-    container_name: dagforge-app
+    container_name: dagforge-runtime
     restart: unless-stopped
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     ports:
       - "8888:8888"
     volumes:
-      - ./dags:/opt/dagforge/dags
-      - dagforge_logs:/var/log/dagforge
       - ./docker_config.toml:/opt/dagforge/system_config.toml:ro
-    depends_on:
-      mysql:
-        condition: service_healthy
-    networks:
-      - dagforge-network
-
-networks:
-  dagforge-network:
-    driver: bridge
-
-volumes:
-  mysql_data:
-    driver: local
-  dagforge_logs:
-    driver: local
+      - /var/run/docker.sock:/var/run/docker.sock

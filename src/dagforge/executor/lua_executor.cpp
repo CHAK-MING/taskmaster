@@ -188,7 +188,6 @@ struct LuaExecutionContext {
   const ExecutorRequest *request{nullptr};
   ExecutionSink *sink{nullptr};
   ExecutorResult *result{nullptr};
-  ExecutorRequest::LuaRuntimeContext *lua_context{nullptr};
 };
 
 inline const char *kLuaExecContextRegistryKey = "dagforge.lua.exec_context";
@@ -377,9 +376,7 @@ int lua_dagforge_log(lua_State *L) {
   }
   size_t size = 0;
   const char *message = luaL_checklstring(L, 1, &size);
-  if (exec->lua_context != nullptr && exec->lua_context->on_log) {
-    exec->lua_context->on_log(std::string_view(message, size));
-  } else if (exec->sink != nullptr && exec->sink->on_stdout) {
+  if (exec->sink != nullptr && exec->sink->on_stdout) {
     exec->sink->on_stdout(exec->request->instance_id,
                           std::string_view(message, size));
   }
@@ -438,8 +435,7 @@ int lua_dagforge_json_encode(lua_State *L) {
   return 1;
 }
 
-void install_dagforge_api(lua_State *L, const ExecutorRequest &req,
-                          LuaExecutionContext &exec_ctx) {
+void install_dagforge_api(lua_State *L, LuaExecutionContext &exec_ctx) {
   lua_pushlightuserdata(L, const_cast<char *>(kLuaExecContextRegistryKey));
   lua_pushlightuserdata(L, &exec_ctx);
   lua_settable(L, LUA_REGISTRYINDEX);
@@ -454,42 +450,6 @@ void install_dagforge_api(lua_State *L, const ExecutorRequest &req,
   lua_pushcfunction(L, &lua_dagforge_json_encode);
   lua_setfield(L, -2, "json_encode");
 
-  if (req.lua_context != nullptr) {
-    lua_pushlstring(L, req.lua_context->task_id.value().data(),
-                    req.lua_context->task_id.value().size());
-    lua_setfield(L, -2, "task_id");
-    lua_pushlstring(L, req.lua_context->dag_run_id.value().data(),
-                    req.lua_context->dag_run_id.value().size());
-    lua_setfield(L, -2, "run_id");
-    lua_pushlstring(L, req.lua_context->dag_id.value().data(),
-                    req.lua_context->dag_id.value().size());
-    lua_setfield(L, -2, "dag_id");
-    lua_pushlstring(L, req.lua_context->execution_date.data(),
-                    req.lua_context->execution_date.size());
-    lua_setfield(L, -2, "execution_date");
-
-    lua_newtable(L);
-    for (const auto &[key, value] : req.lua_context->conf_values) {
-      if (auto parsed = parse_json(value)) {
-        push_json_value(L, *parsed);
-      } else {
-        lua_pushlstring(L, value.data(), value.size());
-      }
-      lua_setfield(L, -2, key.c_str());
-    }
-    lua_setfield(L, -2, "conf");
-  } else {
-    lua_pushstring(L, "");
-    lua_setfield(L, -2, "task_id");
-    lua_pushstring(L, "");
-    lua_setfield(L, -2, "run_id");
-    lua_pushstring(L, "");
-    lua_setfield(L, -2, "dag_id");
-    lua_pushstring(L, "");
-    lua_setfield(L, -2, "execution_date");
-    lua_newtable(L);
-    lua_setfield(L, -2, "conf");
-  }
   lua_setglobal(L, "dagforge");
 }
 
@@ -531,7 +491,6 @@ auto run_lua_chunk(ExecutorRequest req, ExecutionSink &sink,
       .request = &req,
       .sink = &sink,
       .result = &result,
-      .lua_context = req.lua_context.get(),
   };
 
   luaL_openlibs(L);
@@ -541,7 +500,7 @@ auto run_lua_chunk(ExecutorRequest req, ExecutionSink &sink,
     lua_pushnil(L);
     lua_setglobal(L, name);
   }
-  install_dagforge_api(L, req, exec_ctx);
+  install_dagforge_api(L, exec_ctx);
 
   LuaHookState hook_state{
       .remaining_instructions = config->max_instructions,

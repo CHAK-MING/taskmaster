@@ -9,12 +9,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <optional>
+#include <print>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -66,13 +67,14 @@ auto run_serve(const std::string &config_path) -> int {
   dagforge::Application app;
   auto loaded = app.load_config(config_path);
   if (!loaded) {
-    std::cerr << "Failed to load config: " << loaded.error().message() << '\n';
+    std::println(stderr, "Failed to load config: {}",
+                 loaded.error().message());
     return 1;
   }
   auto started = app.start();
   if (!started) {
-    std::cerr << "Failed to start DAGForge: " << started.error().message()
-              << '\n';
+    std::println(stderr, "Failed to start DAGForge: {}",
+                 started.error().message());
     return 1;
   }
 
@@ -88,18 +90,18 @@ auto run_serve(const std::string &config_path) -> int {
 auto run_validate(const std::string &plan_path) -> int {
   auto plan = load_plan(plan_path);
   if (!plan) {
-    std::cerr << "Invalid workflow plan: " << plan.error().message() << '\n';
+    std::println(stderr, "Invalid workflow plan: {}", plan.error().message());
     return 1;
   }
   auto compiled = dagforge::workflow::PlanCompiler{}.compile(std::move(*plan));
   if (!compiled) {
-    std::cerr << "Workflow rejected: " << compiled.error().message() << '\n';
+    std::println(stderr, "Workflow rejected: {}", compiled.error().message());
     return 1;
   }
-  std::cout << "workflow_id=" << (*compiled)->workflow_id << '\n'
-            << "plan_id=" << (*compiled)->plan_id << '\n'
-            << "digest=" << (*compiled)->digest << '\n'
-            << "nodes=" << (*compiled)->nodes.size() << '\n';
+  std::println("workflow_id={}", (*compiled)->workflow_id);
+  std::println("plan_id={}", (*compiled)->plan_id);
+  std::println("digest={}", (*compiled)->digest);
+  std::println("nodes={}", (*compiled)->nodes.size());
   return 0;
 }
 
@@ -108,32 +110,34 @@ auto run_local(const std::string &config_path, const std::string &plan_path,
   dagforge::Application app;
   auto loaded = app.load_config(config_path);
   if (!loaded) {
-    std::cerr << "Failed to load config: " << loaded.error().message() << '\n';
+    std::println(stderr, "Failed to load config: {}",
+                 loaded.error().message());
     return 1;
   }
   app.config().api.enabled = false;
   auto initialized = app.init();
   if (!initialized) {
-    std::cerr << "Failed to initialize: " << initialized.error().message()
-              << '\n';
+    std::println(stderr, "Failed to initialize: {}",
+                 initialized.error().message());
     return 1;
   }
   auto started_app = app.start();
   if (!started_app) {
-    std::cerr << "Failed to start runtime: " << started_app.error().message()
-              << '\n';
+    std::println(stderr, "Failed to start runtime: {}",
+                 started_app.error().message());
     return 1;
   }
 
   auto plan = load_plan(plan_path);
   if (!plan) {
-    std::cerr << "Invalid workflow plan: " << plan.error().message() << '\n';
+    std::println(stderr, "Invalid workflow plan: {}", plan.error().message());
     app.stop();
     return 1;
   }
   auto registered = app.workflow_control_plane()->register_plan(std::move(*plan));
   if (!registered) {
-    std::cerr << "Workflow rejected: " << registered.error().message() << '\n';
+    std::println(stderr, "Workflow rejected: {}",
+                 registered.error().message());
     app.stop();
     return 1;
   }
@@ -154,11 +158,12 @@ auto run_local(const std::string &config_path, const std::string &plan_path,
           .principal = dagforge::workflow::Principal{.subject = "cli"},
       });
   if (!run) {
-    std::cerr << "Failed to start workflow: " << run.error().message() << '\n';
+    std::println(stderr, "Failed to start workflow: {}",
+                 run.error().message());
     app.stop();
     return 1;
   }
-  std::cout << run->str() << '\n';
+  std::println("{}", run->str());
 
   if (!wait) {
     app.stop();
@@ -169,14 +174,14 @@ auto run_local(const std::string &config_path, const std::string &plan_path,
     auto snapshot = dagforge::sync_wait_on_runtime(
         app.runtime(), app.workflow_runtime()->snapshot(*run));
     if (!snapshot) {
-      std::cerr << "Failed to query workflow: " << snapshot.error().message()
-                << '\n';
+      std::println(stderr, "Failed to query workflow: {}",
+                   snapshot.error().message());
       app.stop();
       return 1;
     }
     if (terminal((*snapshot)->state)) {
-      std::cout << dagforge::workflow::to_string_view((*snapshot)->state)
-                << '\n';
+      std::println("{}",
+                   dagforge::workflow::to_string_view((*snapshot)->state));
       const auto exit_code =
           (*snapshot)->state == dagforge::workflow::RunState::Success ? 0 : 1;
       app.stop();

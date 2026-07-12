@@ -4,18 +4,10 @@ queue_capacity = 1024
 pin_threads_to_cores = false
 cpu_affinity_offset = 0
 
-[scheduler]
-log_level = "info"
-log_file = ""
-pid_file = ""
-tick_interval_ms = 1000
-max_concurrency = 10
+[runtime]
 shards = 0
-scheduler_shards = 1
 pin_shards_to_cores = false
 cpu_affinity_offset = 0
-zombie_reaper_interval_sec = 60
-zombie_heartbeat_timeout_sec = 300
 
 [workflow]
 enabled = true
@@ -37,15 +29,6 @@ max_response_bytes = 16777216
 # timeout_sec = 120
 # max_response_bytes = 16777216
 
-[database]
-host = "127.0.0.1"
-port = 3306
-username = "dagforge"
-password = "dagforge"
-database = "dagforge"
-pool_size = 4
-connect_timeout = 5
-
 [api]
 enabled = true
 host = "127.0.0.1"
@@ -54,8 +37,3 @@ reuse_port = false
 tls_enabled = false
 tls_cert_file = ""
 tls_key_file = ""
-
-[dag_source]
-mode = "File"
-directory = "./dags"
-scan_interval_sec = 60

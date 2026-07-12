@@ -127,11 +127,14 @@ auto render_prometheus_metrics(const Application &app) -> std::string {
                                .Help("Compute execution time")
                                .Register(registry);
   auto &queue_wait = queue_wait_family.Add(
-      {}, {0.000001, 0.000005, 0.00001, 0.000025, 0.00005, 0.0001,
-           0.00025, 0.0005, 0.001, 0.005, 0.025, 0.1});
+      prom::Labels{}, prom::Histogram::BucketBoundaries{
+                          0.000001, 0.000005, 0.00001, 0.000025, 0.00005,
+                          0.0001, 0.00025, 0.0005, 0.001, 0.005, 0.025, 0.1});
   auto &execution = execution_family.Add(
-      {}, {0.00001, 0.00005, 0.0001, 0.00025, 0.0005, 0.001, 0.005,
-           0.01, 0.025, 0.05, 0.1, 0.25, 1.0, 10.0});
+      prom::Labels{},
+      prom::Histogram::BucketBoundaries{0.00001, 0.00005, 0.0001, 0.00025,
+                                        0.0005, 0.001, 0.005, 0.01, 0.025,
+                                        0.05, 0.1, 0.25, 1.0, 10.0});
   set_histogram(queue_wait, compute.queue_wait_time);
   set_histogram(execution, compute.execution_time);
 
@@ -171,9 +174,10 @@ auto render_prometheus_metrics(const Application &app) -> std::string {
     for (const auto &[endpoint, snapshot] :
          api->http_request_duration_snapshots()) {
       auto &duration = duration_family.Add(
-          {{"endpoint", endpoint}},
-          {0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0,
-           2.5, 5.0, 10.0});
+          prom::Labels{{"endpoint", endpoint}},
+          prom::Histogram::BucketBoundaries{0.001, 0.005, 0.01, 0.025,
+                                            0.05, 0.1, 0.25, 0.5, 1.0,
+                                            2.5, 5.0, 10.0});
       set_histogram(duration, snapshot);
     }
   }

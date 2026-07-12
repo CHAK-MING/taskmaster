@@ -1,26 +1,12 @@
-#include <cstdint>
-#include <span>
+#include <string_view>
 
 import dagforge.foundation;
 
 auto main() -> int {
   auto result = dagforge::ok(42);
-  dagforge::metrics::Counter counter;
-  counter.inc();
 
   if (!result || *result != 42) {
     return 1;
-  }
-  if (counter.load() != 1U) {
-    return 2;
-  }
-  dagforge::detail::HttpMetricsRegistry http_metrics;
-  auto route = http_metrics.register_route(
-      dagforge::http::HttpMethod::GET, "/metrics",
-      std::span<const std::uint64_t>{});
-  route.record(dagforge::http::HttpStatus::Ok, 1000);
-  if (http_metrics.request_counts().empty()) {
-    return 27;
   }
   if (dagforge::timing::kShutdownPollInterval.count() <= 0) {
     return 3;
@@ -29,8 +15,8 @@ auto main() -> int {
   if (!parsed || *parsed != 7) {
     return 4;
   }
-  dagforge::DAGId dag_id{"module"};
-  if (dag_id.empty() || dag_id.size() != 6) {
+  dagforge::WorkflowId workflow_id{"module"};
+  if (workflow_id.empty() || workflow_id.size() != 6) {
     return 5;
   }
   auto io_ec = dagforge::io::make_error_code(dagforge::io::IoError::TimedOut);
@@ -39,43 +25,11 @@ auto main() -> int {
     return 6;
   }
   dagforge::SystemConfig config;
-  if (config.database.port != 3306 || config.api.port != 8888) {
+  if (config.api.port != 8888 || !config.workflow.enabled) {
     return 7;
   }
-  dagforge::TaskConfig task{};
-  task.task_id = dagforge::TaskId{"task-a"};
-  task.command = "echo ok";
-  if (task.executor != dagforge::ExecutorType::Shell ||
-      task.execution_timeout.count() !=
-          dagforge::task_defaults::kExecutionTimeout.count()) {
-    return 18;
-  }
-  dagforge::ShellExecutorConfig shell_cfg{};
-  dagforge::ExecutorConfig exec_cfg{shell_cfg};
-  if (exec_cfg.type() != dagforge::ExecutorType::Shell) {
+  if (dagforge::to_string_view(dagforge::ExecutorType::Shell) != "shell") {
     return 19;
-  }
-  if (dagforge::to_string_view(dagforge::DAGRunState::Running).size() != 7) {
-    return 9;
-  }
-  dagforge::TaskInstanceInfo ti{};
-  if (ti.task_idx != dagforge::kInvalidNode || ti.attempt != 0) {
-    return 10;
-  }
-  if (ti.instance_id.size() != 0 || ti.task_id.size() != 0) {
-    return 11;
-  }
-  if (dagforge::schema::CURRENT_SCHEMA_VERSION < 2) {
-    return 12;
-  }
-  dagforge::orm::RunHistoryEntry run_entry{};
-  if (run_entry.state != dagforge::DAGRunState::Running ||
-      run_entry.trigger_type != dagforge::TriggerType::Manual) {
-    return 29;
-  }
-  auto cron = dagforge::CronExpr::parse("*/5 * * * *");
-  if (!cron || cron->raw().empty()) {
-    return 13;
   }
   dagforge::http::QueryParams params{"dag_id=example&limit=10"};
   if (!params.has("dag_id")) {
@@ -85,9 +39,7 @@ auto main() -> int {
   if (!limit || limit->size() != 2) {
     return 15;
   }
-  dagforge::cli::ServeStartOptions serve_opts;
-  serve_opts.config_file = "system_config.toml";
-  if (serve_opts.config_file.empty()) {
+  if (dagforge::workflow::kWorkflowSchemaVersion != 1U) {
     return 28;
   }
   return 0;

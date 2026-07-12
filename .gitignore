@@ -1,4 +1,5 @@
-# Frontend dependencies and build output.
+# Frontend dependencies and build output remain ignored if an optional UI is
+# introduced again.
 /web-ui/node_modules/
 /web-ui/dist/
 
@@ -36,8 +37,7 @@
 __pycache__/
 /.ruff_cache/
 
-# Generated benchmark inputs and results.
-/bench/airflow_dags/
+# Generated benchmark results.
 /bench_results/
 
 # Artifacts produced by the vendored Lua Makefile.

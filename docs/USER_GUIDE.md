@@ -1,686 +1,408 @@
-> [!NOTE]
-> **DAGForge is in Active Development.**
-> We are building a high-performance DAG workflow orchestrator built with modern C++23.
+# DAGForge 0.4 User Guide
 
-<div align="center">
+DAGForge 0.4 is a general DAG execution runtime. It accepts a strict,
+versioned workflow plan, compiles that plan into an immutable execution plan,
+and executes it on the sharded C++ runtime.
 
-# DAGForge User Guide
+Natural-language interpretation and dynamic AI planning are intentionally
+outside the runtime. An upstream application can generate plans and control
+runs through the CLI or REST interface.
 
-[English](../README.md) | [简体中文](../README_CN.md) | [API Reference](API.md)
+## 1. Build
 
-</div>
+Requirements:
 
-In-depth usage, patterns, and troubleshooting. For a quick overview see the [README](../README.md).
+- Linux
+- GCC 15+
+- build2 0.17+
+- Boost 1.88+
+- OpenSSL development libraries
 
----
-
-## 📑 Table of Contents
-
-1. [First-time Setup](#1-first-time-setup)
-2. [Running the Service](#2-running-the-service)
-3. [Viewing Logs](#3-viewing-logs)
-4. [DAG Hot-Reload](#4-dag-hot-reload)
-5. [Trigger Rules — When to Use Each](#5-trigger-rules--when-to-use-each)
-7. [Sensor Tasks](#6-sensor-tasks)
-8. [Docker Tasks](#7-docker-tasks)
-9. [Retries and Timeouts](#8-retries-and-timeouts)
-11. [Inspecting Runs](#9-inspecting-runs)
-12. [Testing Individual Tasks](#10-testing-individual-tasks)
-13. [Re-running Failed Tasks](#11-re-running-failed-tasks)
-14. [Database Maintenance](#12-database-maintenance)
-15. [Scripting / JSON Output](#13-scripting--json-output)
-16. [CLI Cheatsheet](#14-cli-cheatsheet)
-17. [Troubleshooting](#15-troubleshooting)
-
----
-
-## 1. First-time Setup
-
-### 🛠️ Prerequisites
-
-- Linux (x86-64 or ARM64)
-- GCC 15+ or Clang 19+
-- build2 0.17+ (`b`, `bdep`, `bpkg`)
-- Boost 1.87+
-- MySQL 8.0+
-
-> [!NOTE]
-> Source builds are supported through **build2**. This repository does not ship
-> a supported CMake configuration.
-
-### 🗄️ MySQL Setup
-
-```sql
--- Run as MySQL root
-CREATE DATABASE dagforge CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'dagforge'@'%' IDENTIFIED BY 'dagforge';
-GRANT ALL PRIVILEGES ON dagforge.* TO 'dagforge'@'%';
-FLUSH PRIVILEGES;
-```
-
-### 🏗️ Build
+Build the project:
 
 ```bash
 ./scripts/setup-build2.sh
 ./scripts/build.sh
-# Binary: ./bin/dagforge
 ```
 
-### ⚙️ Configure
+The build script prints the selected build2 configuration and binary path.
 
-The `system_config.toml` file maps to the internal configuration structures.
+## 2. System configuration
+
+DAGForge uses strict TOML. Unknown fields are rejected.
 
 ```toml
+[runtime]
+shards = 0
+pin_shards_to_cores = false
+cpu_affinity_offset = 0
+
 [compute]
-threads = 0                 # 0 = auto-detect, dedicated CPU workers
-queue_capacity = 1024       # bounded admission queue
+threads = 0
+queue_capacity = 1024
 pin_threads_to_cores = false
 cpu_affinity_offset = 0
 
-[scheduler]
-log_level = "info"
-log_file = ""
-pid_file = ""
-tick_interval_ms = 1000
-max_concurrency = 10
-shards = 0
-scheduler_shards = 1
-pin_shards_to_cores = false
-cpu_affinity_offset = 0
-zombie_reaper_interval_sec = 60
-zombie_heartbeat_timeout_sec = 300
+[workflow]
+enabled = true
 
-[database]
-host = "127.0.0.1"
-port = 3306
-username = "dagforge"
-password = "dagforge"
-database = "dagforge"
-pool_size = 4
-connect_timeout = 5
+[[workflow.model_providers]]
+name = "openai"
+base_url = "https://api.openai.com"
+responses_path = "/v1/responses"
+api_key_env = "OPENAI_API_KEY"
+timeout_sec = 120
+max_response_bytes = 16777216
 
 [api]
-enabled = true
+enabled = false
 host = "127.0.0.1"
 port = 8888
 reuse_port = false
 tls_enabled = false
 tls_cert_file = ""
 tls_key_file = ""
-
-[dag_source]
-mode = "File"
-directory = "./dags"
-scan_interval_sec = 60
 ```
 
-```bash
-cp system_config.toml my_config.toml
-# Edit [database] with your credentials
-export DAGFORGE_CONFIG=my_config.toml   # skip -c on every command
-```
+### 2.1 Runtime
 
-### 🗃️ Initialize the Database Schema
+`runtime.shards` selects the number of owner shards. `0` selects the hardware
+concurrency reported by the operating system.
 
-```bash
-dagforge db init
-```
+CPU affinity is optional. When enabled, shard `0` begins at
+`cpu_affinity_offset`.
 
-> [!TIP]
-> This is **idempotent** — safe to run multiple times. Run `db migrate` after upgrading DAGForge to apply new schema changes.
+Environment overrides:
 
-### ✅ Validate DAG Files
+- `DAGFORGE_RUNTIME_SHARDS`
+- `DAGFORGE_RUNTIME_PIN_SHARDS`
+- `DAGFORGE_RUNTIME_CPU_AFFINITY_OFFSET`
 
-```bash
-dagforge validate          # all DAGs in [dag_source] directory
-dagforge validate -f dags/hello_world.toml   # single file
-```
+### 2.2 Compute pool
 
----
+The compute pool is separate from I/O shards and is used by Compute and
+Evaluator nodes.
 
-## 2. Running the Service
+- `threads = 0` selects an automatic thread count.
+- `queue_capacity` is a hard bound on pending compute work.
+- optional affinity settings control compute worker placement.
 
-### Foreground (Development)
+Environment overrides:
 
-```bash
-dagforge serve start -c system_config.toml
-# Logs go to stderr; API at http://127.0.0.1:8888
-```
+- `DAGFORGE_COMPUTE_THREADS`
+- `DAGFORGE_COMPUTE_QUEUE_CAPACITY`
+- `DAGFORGE_COMPUTE_PIN_THREADS`
+- `DAGFORGE_COMPUTE_CPU_AFFINITY_OFFSET`
 
-> [!TIP]
-> Set `export DAGFORGE_CONFIG=system_config.toml` to skip `-c` on every command.
+### 2.3 Workflow adapters
 
-### Background Daemon (Production)
+`workflow.enabled` creates the workflow control plane and runtime.
 
-```bash
-dagforge serve start -c system_config.toml -d --log-file /var/log/dagforge.log
-```
+Model providers use environment variables for credentials. The current plan
+field names the environment variable directly; the secret value itself is never
+embedded in the plan. Server-managed credential aliases are a later milestone.
 
-The process detaches and redirects all output to the log file. `--log-file` is required when using `--daemon`.
-`-d` is a shorthand for `--daemon`.
-
-Check status or stop it with:
-
-```bash
-dagforge serve status -c system_config.toml
-dagforge serve stop -c system_config.toml
-# custom stop timeout (default: 10s)
-dagforge serve stop -c system_config.toml --timeout 30
-```
-
-### Disable the API
-
-```bash
-dagforge serve start -c system_config.toml --no-api   # scheduler only, no HTTP server
-```
-
-### Log Levels
-
-The default is `info`. To see scheduler internals:
-
-```bash
-dagforge serve start -c system_config.toml --log-level debug
-```
-
-### Shard Count Override
-
-By default, DAGForge auto-detects CPU cores and uses that shard count. To override:
-
-```bash
-dagforge serve start -c system_config.toml --shards 4
-```
-
-Or set it permanently in `system_config.toml`:
+MCP servers are configured with repeated `workflow.mcp_servers` tables:
 
 ```toml
-[scheduler]
-shards = 4
+[[workflow.mcp_servers]]
+name = "tools"
+url = "http://127.0.0.1:9000/mcp"
+bearer_token_env = "MCP_TOKEN"
+protocol_version = "2025-06-18"
+timeout_sec = 120
+max_response_bytes = 16777216
 ```
 
----
+### 2.4 API
 
-## 3. Viewing Logs
+Set `api.enabled = true` to start the HTTP control plane. TLS requires both a
+certificate chain and private key path.
 
-Task stdout and stderr are captured line-by-line and stored in the MySQL `task_logs` table. They are available immediately after each line is written.
+Environment overrides:
 
-### View all logs for the latest run
+- `DAGFORGE_API_ENABLED`
+- `DAGFORGE_API_HOST`
+- `DAGFORGE_API_PORT`
+- `DAGFORGE_API_REUSE_PORT`
+- `DAGFORGE_API_TLS_ENABLED`
+- `DAGFORGE_API_TLS_CERT_FILE`
+- `DAGFORGE_API_TLS_KEY_FILE`
 
-```bash
-dagforge logs hello_world --latest -c system_config.toml
-```
+## 3. Workflow Plan v1
 
-### View logs for a specific run
-
-```bash
-dagforge logs daily_etl --run <run_id> -c system_config.toml
-```
-
-### View logs for a specific task
-
-```bash
-dagforge logs daily_etl --latest --task extract -c system_config.toml
-```
-
-### Follow logs in real time (like `tail -f`)
-
-```bash
-dagforge logs daily_etl --latest -f -c system_config.toml
-```
-
-This polls and exits automatically when the run reaches a terminal state (success, failed, cancelled).
-
-### View logs for a retry attempt
-
-```bash
-dagforge logs daily_etl --latest --task extract --attempt 2 -c system_config.toml
-```
-
-### JSON output (for scripting)
-
-```bash
-dagforge logs hello_world --latest --json -c system_config.toml
-# Each line is a JSON object: {"task_id":"greet","attempt":1,"stream":"stdout","logged_at":"...","content":"..."}
-```
-
-### Via REST API
-
-```bash
-# All logs for a run
-curl http://localhost:8888/api/runs/hello_world%2F2026-01-20T10:00:00/logs
-
-# Logs for a specific task
-curl "http://localhost:8888/api/runs/hello_world%2F2026-01-20T10:00:00/tasks/greet/logs?attempt=1"
-```
-
-### 🤷‍♂️ Why are there no logs?
-
-Logs are only present if:
-1. `dagforge db init` was run (creates the `task_logs` table).
-2. The run happened **after** the logging system was active (v0.1.0-beta+).
-3. The task actually produced stdout/stderr output.
-
-Check that the run exists first:
-
-```bash
-dagforge inspect hello_world --latest
-```
-
-If the run shows `success` but `logs` shows nothing, the run predates the log table. Trigger a new run.
-
----
-
-## 4. DAG Hot-Reload
-
-The service scans the DAG source directory every `scan_interval_sec` seconds (default: 30). Changes to `.toml` files are picked up automatically — **no restart required**.
+Plans are accepted as JSON or TOML. `schema_version` must be `1`.
 
 ```toml
-[dag_source]
-directory         = "./dags"
-scan_interval_sec = 60    # set to 0 to scan only at startup
+workflow_id = "hello-world"
+schema_version = 1
+
+[[nodes]]
+id = "start"
+name = "Start"
+type = "noop"
+outputs = ["result"]
+max_retries = 0
+timeout_sec = 30
+checkpoint = false
+
+[nodes.config]
 ```
 
-**What triggers a reload:**
-- **New `.toml` file added** → DAG registered in DB and scheduler.
-- **Existing file modified** → DAG definition updated; in-flight runs use the old version.
-- **File deleted** → DAG marked inactive in DB; no new runs scheduled. The DB record is kept. Use `dagforge db prune-stale` to remove it.
+### 3.1 Node fields
 
-**To force an immediate reload** without waiting for the interval, restart the service. A `reload` command is planned for a future release.
+- `id`: unique within the workflow.
+- `name`: optional display name.
+- `type`: executor or runtime node type.
+- `config`: type-specific strict configuration object.
+- `inputs`: named bindings to an upstream node output.
+- `outputs`: output port names. The default is `result`.
+- `max_retries`: retries after the first attempt.
+- `timeout_sec`: node deadline.
+- `checkpoint`: save a runtime checkpoint after successful completion.
 
----
-
-## 5. Trigger Rules — When to Use Each
-
-Trigger rules control **when a task becomes eligible to run** based on the states of its upstream dependencies.
-
-| Rule | Runs when… | Typical use case |
-|---|---|---|
-| `all_success` | All upstreams succeeded | Normal pipeline step *(default)* |
-| `all_failed` | All upstreams failed | Fallback / compensating action |
-| `all_done` | All upstreams finished (any state) | Cleanup that must always run |
-| `one_success` | ≥1 upstream succeeded | Fan-in after branching |
-| `one_failed` | ≥1 upstream failed | Alert on first failure |
-| `one_done` | ≥1 upstream finished | Early-exit aggregation |
-| `none_failed` | No upstream failed (success or skipped OK) | Lenient pipeline — skips are fine |
-| `none_skipped` | No upstream was skipped | Strict pipeline — all must run |
-| `none_failed_min_one_success` | No failures AND ≥1 success | Safe fan-in with skips allowed |
-| `all_done_min_one_success` | All done AND ≥1 success | Aggregate after mixed results |
-| `all_skipped` | All upstreams were skipped | Branch not taken handler |
-| `always` | Regardless of upstream state | Notifications, teardown |
-
-### Pattern: cleanup task that always runs
+An input binding is:
 
 ```toml
-[[tasks]]
-id           = "cleanup"
-command      = "rm -rf /tmp/work_dir"
-dependencies = ["step_a", "step_b", "step_c"]
-trigger_rule = "all_done"   # runs even if step_a failed
+[[nodes.inputs]]
+input = "source"
+node = "upstream"
+port = "result"
 ```
 
-### Pattern: alert only on failure
+### 3.2 Node types
+
+#### Noop
+
+Returns `true` without inputs, or forwards the first bound input.
+
+#### Shell
 
 ```toml
-[[tasks]]
-id           = "alert"
-command      = "curl -X POST $SLACK_WEBHOOK -d '{\"text\":\"Pipeline failed!\"}'"
-dependencies = ["extract", "transform", "load"]
-trigger_rule = "one_failed"
+[nodes.config]
+command = "printf hello"
+working_dir = "/tmp"
+env = [{ key = "MODE", value = "test" }]
 ```
 
-### Pattern: fan-in after optional paths
+Shell execution is disabled by default. When
+`require_approval_for_shell = true`, each Shell node must have an Approval
+ancestor.
+
+#### Docker
 
 ```toml
-[[tasks]]
-id           = "merge"
-command      = "./merge.sh"
-dependencies = ["branch_large", "branch_small"]
-trigger_rule = "one_success"   # runs after at least one upstream succeeds
+[nodes.config]
+image = "alpine:3.22"
+command = "printf hello"
+working_dir = "/work"
+docker_socket = "/var/run/docker.sock"
+env = []
 ```
 
-### Pattern: lenient pipeline (skips are OK)
+#### Lua
+
+Specify exactly one of `script` or `script_file`:
 
 ```toml
-[[tasks]]
-id           = "report"
-command      = "./report.sh"
-dependencies = ["optional_enrich", "core_transform"]
-trigger_rule = "none_failed"   # runs if core_transform succeeded, even if optional_enrich was skipped
+[nodes.config]
+script = "return {ok = true}"
+max_instructions = 100000
+max_memory_bytes = 8388608
 ```
 
----
+The sandbox exposes `dagforge.log`, `dagforge.sleep`,
+`dagforge.json_encode`, and `dagforge.json_decode`. The retired 0.3 DAG task
+context is not exposed.
 
-## 6. Sensor Tasks
-
-Sensors poll an external condition and block until it is met (or timeout).
+#### HTTP
 
 ```toml
-[[tasks]]
-id            = "wait_for_file"
-executor      = "sensor"
-sensor_type   = "file"
-target        = "/data/input/ready.flag"
-sensor_interval = 10      # poll every 10 seconds
-timeout       = 3600      # fail after 1 hour
-soft_fail     = false     # true = timeout → skipped instead of failed
+[nodes.config]
+url = "https://example.com/data"
+method = "GET"
+headers = []
+body = ""
+body_input = ""
+expected_status = 200
 ```
 
-### File sensor
+#### Model
 
 ```toml
-executor      = "sensor"
-sensor_type   = "file"
-target        = "/path/to/file"
+[nodes.config]
+provider = "openai"
+model = "gpt-5"
+system_prompt = "Return valid JSON."
+prompt = "Process: "
+prompt_input = "$trigger"
+credential = { name = "OPENAI_API_KEY" }
+max_output_tokens = 4096
+temperature = 0.0
 ```
 
-Succeeds when the file exists.
+#### Tool
 
-### HTTP sensor
+Tool names use `server/tool` when multiple MCP servers are configured.
 
 ```toml
-executor             = "sensor"
-sensor_type          = "http"
-target               = "https://api.example.com/status"
-sensor_http_method   = "GET"
-sensor_expected_status = 200
+[nodes.config]
+tool = "tools/search"
+arguments = { query = "dag runtime" }
+arguments_input = ""
+credential = { name = "MCP_TOKEN" }
 ```
 
-Succeeds when the HTTP response status matches `sensor_expected_status`.
+#### Compute
 
-### Command sensor
+Supported operations are `identity`, `concat`, `sha256`, `json_parse`, and
+`json_stringify`.
+
+#### Evaluator
+
+Supported operations are `truthy`, `equals`, `contains`, and
+`score_at_least`.
+
+#### Approval
+
+An Approval node suspends the run until an external approval decision arrives
+or the request expires.
+
+### 3.3 Conditional edges
+
+Conditions are explicit edges rather than executable branch tasks.
 
 ```toml
-executor      = "sensor"
-sensor_type   = "command"
-target        = "pg_isready -h db.internal"
+[[edges]]
+source_node = "evaluate"
+source_port = "passed"
+target = "publish"
+
+[edges.condition]
+kind = "bool_equals"
+expected_bool = true
 ```
 
-Succeeds when the command exits with code 0.
+Supported condition kinds:
 
-### Soft-fail sensors
+- `always`
+- `bool_equals`
+- `string_equals`
+- `evaluation_passed`
 
-Set `soft_fail = true` to treat a timeout as `skipped` rather than `failed`. Useful for optional upstream dependencies:
+### 3.4 Policy and budgets
 
 ```toml
-[[tasks]]
-id            = "wait_for_optional_feed"
-executor      = "sensor"
-sensor_type   = "file"
-target        = "/data/optional_feed.csv"
-timeout       = 300
-soft_fail     = true
+[policy]
+allow_shell = false
+allow_docker = true
+allow_lua = true
+allow_network = true
+allow_model_calls = true
+allow_tools = true
+require_approval_for_shell = true
+allowed_http_hosts = []
+allowed_model_providers = []
+allowed_tools = []
 
-[[tasks]]
-id           = "process"
-command      = "./process.sh"
-dependencies = ["wait_for_optional_feed"]
-trigger_rule = "none_failed"   # runs even if sensor was skipped
+[policy.budget]
+max_nodes = 256
+max_parallel_nodes = 32
+max_total_output_bytes = 67108864
+max_model_tokens = 1000000
+max_run_duration_sec = 3600
 ```
 
----
+The current plan policy is validated by the compiler. Server-side admission
+policy separation is a later 0.4 milestone.
 
-## 7. Docker Tasks
+## 4. CLI
 
-Run tasks inside a Docker container. Docker fields are set directly on the task:
-
-```toml
-[[tasks]]
-id           = "transform"
-executor     = "docker"
-command      = "python /app/transform.py --date {{ds}}"
-docker_image = "myorg/etl:latest"
-pull_policy  = "IfNotPresent"   # Never | IfNotPresent | Always
-docker_socket = "/var/run/docker.sock"   # optional, default shown
-```
-
-Logs are captured from the container's stdout/stderr. There is no volume or env mapping in the TOML format; pass environment via the command string.
-
----
-
-## 8. Retries and Timeouts
-
-Default values (applied unless overridden per-task or via `[default_args]`):
-- `max_retries = 3`
-- `retry_interval = 60` seconds
-- `timeout = 3600` seconds
-
-```toml
-[[tasks]]
-id             = "flaky_api_call"
-command        = "curl https://unstable-api.example.com/data"
-max_retries    = 5      # retry up to 5 times on non-zero exit
-retry_interval = 30     # wait 30 seconds between retries
-timeout        = 120    # kill the task after 120 seconds
-```
-
-Each retry is a separate attempt. Use `dagforge logs --attempt 2` to see logs from the second attempt.
-
-When all retries are exhausted, the task state becomes `failed` and downstream tasks with `all_success` are skipped.
-
----
-
-## 9. Inspecting Runs
-
-### Quick status check
+### Validate
 
 ```bash
-dagforge inspect hello_world --latest
+dagforge validate --file workflow.toml
 ```
 
-Output shows run state, start/finish times, and a table of task states.
+Validation loads the plan, rejects unknown fields, compiles the graph, and
+prints the workflow ID, generated plan ID, digest, and node count.
 
-### With execution time histogram
+### Local run
 
 ```bash
-dagforge inspect daily_etl --latest --details
+dagforge run \
+  --config system_config.toml \
+  --file workflow.toml \
+  --payload '{"request":"hello"}' \
+  --wait
 ```
 
-The `--details` flag adds a per-task timing bar chart, useful for spotting bottlenecks:
+Without `--wait`, the local process exits immediately after accepting the run.
+Because current stores are in-memory, use `--wait` when the result matters.
 
-```
-extract     [##########                    ] 3.2s
-transform   [##############################] 9.8s  ← slowest
-load        [####                          ] 1.1s
-```
-
-### JSON output for scripting
+### Service
 
 ```bash
-dagforge inspect hello_world --latest --json | jq '.tasks[] | select(.state == "failed")'
+dagforge serve --config system_config.toml
 ```
 
----
+Use `SIGINT` or `SIGTERM` for graceful shutdown.
 
-## 10. Testing Individual Tasks
+## 5. Runtime semantics
 
-For development and debugging, you can test a single task in isolation without running the entire DAG. This ignores dependencies and runs the task immediately (similar to Airflow's `test` command).
+- A compiled plan is immutable for the life of a run.
+- Each run is owned by one shard.
+- Node state mutations occur on the owner shard.
+- Input values reference explicit upstream output ports.
+- A failed dependency causes downstream nodes to be skipped.
+- A failed node is retried up to `max_retries`.
+- Run and node cancellation is cooperative for Compute and delegated to the
+  active executor for process nodes.
+- Duplicate non-empty idempotency keys return the original run ID while the
+  process remains alive.
+- Large string and JSON outputs are replaced with Artifact references.
+
+## 6. Current durability boundary
+
+The following adapters are currently in-memory:
+
+- workflow plan catalog;
+- artifact store;
+- evidence ledger;
+- checkpoint store;
+- idempotency registry;
+- completed-run cache.
+
+Restarting the process loses these values. Do not treat the current checkpoint
+interface as crash recovery.
+
+## 7. Observability
+
+The service exposes:
+
+- `/api/health`
+- `/api/status`
+- `/metrics`
+
+Runtime, compute-pool, HTTP, and active-workflow metrics are rendered in
+Prometheus text format.
+
+## 8. Docker
 
 ```bash
-dagforge test <dag_id> <task_id>
-dagforge test my_pipeline process_data --json
+docker compose up --build
 ```
 
----
+The Compose stack runs only DAGForge. It does not start MySQL. The Docker
+socket mount is required only for Docker nodes.
 
-## 11. Re-running Failed Tasks
-
-After fixing the underlying issue, clear the failed tasks and let the scheduler retry:
+## 9. Verification
 
 ```bash
-# Clear only failed tasks (leaves successful tasks intact)
-dagforge clear daily_etl --run <run_id> --failed
-
-# Clear a specific task and all its downstream dependents
-dagforge clear daily_etl --run <run_id> --task transform --downstream
-
-# Clear everything and re-run from scratch
-dagforge clear daily_etl --run <run_id> --all
+bash scripts/check-module-graph.sh
+bash scripts/check-agent-conventions.sh
+BUILD2_CONFIG_NAME=gcc ./scripts/build.sh
+~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/all-unit-tests
 ```
 
-After clearing, the scheduler picks up the run on its next tick (within `tick_interval_ms`) and re-executes the cleared tasks.
-
-Find the run ID with:
-
-```bash
-dagforge list runs daily_etl --state failed
-dagforge inspect daily_etl --latest   # shows run ID at the top
-```
-
----
-
-## 12. Database Maintenance
-
-### Apply schema migrations after upgrade
-
-```bash
-dagforge db migrate
-```
-
-### Remove stale DAGs
-
-When you delete or rename a DAG file, the DB record remains. To clean it up:
-
-```bash
-# Preview what would be deleted
-dagforge db prune-stale --dry-run
-
-# Actually delete
-dagforge db prune-stale
-```
-
-A DAG is considered stale if it exists in the database but has no corresponding file in the DAG source directory.
-
----
-
-## 13. Scripting / JSON Output
-
-Service startup messages (e.g. `MySQL database opened`) go to **stderr**. CLI commands that support `--json` write structured output to **stdout** and diagnostics to **stderr**.
-
-To capture only JSON from a CLI command:
-
-```bash
-result=$(dagforge list runs hello_world --json 2>/dev/null)
-```
-
-To reduce startup noise, lower the log level in config:
-
-```toml
-[scheduler]
-log_level = "warn"   # only warnings and errors
-```
-
-Commands with `--json` support: `trigger`, `test`, `list dags`, `list runs`, `list tasks`, `inspect`, `logs`, `pause`, `unpause`, `clear`, `serve status`, `validate`.
-
----
-
-## 14. CLI Cheatsheet
-
-```bash
-# Service Management
-dagforge serve start  [-c file] [--pid-file path] [--daemon/-d] [--log-file path] [--no-api] [--log-level trace|debug|info|warn|error] [--shards N]
-dagforge serve status [-c file] [--pid-file path] [--json]
-dagforge serve stop   [-c file] [--pid-file path] [--timeout N] [--force]
-
-# Trigger & Test
-dagforge trigger <dag_id> [--wait] [-e execution_date] [--no-api] [--json]
-dagforge test <dag_id> <task_id> [--json]
-
-# Listing
-dagforge list dags  [--include-stale] [--limit N] [--output table|json] [--json]
-dagforge list runs  [dag_id] [--state failed|success|running] [--limit N] [--output table|json] [--json]
-dagforge list tasks [dag_id] [--output table|json] [--json]
-
-# Inspection and Logs
-dagforge inspect <dag_id> [--run id|--latest] [--details] [--json]
-dagforge logs <dag_id> [--run id|--latest] [--task task_id] [--attempt N] [-f|--follow] [--short-time] [--json]
-
-# DAG Control
-dagforge pause <dag_id> [--json]
-dagforge unpause <dag_id> [--json]
-dagforge clear <dag_id> --run <run_id> [--task <task_id>] [--failed] [--all] [--downstream] [--dry-run] [--json]
-
-# Database Operations
-dagforge db init
-dagforge db migrate
-dagforge db prune-stale [--dry-run]
-
-# Validation
-dagforge validate [-c file | -f dag.toml] [--json]
-```
-
----
-
-## 15. Troubleshooting
-
-### `logs` shows no output after a successful run
-
-- The task may have produced no stdout/stderr (e.g. a silent `true` command).
-- Confirm the run ID is correct: `dagforge inspect <dag_id> --latest`.
-
-### `inspect --latest` says "No runs found"
-
-The DAG has never been triggered, or the DB is empty. Trigger a run:
-
-```bash
-dagforge trigger <dag_id> --wait
-```
-
-### `pause` / `unpause` says "DAG not found"
-
-The DAG must be registered in the database first. Start the service and wait for the first scan, or run:
-
-```bash
-dagforge validate   # confirms the file is valid
-dagforge serve start &    # starts the service; DAG is registered on first scan
-sleep 5
-dagforge pause <dag_id>
-```
-
-### `validate` error: missing required field `id`
-
-The `id` field is the **DAG** identifier, not a task identifier. It must be at the top level of the file:
-
-```toml
-id   = "my_pipeline"   # ← top-level DAG id
-name = "My Pipeline"
-
-[[tasks]]
-id = "step_one"        # ← task id, inside [[tasks]]
-```
-
-### `validate` error: dependency cycle detected
-
-DAGForge validates that the DAG is acyclic. Check that no task depends (directly or transitively) on itself.
-
-### `trigger --wait` exits with code 1
-
-The run failed. Check task states:
-
-```bash
-dagforge inspect <dag_id> --latest
-dagforge logs <dag_id> --latest
-```
-
-### MySQL connection errors
-
-1. Verify credentials in `system_config.toml`.
-2. Test connectivity: `mysql -h 127.0.0.1 -u dagforge -p dagforge`.
-3. Ensure the database exists and the user has full privileges.
-4. Check `pool_size` — too high a value may exhaust MySQL's `max_connections`.
-
-### Tasks stuck in `running` after a crash
-
-On restart, DAGForge's crash recovery marks any run that was `running` at shutdown as `failed` (watermark-based). This happens automatically within a few seconds of startup. If tasks remain stuck, run:
-
-```bash
-dagforge db migrate   # ensures recovery tables are up to date
-```
-
-Then restart the service.
-
-### JSON output contains extra lines
-
-Ensure you redirect stderr: `dagforge <cmd> --json 2>/dev/null`. The `--json` flag only affects stdout formatting; service logs always go to stderr.
-
-### `--details` histogram — what does it mean?
-
-The `--details` flag on `inspect` shows a per-task execution time bar chart normalized to the slowest task. It helps identify bottlenecks in a pipeline. It does **not** show task output — use `dagforge logs` for that.
+Run `bench-core` for Runtime, memory arena, and Lua executor microbenchmarks.

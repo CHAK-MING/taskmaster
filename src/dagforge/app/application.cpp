@@ -2,6 +2,7 @@
 
 #include "dagforge/app/api/api_server.hpp"
 #include "dagforge/config/system_config_loader.hpp"
+#include "dagforge/executor/composite_executor.hpp"
 #include "dagforge/workflow/workflow_adapters.hpp"
 #include "dagforge/workflow/workflow_control_plane.hpp"
 #include "dagforge/workflow/workflow_runtime.hpp"
@@ -47,12 +48,12 @@ auto Application::rebuild_components() -> Result<void> {
   runtime_.reset();
 
   const auto shard_count =
-      config_.scheduler.shards > 0
-          ? static_cast<unsigned>(config_.scheduler.shards)
+      config_.runtime.shards > 0
+          ? static_cast<unsigned>(config_.runtime.shards)
           : std::max(1U, std::thread::hardware_concurrency());
   runtime_ = std::make_unique<Runtime>(
-      shard_count, config_.scheduler.pin_shards_to_cores,
-      static_cast<unsigned>(config_.scheduler.cpu_affinity_offset),
+      shard_count, config_.runtime.pin_shards_to_cores,
+      static_cast<unsigned>(config_.runtime.cpu_affinity_offset),
       ComputePoolConfig{
           .thread_count = static_cast<std::size_t>(config_.compute.threads),
           .queue_capacity =

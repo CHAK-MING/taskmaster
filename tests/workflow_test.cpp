@@ -81,6 +81,10 @@ TEST(WorkflowPlanLoaderTest, ParsesJsonAndTomlPlans) {
   EXPECT_EQ(json_plan->workflow_id, WorkflowId{"loader-json"});
   ASSERT_EQ(json_plan->nodes.size(), 1U);
   EXPECT_EQ(json_plan->nodes.front().type, NodeType::Noop);
+  ASSERT_EQ(json_plan->nodes.front().outputs.size(), 1U);
+  EXPECT_EQ(json_plan->nodes.front().outputs.front(),
+            WorkflowPortId{"result"});
+  EXPECT_TRUE(PlanCompiler{}.compile(*json_plan).has_value());
 
   constexpr std::string_view toml_text = R"(
 workflow_id = "loader-toml"
@@ -100,6 +104,10 @@ checkpoint = true
   EXPECT_EQ(toml_plan->workflow_id, WorkflowId{"loader-toml"});
   ASSERT_EQ(toml_plan->nodes.size(), 1U);
   EXPECT_TRUE(toml_plan->nodes.front().checkpoint);
+  ASSERT_EQ(toml_plan->nodes.front().outputs.size(), 1U);
+  EXPECT_EQ(toml_plan->nodes.front().outputs.front(),
+            WorkflowPortId{"result"});
+  EXPECT_TRUE(PlanCompiler{}.compile(*toml_plan).has_value());
 }
 
 TEST(WorkflowControlPlaneTest, DeduplicatesPlansByDigest) {

@@ -1,15 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
 ARG UBUNTU_VERSION=26.04
-ARG NODE_VERSION=22
-
-FROM node:${NODE_VERSION}-bookworm-slim AS web-builder
-
-WORKDIR /src/web-ui
-COPY web-ui/package.json web-ui/package-lock.json ./
-RUN npm ci --include=dev
-COPY web-ui/ ./
-RUN npm run build
 
 FROM ubuntu:${UBUNTU_VERSION} AS builder
 
@@ -79,8 +70,6 @@ RUN jobs="${BUILD_JOBS}" \
     && BUILD2_JOBS="${jobs}" \
        BUILD2_TARGETS='bin/exe{dagforge}' \
        bash scripts/build.sh
-
-COPY --from=web-builder /src/web-ui/dist /release/web-ui-dist
 
 RUN set -eux; \
     install -d /release/bin /release/dags; \

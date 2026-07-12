@@ -1,150 +1,156 @@
 # DAGForge
 
-<div align="center">
-
-**High-performance, low-latency DAG orchestration engine built with modern C++23.**
-
-[![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg?style=flat-square&logo=c%2B%2B)](https://en.cppreference.com/w/cpp/23)
-[![License](https://img.shields.io/badge/license-Apache--2.0-white?labelColor=black&style=flat-square)](LICENSE)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/CHAK-MING/DAGForge)
-[![Release](https://img.shields.io/github/v/release/CHAK-MING/dagforge?include_prereleases&style=flat-square)](https://github.com/CHAK-MING/dagforge/releases)
+**A general-purpose, high-performance DAG runtime built with C++23.**
 
 [English](README.md) | [简体中文](README_CN.md)
 
----
+DAGForge 0.4 is the execution layer for programmable workflows. An upstream
+application—such as a Python AI planner—produces a versioned workflow plan;
+DAGForge validates, compiles, schedules, executes, observes, and cancels that
+plan with deterministic runtime semantics.
 
-[![DAGForge Web UI](./image/web-ui.png)](#)
+The runtime does not interpret natural language or own an agent loop. Those
+concerns belong above the execution seam.
 
-</div>
+## Architecture
 
----
-
-## ⚡ What is DAGForge?
-
-**DAGForge** is a sharded, asynchronous workflow engine designed for high-throughput, low-latency task scheduling. Inspired by the **Seastar** architectural model and built on **C++23 coroutines**, it aims to minimize lock contention and maximize core utilization for modern multi-core systems.
-
-Whether you're managing complex data pipelines, orchestrating microservices, or building automated CI/CD workflows, DAGForge provides the speed and reliability needed for high-frequency operations.
-
----
-
-## ✨ Key Features
-
-- **🚀 Sharded Async Runtime:** Inspired by **Seastar**, utilizing core-local `io_context` (Boost.Asio) to eliminate cross-core lock contention and maximize multi-core throughput.
-- **🛠️ Declarative Pipelines:** Express complex logic via clean **TOML** definitions with native support for task dependencies, conditional branching, and polling sensors.
-- **🔌 Pluggable Executors:** Orchestrate diverse workloads with first-class support for **Shell**, **Docker**, and **Sensor** execution modes in isolated environments.
-- **📡 Interactive Control Plane:** A high-fidelity **React 19** dashboard powered by **React Flow** for dynamic DAG exploration and **WebSockets** for sub-second, live log telemetry.
-- **📊 Cloud-Native Observability:** Native **Prometheus** metrics, rich REST APIs, and structured JSON logging designed for seamless integration with modern monitoring stacks.
-
----
-
-## 📈 Performance Snapshot
-
-DAGForge is built for speed. In the latest NUMA-local 5-run benchmark sweep, it keeps p95 scheduling lag in the low single-digit milliseconds while sustaining throughput around 7,200 tasks/s in burst-ready workloads.
-
-| Scenario | Topology | Total Tasks | Mean Total Lag | p95 Lag | Throughput | vs Airflow 2.0 |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `scene1_linear` | 100 DAGs × 10 linear tasks | 1,000 | 0.660 s | 5.40 ms | **4,872 tasks/s** | **~17.6x faster** |
-| `scene2_linear` | 10 DAGs × 100 linear tasks | 1,000 | 0.231 s | 1.00 ms | **6,933 tasks/s** | **~62.0x faster** |
-| `scene6_burst` | 1 DAG × 1,001 burst-ready tasks | 1,001 | 1.608 s | 1.60 ms | **7,215 tasks/s** | **N/A** |
-
-> [!TIP]
-> **Check out the [Benchmark Report](docs/BENCH_REPORT.md)** for a detailed analysis and comparison with other workflow engines.
-
----
-
-## 🚀 Quickstart
-
-### 1) Prerequisites
-- **Linux** (x86-64 or ARM64)
-  - Published Linux archives are currently built and smoke-tested on Ubuntu
-    26.04 LTS. See the packaged `BUILD-INFO` and `RUNTIME-DEPENDENCIES` files
-    for the exact toolchain and shared-library contract.
-- **MySQL 8.0+** or **MariaDB 11+**
-- **GCC 15+** and **build2 0.17+** (required for building from source)
-
-> [!NOTE]
-> DAGForge currently ships a **build2-only** source build. There is no supported
-> `CMakeLists.txt`/CMake workflow in this repository.
-
-### 2) Download & Run
-The fastest way to get started is by using our **[Release Package](https://github.com/CHAK-MING/dagforge/releases)**.
-
-```bash
-# 1. Download & Extract
-curl -LO https://github.com/CHAK-MING/dagforge/releases/download/0.3.0/dagforge-0.3.0-linux-x86_64.tar.gz
-tar -xzf dagforge-0.3.0-linux-x86_64.tar.gz && cd dagforge-0.3.0-linux-x86_64
-
-# 2. Init DB (ensure MySQL is running)
-./bin/dagforge db init
-
-# 3. Start the service
-./bin/dagforge serve start --shards 4
+```text
+AI application / workflow author
+            |
+            v
+      WorkflowPlan v1
+            |
+            v
+       PlanCompiler
+            |
+            v
+   immutable ExecutionPlan
+            |
+            v
+      WorkflowRuntime
+     /       |        \
+ executors  compute   adapters
 ```
 
-Visit **[http://localhost:8888](http://localhost:8888)** to view your dashboard.
+The current runtime provides:
 
-### 3) Alternative: Build From Source (build2)
+- owner-shard workflow execution on a Boost.Asio-based C++23 runtime;
+- immutable compiled plans with cycle, port, policy, and resource validation;
+- explicit typed node outputs and input bindings;
+- bounded node and run concurrency, deadlines, retries, and cancellation;
+- Shell, Docker, Lua, HTTP, Compute, Model, Tool, Evaluator, Approval, and Noop
+  node types;
+- artifact externalization for large values;
+- checkpoints, evidence records, idempotent triggers, and approval gates;
+- REST control-plane endpoints and Prometheus metrics.
+
+The built-in checkpoint, evidence, artifact, plan, and completed-run stores are
+currently in-memory adapters. Durable recovery is a later 0.4 milestone, not a
+property of the current build.
+
+## Requirements
+
+- Linux x86-64 or ARM64
+- GCC 15+
+- build2 0.17+
+- Boost 1.88+
+- OpenSSL development libraries
+
+MySQL and Node.js are not required by the 0.4 runtime core.
+
+## Build
+
 ```bash
-# Bootstrap a stable build2 config under ~/.local/share/build2-configs
 ./scripts/setup-build2.sh
-# Build and update
 ./scripts/build.sh
-# Start the service
-./bin/dagforge serve start -c system_config.toml
 ```
 
-For VS Code and clangd, generate the dedicated Clang PCM graph and compilation
-database with `scripts/setup-clangd.sh`. See
-[`docs/CLANGD_SETUP.md`](docs/CLANGD_SETUP.md).
+The executable is produced in the selected build2 configuration directory.
+For the default configuration, `scripts/build.sh` prints the exact path.
 
-### 4) Alternative: Docker Compose
+Run the unit-test executable after building:
+
 ```bash
-docker compose up -d
+~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/all-unit-tests
 ```
 
----
+## Configuration
 
-## 📚 Documentation
+The supported top-level sections are:
 
-Detailed guides and references are available in the **[`docs/`](docs/)** directory:
+- `[runtime]`: shard count and shard affinity;
+- `[compute]`: bounded CPU worker pool;
+- `[workflow]`: workflow adapters and provider catalogs;
+- `[api]`: HTTP control plane.
 
-- **[Getting Started Guide](docs/USER_GUIDE.md#1-first-time-setup)** - Step-by-step setup and configuration.
-- **[Core Features Guide](docs/USER_GUIDE.md#5-trigger-rules--when-to-use-each)** - Trigger rules, Sensors, and Docker tasks.
-- **[API Reference](docs/API.md)** - Explore our REST and WebSocket endpoints.
-- **[CLI Cheatsheet](docs/USER_GUIDE.md#16-cli-cheatsheet)** - Master the `dagforge` command-line tool.
+See [`system_config.toml`](system_config.toml) for a complete example.
 
----
+## CLI
 
-## 🗺️ Roadmap
+Validate a workflow plan:
 
-- [x] **OpenTelemetry:** Deep tracing and observability integration.
-- [ ] **API Security:** Role-based access control (RBAC) and authentication.
-- [ ] **PostgreSQL Support:** Native support for Postgres as a backend store.
-- [ ] **Kubernetes Executor:** Scalable task execution in K8s clusters.
-- [ ] **Coroutine Optimization:** Further latency reductions in the C++23 runtime.
+```bash
+dagforge validate --file dags/hello_world.toml
+```
 
----
+Run a plan locally and wait for completion:
 
-## 🤝 Contributing
+```bash
+dagforge run \
+  --config system_config.toml \
+  --file dags/hello_world.toml \
+  --wait
+```
 
-We love contributions! Whether it's a bug report, a feature request, or a documentation fix, we value your input.
+Start the REST service:
 
-1. Fork the repo.
-2. Create your feature branch (`git checkout -b feature/amazing-feature`).
-3. Commit your changes (`git commit -m 'Add amazing feature'`).
-4. Push to the branch (`git push origin feature/amazing-feature`).
-5. Open a Pull Request.
+```bash
+dagforge serve --config system_config.toml
+```
 
-Check out our **[Official Roadmap](#-roadmap)** for high-priority items.
+## Workflow plan
 
----
+A minimal TOML plan is:
 
-## 📄 License
+```toml
+workflow_id = "hello-world"
+schema_version = 1
 
-Distributed under the **Apache License 2.0**. See `LICENSE` for more information.
+[[nodes]]
+id = "start"
+type = "noop"
+outputs = ["result"]
+timeout_sec = 30
 
----
+[nodes.config]
+```
 
-<div align="center">
-  Built with ❤️ by the DAGForge Team
-</div>
+Plans are accepted as strict JSON or TOML. Unknown fields are rejected.
+
+## HTTP control plane
+
+The service exposes plan registration, workflow execution, run status,
+outputs, evidence, approvals, cancellation, health, status, and metrics. See
+[`docs/API.md`](docs/API.md).
+
+## Benchmarks
+
+The 0.4 benchmark targets measure the current runtime primitives directly:
+
+```bash
+~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/bench-core
+```
+
+Historical Airflow-style scheduler benchmarks were removed because they tested
+the retired 0.3 DAG/scheduler/storage stack rather than the 0.4 runtime.
+
+## Documentation
+
+- [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)
+- [`docs/API.md`](docs/API.md)
+- [`docs/CLANGD_SETUP.md`](docs/CLANGD_SETUP.md)
+- [`docs/BENCH_REPORT.md`](docs/BENCH_REPORT.md)
+
+## License
+
+Apache License 2.0. See [`LICENSE`](LICENSE).

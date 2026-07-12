@@ -48,7 +48,7 @@ struct NodeDto {
   std::string type{"noop"};
   JsonValue config{JsonValue::object_t{}};
   std::vector<InputDto> inputs;
-  std::vector<std::string> outputs{"result"};
+  std::vector<std::string> outputs;
   int max_retries{0};
   int timeout_sec{300};
   bool checkpoint{false};

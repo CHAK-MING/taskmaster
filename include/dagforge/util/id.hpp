@@ -11,7 +11,6 @@
 #include <cstddef>
 #include <format>
 #include <functional>
-#include <optional>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -31,10 +30,6 @@ namespace dagforge {
   return !value.empty() && !has_control_chars(value);
 }
 
-struct DAGTag {};
-struct TaskTag {};
-struct DAGTaskTag {};
-struct DAGRunTag {};
 struct InstanceTag {};
 struct WorkflowTag {};
 struct WorkflowRunTag {};
@@ -104,10 +99,6 @@ private:
   std::string value_;
 };
 
-using DAGId = TypedId<DAGTag>;
-using TaskId = TypedId<TaskTag>;
-using DAGTaskId = TypedId<DAGTaskTag>;
-using DAGRunId = TypedId<DAGRunTag>;
 using InstanceId = TypedId<InstanceTag>;
 using WorkflowId = TypedId<WorkflowTag>;
 using WorkflowRunId = TypedId<WorkflowRunTag>;
@@ -158,49 +149,13 @@ namespace detail {
   return boost::uuids::to_string(generator());
 }
 
-inline constexpr std::string_view kDagRunSeparator = "__";
+inline constexpr std::string_view kRunSeparator = "__";
 } // namespace detail
-
-inline auto generate_dag_task_id(const DAGId &dag_id, const TaskId &task_id)
-    -> DAGTaskId {
-  std::string out;
-  out.reserve(dag_id.value().size() + 1 + task_id.value().size());
-  out.append(dag_id.value());
-  out.push_back('_');
-  out.append(task_id.value());
-  return DAGTaskId{std::move(out)};
-}
-
-inline auto generate_dag_run_id([[maybe_unused]] const DAGId &dag_id)
-    -> DAGRunId {
-  return DAGRunId{std::format("{}{}{}", dag_id, detail::kDagRunSeparator,
-                              detail::generate_uuid_v7())};
-}
-
-[[nodiscard]] inline auto dag_id_from_run_id(const DAGRunId &dag_run_id)
-    -> std::optional<DAGId> {
-  auto value = dag_run_id.value();
-  auto pos = value.find(detail::kDagRunSeparator);
-  if (pos == std::string_view::npos || pos == 0) {
-    return std::nullopt;
-  }
-  return DAGId{value.substr(0, pos)};
-}
-
-inline auto generate_instance_id(const DAGRunId &dag_run_id,
-                                 const TaskId &task_id) -> InstanceId {
-  std::string out;
-  out.reserve(dag_run_id.value().size() + 1 + task_id.value().size());
-  out.append(dag_run_id.value());
-  out.push_back('_');
-  out.append(task_id.value());
-  return InstanceId{std::move(out)};
-}
 
 [[nodiscard]] inline auto generate_workflow_run_id(const WorkflowId &workflow_id)
     -> WorkflowRunId {
   return WorkflowRunId{std::format("{}{}{}", workflow_id,
-                                   detail::kDagRunSeparator,
+                                   detail::kRunSeparator,
                                    detail::generate_uuid_v7())};
 }
 

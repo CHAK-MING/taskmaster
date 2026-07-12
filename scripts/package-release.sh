@@ -28,7 +28,6 @@ fi
 
 for required in \
   bin/dagforge \
-  web-ui-dist/index.html \
   system_config.toml \
   LICENSE \
   README.md \

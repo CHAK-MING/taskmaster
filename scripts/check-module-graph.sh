@@ -7,20 +7,14 @@ modules_dir="${repo_root}/src/modules"
 buildfile="${repo_root}/src/buildfile"
 
 declare -A expected_module=(
-  [app.cppm]=dagforge.metrics
   [base.cppm]=dagforge.base
-  [cli.cppm]=dagforge.cli
   [client.cppm]=dagforge.http
   [config.cppm]=dagforge.config
   [core.cppm]=dagforge.core
-  [dag.cppm]=dagforge.dag
   [dagforge.cppm]=dagforge.foundation
   [domain.cppm]=dagforge.domain
   [executor.cppm]=dagforge.executor
   [io.cppm]=dagforge.io
-  [scheduler.cppm]=dagforge.scheduler
-  [storage.cppm]=dagforge.storage.schema
-  [task_types.cppm]=dagforge.task_types
   [util.cppm]=dagforge.util
   [workflow.cppm]=dagforge.workflow
 )
@@ -31,16 +25,10 @@ declare -A module_rank=(
   [dagforge.io]=0
   [dagforge.core]=1
   [dagforge.util]=1
-  [dagforge.cli]=2
   [dagforge.executor]=2
   [dagforge.http]=2
-  [dagforge.scheduler]=2
-  [dagforge.task_types]=2
   [dagforge.config]=3
-  [dagforge.dag]=3
   [dagforge.workflow]=3
-  [dagforge.metrics]=4
-  [dagforge.storage.schema]=4
   [dagforge.foundation]=5
 )
 

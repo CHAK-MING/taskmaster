@@ -86,7 +86,6 @@ fi
 
 coroutine_iife_matches=$(
   while IFS= read -r file; do
-    [[ "$file" != "tests/bench_mysql_storage.cpp" ]] || continue
     awk -v file="$file" '
       function count_char(text, pattern, copy, count) {
         copy = text
