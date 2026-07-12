@@ -3,7 +3,6 @@
 #include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/util/log.hpp"
 
-
 #include <boost/asio/cancel_after.hpp>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/write.hpp>
@@ -44,10 +43,8 @@ auto to_response(
     -> HttpResponse {
   HttpResponse out;
   out.status = static_cast<HttpStatus>(msg.result_int());
-  out.headers.reserve(static_cast<std::size_t>(
-      std::distance(msg.base().begin(), msg.base().end())));
   for (const auto &field : msg.base()) {
-    out.headers.emplace(field.name_string(), field.value());
+    out.headers.add(std::string(field.name_string()), std::string(field.value()));
   }
   out.body = msg.body();
   return out;
@@ -68,10 +65,10 @@ auto request_over_stream(Stream &stream, HttpRequest req,
                           ? req.path
                           : std::format("{}?{}", req.path, req.query_string);
   if (!req.headers.contains("Host")) {
-    req.headers["Host"] = host;
+    req.headers.set("Host", host);
   }
   if (config.keep_alive && !req.headers.contains("Connection")) {
-    req.headers["Connection"] = "keep-alive";
+    req.headers.set("Connection", "keep-alive");
   }
 
   auto request_data = req.serialize();
@@ -126,14 +123,13 @@ HttpClient::~HttpClient() = default;
 HttpClient::HttpClient(HttpClient &&) noexcept = default;
 auto HttpClient::operator=(HttpClient &&) noexcept -> HttpClient & = default;
 
-auto HttpClient::connect_tcp(io::IoContext &ctx, std::string_view host,
+auto HttpClient::connect_tcp(io::IoContext &ctx, std::string host,
                              uint16_t port, HttpClientConfig config)
     -> task<Result<std::unique_ptr<HttpClient>>> {
   boost::system::error_code ec;
   boost::asio::ip::tcp::resolver resolver(ctx);
-  std::string host_str(host);
   std::string port_str = std::to_string(port);
-  auto endpoints = resolver.resolve(host_str, port_str, ec);
+  auto endpoints = resolver.resolve(host, port_str, ec);
   if (ec) {
     log::debug("Failed to resolve {}:{} - {}", host, port, ec.message());
     co_return fail(Error::InvalidUrl);
@@ -151,11 +147,11 @@ auto HttpClient::connect_tcp(io::IoContext &ctx, std::string_view host,
   (void)*connect_res;
 
   auto client = std::make_unique<HttpClient>(std::move(socket), config);
-  client->impl_->host = std::string(host);
+  client->impl_->host = std::move(host);
   co_return ok(std::move(client));
 }
 
-auto HttpClient::connect_unix(io::IoContext &ctx, std::string_view socket_path,
+auto HttpClient::connect_unix(io::IoContext &ctx, std::string socket_path,
                               HttpClientConfig config)
     -> task<Result<std::unique_ptr<HttpClient>>> {
   boost::system::error_code ec;
@@ -172,7 +168,7 @@ auto HttpClient::connect_unix(io::IoContext &ctx, std::string_view socket_path,
     co_return fail(std::error_code(ec.value(), std::system_category()));
   }
   auto connect_res = co_await co_as_result(socket.async_connect(
-      boost::asio::local::stream_protocol::endpoint(std::string(socket_path)),
+      boost::asio::local::stream_protocol::endpoint(socket_path),
       boost::asio::cancel_after(config.connect_timeout, use_nothrow)));
   if (!connect_res) {
     log::debug("Failed to connect to {} - {}", socket_path,
@@ -236,7 +232,7 @@ auto HttpClient::post_json(std::string_view path, std::string_view json,
   req.path = std::string(path);
   req.body = std::vector<uint8_t>(json.begin(), json.end());
   req.headers = headers;
-  req.headers["Content-Type"] = "application/json";
+  req.headers.set("Content-Type", "application/json");
   return request(std::move(req));
 }
 

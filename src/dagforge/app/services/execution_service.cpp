@@ -4,14 +4,15 @@
 #include "dagforge/util/hash.hpp"
 #include "dagforge/util/json.hpp"
 #include "dagforge/util/log.hpp"
+#include "dagforge/util/string_hash.hpp"
 #include "dagforge/xcom/xcom_extractor.hpp"
 
 #include <boost/asio/post.hpp>
 #include <boost/asio/this_coro.hpp>
+#include <boost/system/error_code.hpp>
 
 #include <algorithm>
 #include <array>
-#include <boost/system/error_code.hpp>
 #include <chrono>
 #include <experimental/scope>
 #include <functional>
@@ -170,15 +171,14 @@ auto ExecutionService::owner_shard(const DAGRunId &dag_run_id) const noexcept
   if (shard_count == 0) {
     return 0;
   }
-  return static_cast<shard_id>(util::shard_of(
-      std::hash<std::string_view>{}(dag_run_id.value()), shard_count));
+  return static_cast<shard_id>(
+      util::shard_of(dag_run_id.value(), shard_count));
 }
 
 auto ExecutionService::post_to_owner(const DAGRunId &dag_run_id,
                                      std::move_only_function<void()> fn)
     -> void {
-  boost::asio::post(runtime_.shard(owner_shard(dag_run_id)).ctx(),
-                    std::move(fn));
+  runtime_.post_to(owner_shard(dag_run_id), std::move(fn));
 }
 
 auto ExecutionService::copy_run_snapshot(const ShardState &state,
@@ -288,7 +288,7 @@ auto ExecutionService::schedule_dispatch_scan(shard_id sid) -> void {
     return;
   }
 
-  boost::asio::post(runtime_.shard(sid).ctx(), [this, sid]() {
+  runtime_.post_to(sid, [this, sid]() {
     auto &state = shard_states_[sid];
     if (state.dispatch_scan_state != DispatchScanState::Idle) {
       state.dispatch_scan_state = DispatchScanState::Rearmed;
@@ -480,10 +480,9 @@ auto ExecutionService::get_run_snapshot(const DAGRunId &dag_run_id) const
       const decltype(dagforge::use_nothrow),
       void(boost::system::error_code, std::shared_ptr<const DAGRun>)>(
       [this, dag_run_id = dag_run_id.clone(), target](auto handler) mutable {
-        boost::asio::post(
-            runtime_.shard(target).ctx(),
-            [this, dag_run_id = std::move(dag_run_id), target,
-             handler = std::move(handler)]() mutable {
+        runtime_.post_to(
+            target, [this, dag_run_id = std::move(dag_run_id), target,
+                     handler = std::move(handler)]() mutable {
               auto result =
                   copy_run_snapshot(shard_states_[target], dag_run_id);
               if (!result) {
@@ -1567,7 +1566,7 @@ private:
     co_return ok(std::move(result));
   }
 
-  auto invalid_config_task(std::string_view executor_name) const
+  auto invalid_config_task(std::string executor_name) const
       -> task<Result<ExecutorResult>> {
     co_return ok(invalid_config(executor_name));
   }
@@ -1656,16 +1655,15 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job)
   const auto &xcom_pull = job.xcom_pull();
   if (!xcom_pull.empty()) {
     using MissingKeySet =
-        std::unordered_set<std::string_view, util::TransparentStringHash,
-                           util::TransparentStringEqual>;
-    using MissingKeyMap = std::unordered_map<std::string_view, MissingKeySet,
-                                             util::TransparentStringHash,
-                                             util::TransparentStringEqual>;
+        std::unordered_set<std::string, StringHash, StringEqual>;
+    using MissingKeyMap =
+        std::unordered_map<std::string, MissingKeySet, StringHash, StringEqual>;
 
     MissingKeyMap missing_keys_by_task;
     missing_keys_by_task.reserve(xcom_pull.size());
     for (const auto &pull : xcom_pull) {
-      missing_keys_by_task[pull.ref.task_id.value()].insert(pull.ref.key);
+      missing_keys_by_task[std::string(pull.ref.task_id.value())].insert(
+          pull.ref.key);
     }
 
     auto erase_task_if_empty = [&](std::string_view task_id_str) {
@@ -1678,7 +1676,7 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job)
     // Fast path: owner-shard local XCom cache (same-run produced values).
     auto &state = shard_state(dag_run_id);
     if (auto run_it = state.runs.find(dag_run_id); run_it != state.runs.end()) {
-      pmr::vector<std::pair<std::string_view, std::string_view>> cache_hits{
+      pmr::vector<std::pair<std::string, std::string>> cache_hits{
           current_memory_resource_or_default()};
       cache_hits.reserve(xcom_pull.size());
       for (const auto &[task_id_str, keys] : missing_keys_by_task) {
@@ -1704,7 +1702,9 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job)
       for (const auto &[task_id_str, key] : cache_hits) {
         if (auto it = missing_keys_by_task.find(task_id_str);
             it != missing_keys_by_task.end()) {
-          it->second.erase(key);
+          if (auto key_it = it->second.find(key); key_it != it->second.end()) {
+            it->second.erase(key_it);
+          }
           erase_task_if_empty(task_id_str);
         }
       }
@@ -1742,8 +1742,7 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job)
 
     // Fallback path: fetch task-level sets.
     if (!missing_keys_by_task.empty() && callbacks_.get_task_xcoms) {
-      pmr::vector<std::string_view> source_tasks{
-          current_memory_resource_or_default()};
+      std::vector<std::string> source_tasks;
       source_tasks.reserve(missing_keys_by_task.size());
       for (const auto &[task_id_str, _] : missing_keys_by_task) {
         source_tasks.push_back(task_id_str);
@@ -1794,8 +1793,8 @@ auto ExecutionService::run_task(DAGRunId dag_run_id, TaskJob job)
             xcom_prefetch_hits_[xcom_metric_source_index(
                                     XComMetricSource::Single)]
                 .fetch_add(1, std::memory_order_relaxed);
-            template_resolver_.prefetch_xcom(dag_run_id, source_task,
-                                             std::string(key), xcom->value);
+            template_resolver_.prefetch_xcom(dag_run_id, source_task, key,
+                                             xcom->value);
           } else if (xcom.error() != make_error_code(Error::NotFound)) {
             log::warn("run_task: xcom_pull prefetch failed for {}/{}: {}",
                       source_task, key, xcom.error().message());

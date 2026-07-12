@@ -7,7 +7,6 @@
 #include "dagforge/util/json.hpp"
 #include "dagforge/xcom/xcom_util.hpp"
 
-
 #include <glaze/toml.hpp>
 
 #include <algorithm>
@@ -20,8 +19,7 @@
 #include <unordered_set>
 #include <variant>
 
-
-using namespace std::string_view_literals;
+using std::string_view_literals::operator""sv;
 
 namespace dagforge {
 namespace detail {
@@ -45,6 +43,8 @@ struct ParsedTaskConfig {
 
 struct ParsedDagToml {
   DAGInfo dag{};
+  std::optional<std::chrono::year_month_day> start_date;
+  std::optional<std::chrono::year_month_day> end_date;
   TaskDefaults default_args{};
   std::vector<ParsedTaskConfig> tasks;
 
@@ -71,7 +71,7 @@ template <> struct meta<dagforge::XComPushConfig> {
   };
   static constexpr auto value =
       object("key", &T::key, "source", custom<read_source, nullptr>,
-             "json_path", &T::json_path, "regex", &T::regex_pattern,
+             "json_pointer", &T::json_pointer, "regex", &T::regex_pattern,
              "regex_group", &T::regex_group);
 };
 
@@ -86,12 +86,6 @@ template <> struct meta<dagforge::XComPullConfig> {
   static constexpr auto read_default_value = [](T &value,
                                                 const dagforge::JsonValue &input) {
     value.default_value_json = dagforge::dump_json(input);
-    auto rendered = dagforge::xcom::render_serialized_json(
-        value.default_value_json);
-    if (!rendered) {
-      throw std::runtime_error("failed to render xcom pull default value");
-    }
-    value.default_value_rendered = std::move(*rendered);
     value.has_default_value = true;
   };
   static constexpr auto value = object("key", custom<read_key, nullptr>, "from",
@@ -328,13 +322,6 @@ template <> struct meta<dagforge::detail::ParsedDagToml> {
   static constexpr auto read_cron = [](T &value, const std::string &input) {
     value.dag.cron = input;
   };
-  static constexpr auto read_start_date = [](T &value,
-                                             const std::string &input) {
-    value.dag.start_date = dagforge::toml_util::parse_date_yyyy_mm_dd(input);
-  };
-  static constexpr auto read_end_date = [](T &value, const std::string &input) {
-    value.dag.end_date = dagforge::toml_util::parse_date_yyyy_mm_dd(input);
-  };
   static constexpr auto read_max_active_runs = [](T &value, const int input) {
     value.dag.max_concurrent_runs = input;
   };
@@ -344,9 +331,8 @@ template <> struct meta<dagforge::detail::ParsedDagToml> {
   static constexpr auto value =
       object("id", custom<read_id, nullptr>, "name", custom<read_name, nullptr>,
              "description", custom<read_description, nullptr>, "cron",
-             custom<read_cron, nullptr>, "start_date",
-             custom<read_start_date, nullptr>, "end_date",
-             custom<read_end_date, nullptr>, "max_active_runs",
+             custom<read_cron, nullptr>, "start_date", &T::start_date,
+             "end_date", &T::end_date, "max_active_runs",
              custom<read_max_active_runs, nullptr>, "catchup",
              custom<read_catchup, nullptr>, "default_args", &T::default_args,
              "tasks", &T::tasks);
@@ -458,6 +444,16 @@ template <typename T>
 auto append_toml_scalar(std::string &out, std::string_view key, const T &value)
     -> void {
   out += std::format("{} = {}\n", key, value);
+}
+
+auto append_toml_local_date(std::string &out, std::string_view key,
+                            std::chrono::year_month_day value) -> void {
+  auto encoded = toml_util::serialize_toml(value);
+  if (!encoded) {
+    log::error("Failed to serialize TOML local date for key '{}'", key);
+    return;
+  }
+  out += std::format("{} = {}\n", key, *encoded);
 }
 
 auto append_toml_bool(std::string &out, std::string_view key, bool value)
@@ -665,6 +661,12 @@ auto append_task_toml(std::string &out, const TaskConfig &task) -> void {
     return fail(Error::InvalidArgument);
   }
   auto dag = std::move(raw.dag);
+  if (raw.start_date) {
+    dag.start_date = std::chrono::sys_days{*raw.start_date};
+  }
+  if (raw.end_date) {
+    dag.end_date = std::chrono::sys_days{*raw.end_date};
+  }
   if (dag.name.empty()) {
     dag.name = dag.dag_id.str();
   }
@@ -687,14 +689,28 @@ auto append_task_toml(std::string &out, const TaskConfig &task) -> void {
         materialize_task_dependencies(parsed_task.dependencies);
     parsed_task.task.xcom_push = std::move(parsed_task.xcom_push);
     for (auto &push : parsed_task.task.xcom_push) {
-      if (auto compiled = push.compile_regex(); !compiled) {
+      if (auto prepared = push.prepare(); !prepared) {
         if (diagnostic) {
-          *diagnostic = "DAG parse error: invalid xcom_push regex";
+          *diagnostic =
+              "DAG parse error: invalid xcom_push json_pointer or regex";
         }
-        return fail(compiled.error());
+        return fail(prepared.error());
       }
     }
     parsed_task.task.xcom_pull = std::move(parsed_task.xcom_pull);
+    for (auto &pull : parsed_task.task.xcom_pull) {
+      if (!pull.has_default_value) {
+        continue;
+      }
+      auto rendered = xcom::render_serialized_json(pull.default_value_json);
+      if (!rendered) {
+        if (diagnostic) {
+          *diagnostic = "DAG parse error: invalid xcom_pull default_value";
+        }
+        return fail(rendered.error());
+      }
+      pull.default_value_rendered = std::move(*rendered);
+    }
     finalize_task(parsed_task.task);
     dag.tasks.emplace_back(std::move(parsed_task.task));
   }
@@ -773,12 +789,16 @@ auto DAGInfoLoader::to_string(const DAGInfo &dag) -> std::string {
     append_toml_string(out, "cron", dag.cron);
   }
   if (dag.start_date) {
-    append_toml_string(out, "start_date",
-                       toml_util::format_date_yyyy_mm_dd(*dag.start_date));
+    append_toml_local_date(
+        out, "start_date",
+        std::chrono::year_month_day{
+            std::chrono::floor<std::chrono::days>(*dag.start_date)});
   }
   if (dag.end_date) {
-    append_toml_string(out, "end_date",
-                       toml_util::format_date_yyyy_mm_dd(*dag.end_date));
+    append_toml_local_date(
+        out, "end_date",
+        std::chrono::year_month_day{
+            std::chrono::floor<std::chrono::days>(*dag.end_date)});
   }
   append_toml_scalar(out, "max_active_runs", dag.max_concurrent_runs);
   append_toml_bool(out, "catchup", dag.catchup);

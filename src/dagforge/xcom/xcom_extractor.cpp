@@ -2,7 +2,6 @@
 #include "dagforge/util/json.hpp"
 
 #include <boost/algorithm/string/trim.hpp>
-#include <ranges>
 #include <regex>
 #include <utility>
 
@@ -73,46 +72,37 @@ namespace {
   return std::string(output);
 }
 
-[[nodiscard]] auto apply_json_path(const JsonValue &json, std::string_view path)
-    -> Result<JsonValue> {
-  const JsonValue *cur = &json;
-
-  if (!path.empty() && path.front() == '.') {
-    path.remove_prefix(1);
+[[nodiscard]] auto is_valid_json_pointer(std::string_view pointer) noexcept
+    -> bool {
+  if (pointer.empty()) {
+    return true;
   }
-
-  for (auto part : path | std::views::split('.')) {
-    std::string_view token(part.begin(), part.end());
-    if (token.empty())
+  if (pointer.front() != '/') {
+    return false;
+  }
+  for (std::size_t i = 0; i < pointer.size(); ++i) {
+    if (pointer[i] != '~') {
       continue;
-
-    // Split token on '[' to separate key from optional array index
-    auto bracket = token.find('[');
-    std::string_view key = token.substr(0, bracket);
-
-    if (!key.empty()) {
-      if (!cur->contains(key))
-        return fail(Error::NotFound);
-      cur = &(*cur)[key];
     }
-
-    while (bracket != std::string_view::npos) {
-      auto close = token.find(']', bracket);
-      if (close == std::string_view::npos)
-        return fail(Error::InvalidArgument);
-      auto index_sv = token.substr(bracket + 1, close - bracket - 1);
-      std::size_t index{};
-      auto [p, ec] = std::from_chars(index_sv.data(),
-                                     index_sv.data() + index_sv.size(), index);
-      if (ec != std::errc{} || !cur->is_array() || index >= cur->size()) {
-        return fail(Error::NotFound);
-      }
-      cur = &cur->get_array()[index];
-      bracket = token.find('[', close + 1);
+    if (++i >= pointer.size() ||
+        (pointer[i] != '0' && pointer[i] != '1')) {
+      return false;
     }
   }
+  return true;
+}
 
-  return ok(*cur);
+[[nodiscard]] auto apply_json_pointer(const JsonValue &json,
+                                      std::string_view pointer)
+    -> Result<JsonValue> {
+  if (!is_valid_json_pointer(pointer)) {
+    return fail(Error::InvalidArgument);
+  }
+  const auto *value = glz::navigate_to(&json, pointer);
+  if (value == nullptr) {
+    return fail(Error::NotFound);
+  }
+  return ok(*value);
 }
 
 [[nodiscard]] auto extract_one(const ExecutorResult &result,
@@ -121,7 +111,7 @@ namespace {
   std::string source_text = get_source_text(result, config.source);
   if (config.source != XComSource::Json &&
       config.source != XComSource::ExitCode &&
-      config.regex_pattern.empty() && config.json_path.empty()) {
+      config.regex_pattern.empty() && config.json_pointer.empty()) {
     source_text = extract_last_non_empty_line(source_text);
   }
   auto text_res = ok(std::move(source_text));
@@ -154,7 +144,8 @@ namespace {
 
   return std::move(text_res).and_then(
       [&](std::string &&text) -> Result<ExtractedXCom> {
-        if (config.source == XComSource::Json || !config.json_path.empty()) {
+        if (config.source == XComSource::Json ||
+            !config.json_pointer.empty()) {
           if (config.source == XComSource::Json) {
             text = extract_json_from_output(text);
           }
@@ -163,8 +154,8 @@ namespace {
             return fail(Error::InvalidArgument);
           }
 
-          if (!config.json_path.empty()) {
-            return apply_json_path(*parsed, config.json_path)
+          if (!config.json_pointer.empty()) {
+            return apply_json_pointer(*parsed, config.json_pointer)
                 .transform([&](auto &&val) {
                   return ExtractedXCom{
                       .key = config.key,

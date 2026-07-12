@@ -16,7 +16,7 @@ lua_lib = ../third_party/lua-5.4.8/src/c{lauxlib lbaselib lcorolib ldblib \
       modules/client modules/executor modules/task_types modules/app \
       modules/dagforge \
       modules/cli modules/xcom} \
-  cxx{modules/scheduler}
+  cxx{modules/scheduler modules/http}
 
 lib{dagforge-foundation}:
 {
@@ -109,8 +109,8 @@ lib{dagforge}:                                                   \
   cxx.poptions += "-DBOOST_ASIO_HAS_IO_URING=0" \
                   "-DDAGFORGE_USE_MIMALLOC=0"
   c.libs = -lm -ldl
-  cxx.libs = -lboost_url -lboost_charconv -lboost_process -lboost_filesystem -lssl -lcrypto -pthread -lm -ldl
-  cxx.export.libs = -lboost_url -lboost_charconv -lboost_process -lboost_filesystem -lssl -lcrypto -pthread -lm -ldl
+  cxx.libs = -lboost_url -lboost_charconv -lboost_process -lssl -lcrypto -pthread -lm -ldl
+  cxx.export.libs = -lboost_url -lboost_charconv -lboost_process -lssl -lcrypto -pthread -lm -ldl
 }
 
 mxx{modules/dagforge}@modules/: cxx.module_name = dagforge.foundation

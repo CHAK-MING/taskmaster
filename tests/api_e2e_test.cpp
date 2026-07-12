@@ -395,7 +395,7 @@ TEST_F(ApiE2EIntegrationTest, TriggerHistoryAndXComRoundtrip) {
   task_res->xcom_push.push_back(XComPushConfig{
       .key = "payload",
       .source = XComSource::Json,
-      .json_path = "",
+      .json_pointer = "",
       .regex_pattern = "",
       .regex_group = 0,
   });
@@ -1634,7 +1634,7 @@ TEST_F(ApiE2EIntegrationTest,
   router->xcom_push.push_back(XComPushConfig{
       .key = "branch",
       .source = XComSource::Json,
-      .json_path = "",
+      .json_pointer = "",
       .regex_pattern = "",
       .regex_group = 0,
   });

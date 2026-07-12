@@ -5,13 +5,13 @@
 #include "dagforge/app/services/persistence_service.hpp"
 #include "dagforge/dag/dag_manager.hpp"
 #include "dagforge/io/context.hpp"
+#include "dagforge/util/conv.hpp"
 #include "dagforge/util/id.hpp"
 
 #include <arpa/inet.h>
 #include <atomic>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
-#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -51,15 +51,11 @@ namespace dagforge::test {
     return fallback;
   }
 
-  const std::string_view value{raw};
-  unsigned int port = 0;
-  const auto [end, ec] =
-      std::from_chars(value.data(), value.data() + value.size(), port);
-  if (ec != std::errc{} || end != value.data() + value.size() || port == 0 ||
-      port > 65535) {
+  auto port = util::parse_int<unsigned int>(raw);
+  if (!port || *port == 0 || *port > 65535) {
     return fallback;
   }
-  return static_cast<std::uint16_t>(port);
+  return static_cast<std::uint16_t>(*port);
 }
 
 [[nodiscard]] inline auto unique_token(std::string_view base) -> std::string {
@@ -352,6 +348,16 @@ inline void sleep_ms(std::chrono::milliseconds ms) {
   std::this_thread::sleep_for(ms);
 }
 
+[[nodiscard]] inline auto parse_http_status(std::string_view response) -> int {
+  const auto space_pos = response.find(' ');
+  if (space_pos == std::string_view::npos || space_pos + 4 > response.size()) {
+    return 0;
+  }
+
+  auto parsed = util::parse_int<int>(response.substr(space_pos + 1, 3));
+  return parsed.value_or(0);
+}
+
 [[nodiscard]] inline auto
 http_get(std::uint16_t port, std::string_view path,
          std::chrono::seconds timeout = std::chrono::seconds(5))
@@ -389,13 +395,7 @@ http_get(std::uint16_t port, std::string_view path,
   }
   ::close(sock);
 
-  int status_code = 0;
-  if (response.size() > 12) {
-    auto space_pos = response.find(' ');
-    if (space_pos != std::string::npos && space_pos + 4 <= response.size()) {
-      status_code = std::stoi(response.substr(space_pos + 1, 3));
-    }
-  }
+  const auto status_code = parse_http_status(response);
 
   auto body_start = response.find("\r\n\r\n");
   std::string body =
@@ -445,13 +445,7 @@ http_post(std::uint16_t port, std::string_view path, std::string_view json_body,
   }
   ::close(sock);
 
-  int status_code = 0;
-  if (response.size() > 12) {
-    auto space_pos = response.find(' ');
-    if (space_pos != std::string::npos && space_pos + 4 <= response.size()) {
-      status_code = std::stoi(response.substr(space_pos + 1, 3));
-    }
-  }
+  const auto status_code = parse_http_status(response);
 
   auto body_start = response.find("\r\n\r\n");
   std::string body =

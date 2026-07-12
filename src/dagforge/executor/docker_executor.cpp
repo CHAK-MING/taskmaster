@@ -111,7 +111,7 @@ struct DockerWaitResult {
 };
 
 auto wait_container_with_timeout(RealDockerClient &client,
-                                 std::string_view container_id,
+                                 std::string container_id,
                                  std::chrono::seconds timeout)
     -> task<DockerWaitResult> {
   auto outcome = co_await (client.wait_container(container_id) ||
@@ -128,7 +128,7 @@ auto wait_container_with_timeout(RealDockerClient &client,
   };
 }
 
-auto fetch_container_logs(RealDockerClient &client, std::string_view container_id,
+auto fetch_container_logs(RealDockerClient &client, std::string container_id,
                           ExecutorResult &result) -> task<void> {
   auto logs_result = co_await client.get_logs(container_id);
   if (!logs_result) {
@@ -140,7 +140,7 @@ auto fetch_container_logs(RealDockerClient &client, std::string_view container_i
   result.stderr_output = std::move(logs_result->stderr_output);
 }
 
-auto cleanup_container(RealDockerClient &client, std::string_view container_id,
+auto cleanup_container(RealDockerClient &client, std::string container_id,
                        bool stop_first, std::chrono::seconds stop_timeout)
     -> task<void> {
   if (stop_first) {

@@ -66,6 +66,29 @@ TEST(GlazeSecurityTest, ParsesExactJsonBufferWithoutNullTerminator) {
   EXPECT_TRUE(is_valid_json(input.view()));
 }
 
+TEST(GlazeSecurityTest, SerializesTypedJsonThroughProjectWrapper) {
+  JsonPayload payload{.name = "safe", .values = {1, 2, 3}};
+
+  auto serialized = serialize_json(payload);
+
+  ASSERT_TRUE(serialized.has_value()) << serialized.error().message();
+  auto parsed = parse_json_as<JsonPayload>(*serialized);
+  ASSERT_TRUE(parsed.has_value()) << parsed.error().message();
+  EXPECT_EQ(parsed->name, payload.name);
+  EXPECT_EQ(parsed->values, payload.values);
+}
+
+TEST(GlazeSecurityTest, RelaxedTypedParserAllowsUnknownKeys) {
+  constexpr std::string_view kInput =
+      R"({"name":"safe","values":[1],"future_field":true})";
+
+  EXPECT_FALSE(parse_json_as<JsonPayload>(kInput).has_value());
+  auto parsed = parse_json_as_allow_unknown<JsonPayload>(kInput);
+  ASSERT_TRUE(parsed.has_value()) << parsed.error().message();
+  EXPECT_EQ(parsed->name, "safe");
+  EXPECT_EQ(parsed->values, (std::vector<int>{1}));
+}
+
 TEST(GlazeSecurityTest, JsonViewDoesNotConsumePoisonSuffix) {
   constexpr std::string_view kJson =
       R"({"name":"bounded","values":[7]})";

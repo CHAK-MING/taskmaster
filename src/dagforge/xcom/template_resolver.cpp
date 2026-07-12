@@ -4,11 +4,11 @@
 #include "dagforge/util/log.hpp"
 #include "dagforge/xcom/xcom_util.hpp"
 
-
+#include <ankerl/unordered_dense.h>
 #include <boost/algorithm/string/find.hpp>
 #include <boost/algorithm/string/replace.hpp>
-
 #include <boost/algorithm/string/trim.hpp>
+
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -16,10 +16,7 @@
 #include <unordered_map>
 #include <utility>
 
-#include <ankerl/unordered_dense.h>
-
 namespace dagforge {
-// ... (rest of headers)
 
 TemplateResolver::TemplateResolver(XComLookupFn lookup)
     : xcom_lookup_(std::move(lookup)) {}
@@ -357,14 +354,7 @@ auto TemplateResolver::resolve_template(
     return ok(std::string{});
   }
 
-  pmr::memory_resource *resource = nullptr;
-  if (detail::current_runtime != nullptr &&
-      detail::current_shard_id != kInvalidShard) {
-    resource = current_memory_resource();
-  }
-  if (resource == nullptr) {
-    resource = pmr::get_default_resource();
-  }
+  auto *resource = current_memory_resource_or_default();
 
   // Build whitelist lookup for strict mode
   XComWhitelist whitelist;

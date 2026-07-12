@@ -19,11 +19,11 @@ protected:
   auto create_run(const DAGRunId &run_id, int64_t dag_rowid) -> Result<DAGRun> {
     auto graph = std::make_shared<DAG>();
     if (auto add = graph->add_node(TaskId{"task_1"}); !add) {
-      return std::unexpected(add.error());
+      return fail(add.error());
     }
     auto run = DAGRun::create(run_id, graph);
     if (!run) {
-      return std::unexpected(run.error());
+      return fail(run.error());
     }
     run->set_dag_rowid(dag_rowid);
     run->set_dag_version(1);

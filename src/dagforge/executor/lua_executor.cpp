@@ -119,7 +119,7 @@ int lua_traceback_handler(lua_State *L) {
   for (int level = 1; lua_getstack(L, level, &ar) != 0; ++level) {
     lua_getinfo(L, "Sln", &ar);
     luaL_addstring(&buffer, "\n\t");
-    luaL_addstring(&buffer, ar.short_src != nullptr ? ar.short_src : "?");
+    luaL_addstring(&buffer, ar.short_src[0] != '\0' ? ar.short_src : "?");
     if (ar.currentline > 0) {
       char line[32];
       std::snprintf(line, sizeof(line), ":%d", ar.currentline);

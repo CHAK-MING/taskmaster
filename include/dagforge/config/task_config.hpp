@@ -158,8 +158,8 @@ struct TaskConfig::Builder {
       return fail(Error::InvalidArgument);
     }
     for (auto &push : config_.xcom_push) {
-      if (auto compiled = push.compile_regex(); !compiled) {
-        return fail(compiled.error());
+      if (auto prepared = push.prepare(); !prepared) {
+        return fail(prepared.error());
       }
     }
     return ok(std::move(config_));

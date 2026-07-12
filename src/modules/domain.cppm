@@ -1,8 +1,10 @@
 module;
 
+#include <boost/uuid/time_generator_v7.hpp>
+#include <boost/uuid/uuid_io.hpp>
+
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <compare>
 #include <concepts>
 #include <cstddef>
@@ -10,7 +12,6 @@ module;
 #include <functional>
 #include <optional>
 #include <ostream>
-#include <random>
 #include <string>
 #include <string_view>
 #include <utility>

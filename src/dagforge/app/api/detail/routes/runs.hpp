@@ -2,6 +2,7 @@
 
 #include "../api_context.hpp"
 #include "../dto_mapper.hpp"
+#include "dagforge/util/string_hash.hpp"
 
 #include <unordered_map>
 
@@ -25,7 +26,7 @@ inline auto register_run_routes(ApiContext &ctx) -> void {
             for (const auto &run : *res) {
               dto.runs.emplace_back(to_dto(run.entry, run.state));
             }
-            co_return json_response_glz(dto);
+            co_return typed_json_response(dto);
           }));
 
   router.get(
@@ -42,7 +43,7 @@ inline auto register_run_routes(ApiContext &ctx) -> void {
             if (!res) {
               co_return to_result_response(res.error()).value();
             }
-            co_return json_response_glz(to_dto(res->entry, res->state));
+            co_return typed_json_response(to_dto(res->entry, res->state));
           }));
 
   router.get(
@@ -125,9 +126,8 @@ inline auto register_run_routes(ApiContext &ctx) -> void {
                       .dag_run_id = *dag_run_id,
                       .tasks = {},
                   };
-                  std::unordered_map<std::string, TaskInstanceInfo,
-                                     util::TransparentStringHash,
-                                     util::TransparentStringEqual>
+                  std::unordered_map<std::string, TaskInstanceInfo, StringHash,
+                                     StringEqual>
                       latest_by_task_id;
                   latest_by_task_id.reserve(tasks.size());
                   for (const auto &t : tasks) {
@@ -162,7 +162,7 @@ inline auto register_run_routes(ApiContext &ctx) -> void {
                         .error = t.error_message,
                     });
                   }
-                  return json_response_glz(dto);
+                  return typed_json_response(dto);
                 })
                 .or_else(to_result_response)
                 .value();

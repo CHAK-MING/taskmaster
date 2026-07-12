@@ -4,7 +4,6 @@
 #include "dagforge/core/runtime.hpp"
 #include "dagforge/util/log.hpp"
 
-
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/cancel_after.hpp>
 #include <boost/asio/connect.hpp>
@@ -15,9 +14,9 @@
 #include <boost/asio/write.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/system/error_code.hpp>
 #include <boost/url/parse.hpp>
 
-#include <boost/asio/error.hpp>
 #include <cerrno>
 #include <chrono>
 #include <sys/socket.h>
@@ -72,10 +71,8 @@ auto to_request(
     out.path = std::move(target);
   }
 
-  out.headers.reserve(static_cast<std::size_t>(
-      std::distance(msg.base().begin(), msg.base().end())));
   for (const auto &field : msg.base()) {
-    out.headers.emplace(field.name_string(), field.value());
+    out.headers.add(std::string(field.name_string()), std::string(field.value()));
   }
   out.body = msg.body();
   return out;
@@ -87,8 +84,8 @@ auto to_beast_response(const HttpResponse &resp, unsigned version,
   beast_http::response<beast_http::vector_body<uint8_t>> out{
       static_cast<beast_http::status>(resp.status), version};
   out.keep_alive(keep_alive);
-  for (const auto &[k, v] : resp.headers) {
-    out.set(k, v);
+  for (const auto &field : resp.headers) {
+    out.insert(field.name, field.value);
   }
   out.body() = resp.body;
   out.prepare_payload();
@@ -538,7 +535,7 @@ auto HttpServer::stop() -> void {
   log::debug("Stopping HTTP server...");
 
   for (unsigned i = 0; i < impl_->runtime.shard_count(); ++i) {
-    boost::asio::post(impl_->runtime.executor_for(i), [impl = impl_, i]() {
+    impl_->runtime.post_to(i, [impl = impl_, i]() {
       if (auto acc = impl->shard_states[i].acceptor) {
         boost::system::error_code close_ec;
         acc->cancel(close_ec);

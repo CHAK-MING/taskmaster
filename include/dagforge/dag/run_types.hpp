@@ -11,8 +11,6 @@
 #endif
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include <boost/describe/enum.hpp>
-
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -28,12 +26,25 @@ enum class DAGRunState : std::uint8_t {
   Skipped,
   Cancelled,
 };
-BOOST_DESCRIBE_ENUM(DAGRunState, Queued, Running, Success, Failed, Skipped,
-                    Cancelled)
+
+} // namespace dagforge
+
+namespace glz {
+template <> struct meta<dagforge::DAGRunState> {
+  static constexpr auto value = glz::enumerate(
+      "queued", dagforge::DAGRunState::Queued, "running",
+      dagforge::DAGRunState::Running, "success",
+      dagforge::DAGRunState::Success, "failed", dagforge::DAGRunState::Failed,
+      "skipped", dagforge::DAGRunState::Skipped, "cancelled",
+      dagforge::DAGRunState::Cancelled);
+};
+} // namespace glz
+
+namespace dagforge {
 
 [[nodiscard]] constexpr auto to_string_view(DAGRunState value) noexcept
     -> std::string_view {
-  return ::dagforge::util::enum_to_snake_case_view(value);
+  return ::dagforge::util::enum_to_string_view(value);
 }
 
 template <>
@@ -48,11 +59,23 @@ enum class TriggerType : std::uint8_t {
   Api,
   Backfill,
 };
-BOOST_DESCRIBE_ENUM(TriggerType, Manual, Schedule, Api, Backfill)
+
+} // namespace dagforge
+
+namespace glz {
+template <> struct meta<dagforge::TriggerType> {
+  static constexpr auto value = glz::enumerate(
+      "manual", dagforge::TriggerType::Manual, "schedule",
+      dagforge::TriggerType::Schedule, "api", dagforge::TriggerType::Api,
+      "backfill", dagforge::TriggerType::Backfill);
+};
+} // namespace glz
+
+namespace dagforge {
 
 [[nodiscard]] constexpr auto to_string_view(TriggerType value) noexcept
     -> std::string_view {
-  return ::dagforge::util::enum_to_snake_case_view(value);
+  return ::dagforge::util::enum_to_string_view(value);
 }
 
 template <>

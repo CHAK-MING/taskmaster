@@ -17,7 +17,7 @@ inline auto register_dag_routes(ApiContext &ctx) -> void {
                         ctx.app.dag_manager().list_dags()) {
                      resp_dto.dags.emplace_back(to_dto(dag_info));
                    }
-                   co_return json_response_glz(resp_dto);
+                   co_return typed_json_response(resp_dto);
                  }));
 
   router.get("/api/dags/{dag_id}",
@@ -32,7 +32,7 @@ inline auto register_dag_routes(ApiContext &ctx) -> void {
                    co_return ctx.app.dag_manager()
                        .get_dag(DAGId{*dag_id})
                        .transform([](const auto &dag) {
-                         return json_response_glz(to_dto(dag));
+                         return typed_json_response(to_dto(dag));
                        })
                        .or_else(to_result_response)
                        .value();
@@ -55,7 +55,7 @@ inline auto register_dag_routes(ApiContext &ctx) -> void {
                          for (const auto &task : dag.tasks) {
                            dto.tasks.emplace_back(task.task_id.str());
                          }
-                         return json_response_glz(dto);
+                         return typed_json_response(dto);
                        })
                        .or_else(to_result_response)
                        .value();
@@ -79,7 +79,7 @@ inline auto register_dag_routes(ApiContext &ctx) -> void {
                              if (!task) {
                                return fail(Error::NotFound);
                              }
-                             return ok(json_response_glz(to_dto(*task)));
+                             return ok(typed_json_response(to_dto(*task)));
                            })
                        .or_else(to_result_response)
                        .value();
@@ -98,16 +98,14 @@ inline auto register_dag_routes(ApiContext &ctx) -> void {
             std::optional<std::chrono::system_clock::time_point> execution_date;
             auto body = req.body_as_string();
             if (!body.empty()) {
-              api_dto::TriggerRequestDto trigger_req{};
-              if (auto ec =
-                      glz::read<glz::opts{.error_on_unknown_keys = false}>(
-                          trigger_req, body);
-                  ec) {
+              auto trigger_req =
+                  parse_json_as_allow_unknown<api_dto::TriggerRequestDto>(body);
+              if (!trigger_req) {
                 co_return error_response(400, "Invalid JSON body");
               }
-              if (trigger_req.execution_date) {
+              if (trigger_req->execution_date) {
                 auto parsed_execution_date =
-                    parse_execution_date_arg(*trigger_req.execution_date);
+                    parse_execution_date_arg(*trigger_req->execution_date);
                 if (!parsed_execution_date) {
                   co_return error_response(
                       400, "Invalid execution_date, expected now "
@@ -207,7 +205,7 @@ inline auto register_dag_routes(ApiContext &ctx) -> void {
                   .finished_at = util::format_iso8601(run.entry.finished_at),
               });
             }
-            co_return json_response_glz(dto);
+            co_return typed_json_response(dto);
           }));
 }
 

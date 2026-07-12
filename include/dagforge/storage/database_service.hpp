@@ -8,13 +8,14 @@
 #include "dagforge/storage/orm_models.hpp"
 #include "dagforge/util/id.hpp"
 #include "dagforge/xcom/xcom_types.hpp"
-#endif
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <string>
-#include <string_view>
+#include <utility>
 #include <vector>
+#endif
 
 namespace dagforge {
 
@@ -82,7 +83,7 @@ public:
   virtual auto
   save_task_dependencies(const DAGId &dag_id, const TaskId &task_id,
                          const std::vector<TaskId> &dep_task_ids,
-                         std::string_view dependency_type = "success")
+                         std::string dependency_type = "success")
       -> task<Result<void>> = 0;
   virtual auto get_task_dependencies(const DAGId &dag_id)
       -> task<Result<std::vector<std::pair<TaskId, TaskId>>>> = 0;
@@ -111,8 +112,7 @@ public:
   save_task_instances_batch(const DAGRunId &run_id,
                             const std::vector<TaskInstanceInfo> &instances)
       -> task<Result<void>> = 0;
-  virtual auto claim_task_instances(std::size_t limit,
-                                    std::string_view worker_id)
+  virtual auto claim_task_instances(std::size_t limit, std::string worker_id)
       -> task<Result<std::vector<ClaimedTaskInstance>>> = 0;
   virtual auto touch_task_heartbeat(const TaskInstanceKey &key)
       -> task<Result<void>> = 0;
@@ -132,7 +132,7 @@ public:
                          std::string key, std::string value_json)
       -> task<Result<void>> = 0;
   virtual auto get_xcom(const DAGRunId &run_id, const TaskId &task_id,
-                        std::string_view key) -> task<Result<XComEntry>> = 0;
+                        std::string key) -> task<Result<XComEntry>> = 0;
   virtual auto get_task_xcoms(const DAGRunId &run_id, const TaskId &task_id)
       -> task<Result<std::vector<XComEntry>>> = 0;
   virtual auto get_run_xcoms(const DAGRunId &run_id)

@@ -1,12 +1,12 @@
 #include "dagforge/util/daemon.hpp"
 
 
-#include <boost/filesystem.hpp>
 #include <boost/interprocess/sync/file_lock.hpp>
 
 #include <charconv>
 #include <csignal>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -40,16 +40,16 @@ namespace {
 }
 
 auto ensure_parent_directory(std::string_view path) -> Result<void> {
-  boost::system::error_code ec;
-  const boost::filesystem::path p{std::string(path)};
-  const auto parent = p.parent_path();
+  std::error_code ec;
+  const std::filesystem::path file_path{std::string(path)};
+  const auto parent = file_path.parent_path();
   if (parent.empty()) {
     return ok();
   }
-  if (!boost::filesystem::exists(parent, ec)) {
-    boost::filesystem::create_directories(parent, ec);
+  if (!std::filesystem::exists(parent, ec)) {
+    std::filesystem::create_directories(parent, ec);
     if (ec) {
-      return fail(std::error_code(ec.value(), std::system_category()));
+      return fail(ec);
     }
   }
   return ok();
@@ -140,8 +140,8 @@ auto PidFileGuard::release() noexcept -> void {
   }
   lock_.reset();
 
-  boost::system::error_code ec;
-  boost::filesystem::remove(boost::filesystem::path(path_), ec);
+  std::error_code ec;
+  std::filesystem::remove(std::filesystem::path(path_), ec);
 }
 
 auto daemonize() -> Result<void> {
@@ -188,10 +188,10 @@ auto read_pid_file(std::string_view path) -> Result<std::int64_t> {
 }
 
 auto remove_pid_file(std::string_view path) -> Result<void> {
-  boost::system::error_code ec;
-  boost::filesystem::remove(boost::filesystem::path(std::string(path)), ec);
+  std::error_code ec;
+  std::filesystem::remove(std::filesystem::path(std::string(path)), ec);
   if (ec) {
-    return fail(std::error_code(ec.value(), std::system_category()));
+    return fail(ec);
   }
   return ok();
 }

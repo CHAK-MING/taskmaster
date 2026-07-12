@@ -8,8 +8,6 @@
 #include <flat_map>
 #include <memory>
 #include <string>
-
-#include <boost/describe/enum.hpp>
 #endif
 
 namespace dagforge {
@@ -21,18 +19,37 @@ enum class ExecutorType : std::uint8_t {
   Lua,
   Noop,
 };
-BOOST_DESCRIBE_ENUM(ExecutorType, Shell, Docker, Sensor, Lua, Noop)
 
 enum class ImagePullPolicy : std::uint8_t {
   Never,
   IfNotPresent,
   Always,
 };
-BOOST_DESCRIBE_ENUM(ImagePullPolicy, Never, IfNotPresent, Always)
+
+} // namespace dagforge
+
+namespace glz {
+template <> struct meta<dagforge::ExecutorType> {
+  static constexpr auto value = glz::enumerate(
+      "shell", dagforge::ExecutorType::Shell, "docker",
+      dagforge::ExecutorType::Docker, "sensor",
+      dagforge::ExecutorType::Sensor, "lua", dagforge::ExecutorType::Lua,
+      "noop", dagforge::ExecutorType::Noop);
+};
+
+template <> struct meta<dagforge::ImagePullPolicy> {
+  static constexpr auto value = glz::enumerate(
+      "never", dagforge::ImagePullPolicy::Never, "if_not_present",
+      dagforge::ImagePullPolicy::IfNotPresent, "always",
+      dagforge::ImagePullPolicy::Always);
+};
+} // namespace glz
+
+namespace dagforge {
 
 [[nodiscard]] constexpr auto to_string_view(ExecutorType value) noexcept
     -> std::string_view {
-  return ::dagforge::util::enum_to_snake_case_view(value);
+  return ::dagforge::util::enum_to_string_view(value);
 }
 
 template <>
@@ -43,7 +60,7 @@ template <>
 
 [[nodiscard]] constexpr auto to_string_view(ImagePullPolicy value) noexcept
     -> std::string_view {
-  return ::dagforge::util::enum_to_snake_case_view(value);
+  return ::dagforge::util::enum_to_string_view(value);
 }
 
 template <>
@@ -68,11 +85,23 @@ enum class SensorType : std::uint8_t {
   Http,
   Command,
 };
-BOOST_DESCRIBE_ENUM(SensorType, File, Http, Command)
+
+} // namespace dagforge
+
+namespace glz {
+template <> struct meta<dagforge::SensorType> {
+  static constexpr auto value =
+      glz::enumerate("file", dagforge::SensorType::File, "http",
+                dagforge::SensorType::Http, "command",
+                dagforge::SensorType::Command);
+};
+} // namespace glz
+
+namespace dagforge {
 
 [[nodiscard]] constexpr auto to_string_view(SensorType value) noexcept
     -> std::string_view {
-  return ::dagforge::util::enum_to_snake_case_view(value);
+  return ::dagforge::util::enum_to_string_view(value);
 }
 
 template <>

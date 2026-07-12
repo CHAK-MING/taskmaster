@@ -1,11 +1,14 @@
 #include "dagforge/core/shard.hpp"
 
+#include "dagforge/util/hash.hpp"
+
 #include <boost/asio/post.hpp>
+#include <gtest/gtest.h>
 
 #include <atomic>
+#include <functional>
 #include <memory_resource>
-
-#include "gtest/gtest.h"
+#include <string_view>
 
 using namespace dagforge;
 
@@ -49,4 +52,14 @@ TEST(ShardTest, ContextExecutesPostedWork) {
   boost::asio::post(shard.ctx(), [&] { counter.fetch_add(1); });
   (void)shard.ctx().run_one();
   EXPECT_EQ(counter.load(), 1);
+}
+
+TEST(ShardRoutingTest, UsesUnorderedDenseHashForStableTypeSemantics) {
+  constexpr std::string_view kValue = "dag_run_alpha";
+  const auto hash = static_cast<std::size_t>(
+      ankerl::unordered_dense::hash<std::string_view>{}(kValue));
+
+  for (unsigned shard_count : {1U, 2U, 3U, 8U, 16U}) {
+    EXPECT_EQ(util::shard_of(kValue, shard_count), hash % shard_count);
+  }
 }

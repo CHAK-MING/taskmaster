@@ -51,7 +51,7 @@ auto main() -> int {
     return 18;
   }
   dagforge::XComPushConfig push{.key = "result", .regex_pattern = "ok"};
-  if (!push.compile_regex()) {
+  if (!push.prepare()) {
     return 8;
   }
   dagforge::ShellExecutorConfig shell_cfg{};

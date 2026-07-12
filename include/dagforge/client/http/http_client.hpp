@@ -5,7 +5,6 @@
 #include "dagforge/core/coroutine.hpp"
 #include "dagforge/core/error.hpp"
 #include "dagforge/io/context.hpp"
-#endif
 
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/local/stream_protocol.hpp>
@@ -13,10 +12,14 @@
 #include <chrono>
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
+#endif
 
 
 namespace dagforge::http {
@@ -48,11 +51,11 @@ public:
   HttpClient(HttpClient &&) noexcept;
   auto operator=(HttpClient &&) noexcept -> HttpClient &;
 
-  static auto connect_tcp(io::IoContext &ctx, std::string_view host,
-                          uint16_t port, HttpClientConfig config = {})
+  static auto connect_tcp(io::IoContext &ctx, std::string host, uint16_t port,
+                          HttpClientConfig config = {})
       -> task<Result<std::unique_ptr<HttpClient>>>;
 
-  static auto connect_unix(io::IoContext &ctx, std::string_view socket_path,
+  static auto connect_unix(io::IoContext &ctx, std::string socket_path,
                            HttpClientConfig config = {})
       -> task<Result<std::unique_ptr<HttpClient>>>;
 

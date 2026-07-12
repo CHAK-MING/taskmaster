@@ -1,18 +1,17 @@
 #pragma once
 
-#if !defined(DAGFORGE_BUILDING_MODULE_INTERFACE) &&                              \
-    (!defined(DAGFORGE_CONSUME_NAMED_MODULES) ||                                \
-     !DAGFORGE_CONSUME_NAMED_MODULES)
+#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#if !defined(DAGFORGE_CONSUME_NAMED_MODULES) ||                                \
+    !DAGFORGE_CONSUME_NAMED_MODULES
 #include "dagforge/core/error.hpp"
 #endif
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <glaze/json.hpp>
 
 #include <string>
 #include <string_view>
+#include <utility>
 #endif
-
 
 namespace dagforge {
 
@@ -31,6 +30,12 @@ inline constexpr auto kStrictJsonOpts = [] {
   return opts;
 }();
 
+inline constexpr auto kAllowUnknownJsonOpts = [] {
+  auto opts = kStrictJsonOpts;
+  opts.error_on_unknown_keys = false;
+  return opts;
+}();
+
 [[nodiscard]] inline auto validate_json_input(std::string_view input) -> bool {
   glz::context context{};
   glz::skip value{};
@@ -38,24 +43,46 @@ inline constexpr auto kStrictJsonOpts = [] {
       glz::read<kStrictJsonOpts>(value, input, context));
 }
 
-} // namespace detail
-
-[[nodiscard]] inline auto dump_json(const JsonValue &value) -> std::string {
-  auto out = glz::write_json(value);
-  return out ? *out : "null";
-}
-
-template <typename T>
-[[nodiscard]] inline auto parse_json_as(std::string_view input) -> Result<T> {
-  if (!detail::validate_json_input(input)) {
+template <typename T, auto Opts>
+[[nodiscard]] inline auto parse_json_as_with_options(std::string_view input)
+    -> Result<T> {
+  if (!validate_json_input(input)) {
     return fail(Error::ParseError);
   }
 
   T value{};
-  if (auto ec = glz::read<detail::kStrictJsonOpts>(value, input); ec) {
+  if (auto ec = glz::read<Opts>(value, input); ec) {
     return fail(Error::ParseError);
   }
   return ok(std::move(value));
+}
+
+} // namespace detail
+
+template <typename T>
+[[nodiscard]] inline auto serialize_json(const T &value) -> Result<std::string> {
+  auto out = glz::write_json(value);
+  if (!out) {
+    return fail(Error::ProtocolError);
+  }
+  return ok(std::move(*out));
+}
+
+[[nodiscard]] inline auto dump_json(const JsonValue &value) -> std::string {
+  auto out = serialize_json(value);
+  return out ? std::move(*out) : "null";
+}
+
+template <typename T>
+[[nodiscard]] inline auto parse_json_as(std::string_view input) -> Result<T> {
+  return detail::parse_json_as_with_options<T, detail::kStrictJsonOpts>(input);
+}
+
+template <typename T>
+[[nodiscard]] inline auto parse_json_as_allow_unknown(std::string_view input)
+    -> Result<T> {
+  return detail::parse_json_as_with_options<T, detail::kAllowUnknownJsonOpts>(
+      input);
 }
 
 [[nodiscard]] inline auto parse_json(std::string_view input)

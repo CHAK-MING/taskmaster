@@ -8,8 +8,8 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/beast/http/status.hpp>
-#include <boost/url/params_view.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -78,9 +78,59 @@ enum class HttpStatus : std::uint16_t {
   ServiceUnavailable = 503
 };
 
-using HttpHeaders =
-    std::unordered_map<std::string, std::string, dagforge::StringHash,
-                       dagforge::StringEqual>;
+class HttpHeaders {
+public:
+  struct Field {
+    std::string name;
+    std::string value;
+  };
+
+  using const_iterator = std::vector<Field>::const_iterator;
+
+  HttpHeaders() = default;
+  HttpHeaders(std::initializer_list<Field> fields) : fields_(fields) {}
+
+  auto add(std::string name, std::string value) -> void {
+    fields_.push_back(Field{std::move(name), std::move(value)});
+  }
+
+  auto set(std::string name, std::string value) -> void {
+    std::erase_if(fields_, [&](const Field &field) {
+      return boost::algorithm::iequals(field.name, name);
+    });
+    add(std::move(name), std::move(value));
+  }
+
+  [[nodiscard]] auto get(std::string_view name) const -> Result<std::string> {
+    for (const auto &field : fields_) {
+      if (boost::algorithm::iequals(field.name, name)) {
+        return ok(field.value);
+      }
+    }
+    return fail(Error::NotFound);
+  }
+
+  [[nodiscard]] auto contains(std::string_view name) const -> bool {
+    return std::ranges::any_of(fields_, [&](const Field &field) {
+      return boost::algorithm::iequals(field.name, name);
+    });
+  }
+
+  [[nodiscard]] auto begin() const noexcept -> const_iterator {
+    return fields_.begin();
+  }
+
+  [[nodiscard]] auto end() const noexcept -> const_iterator {
+    return fields_.end();
+  }
+
+  [[nodiscard]] auto size() const noexcept -> std::size_t {
+    return fields_.size();
+  }
+
+private:
+  std::vector<Field> fields_;
+};
 
 [[nodiscard]] inline auto status_reason_phrase(HttpStatus status)
     -> std::string_view {
@@ -91,19 +141,7 @@ using HttpHeaders =
 class QueryParams {
 public:
   QueryParams() = default;
-  explicit QueryParams(std::string_view query_string) {
-    if (query_string.empty()) {
-      return;
-    }
-    try {
-      boost::urls::params_view parsed(query_string);
-      for (const auto &param : parsed) {
-        params_[std::string(param.key)] = std::string(param.value);
-      }
-    } catch (...) {
-      return;
-    }
-  }
+  explicit QueryParams(std::string_view query_string);
 
   [[nodiscard]] auto get(std::string_view key) const -> Result<std::string> {
     auto it = params_.find(key);
@@ -138,16 +176,7 @@ struct HttpRequest {
       path_params;
 
   [[nodiscard]] auto header(std::string_view key) const -> Result<std::string> {
-    if (auto it = headers.find(std::string(key)); it != headers.end()) {
-      return ok(it->second);
-    }
-
-    for (const auto &[header_key, value] : headers) {
-      if (boost::algorithm::iequals(header_key, key)) {
-        return ok(value);
-      }
-    }
-    return fail(Error::NotFound);
+    return headers.get(key);
   }
 
   [[nodiscard]] auto is_websocket_upgrade() const -> bool {
@@ -182,17 +211,12 @@ struct HttpRequest {
     std::format_to(std::back_inserter(result), "{} {} HTTP/1.1\r\n",
                    http_method_name(method), path);
 
-    bool has_content_length = false;
-    bool has_host = false;
+    const bool has_content_length = headers.contains("Content-Length");
+    const bool has_host = headers.contains("Host");
 
-    for (const auto &[key, value] : headers) {
-      std::format_to(std::back_inserter(result), "{}: {}\r\n", key, value);
-      if (key == "Content-Length") {
-        has_content_length = true;
-      }
-      if (key == "Host") {
-        has_host = true;
-      }
+    for (const auto &field : headers) {
+      std::format_to(std::back_inserter(result), "{}: {}\r\n", field.name,
+                     field.value);
     }
 
     if (!has_host) {
@@ -223,7 +247,7 @@ struct HttpResponse {
 
   [[nodiscard]] static auto json(std::string_view json_str) -> HttpResponse {
     HttpResponse resp{.status = HttpStatus::Ok, .headers = {}, .body = {}};
-    resp.headers["Content-Type"] = "application/json";
+    resp.headers.set("Content-Type", "application/json");
     resp.body.assign(json_str.begin(), json_str.end());
     return resp;
   }
@@ -242,7 +266,7 @@ struct HttpResponse {
   }
 
   auto set_header(std::string key, std::string value) -> HttpResponse & {
-    headers[std::move(key)] = std::move(value);
+    headers.set(key, value);
     return *this;
   }
 
@@ -264,12 +288,10 @@ struct HttpResponse {
                    static_cast<std::uint16_t>(status),
                    status_reason_phrase(status));
 
-    bool has_content_length = false;
-    for (const auto &[key, value] : headers) {
-      std::format_to(std::back_inserter(result), "{}: {}\r\n", key, value);
-      if (key == "Content-Length") {
-        has_content_length = true;
-      }
+    const bool has_content_length = headers.contains("Content-Length");
+    for (const auto &field : headers) {
+      std::format_to(std::back_inserter(result), "{}: {}\r\n", field.name,
+                     field.value);
     }
 
     if (!has_content_length && !body.empty()) {

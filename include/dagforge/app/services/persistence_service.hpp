@@ -14,7 +14,6 @@
 #include "dagforge/util/id.hpp"
 #include "dagforge/util/log.hpp"
 #include "dagforge/xcom/xcom_types.hpp"
-#endif
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/experimental/concurrent_channel.hpp>
@@ -25,15 +24,19 @@
 #include <boost/asio/thread_pool.hpp>
 #include <boost/asio/use_future.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <future>
 #include <memory>
 #include <optional>
 #include <span>
-#include <string_view>
+#include <string>
 #include <thread>
+#include <utility>
 #include <vector>
+#endif
 
 namespace dagforge {
 
@@ -168,7 +171,7 @@ public:
   [[nodiscard]] auto delete_task(const DAGId &dag_id, const TaskId &task_id)
       -> task<Result<void>>;
   [[nodiscard]] auto claim_task_instances(std::size_t limit,
-                                          std::string_view worker_id)
+                                          std::string worker_id)
       -> task<Result<std::vector<ClaimedTaskInstance>>>;
   [[nodiscard]] auto touch_task_heartbeat(const TaskInstanceKey &key)
       -> task<Result<void>>;
@@ -183,7 +186,7 @@ public:
                                std::string key, std::string value_json)
       -> task<Result<void>>;
   [[nodiscard]] auto get_xcom(const DAGRunId &run_id, const TaskId &task_id,
-                              std::string_view key) -> task<Result<XComEntry>>;
+                              std::string key) -> task<Result<XComEntry>>;
   [[nodiscard]] auto get_task_xcoms(const DAGRunId &run_id,
                                     const TaskId &task_id)
       -> task<Result<std::vector<XComEntry>>>;
@@ -286,6 +289,7 @@ private:
       -> task<Result<void>>;
   auto submit_task_update_async(TaskUpdateRequestPtr request)
       -> spawn_task;
+  auto persist_task_heartbeat(TaskInstanceKey key) -> spawn_task;
 
   auto trigger_batch_writer_loop() -> spawn_task;
   auto

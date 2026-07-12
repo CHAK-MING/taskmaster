@@ -1,11 +1,9 @@
 #include "dagforge/executor/executor.hpp"
-#include "dagforge/executor/executor_dto.hpp"
+
 #include "dagforge/config/task_config.hpp"
+#include "dagforge/executor/executor_dto.hpp"
+#include "dagforge/util/json.hpp"
 #include "dagforge/util/log.hpp"
-
-
-#include <glaze/json.hpp>
-
 
 namespace dagforge {
 namespace {
@@ -97,8 +95,8 @@ auto serialize_docker_config(const ExecutorConfig &config) -> std::string {
       .socket = docker->docker_socket,
       .pull_policy = enum_to_string(docker->pull_policy),
   };
-  if (auto out = glz::write_json(j); out) {
-    return *out;
+  if (auto out = serialize_json(j); out) {
+    return std::move(*out);
   }
   return "{}";
 }
@@ -108,11 +106,11 @@ auto parse_docker_config(std::string_view input) -> Result<ExecutorConfig> {
     return ok(ExecutorConfig{DockerExecutorConfig{}});
   }
 
-  executor_dto::DockerExecutorConfigJson j{};
-  constexpr auto kOpts = glz::opts{.null_terminated = false};
-  if (auto ec = glz::read<kOpts>(j, input); ec) {
-    return fail(Error::ParseError);
+  auto parsed = parse_json_as<executor_dto::DockerExecutorConfigJson>(input);
+  if (!parsed) {
+    return fail(parsed.error());
   }
+  auto j = std::move(*parsed);
 
   DockerExecutorConfig cfg{};
   cfg.image = std::move(j.image);
@@ -148,8 +146,8 @@ auto serialize_sensor_config(const ExecutorConfig &config) -> std::string {
       .expected_status = sensor->expected_status,
       .http_method = sensor->http_method,
   };
-  if (auto out = glz::write_json(j); out) {
-    return *out;
+  if (auto out = serialize_json(j); out) {
+    return std::move(*out);
   }
   return "{}";
 }
@@ -159,11 +157,11 @@ auto parse_sensor_config(std::string_view input) -> Result<ExecutorConfig> {
     return ok(ExecutorConfig{SensorExecutorConfig{}});
   }
 
-  executor_dto::SensorExecutorConfigJson j{};
-  constexpr auto kOpts = glz::opts{.null_terminated = false};
-  if (auto ec = glz::read<kOpts>(j, input); ec) {
-    return fail(Error::ParseError);
+  auto parsed = parse_json_as<executor_dto::SensorExecutorConfigJson>(input);
+  if (!parsed) {
+    return fail(parsed.error());
   }
+  auto j = std::move(*parsed);
 
   SensorExecutorConfig cfg{};
   if (!j.type.empty()) {
@@ -191,8 +189,8 @@ auto serialize_lua_config(const ExecutorConfig &config) -> std::string {
       .max_instructions = lua->max_instructions,
       .max_memory_bytes = lua->max_memory_bytes,
   };
-  if (auto out = glz::write_json(j); out) {
-    return *out;
+  if (auto out = serialize_json(j); out) {
+    return std::move(*out);
   }
   return "{}";
 }
@@ -202,11 +200,11 @@ auto parse_lua_config(std::string_view input) -> Result<ExecutorConfig> {
     return ok(ExecutorConfig{LuaExecutorConfig{}});
   }
 
-  executor_dto::LuaExecutorConfigJson j{};
-  constexpr auto kOpts = glz::opts{.null_terminated = false};
-  if (auto ec = glz::read<kOpts>(j, input); ec) {
-    return fail(Error::ParseError);
+  auto parsed = parse_json_as<executor_dto::LuaExecutorConfigJson>(input);
+  if (!parsed) {
+    return fail(parsed.error());
   }
+  auto j = std::move(*parsed);
 
   LuaExecutorConfig cfg{};
   cfg.script = std::move(j.script);

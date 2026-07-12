@@ -2,7 +2,6 @@
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/enum.hpp"
-#include <boost/describe/enum.hpp>
 #include <cstdint>
 #include <string>
 #endif
@@ -51,11 +50,23 @@ struct ApiConfig {
 };
 
 enum class DAGSourceMode : std::uint8_t { File, Api, Hybrid };
-BOOST_DESCRIBE_ENUM(DAGSourceMode, File, Api, Hybrid)
+
+} // namespace dagforge
+
+namespace glz {
+template <> struct meta<dagforge::DAGSourceMode> {
+  static constexpr auto value =
+      glz::enumerate("file", dagforge::DAGSourceMode::File, "api",
+                dagforge::DAGSourceMode::Api, "hybrid",
+                dagforge::DAGSourceMode::Hybrid);
+};
+} // namespace glz
+
+namespace dagforge {
 
 [[nodiscard]] constexpr auto to_string_view(DAGSourceMode value) noexcept
     -> std::string_view {
-  return ::dagforge::util::enum_to_snake_case_view(value);
+  return ::dagforge::util::enum_to_string_view(value);
 }
 
 template <>

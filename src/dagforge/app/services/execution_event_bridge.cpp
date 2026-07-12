@@ -165,11 +165,12 @@ auto ExecutionEventBridge::wire() -> void {
   };
 
   callbacks.get_xcom = [this](const DAGRunId &dag_run_id, const TaskId &task_id,
-                              std::string_view key) -> task<Result<XComEntry>> {
+                              std::string key) -> task<Result<XComEntry>> {
     if (!deps_.persistence) {
       co_return fail(Error::NotFound);
     }
-    auto xcom_res = co_await deps_.persistence->get_xcom(dag_run_id, task_id, key);
+    auto xcom_res = co_await deps_.persistence->get_xcom(
+        dag_run_id, task_id, std::move(key));
     if (!xcom_res) {
       co_return fail(xcom_res.error());
     }

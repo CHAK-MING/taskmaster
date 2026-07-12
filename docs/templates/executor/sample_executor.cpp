@@ -1,11 +1,10 @@
 #include "dagforge/executor/executor.hpp"
 
-#include "dagforge/core/asio_awaitable.hpp"
+#include "dagforge/io/timing_wheel.hpp"
 #include "dagforge/util/log.hpp"
 
-#include <boost/asio/steady_timer.hpp>
-
 #include <chrono>
+#include <exception>
 #include <memory>
 
 namespace dagforge {
@@ -22,34 +21,12 @@ public:
       return fail(Error::InvalidArgument);
     }
 
-    auto ex = runtime_.io().get_executor();
-    boost::asio::co_spawn(
-        ex,
-        [req = std::move(req), sink = std::move(sink), ex,
-         exit_code = cfg->exit_code]() mutable -> spawn_task {
-          if (sink.on_state) {
-            sink.on_state(req.instance_id, "started");
-          }
+    if (!runtime_.is_running()) {
+      return fail(Error::SystemNotRunning);
+    }
 
-          // Replace this timer with the real async operation.
-          boost::asio::steady_timer timer(ex);
-          timer.expires_after(std::chrono::milliseconds(1));
-          auto wait_res =
-              co_await co_as_result(timer.async_wait(dagforge::use_nothrow));
-          if (!wait_res) {
-            log::debug("sample executor wait failed: {}",
-                       wait_res.error().message());
-          }
-
-          auto result = make_executor_result(req.resource());
-          result.exit_code = exit_code;
-
-          if (sink.on_complete) {
-            sink.on_complete(req.instance_id, std::move(result));
-          }
-        },
-        detached);
-
+    const auto exit_code = cfg->exit_code;
+    runtime_.spawn(execute(std::move(req), std::move(sink), exit_code));
     return ok();
   }
 
@@ -58,6 +35,32 @@ public:
   }
 
 private:
+  static auto execute(ExecutorRequest req, ExecutionSink sink, int exit_code)
+      -> spawn_task {
+    if (sink.on_state) {
+      sink.on_state(req.instance_id, "started");
+    }
+
+    try {
+      // Replace this delay with the real async operation.
+      co_await async_sleep_on_timing_wheel(std::chrono::milliseconds(1));
+    } catch (const std::exception &e) {
+      log::error("sample executor async operation failed: {}", e.what());
+      auto result = make_executor_result(req.resource());
+      result.exit_code = 1;
+      if (sink.on_complete) {
+        sink.on_complete(req.instance_id, std::move(result));
+      }
+      co_return;
+    }
+
+    auto result = make_executor_result(req.resource());
+    result.exit_code = exit_code;
+    if (sink.on_complete) {
+      sink.on_complete(req.instance_id, std::move(result));
+    }
+  }
+
   Runtime &runtime_;
 };
 

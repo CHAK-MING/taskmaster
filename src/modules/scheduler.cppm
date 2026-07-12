@@ -1,8 +1,6 @@
 module;
 
-#include <boost/describe/enum.hpp>
-#include <boost/describe/enumerators.hpp>
-#include <boost/mp11/algorithm.hpp>
+#include <glaze/core/reflect.hpp>
 
 #include <array>
 #include <bitset>

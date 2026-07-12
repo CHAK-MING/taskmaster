@@ -52,6 +52,9 @@ run_build2_config() {
   if [[ "${DAGFORGE_SKIP_MODULE_GRAPH_CHECK:-0}" != "1" ]]; then
     bash "${repo_root}/scripts/check-module-graph.sh"
   fi
+  if [[ "${DAGFORGE_SKIP_AGENT_CONVENTION_CHECK:-0}" != "1" ]]; then
+    bash "${repo_root}/scripts/check-agent-conventions.sh"
+  fi
 
   acquire_build2_lock "build-${config_name}"
 

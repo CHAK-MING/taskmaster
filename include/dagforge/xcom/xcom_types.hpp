@@ -6,7 +6,6 @@
 #endif
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include "dagforge/util/hash.hpp"
 #include "dagforge/util/id.hpp"
 #endif
 
@@ -64,12 +63,22 @@ public:
 
   struct CacheKeyHash {
     using is_transparent = void;
+    using HashKey =
+        std::tuple<std::string_view, std::string_view, std::string_view>;
 
-    auto operator()(const CacheKey &k) const noexcept -> std::size_t {
-      return util::combine(k.run_id, k.task_id, k.key);
+    auto operator()(const CacheKey &key) const noexcept -> std::size_t {
+      return hash(HashKey{key.run_id.value(), key.task_id.value(), key.key});
     }
-    auto operator()(const CacheKeyView &t) const noexcept -> std::size_t {
-      return util::combine(std::get<0>(t), std::get<1>(t), std::get<2>(t));
+
+    auto operator()(const CacheKeyView &key) const noexcept -> std::size_t {
+      return hash(HashKey{std::get<0>(key).value(), std::get<1>(key).value(),
+                          std::get<2>(key)});
+    }
+
+  private:
+    [[nodiscard]] static auto hash(const HashKey &key) noexcept -> std::size_t {
+      return static_cast<std::size_t>(
+          ankerl::unordered_dense::hash<HashKey>{}(key));
     }
   };
 

@@ -80,8 +80,9 @@ TEST(HttpParserTest, ResponseParserExtractsStatusHeadersAndBody) {
   auto parsed = parser.parse(raw);
   ASSERT_TRUE(parsed.has_value()) << parsed.error().message();
   EXPECT_EQ(parsed->status, http::HttpStatus::NotFound);
-  ASSERT_TRUE(parsed->headers.contains("Content-Type"));
-  EXPECT_EQ(parsed->headers.at("Content-Type"), "application/json");
+  const auto content_type = parsed->headers.get("content-type");
+  ASSERT_TRUE(content_type.has_value());
+  EXPECT_EQ(*content_type, "application/json");
   EXPECT_EQ(std::string(parsed->body.begin(), parsed->body.end()),
             "{\"error\":\"missing\"}");
 }
@@ -102,6 +103,28 @@ TEST(HttpParserTest, ResponseParserReturnsProtocolErrorForMalformedMessage) {
   auto parsed = parser.parse(raw);
   ASSERT_FALSE(parsed.has_value());
   EXPECT_EQ(parsed.error(), make_error_code(Error::ProtocolError));
+}
+
+TEST(HttpHeadersTest, PreservesDuplicatesAndSetsCaseInsensitively) {
+  http::HttpHeaders headers;
+  headers.add("Set-Cookie", "a=1");
+  headers.add("set-cookie", "b=2");
+
+  EXPECT_EQ(headers.size(), 2U);
+  ASSERT_TRUE(headers.get("SET-COOKIE").has_value());
+  EXPECT_EQ(*headers.get("SET-COOKIE"), "a=1");
+
+  headers.set("SET-cookie", "c=3");
+  EXPECT_EQ(headers.size(), 1U);
+  ASSERT_TRUE(headers.get("set-cookie").has_value());
+  EXPECT_EQ(*headers.get("set-cookie"), "c=3");
+}
+
+TEST(HttpParserTest, QueryParamsDecodesPercentEncodedComponents) {
+  http::QueryParams params{"name=hello%20world&empty&pointer=%2Fitems%2F0"};
+  EXPECT_EQ(*params.get("name"), "hello world");
+  EXPECT_EQ(*params.get("empty"), "");
+  EXPECT_EQ(*params.get("pointer"), "/items/0");
 }
 
 TEST(HttpParserTest, QueryParamsIgnoresInvalidEncoding) {

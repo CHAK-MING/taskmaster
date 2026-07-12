@@ -42,10 +42,10 @@ TEST(XComCodecTest, PushConfigRoundTripPreservesFields) {
   XComPushConfig push;
   push.key = "result";
   push.source = XComSource::Json;
-  push.json_path = "items[1]";
+  push.json_pointer = "/items/1";
   push.regex_pattern = R"((\d+))";
   push.regex_group = 1;
-  ASSERT_TRUE(push.compile_regex().has_value());
+  ASSERT_TRUE(push.prepare().has_value());
 
   const auto encoded = xcom::serialize_push_configs({push});
   auto decoded = xcom::parse_push_configs(encoded);
@@ -53,7 +53,7 @@ TEST(XComCodecTest, PushConfigRoundTripPreservesFields) {
   ASSERT_EQ(decoded->size(), 1U);
   EXPECT_EQ((*decoded)[0].key, "result");
   EXPECT_EQ((*decoded)[0].source, XComSource::Json);
-  EXPECT_EQ((*decoded)[0].json_path, "items[1]");
+  EXPECT_EQ((*decoded)[0].json_pointer, "/items/1");
   EXPECT_EQ((*decoded)[0].regex_pattern, R"((\d+))");
   EXPECT_EQ((*decoded)[0].regex_group, 1);
   ASSERT_TRUE((*decoded)[0].compiled_regex);
@@ -67,9 +67,25 @@ TEST(XComCodecTest, ParsePushConfigsRejectsMalformedJson) {
 
 TEST(XComCodecTest, ParsePushConfigsRejectsInvalidRegex) {
   auto decoded = xcom::parse_push_configs(
-      R"([{"key":"result","source":"stdout","json_path":"","regex":"(","regex_group":0}])");
+      R"([{"key":"result","source":"stdout","json_pointer":"","regex":"(","regex_group":0}])");
   ASSERT_FALSE(decoded.has_value());
   EXPECT_EQ(decoded.error(), make_error_code(Error::InvalidArgument));
+}
+
+TEST(XComCodecTest, RejectsRemovedJsonPathField) {
+  auto decoded = xcom::parse_push_configs(
+      R"([{"key":"result","source":"json","json_path":"items[0]","regex":"","regex_group":0}])");
+  ASSERT_FALSE(decoded.has_value());
+  EXPECT_EQ(decoded.error(), make_error_code(Error::ParseError));
+}
+
+TEST(XComCodecTest, RejectsInvalidJsonPointerDuringPreparation) {
+  XComPushConfig push{.key = "result",
+                      .source = XComSource::Json,
+                      .json_pointer = "/items/~2bad"};
+  auto prepared = push.prepare();
+  ASSERT_FALSE(prepared.has_value());
+  EXPECT_EQ(prepared.error(), make_error_code(Error::InvalidArgument));
 }
 
 TEST(XComCodecTest, PullConfigRoundTripPreservesDefaultValue) {
@@ -155,7 +171,7 @@ TEST_F(XComExtractorTest, ExtractStdoutAsString) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "output",
                                        .source = XComSource::Stdout,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);
@@ -173,7 +189,7 @@ TEST_F(XComExtractorTest, ExtractStderrAsString) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "error",
                                        .source = XComSource::Stderr,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);
@@ -190,7 +206,7 @@ TEST_F(XComExtractorTest, ExtractExitCode) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "code",
                                        .source = XComSource::ExitCode,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);
@@ -206,7 +222,7 @@ TEST_F(XComExtractorTest, ExtractJsonFromStdout) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "data",
                                        .source = XComSource::Json,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);
@@ -217,7 +233,7 @@ TEST_F(XComExtractorTest, ExtractJsonFromStdout) {
   expect_json_int(dump_json((*parsed)["value"]), 123);
 }
 
-TEST_F(XComExtractorTest, ExtractWithJsonPath) {
+TEST_F(XComExtractorTest, ExtractWithJsonPointer) {
   ExecutorResult result{.exit_code = 0,
                         .stdout_output = R"({"result": {"status": "ok"}})",
                         .stderr_output = "",
@@ -225,12 +241,29 @@ TEST_F(XComExtractorTest, ExtractWithJsonPath) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "status",
                                        .source = XComSource::Json,
-                                       .json_path = "result.status",
+                                       .json_pointer = "/result/status",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);
   ASSERT_TRUE(extracted);
   expect_json_string((*extracted)[0].value, "ok");
+}
+
+TEST_F(XComExtractorTest, JsonPointerSupportsRfc6901Escapes) {
+  ExecutorResult result{
+      .exit_code = 0,
+      .stdout_output = R"({"a/b":{"m~n":"escaped"}})",
+      .stderr_output = "",
+      .error = "",
+      .timed_out = false};
+  std::vector<XComPushConfig> configs{{.key = "value",
+                                       .source = XComSource::Json,
+                                       .json_pointer = "/a~1b/m~0n",
+                                       .regex_pattern = ""}};
+
+  auto extracted = xcom::extract(result, configs);
+  ASSERT_TRUE(extracted);
+  expect_json_string((*extracted)[0].value, "escaped");
 }
 
 TEST_F(XComExtractorTest, ExtractWithRegex) {
@@ -241,7 +274,7 @@ TEST_F(XComExtractorTest, ExtractWithRegex) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "count",
                                        .source = XComSource::Stdout,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = R"(Result: (\d+))",
                                        .regex_group = 1}};
 
@@ -258,15 +291,15 @@ TEST_F(XComExtractorTest, ExtractMultipleXComs) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "out",
                                        .source = XComSource::Stdout,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = ""},
                                       {.key = "err",
                                        .source = XComSource::Stderr,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = ""},
                                       {.key = "code",
                                        .source = XComSource::ExitCode,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);
@@ -285,7 +318,7 @@ TEST_F(XComExtractorTest, InvalidJsonReturnsError) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "data",
                                        .source = XComSource::Json,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);
@@ -300,14 +333,14 @@ TEST_F(XComExtractorTest, RegexNoMatchReturnsError) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "num",
                                        .source = XComSource::Stdout,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = R"(\d+)"}};
 
   auto extracted = xcom::extract(result, configs);
   EXPECT_FALSE(extracted);
 }
 
-TEST_F(XComExtractorTest, JsonPathNotFoundReturnsError) {
+TEST_F(XComExtractorTest, JsonPointerNotFoundReturnsError) {
   ExecutorResult result{.exit_code = 0,
                         .stdout_output = R"({"a": 1})",
                         .stderr_output = "",
@@ -315,14 +348,14 @@ TEST_F(XComExtractorTest, JsonPathNotFoundReturnsError) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "missing",
                                        .source = XComSource::Json,
-                                       .json_path = "b.c.d",
+                                       .json_pointer = "/b/c/d",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);
   EXPECT_FALSE(extracted);
 }
 
-TEST_F(XComExtractorTest, JsonPathWithArrayIndex) {
+TEST_F(XComExtractorTest, JsonPointerWithArrayIndex) {
   ExecutorResult result{.exit_code = 0,
                         .stdout_output = R"({"items": [1, 2, 3]})",
                         .stderr_output = "",
@@ -330,7 +363,7 @@ TEST_F(XComExtractorTest, JsonPathWithArrayIndex) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "second",
                                        .source = XComSource::Json,
-                                       .json_path = "items[1]",
+                                       .json_pointer = "/items/1",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);
@@ -338,7 +371,7 @@ TEST_F(XComExtractorTest, JsonPathWithArrayIndex) {
   expect_json_int((*extracted)[0].value, 2);
 }
 
-TEST_F(XComExtractorTest, JsonPathArrayIndexOutOfBoundsReturnsError) {
+TEST_F(XComExtractorTest, JsonPointerArrayIndexOutOfBoundsReturnsError) {
   ExecutorResult result{.exit_code = 0,
                         .stdout_output = R"({"items": [1, 2, 3]})",
                         .stderr_output = "",
@@ -346,7 +379,7 @@ TEST_F(XComExtractorTest, JsonPathArrayIndexOutOfBoundsReturnsError) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "missing",
                                        .source = XComSource::Json,
-                                       .json_path = "items[999]",
+                                       .json_pointer = "/items/999",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);
@@ -362,7 +395,7 @@ TEST_F(XComExtractorTest, RegexGroupOutOfRangeReturnsError) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "count",
                                        .source = XComSource::Stdout,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = R"(Result: (\d+))",
                                        .regex_group = 2}};
 
@@ -379,7 +412,7 @@ TEST_F(XComExtractorTest, UncompiledInvalidRegexReturnsError) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "count",
                                        .source = XComSource::Stdout,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = "(",
                                        .regex_group = 0}};
 
@@ -396,7 +429,7 @@ TEST_F(XComExtractorTest, EmptyStdoutWithoutRegexProducesEmptyString) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "output",
                                        .source = XComSource::Stdout,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);
@@ -413,7 +446,7 @@ TEST_F(XComExtractorTest, ExtractJsonFromMixedOutput_LastLine) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "branch",
                                        .source = XComSource::Json,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);
@@ -433,7 +466,7 @@ TEST_F(XComExtractorTest, ExtractJsonFromMixedOutput_PrecedingLogs) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "branch",
                                        .source = XComSource::Json,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = "",
                                        .regex_group = 0}};
 
@@ -454,7 +487,7 @@ TEST_F(XComExtractorTest, ExtractJsonFromMixedOutput_MultipleLogLines) {
       .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "data",
                                        .source = XComSource::Json,
-                                       .json_path = "",
+                                       .json_pointer = "",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);
@@ -464,7 +497,7 @@ TEST_F(XComExtractorTest, ExtractJsonFromMixedOutput_MultipleLogLines) {
   expect_json_string(dump_json((*parsed)["result"]), "success");
 }
 
-TEST_F(XComExtractorTest, InvalidJsonPathSyntaxReturnsError) {
+TEST_F(XComExtractorTest, InvalidJsonPointerSyntaxReturnsError) {
   ExecutorResult result{.exit_code = 0,
                         .stdout_output = R"({"items": [1, 2, 3]})",
                         .stderr_output = "",
@@ -472,7 +505,7 @@ TEST_F(XComExtractorTest, InvalidJsonPathSyntaxReturnsError) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "broken",
                                        .source = XComSource::Json,
-                                       .json_path = "items[1",
+                                       .json_pointer = "items/1",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);
@@ -480,7 +513,7 @@ TEST_F(XComExtractorTest, InvalidJsonPathSyntaxReturnsError) {
   EXPECT_EQ(extracted.error(), make_error_code(Error::InvalidArgument));
 }
 
-TEST_F(XComExtractorTest, JsonPathOnInvalidJsonTextReturnsError) {
+TEST_F(XComExtractorTest, JsonPointerOnInvalidJsonTextReturnsError) {
   ExecutorResult result{.exit_code = 0,
                         .stdout_output = "plain text",
                         .stderr_output = "",
@@ -488,7 +521,7 @@ TEST_F(XComExtractorTest, JsonPathOnInvalidJsonTextReturnsError) {
                         .timed_out = false};
   std::vector<XComPushConfig> configs{{.key = "broken",
                                        .source = XComSource::Stdout,
-                                       .json_path = "items[0]",
+                                       .json_pointer = "/items/0",
                                        .regex_pattern = ""}};
 
   auto extracted = xcom::extract(result, configs);

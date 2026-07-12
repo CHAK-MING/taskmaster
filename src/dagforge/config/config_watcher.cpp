@@ -1,14 +1,11 @@
 #include "dagforge/config/config_watcher.hpp"
+
 #include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/core/constants.hpp"
 #include "dagforge/core/runtime.hpp"
 #include "dagforge/util/log.hpp"
 
-
-#include <boost/asio/co_spawn.hpp>
-#include <boost/asio/detached.hpp>
 #include <boost/asio/posix/stream_descriptor.hpp>
-#include <boost/asio/post.hpp>
 
 #include <sys/inotify.h>
 #include <unistd.h>
@@ -78,45 +75,44 @@ auto ConfigWatcher::start() -> Result<void> {
       std::make_unique<boost::asio::posix::stream_descriptor>(
           io, state->inotify_fd);
 
-  boost::asio::co_spawn(
-      io,
-      [state]() -> task<void> {
-        std::array<char, io::kEventBufferSize> buffer{};
-        while (state->running.load(std::memory_order_acquire)) {
-          if (!state->inotify_stream) {
-            break;
-          }
-          const auto operation_aborted =
-              std::error_code{boost::asio::error::make_error_code(
-                  boost::asio::error::operation_aborted)};
-          const auto bad_descriptor =
-              std::error_code{boost::asio::error::make_error_code(
-                  boost::asio::error::bad_descriptor)};
-          auto read_res = co_await co_as_result(
-              state->inotify_stream->async_read_some(boost::asio::buffer(buffer),
-                                                     use_nothrow));
-          if (!read_res) {
-            if (read_res.error() == operation_aborted) {
-              break;
-            }
-            if (read_res.error() != bad_descriptor) {
-              log::warn("ConfigWatcher async_read error: {}",
-                        read_res.error().message());
-            }
-            break;
-          }
-          auto bytes_read = *read_res;
-          if (bytes_read > 0) {
-            process_events(*state, buffer.data(),
-                           static_cast<ssize_t>(bytes_read));
-          }
-        }
-      },
-      boost::asio::detached);
+  runtime_->spawn_on(shard_id{0}, watch_loop(state));
 
   log::debug("ConfigWatcher started for: {} (mode: async)",
              directory_.string());
   return ok();
+}
+
+auto ConfigWatcher::watch_loop(std::shared_ptr<WatchState> state)
+    -> spawn_task {
+  std::array<char, io::kEventBufferSize> buffer{};
+  while (state->running.load(std::memory_order_acquire)) {
+    if (!state->inotify_stream) {
+      break;
+    }
+    const auto operation_aborted =
+        std::error_code{boost::asio::error::make_error_code(
+            boost::asio::error::operation_aborted)};
+    const auto bad_descriptor =
+        std::error_code{boost::asio::error::make_error_code(
+            boost::asio::error::bad_descriptor)};
+    auto read_res = co_await co_as_result(
+        state->inotify_stream->async_read_some(boost::asio::buffer(buffer),
+                                               use_nothrow));
+    if (!read_res) {
+      if (read_res.error() == operation_aborted) {
+        break;
+      }
+      if (read_res.error() != bad_descriptor) {
+        log::warn("ConfigWatcher async_read error: {}",
+                  read_res.error().message());
+      }
+      break;
+    }
+    const auto bytes_read = *read_res;
+    if (bytes_read > 0) {
+      process_events(*state, buffer.data(), static_cast<ssize_t>(bytes_read));
+    }
+  }
 }
 
 auto ConfigWatcher::stop_state(WatchState &state) noexcept -> void {
@@ -200,13 +196,11 @@ auto ConfigWatcher::is_running() const noexcept -> bool {
 auto ConfigWatcher::set_on_file_changed(FileChangeCallback cb) -> void {
   if (watch_state_ && runtime_ != nullptr) {
     auto weak = std::weak_ptr<WatchState>(watch_state_);
-    auto *rt = runtime_;
-    boost::asio::post(rt->shard(shard_id{0}).ctx(),
-                      [weak, cb = std::move(cb)]() mutable {
-                        if (auto state = weak.lock()) {
-                          state->on_file_changed = std::move(cb);
-                        }
-                      });
+    runtime_->post_to(shard_id{0}, [weak, cb = std::move(cb)]() mutable {
+      if (auto state = weak.lock()) {
+        state->on_file_changed = std::move(cb);
+      }
+    });
     return;
   }
   on_file_changed_ = std::move(cb);
@@ -215,13 +209,11 @@ auto ConfigWatcher::set_on_file_changed(FileChangeCallback cb) -> void {
 auto ConfigWatcher::set_on_file_removed(FileRemoveCallback cb) -> void {
   if (watch_state_ && runtime_ != nullptr) {
     auto weak = std::weak_ptr<WatchState>(watch_state_);
-    auto *rt = runtime_;
-    boost::asio::post(rt->shard(shard_id{0}).ctx(),
-                      [weak, cb = std::move(cb)]() mutable {
-                        if (auto state = weak.lock()) {
-                          state->on_file_removed = std::move(cb);
-                        }
-                      });
+    runtime_->post_to(shard_id{0}, [weak, cb = std::move(cb)]() mutable {
+      if (auto state = weak.lock()) {
+        state->on_file_removed = std::move(cb);
+      }
+    });
     return;
   }
   on_file_removed_ = std::move(cb);

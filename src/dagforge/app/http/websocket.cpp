@@ -4,7 +4,6 @@
 #include "dagforge/util/json.hpp"
 #include "dagforge/util/log.hpp"
 
-
 #include <boost/asio/as_tuple.hpp>
 #include <boost/asio/associated_executor.hpp>
 #include <boost/asio/async_result.hpp>
@@ -126,8 +125,8 @@ auto to_upgrade_request(HttpRequest request) -> UpgradeRequest {
     out.target(std::format("{}?{}", request.path, request.query_string));
   }
 
-  for (const auto &[name, value] : request.headers) {
-    out.set(name, value);
+  for (const auto &field : request.headers) {
+    out.insert(field.name, field.value);
   }
   return out;
 }
@@ -779,10 +778,10 @@ struct WebSocketHub::Impl : std::enable_shared_from_this<WebSocketHub::Impl> {
     for (unsigned i = 0; i < n; ++i) {
       // Post to each shard's executor so that broadcast_on_shard runs
       // exclusively on that shard — no cross-shard data access, no locks.
-      boost::asio::post(runtime.executor_for(i),
-                        [self = shared_from_this(), i, json_str, dag_run_id]() {
-                          self->broadcast_on_shard(i, json_str, dag_run_id);
-                        });
+      runtime.post_to(
+          i, [self = shared_from_this(), i, json_str, dag_run_id]() {
+            self->broadcast_on_shard(i, json_str, dag_run_id);
+          });
     }
   }
 };
@@ -873,7 +872,7 @@ auto WebSocketHub::message_size_snapshots() const
 auto WebSocketHub::close_all() -> void {
   const auto n = impl_->runtime.shard_count();
   for (unsigned i = 0; i < n; ++i) {
-    boost::asio::post(impl_->runtime.executor_for(i), [self = impl_, i]() {
+    impl_->runtime.post_to(i, [self = impl_, i]() {
       auto connections = std::move(self->shard_states_[i].connections);
       self->shard_states_[i].connections.clear();
       if (!connections.empty()) {

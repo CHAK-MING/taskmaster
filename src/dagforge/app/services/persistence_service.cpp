@@ -1123,9 +1123,10 @@ auto PersistenceService::delete_task(const DAGId &dag_id, const TaskId &task_id)
 }
 
 auto PersistenceService::claim_task_instances(std::size_t limit,
-                                              std::string_view worker_id)
+                                              std::string worker_id)
     -> task<Result<std::vector<ClaimedTaskInstance>>> {
-  DAGFORGE_DB_RETURN(db_.claim_task_instances(limit, worker_id), false);
+  DAGFORGE_DB_RETURN(
+      db_.claim_task_instances(limit, std::move(worker_id)), false);
 }
 
 auto PersistenceService::touch_task_heartbeat(const TaskInstanceKey &key)
@@ -1133,30 +1134,31 @@ auto PersistenceService::touch_task_heartbeat(const TaskInstanceKey &key)
   DAGFORGE_DB_RETURN(db_.touch_task_heartbeat(key), true);
 }
 
+auto PersistenceService::persist_task_heartbeat(TaskInstanceKey key)
+    -> spawn_task {
+  const auto started_at = std::chrono::steady_clock::now();
+  auto result = co_await db_.touch_task_heartbeat(key);
+  const auto elapsed_ns =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - started_at)
+          .count();
+  db_query_duration_.observe_ns(
+      static_cast<std::uint64_t>(elapsed_ns > 0 ? elapsed_ns : 0));
+  if (result) {
+    db_transactions_total_.fetch_add(1, std::memory_order_relaxed);
+  } else {
+    db_errors_total_.fetch_add(1, std::memory_order_relaxed);
+    log::error("Task heartbeat persistence failed: {}",
+               result.error().message());
+  }
+}
+
 auto PersistenceService::submit_task_heartbeat(TaskInstanceKey key) -> void {
   if (!key.valid()) {
     return;
   }
-  boost::asio::co_spawn(
-      db_pool_,
-      [this, key]() -> spawn_task {
-        const auto started_at = std::chrono::steady_clock::now();
-        auto result = co_await db_.touch_task_heartbeat(key);
-        const auto elapsed_ns =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now() - started_at)
-                .count();
-        db_query_duration_.observe_ns(
-            static_cast<std::uint64_t>(elapsed_ns > 0 ? elapsed_ns : 0));
-        if (result) {
-          db_transactions_total_.fetch_add(1, std::memory_order_relaxed);
-        } else {
-          db_errors_total_.fetch_add(1, std::memory_order_relaxed);
-          log::error("Task heartbeat persistence failed: {}",
-                     result.error().message());
-        }
-      }(),
-      boost::asio::detached);
+  boost::asio::co_spawn(db_pool_, persist_task_heartbeat(std::move(key)),
+                        boost::asio::detached);
 }
 
 auto PersistenceService::reap_zombie_task_instances(
@@ -1178,9 +1180,8 @@ auto PersistenceService::save_xcom(const DAGRunId &run_id,
 }
 
 auto PersistenceService::get_xcom(const DAGRunId &run_id, const TaskId &task_id,
-                                  std::string_view key)
-    -> task<Result<XComEntry>> {
-  DAGFORGE_DB_RETURN(db_.get_xcom(run_id, task_id, key), false);
+                                  std::string key) -> task<Result<XComEntry>> {
+  DAGFORGE_DB_RETURN(db_.get_xcom(run_id, task_id, std::move(key)), false);
 }
 
 auto PersistenceService::get_task_xcoms(const DAGRunId &run_id,

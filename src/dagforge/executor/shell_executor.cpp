@@ -112,8 +112,7 @@ auto run_executor_heartbeat(
                                  pmr::string &out,
                                  boost::asio::cancellation_signal &cancel_sig,
                                  const InstanceId &instance_id,
-                                 ExecutionSink &sink,
-                                 std::string_view stream,
+                                 ExecutionSink &sink, std::string stream,
                                  bool &streamed_any)
     -> task<void> {
   std::array<char, kReadBufferSize> buffer{};

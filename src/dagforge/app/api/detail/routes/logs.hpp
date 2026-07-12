@@ -3,6 +3,8 @@
 #include "../api_context.hpp"
 #include "../dto_mapper.hpp"
 
+#include "dagforge/util/conv.hpp"
+
 namespace dagforge::api_detail {
 
 inline auto register_log_routes(ApiContext &ctx) -> void {
@@ -21,12 +23,12 @@ inline auto register_log_routes(ApiContext &ctx) -> void {
             http::QueryParams qp(req.query_string);
             std::size_t limit = 10000;
             if (auto lim = qp.get("limit"); lim) {
-              try {
-                limit = static_cast<std::size_t>(std::stoul(*lim));
-              } catch (const std::exception &e) {
+              if (auto parsed = util::parse_int<std::size_t>(*lim); parsed) {
+                limit = *parsed;
+              } else {
                 log::warn("Ignoring invalid /api/runs/{{dag_run_id}}/logs "
-                          "limit '{}': {}",
-                          *lim, e.what());
+                          "limit '{}'",
+                          *lim);
               }
             }
 
@@ -47,7 +49,7 @@ inline auto register_log_routes(ApiContext &ctx) -> void {
                   .content = e.content,
               });
             }
-            co_return json_response_glz(dto);
+            co_return typed_json_response(dto);
           }));
 
   router.get(
@@ -64,22 +66,22 @@ inline auto register_log_routes(ApiContext &ctx) -> void {
             http::QueryParams qp(req.query_string);
             int attempt = 1;
             if (auto att = qp.get("attempt"); att) {
-              try {
-                attempt = std::stoi(*att);
-              } catch (const std::exception &e) {
+              if (auto parsed = util::parse_int<int>(*att); parsed) {
+                attempt = *parsed;
+              } else {
                 log::warn("Ignoring invalid /api/runs/{{dag_run_id}}/"
-                          "tasks/{{task_id}}/logs attempt '{}': {}",
-                          *att, e.what());
+                          "tasks/{{task_id}}/logs attempt '{}'",
+                          *att);
               }
             }
             std::size_t limit = 5000;
             if (auto lim = qp.get("limit"); lim) {
-              try {
-                limit = static_cast<std::size_t>(std::stoul(*lim));
-              } catch (const std::exception &e) {
+              if (auto parsed = util::parse_int<std::size_t>(*lim); parsed) {
+                limit = *parsed;
+              } else {
                 log::warn("Ignoring invalid /api/runs/{{dag_run_id}}/"
-                          "tasks/{{task_id}}/logs limit '{}': {}",
-                          *lim, e.what());
+                          "tasks/{{task_id}}/logs limit '{}'",
+                          *lim);
               }
             }
 
@@ -103,7 +105,7 @@ inline auto register_log_routes(ApiContext &ctx) -> void {
                   .content = e.content,
               });
             }
-            co_return json_response_glz(dto);
+            co_return typed_json_response(dto);
           }));
 }
 

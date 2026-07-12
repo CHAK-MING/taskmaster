@@ -5,6 +5,7 @@
 #include <boost/asio/buffer.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/url/parse.hpp>
+#include <boost/url/parse_query.hpp>
 #include <iterator>
 
 
@@ -46,8 +47,9 @@ auto to_request(
   out.method = to_method(msg.method());
   out.version_major = msg.version() / 10;
   out.version_minor = msg.version() % 10;
-  out.headers.reserve(static_cast<std::size_t>(
-      std::distance(msg.base().begin(), msg.base().end())));
+  for (const auto &field : msg.base()) {
+    out.headers.add(std::string(field.name_string()), std::string(field.value()));
+  }
 
   std::string target(msg.target());
   if (const auto query_pos = target.find('?'); query_pos != std::string::npos) {
@@ -57,9 +59,6 @@ auto to_request(
     out.path = std::move(target);
   }
 
-  for (const auto &field : msg.base()) {
-    out.headers.emplace(field.name_string(), field.value());
-  }
   out.body = msg.body();
   return out;
 }
@@ -69,16 +68,16 @@ auto to_response(
     -> HttpResponse {
   HttpResponse out;
   out.status = static_cast<HttpStatus>(msg.result_int());
-  out.headers.reserve(static_cast<std::size_t>(
-      std::distance(msg.base().begin(), msg.base().end())));
   for (const auto &field : msg.base()) {
-    out.headers.emplace(field.name_string(), field.value());
+    out.headers.add(std::string(field.name_string()), std::string(field.value()));
   }
   out.body = msg.body();
   return out;
 }
 
 } // namespace
+
+#include "detail/query_params_impl.inc"
 
 struct HttpRequestParser::Impl {
   std::unique_ptr<beast_http::request_parser<beast_http::vector_body<uint8_t>>>

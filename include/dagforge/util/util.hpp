@@ -6,7 +6,6 @@
 #include "dagforge/util/enum.hpp"
 #include "dagforge/util/hash.hpp"
 #include "dagforge/util/time.hpp"
-#include "dagforge/util/encoding.hpp"
 #include "dagforge/util/string_hash.hpp"
 #include "dagforge/util/url.hpp"
 #endif

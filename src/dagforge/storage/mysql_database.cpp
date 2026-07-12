@@ -2,6 +2,7 @@
 #include "dagforge/storage/mysql_schema.hpp"
 
 #include "dagforge/core/asio_awaitable.hpp"
+#include "dagforge/util/conv.hpp"
 #include "dagforge/util/enum_mysql_formatter.hpp"
 #include "dagforge/util/log.hpp"
 #include "dagforge/util/time.hpp"
@@ -173,8 +174,7 @@ describe_mysql_diagnostics(const boost::mysql::diagnostics &diag)
 }
 
 auto fetch_column_data_type(boost::mysql::any_connection &conn,
-                            std::string_view table_name,
-                            std::string_view column_name)
+                            std::string table_name, std::string column_name)
     -> task<Result<std::string>> {
   boost::mysql::results res;
   auto execute_res = co_await co_as_result(conn.async_execute(
@@ -230,8 +230,8 @@ auto acquire_pooled_connection(
 }
 
 auto validate_integer_enum_column(boost::mysql::any_connection &conn,
-                                  std::string_view table_name,
-                                  std::string_view column_name)
+                                  std::string table_name,
+                                  std::string column_name)
     -> task<Result<void>> {
   auto type_res = co_await fetch_column_data_type(conn, table_name, column_name);
   if (!type_res) {
@@ -316,7 +316,10 @@ summarize_task_instance_batch(std::span<const TaskInstanceInfo> instances)
     return static_cast<std::int64_t>(f.as_uint64());
   }
   if (f.is_string()) {
-    return std::stoll(std::string(f.as_string()));
+    const auto value = f.as_string();
+    auto parsed = util::parse_int<std::int64_t>(
+        std::string_view{value.data(), value.size()});
+    return parsed.value_or(0);
   }
   return 0;
 }
@@ -451,7 +454,7 @@ summarize_task_instance_batch(std::span<const TaskInstanceInfo> instances)
 
 // Coroutines must own temporary callables across suspension points.
 template <typename F>
-auto mysql_try(F f, std::string_view op_name = {}, std::string context = {})
+auto mysql_try(F f, std::string op_name = {}, std::string context = {})
     -> task<typename std::invoke_result_t<F &>::value_type> {
   try {
     auto result = co_await f();
@@ -1692,7 +1695,7 @@ auto MySQLDatabase::delete_task(const DAGId &dag_id, const TaskId &task_id)
 
 auto MySQLDatabase::save_task_dependencies(
     const DAGId &dag_id, const TaskId &task_id,
-    const std::vector<TaskId> &dep_task_ids, std::string_view dependency_type)
+    const std::vector<TaskId> &dep_task_ids, std::string dependency_type)
     -> task<Result<void>> {
   co_return co_await mysql_try([&]() -> task<Result<void>> {
     auto conn_res = co_await get_connection();
@@ -1769,7 +1772,7 @@ auto MySQLDatabase::save_task_dependencies(
       co_return ok();
     }
 
-    const std::string dep_type(dependency_type);
+    const auto &dep_type = dependency_type;
     auto format_dep = [dag_rowid = *dag_rowid_res, task_rowid,
                        &dep_type](const std::int64_t &dep_rowid,
                                   boost::mysql::format_context_base &ctx) {
@@ -2432,7 +2435,7 @@ auto MySQLDatabase::save_xcom(const DAGRunId &run_id, const TaskId &task_id,
 }
 
 auto MySQLDatabase::get_xcom(const DAGRunId &run_id, const TaskId &task_id,
-                             std::string_view key) -> task<Result<XComEntry>> {
+                             std::string key) -> task<Result<XComEntry>> {
   co_return co_await mysql_try([&]() -> task<Result<XComEntry>> {
     auto conn_res = co_await get_connection();
     if (!conn_res) {
@@ -2448,7 +2451,7 @@ auto MySQLDatabase::get_xcom(const DAGRunId &run_id, const TaskId &task_id,
             "JOIN dag_runs r ON r.run_rowid = x.run_rowid "
             "JOIN dag_tasks t ON t.task_rowid = x.task_rowid "
             "WHERE r.dag_run_id = {} AND t.task_id = {} AND x.`key` = {}",
-            run_id.str(), task_id.str(), std::string(key)),
+            run_id.str(), task_id.str(), key),
         res));
 
     if (res.rows().empty()) {
@@ -2879,7 +2882,7 @@ auto MySQLDatabase::mark_incomplete_runs_failed() -> task<Result<std::size_t>> {
 }
 
 auto MySQLDatabase::claim_task_instances(std::size_t limit,
-                                         std::string_view worker_id)
+                                         std::string worker_id)
     -> task<Result<std::vector<ClaimedTaskInstance>>> {
   co_return co_await mysql_try([&]() -> task<Result<
                                          std::vector<ClaimedTaskInstance>>> {

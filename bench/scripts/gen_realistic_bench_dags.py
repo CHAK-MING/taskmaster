@@ -97,8 +97,8 @@ def emit_task(
                     f'source = "{push["source"]}"',
                 ]
             )
-            if "json_path" in push:
-                lines.append(f'json_path = "{push["json_path"]}"')
+            if "json_pointer" in push:
+                lines.append(f'json_pointer = "{push["json_pointer"]}"')
             if "regex" in push:
                 lines.append(f'regex = "{push["regex"]}"')
             lines.append("")
@@ -192,7 +192,7 @@ def emit_cron_scene(bench_root: Path) -> None:
             f"Cron Autoschedule Bench {i}",
             dag_id,
             "Cron auto-schedule bench with five tasks and a cleanup trigger-rule tail",
-            extra=['cron = "*/1 * * * *"', 'start_date = "2026-03-21"', "catchup = false"],
+            extra=['cron = "*/1 * * * *"', "start_date = 2026-03-21", "catchup = false"],
         )
         lines.extend(
             emit_task(

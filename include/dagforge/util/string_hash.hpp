@@ -1,6 +1,8 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#include <ankerl/unordered_dense.h>
+
 #include <functional>
 #include <string>
 #include <string_view>
@@ -11,18 +13,20 @@ namespace dagforge {
 struct StringHash {
   using is_transparent = void;
 
-  [[nodiscard]] auto operator()(std::string_view sv) const noexcept
+  [[nodiscard]] auto operator()(std::string_view value) const noexcept
       -> std::size_t {
-    return std::hash<std::string_view>{}(sv);
+    return static_cast<std::size_t>(
+        ankerl::unordered_dense::hash<std::string_view>{}(value));
   }
 
-  [[nodiscard]] auto operator()(const std::string &s) const noexcept
+  [[nodiscard]] auto operator()(const std::string &value) const noexcept
       -> std::size_t {
-    return std::hash<std::string_view>{}(s);
+    return (*this)(std::string_view{value});
   }
 
-  [[nodiscard]] auto operator()(const char *s) const noexcept -> std::size_t {
-    return std::hash<std::string_view>{}(s);
+  [[nodiscard]] auto operator()(const char *value) const noexcept
+      -> std::size_t {
+    return (*this)(std::string_view{value});
   }
 };
 

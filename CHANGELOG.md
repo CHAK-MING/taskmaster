@@ -2,6 +2,20 @@
 
 All notable changes to DAGForge will be documented in this file.
 
+## [Unreleased]
+
+### Breaking Changes
+- DAG `start_date` and `end_date` now use native TOML Local Date values such as `2026-07-12`; quoted date strings are rejected.
+- XCom extraction now uses RFC 6901 `json_pointer`; the former `json_path` field and dot/bracket syntax are removed.
+- Unknown TOML fields are rejected instead of being silently ignored.
+- Newly generated DAG run IDs use standard UUIDv7 suffixes.
+
+### Changed
+- Enum metadata and JSON/TOML enum serialization now share Glaze `enumerate` definitions.
+- HTTP headers use Boost.Beast fields, preserving case-insensitive lookup and duplicate fields.
+- Shard and composite hashes use `ankerl::unordered_dense` hashing.
+- Removed Boost.Filesystem and Boost.Charconv runtime dependencies.
+
 ## [0.3.0] - 2026-03-30
 
 ### Changed

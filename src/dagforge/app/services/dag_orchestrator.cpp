@@ -271,15 +271,14 @@ auto DAGOrchestrator::owner_shard(const DAGId &dag_id) const noexcept
     -> shard_id {
   const auto shard_count =
       std::max(1U, static_cast<unsigned>(dag_owner_states_.size()));
-  return static_cast<shard_id>(util::shard_of(
-      std::hash<std::string_view>{}(dag_id.value()), shard_count));
+  return static_cast<shard_id>(util::shard_of(dag_id.value(), shard_count));
 }
 
 auto DAGOrchestrator::owner_shard(const DAGRunId &dag_run_id) const noexcept
     -> shard_id {
   const auto shard_count = std::max(1U, deps_.runtime.shard_count());
-  return static_cast<shard_id>(util::shard_of(
-      std::hash<std::string_view>{}(dag_run_id.value()), shard_count));
+  return static_cast<shard_id>(
+      util::shard_of(dag_run_id.value(), shard_count));
 }
 
 auto DAGOrchestrator::try_acquire_dag_run_slot(const DAGInfo &info)

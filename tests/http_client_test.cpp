@@ -6,8 +6,25 @@
 
 #include <atomic>
 #include <chrono>
+#include <memory>
+#include <thread>
+#include <utility>
 
 namespace dagforge::http::test {
+namespace {
+
+auto connect_unix_after_yield(std::shared_ptr<std::atomic_bool> completed,
+                              std::shared_ptr<std::atomic_bool> failed)
+    -> spawn_task {
+  auto connect_op = HttpClient::connect_unix(
+      current_io_context(), std::string{"/tmp/nonexistent_deferred.sock"});
+  co_await async_yield();
+  auto client_res = co_await std::move(connect_op);
+  failed->store(!client_res.has_value(), std::memory_order_release);
+  completed->store(true, std::memory_order_release);
+}
+
+} // namespace
 
 class HttpClientTest : public ::testing::Test {
 protected:
@@ -51,6 +68,20 @@ TEST_F(HttpClientTest, ConnectUnixFailsForNonExistentSocket) {
 
   EXPECT_TRUE(completed.load());
   EXPECT_EQ(result_client, nullptr);
+}
+
+TEST_F(HttpClientTest, ConnectUnixOwnsSocketPathAcrossDeferredStart) {
+  auto completed = std::make_shared<std::atomic_bool>(false);
+  auto failed = std::make_shared<std::atomic_bool>(false);
+  runtime_->spawn_external(connect_unix_after_yield(completed, failed));
+
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!completed->load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(completed->load(std::memory_order_acquire));
+  EXPECT_TRUE(failed->load(std::memory_order_acquire));
 }
 
 TEST_F(HttpClientTest, HttpClientConfigDefaults) {

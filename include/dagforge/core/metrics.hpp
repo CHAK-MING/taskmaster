@@ -30,29 +30,6 @@ private:
   std::atomic<std::uint64_t> value_{0};
 };
 
-class Gauge {
-public:
-  constexpr Gauge() = default;
-
-  auto add(std::int64_t value) noexcept -> void {
-    value_.fetch_add(value, std::memory_order_relaxed);
-  }
-
-  auto inc() noexcept -> void { add(1); }
-  auto dec() noexcept -> void { add(-1); }
-
-  auto store(std::int64_t value) noexcept -> void {
-    value_.store(value, std::memory_order_relaxed);
-  }
-
-  [[nodiscard]] auto load() const noexcept -> std::int64_t {
-    return value_.load(std::memory_order_relaxed);
-  }
-
-private:
-  std::atomic<std::int64_t> value_{0};
-};
-
 class Histogram {
 public:
   struct Snapshot {

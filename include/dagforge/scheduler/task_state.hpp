@@ -5,8 +5,6 @@
 #endif
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include <boost/describe/enum.hpp>
-
 #include <chrono>
 #include <cstdint>
 #include <string_view>
@@ -24,12 +22,26 @@ enum class TaskState : std::uint8_t {
   Skipped,
   Ready,
 };
-BOOST_DESCRIBE_ENUM(TaskState, Pending, Running, Success, Failed,
-                    UpstreamFailed, Retrying, Skipped, Ready)
+
+} // namespace dagforge
+
+namespace glz {
+template <> struct meta<dagforge::TaskState> {
+  static constexpr auto value = glz::enumerate(
+      "pending", dagforge::TaskState::Pending, "running",
+      dagforge::TaskState::Running, "success", dagforge::TaskState::Success,
+      "failed", dagforge::TaskState::Failed, "upstream_failed",
+      dagforge::TaskState::UpstreamFailed, "retrying",
+      dagforge::TaskState::Retrying, "skipped", dagforge::TaskState::Skipped,
+      "ready", dagforge::TaskState::Ready);
+};
+} // namespace glz
+
+namespace dagforge {
 
 [[nodiscard]] constexpr auto to_string_view(TaskState value) noexcept
     -> std::string_view {
-  return ::dagforge::util::enum_to_snake_case_view(value);
+  return ::dagforge::util::enum_to_string_view(value);
 }
 
 template <>

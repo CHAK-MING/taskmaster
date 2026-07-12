@@ -17,9 +17,48 @@ fi
 config_default="${BUILD2_CONFIG_DEFAULT:-$default_default}"
 config_forward="${BUILD2_CONFIG_FORWARD:-1}"
 cc_coptions="${BUILD2_CC_COPTIONS:-}"
+cxx_poptions="${BUILD2_CXX_POPTIONS:-}"
 cc_loptions="${BUILD2_CC_LOPTIONS:-}"
 bin_lib="${BUILD2_BIN_LIB:-}"
 recreate_config="${BUILD2_RECREATE_CONFIG:-0}"
+
+boost_version_from_header() {
+  local header=$1
+  [[ -f "$header" ]] || return 0
+  awk '/^#define BOOST_LIB_VERSION / {gsub(/"/, "", $3); print $3; exit}' "$header"
+}
+
+system_include_override() {
+  local local_boost system_boost
+  local_boost=$(boost_version_from_header /usr/local/include/boost/version.hpp)
+  system_boost=$(boost_version_from_header /usr/include/boost/version.hpp)
+  if [[ -z "$local_boost" || -z "$system_boost" ||
+        "$local_boost" == "$system_boost" ]]; then
+    return 0
+  fi
+
+  printf '%s' '-nostdinc '
+  "$compiler" -E -x c++ -v - </dev/null 2>&1 \
+    | awk '
+        /#include <\.\.\.> search starts here:/ {capture = 1; next}
+        /End of search list\./ {capture = 0}
+        capture {
+          sub(/^[[:space:]]+/, "")
+          sub(/[[:space:]]+$/, "")
+          if ($0 != "/usr/local/include" && $0 !~ /\(framework directory\)$/) {
+            printf "-isystem %s ", $0
+          }
+        }
+      '
+}
+
+include_override=$(system_include_override)
+if [[ -n "$include_override" ]]; then
+  cxx_poptions="${include_override}${cxx_poptions}"
+  printf 'using distribution Boost headers (%s) instead of stale local headers (%s)\n' \
+    "$(boost_version_from_header /usr/include/boost/version.hpp)" \
+    "$(boost_version_from_header /usr/local/include/boost/version.hpp)"
+fi
 
 cd "$repo_root"
 
@@ -50,6 +89,11 @@ current_cfg_path=$(
     | awk -v alias="$config_alias" '$1 == alias {print $2; exit}' \
     || true
 )
+
+if [[ -n "$include_override" && -n "$current_cfg_path" ]] &&
+   ! grep -q -- '-nostdinc' "${current_cfg_path%/}/build/config.build" 2>/dev/null; then
+  recreate_config=1
+fi
 
 if [[ "$recreate_config" == "1" && -n "${current_cfg_path}" ]]; then
   bdep deinit --force "$config_alias" || true
@@ -84,6 +128,9 @@ if ! bdep config list 2>/dev/null | awk -v alias="$config_alias" '$1 == alias {f
   fi
   if [[ -n "$cc_coptions" ]]; then
     init_args+=("config.cc.coptions=${cc_coptions}")
+  fi
+  if [[ -n "$cxx_poptions" ]]; then
+    init_args+=("config.cxx.poptions=${cxx_poptions}")
   fi
   if [[ -n "$cc_loptions" ]]; then
     init_args+=("config.cc.loptions=${cc_loptions}")

@@ -11,11 +11,12 @@
 #include "dagforge/io/timing_wheel.hpp"
 #include "dagforge/util/id.hpp"
 #include "dagforge/xcom/template_resolver.hpp"
-#endif
 
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <flat_map>
@@ -24,8 +25,11 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
+#endif
 
 namespace dagforge {
 
@@ -63,7 +67,7 @@ struct ExecutionCallbacks {
       on_persist_xcom;
   // Async reads — all go through the persistence Actor (ask pattern).
   std::move_only_function<task<Result<XComEntry>>(
-      const DAGRunId &dag_run_id, const TaskId &task, std::string_view key)>
+      const DAGRunId &dag_run_id, const TaskId &task, std::string key)>
       get_xcom;
   std::move_only_function<task<Result<std::vector<XComEntry>>>(
       const DAGRunId &dag_run_id, const TaskId &task)>

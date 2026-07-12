@@ -68,8 +68,8 @@ namespace {
 
 [[nodiscard]] auto owner_shard_for(const DAGRunId &dag_run_id,
                                    unsigned shards) noexcept -> shard_id {
-  return static_cast<shard_id>(util::shard_of(
-      std::hash<std::string_view>{}(dag_run_id.value()), std::max(1U, shards)));
+  return static_cast<shard_id>(
+      util::shard_of(dag_run_id.value(), std::max(1U, shards)));
 }
 
 [[nodiscard]] auto make_small_template_dag() -> std::shared_ptr<DAG> {
@@ -162,6 +162,14 @@ struct DispatchBenchState {
   std::atomic<int> executed{0};
   int expected{0};
 };
+
+auto run_dispatch_benchmark_execution(
+    std::shared_ptr<DispatchBenchState> state, int yields) -> spawn_task {
+  for (int i = 0; i < yields; ++i) {
+    co_await async_yield();
+  }
+  state->executed.fetch_add(1, std::memory_order_acq_rel);
+}
 
 struct HandoffBenchState {
   std::mutex mu;
@@ -400,13 +408,8 @@ void BM_SchedulerCatchupScheduleAndExecute(benchmark::State &state) {
         [&runtime_guard, shared, exec_yields](
             const DAGId &, std::chrono::system_clock::time_point) {
           shared->fired.fetch_add(1, std::memory_order_relaxed);
-          runtime_guard.runtime.spawn_external([shared, exec_yields]() -> spawn_task {
-            for (int i = 0; i < exec_yields; ++i) {
-              co_await async_yield();
-            }
-            shared->executed.fetch_add(1, std::memory_order_acq_rel);
-            co_return;
-          }());
+          runtime_guard.runtime.spawn_external(
+              run_dispatch_benchmark_execution(shared, exec_yields));
         });
 
     scheduler.start();

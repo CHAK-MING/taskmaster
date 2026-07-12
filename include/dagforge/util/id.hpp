@@ -1,9 +1,11 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#include <boost/uuid/time_generator_v7.hpp>
+#include <boost/uuid/uuid_io.hpp>
+
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <compare>
 #include <concepts>
 #include <cstddef>
@@ -11,7 +13,6 @@
 #include <functional>
 #include <optional>
 #include <ostream>
-#include <random>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -134,21 +135,9 @@ struct std::formatter<dagforge::TypedId<Tag>>
 namespace dagforge {
 
 namespace detail {
-[[nodiscard]] inline auto generate_short_uuid() -> std::string {
-  thread_local std::mt19937_64 gen(std::random_device{}());
-  thread_local std::uniform_int_distribution<std::uint32_t> dis;
-  return std::format("{:08x}", dis(gen));
-}
-
-[[nodiscard]] inline auto generate_uuid_v7_like() -> std::string {
-  thread_local std::mt19937_64 gen(std::random_device{}());
-  thread_local std::uniform_int_distribution<std::uint64_t> dis;
-  const auto now_ms = static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count());
-  const auto rnd = dis(gen);
-  return std::format("{:012x}{:016x}", now_ms, rnd);
+[[nodiscard]] inline auto generate_uuid_v7() -> std::string {
+  thread_local boost::uuids::time_generator_v7 generator;
+  return boost::uuids::to_string(generator());
 }
 
 inline constexpr std::string_view kDagRunSeparator = "__";
@@ -166,9 +155,8 @@ inline auto generate_dag_task_id(const DAGId &dag_id, const TaskId &task_id)
 
 inline auto generate_dag_run_id([[maybe_unused]] const DAGId &dag_id)
     -> DAGRunId {
-  return DAGRunId{
-      std::format("{}{}{}", dag_id, detail::kDagRunSeparator,
-                  detail::generate_uuid_v7_like())};
+  return DAGRunId{std::format("{}{}{}", dag_id, detail::kDagRunSeparator,
+                              detail::generate_uuid_v7())};
 }
 
 [[nodiscard]] inline auto dag_id_from_run_id(const DAGRunId &dag_run_id)

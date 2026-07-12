@@ -1,11 +1,14 @@
 module;
 
-#include <boost/describe/enum.hpp>
+#include <ankerl/unordered_dense.h>
+#include <glaze/core/reflect.hpp>
 
 #include <memory>
 #include <ranges>
 #include <regex>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 export module dagforge.task_types;

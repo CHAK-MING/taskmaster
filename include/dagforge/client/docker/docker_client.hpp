@@ -9,12 +9,10 @@
 #include "dagforge/util/json.hpp"
 #include "dagforge/util/log.hpp"
 #include "dagforge/util/url.hpp"
-#endif
-
-#include <cstdint>
 
 #include <bit>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <expected>
 #include <flat_map>
@@ -24,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#endif
 
 namespace dagforge::docker {
 
@@ -215,7 +214,7 @@ public:
   auto operator=(DockerClient &&) noexcept -> DockerClient & = default;
 
   static auto connect(io::IoContext &ctx,
-                      std::string_view socket_path = "/var/run/docker.sock",
+                      std::string socket_path = "/var/run/docker.sock",
                       DockerClientConfig config = {})
       -> task<Result<std::unique_ptr<DockerClient<Connector>>>> {
     http::HttpClientConfig http_config{
@@ -235,11 +234,10 @@ public:
 
     co_return std::make_unique<DockerClient<Connector>>(
         ctx, std::move(*http_client_res), std::move(config),
-        std::string(socket_path));
+        std::move(socket_path));
   }
 
-  auto create_container(const ContainerConfig &config,
-                        std::string_view name = "")
+  auto create_container(ContainerConfig config, std::string name = {})
       -> task<Result<CreateContainerResponse>> {
     if (auto ready = co_await ensure_connected(); !ready) {
       co_return fail(ready.error());
@@ -313,7 +311,7 @@ public:
     };
   }
 
-  auto pull_image(std::string_view image) -> task<Result<void>> {
+  auto pull_image(std::string image) -> task<Result<void>> {
     if (auto ready = co_await ensure_connected(); !ready) {
       co_return fail(ready.error());
     }
@@ -362,7 +360,7 @@ public:
     co_return ok();
   }
 
-  auto start_container(std::string_view container_id)
+  auto start_container(std::string container_id)
       -> task<Result<void>> {
     if (auto ready = co_await ensure_connected(); !ready) {
       co_return fail(ready.error());
@@ -397,7 +395,7 @@ public:
     co_return ok();
   }
 
-  auto wait_container(std::string_view container_id)
+  auto wait_container(std::string container_id)
       -> task<Result<WaitContainerResponse>> {
     if (auto ready = co_await ensure_connected(); !ready) {
       co_return fail(ready.error());
@@ -441,7 +439,7 @@ public:
     };
   }
 
-  auto get_logs(std::string_view container_id)
+  auto get_logs(std::string container_id)
       -> task<Result<ContainerLogs>> {
     if (auto ready = co_await ensure_connected(); !ready) {
       co_return fail(ready.error());
@@ -479,7 +477,7 @@ public:
     co_return parse_log_stream(raw_logs);
   }
 
-  auto stop_container(std::string_view container_id,
+  auto stop_container(std::string container_id,
                       std::chrono::seconds timeout = std::chrono::seconds{10})
       -> task<Result<void>> {
     if (auto ready = co_await ensure_connected(); !ready) {
@@ -516,7 +514,7 @@ public:
     co_return ok();
   }
 
-  auto remove_container(std::string_view container_id, bool force = false)
+  auto remove_container(std::string container_id, bool force = false)
       -> task<Result<void>> {
     if (auto ready = co_await ensure_connected(); !ready) {
       co_return fail(ready.error());

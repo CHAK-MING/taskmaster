@@ -9,7 +9,7 @@ namespace dagforge::xcom_dto {
 struct XComPushConfigJson {
   std::string key;
   std::string source;
-  std::string json_path;
+  std::string json_pointer;
   std::string regex;
   int regex_group{0};
 };
@@ -29,9 +29,9 @@ namespace glz {
 
 template <> struct meta<dagforge::xcom_dto::XComPushConfigJson> {
   using T = dagforge::xcom_dto::XComPushConfigJson;
-  static constexpr auto value =
-      object("key", &T::key, "source", &T::source, "json_path", &T::json_path,
-             "regex", &T::regex, "regex_group", &T::regex_group);
+  static constexpr auto value = object(
+      "key", &T::key, "source", &T::source, "json_pointer",
+      &T::json_pointer, "regex", &T::regex, "regex_group", &T::regex_group);
 };
 
 template <> struct meta<dagforge::xcom_dto::XComPullConfigJson> {
@@ -54,13 +54,13 @@ auto serialize_push_configs(const std::vector<XComPushConfig> &pushes)
     out.push_back(xcom_dto::XComPushConfigJson{
         .key = push.key,
         .source = enum_to_string(push.source),
-        .json_path = push.json_path,
+        .json_pointer = push.json_pointer,
         .regex = push.regex_pattern,
         .regex_group = push.regex_group,
     });
   }
-  if (auto serialized = glz::write_json(out); serialized) {
-    return *serialized;
+  if (auto serialized = serialize_json(out); serialized) {
+    return std::move(*serialized);
   }
   return "[]";
 }
@@ -71,25 +71,25 @@ auto parse_push_configs(std::string_view input)
     return ok(std::vector<XComPushConfig>{});
   }
 
-  std::vector<xcom_dto::XComPushConfigJson> parsed;
-  constexpr auto kOpts = glz::opts{.null_terminated = false};
-  if (auto ec = glz::read<kOpts>(parsed, input); ec) {
-    return fail(Error::ParseError);
+  auto parsed =
+      parse_json_as<std::vector<xcom_dto::XComPushConfigJson>>(input);
+  if (!parsed) {
+    return fail(parsed.error());
   }
 
   std::vector<XComPushConfig> out;
-  out.reserve(parsed.size());
-  for (auto &item : parsed) {
+  out.reserve(parsed->size());
+  for (auto &item : *parsed) {
     XComPushConfig cfg;
     cfg.key = std::move(item.key);
     if (!item.source.empty()) {
       cfg.source = parse<XComSource>(item.source);
     }
-    cfg.json_path = std::move(item.json_path);
+    cfg.json_pointer = std::move(item.json_pointer);
     cfg.regex_pattern = std::move(item.regex);
     cfg.regex_group = item.regex_group;
-    if (auto compiled = cfg.compile_regex(); !compiled) {
-      return fail(compiled.error());
+    if (auto prepared = cfg.prepare(); !prepared) {
+      return fail(prepared.error());
     }
     out.push_back(std::move(cfg));
   }
@@ -118,8 +118,8 @@ auto serialize_pull_configs(const std::vector<XComPullConfig> &pulls)
         .has_default_value = has_default_value,
     });
   }
-  if (auto serialized = glz::write_json(out); serialized) {
-    return *serialized;
+  if (auto serialized = serialize_json(out); serialized) {
+    return std::move(*serialized);
   }
   return "[]";
 }
@@ -130,15 +130,15 @@ auto parse_pull_configs(std::string_view input)
     return ok(std::vector<XComPullConfig>{});
   }
 
-  std::vector<xcom_dto::XComPullConfigJson> parsed;
-  constexpr auto kOpts = glz::opts{.null_terminated = false};
-  if (auto ec = glz::read<kOpts>(parsed, input); ec) {
-    return fail(Error::ParseError);
+  auto parsed =
+      parse_json_as<std::vector<xcom_dto::XComPullConfigJson>>(input);
+  if (!parsed) {
+    return fail(parsed.error());
   }
 
   std::vector<XComPullConfig> out;
-  out.reserve(parsed.size());
-  for (auto &item : parsed) {
+  out.reserve(parsed->size());
+  for (auto &item : *parsed) {
     XComPullConfig cfg;
     cfg.ref.task_id = TaskId{std::string(item.from)};
     cfg.ref.key = std::move(item.key);

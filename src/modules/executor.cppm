@@ -1,6 +1,6 @@
 module;
 
-#include <boost/describe/enum.hpp>
+#include <glaze/core/reflect.hpp>
 
 #include <chrono>
 #include <cstdint>

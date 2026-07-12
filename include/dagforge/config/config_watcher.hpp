@@ -1,8 +1,8 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#include "dagforge/core/coroutine.hpp"
 #include "dagforge/core/error.hpp"
-#endif
 
 #include <atomic>
 #include <chrono>
@@ -11,6 +11,8 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <sys/types.h>
+#endif
 
 namespace dagforge {
 
@@ -43,6 +45,7 @@ public:
 
 private:
   struct WatchState;
+  static auto watch_loop(std::shared_ptr<WatchState> state) -> spawn_task;
   static auto process_events(WatchState &state, const char *buf, ssize_t len)
       -> void;
   static auto stop_state(WatchState &state) noexcept -> void;

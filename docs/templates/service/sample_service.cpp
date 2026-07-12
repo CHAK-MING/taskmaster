@@ -1,8 +1,6 @@
 #include "dagforge/sample/sample_service.hpp"
 
-#include "dagforge/core/asio_awaitable.hpp"
-
-#include <boost/asio/steady_timer.hpp>
+#include "dagforge/io/timing_wheel.hpp"
 
 #include <chrono>
 #include <utility>
@@ -11,28 +9,22 @@ namespace dagforge {
 
 SampleService::SampleService(Runtime &runtime) : runtime_(runtime) {}
 
-auto SampleService::fetch(std::string_view key) -> task<Result<std::string>> {
-  auto timer = boost::asio::steady_timer(runtime_.io().get_executor());
-  timer.expires_after(std::chrono::milliseconds(1));
-
-  auto wait_res = co_await co_as_result(timer.async_wait(dagforge::use_nothrow));
-  if (!wait_res) {
-    co_return fail(wait_res.error());
+auto SampleService::fetch(std::string key) -> task<Result<std::string>> {
+  if (!runtime_.is_running()) {
+    co_return fail(Error::SystemNotRunning);
   }
 
-  co_return ok(std::string(key));
+  co_await async_sleep_on_timing_wheel(std::chrono::milliseconds(1));
+  co_return ok(std::move(key));
 }
 
 auto SampleService::store(std::string key, std::string value)
     -> task<Result<void>> {
-  auto timer = boost::asio::steady_timer(runtime_.io().get_executor());
-  timer.expires_after(std::chrono::milliseconds(1));
-
-  auto wait_res = co_await co_as_result(timer.async_wait(dagforge::use_nothrow));
-  if (!wait_res) {
-    co_return fail(wait_res.error());
+  if (!runtime_.is_running()) {
+    co_return fail(Error::SystemNotRunning);
   }
 
+  co_await async_sleep_on_timing_wheel(std::chrono::milliseconds(1));
   (void)key;
   (void)value;
   co_return ok();

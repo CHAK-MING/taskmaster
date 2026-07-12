@@ -100,20 +100,19 @@ inline auto json_response(const json &j,
 }
 
 template <typename T>
-inline auto json_response_glz(const T &value,
-                              http::HttpStatus status = http::HttpStatus::Ok)
+inline auto typed_json_response(
+    const T &value, http::HttpStatus status = http::HttpStatus::Ok)
     -> http::HttpResponse {
   http::HttpResponse resp;
   resp.status = status;
   resp.set_header("Content-Type", "application/json");
 
-  std::string buffer;
-  if (auto ec = glz::write_json(value, buffer); !ec) {
-    resp.body.assign(buffer.begin(), buffer.end());
+  if (auto serialized = serialize_json(value); serialized) {
+    resp.body.assign(serialized->begin(), serialized->end());
   } else {
-    log::error("JSON serialization failed for API response");
+    log::error("JSON serialization failed for API response: {}",
+               serialized.error().message());
     resp.status = http::HttpStatus::InternalServerError;
-    resp.body.clear();
     constexpr std::string_view fallback =
         R"({"error":"JSON serialization failed"})";
     resp.body.assign(fallback.begin(), fallback.end());

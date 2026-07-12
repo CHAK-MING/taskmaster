@@ -2,14 +2,22 @@
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/config/system_config.hpp"
+#include "dagforge/core/metrics.hpp"
 #include "dagforge/storage/database_service.hpp"
-#endif
 
-#include <atomic>
-#include <memory>
+#include <boost/asio/any_io_executor.hpp>
 #include <boost/mysql/any_connection.hpp>
 #include <boost/mysql/connection_pool.hpp>
 #include <boost/mysql/pool_params.hpp>
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+#endif
 
 namespace dagforge::storage {
 
@@ -49,7 +57,7 @@ public:
 
   auto save_task_dependencies(const DAGId &dag_id, const TaskId &task_id,
                               const std::vector<TaskId> &dep_task_ids,
-                              std::string_view dependency_type = "success")
+                              std::string dependency_type = "success")
       -> task<Result<void>> override;
   auto get_task_dependencies(const DAGId &dag_id)
       -> task<Result<std::vector<std::pair<TaskId, TaskId>>>> override;
@@ -109,7 +117,7 @@ public:
       boost::mysql::any_connection &conn, const DAGRunId &run_id,
       const std::vector<TaskInstanceInfo> &instances, int64_t run_rowid,
       std::int64_t execution_date_ms = -1) -> task<Result<void>>;
-  auto claim_task_instances(std::size_t limit, std::string_view worker_id)
+  auto claim_task_instances(std::size_t limit, std::string worker_id)
       -> task<Result<std::vector<ClaimedTaskInstance>>> override;
   auto touch_task_heartbeat(const TaskInstanceKey &key)
       -> task<Result<void>> override;
@@ -126,7 +134,7 @@ public:
   auto save_xcom(const DAGRunId &run_id, const TaskId &task_id, std::string key,
                  std::string value_json) -> task<Result<void>> override;
   auto get_xcom(const DAGRunId &run_id, const TaskId &task_id,
-                std::string_view key) -> task<Result<XComEntry>> override;
+                std::string key) -> task<Result<XComEntry>> override;
   auto get_task_xcoms(const DAGRunId &run_id, const TaskId &task_id)
       -> task<Result<std::vector<XComEntry>>> override;
   auto get_run_xcoms(const DAGRunId &run_id)

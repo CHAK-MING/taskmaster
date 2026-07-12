@@ -6,10 +6,29 @@
 
 #include <atomic>
 #include <chrono>
+#include <memory>
+#include <thread>
+#include <utility>
 
 namespace dagforge::docker::test {
 
 using TestDockerClient = DockerClient<http::HttpClient>;
+
+namespace {
+
+auto connect_docker_after_yield(std::shared_ptr<std::atomic_bool> completed,
+                                std::shared_ptr<std::atomic_bool> failed)
+    -> spawn_task {
+  auto connect_op = TestDockerClient::connect(
+      current_io_context(),
+      std::string{"/tmp/nonexistent_deferred_docker.sock"});
+  co_await async_yield();
+  auto result = co_await std::move(connect_op);
+  failed->store(!result.has_value(), std::memory_order_release);
+  completed->store(true, std::memory_order_release);
+}
+
+} // namespace
 
 class DockerClientTest : public ::testing::Test {
 protected:
@@ -50,6 +69,20 @@ TEST_F(DockerClientTest, ConnectFailsForNonExistentSocket) {
   EXPECT_TRUE(completed.load());
   EXPECT_FALSE(result.has_value());
   EXPECT_EQ(result.error(), make_error_code(DockerError::ConnectionFailed));
+}
+
+TEST_F(DockerClientTest, ConnectOwnsSocketPathAcrossDeferredStart) {
+  auto completed = std::make_shared<std::atomic_bool>(false);
+  auto failed = std::make_shared<std::atomic_bool>(false);
+  runtime_->spawn_external(connect_docker_after_yield(completed, failed));
+
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!completed->load(std::memory_order_acquire) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(completed->load(std::memory_order_acquire));
+  EXPECT_TRUE(failed->load(std::memory_order_acquire));
 }
 
 TEST_F(DockerClientTest, DockerClientConfigDefaults) {

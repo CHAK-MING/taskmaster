@@ -411,7 +411,7 @@ regex = "Build version: (\\S+)"   # capture group 1 is stored
 | `key` | Key name to store the value under |
 | `source` | `stdout` \| `stderr` \| `json` \| `exit_code` |
 | `regex` | Regex pattern; capture group 1 is stored |
-| `json_path` | JSONPath expression to extract from JSON output |
+| `json_pointer` | RFC 6901 JSON Pointer, for example `/result/items/0` |
 
 ### 🔍 XCom Sources
 

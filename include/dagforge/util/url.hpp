@@ -3,8 +3,8 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include <boost/url/encode.hpp>
+#include <boost/url/parse.hpp>
 #include <boost/url/rfc/unreserved_chars.hpp>
-#include <boost/url/url_view.hpp>
 
 #include <cstdint>
 #include <string>
@@ -33,12 +33,11 @@ struct ParsedHttpUrl {
     url = normalized;
   }
 
-  boost::urls::url_view uri;
-  try {
-    uri = boost::urls::url_view(url);
-  } catch (...) {
+  auto parsed = boost::urls::parse_uri(url);
+  if (!parsed) {
     return fail(Error::InvalidUrl);
   }
+  const auto uri = *parsed;
 
   if (uri.scheme() != "http") {
     return fail(Error::InvalidUrl);

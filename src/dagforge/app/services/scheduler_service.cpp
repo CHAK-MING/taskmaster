@@ -292,8 +292,7 @@ auto SchedulerService::cron_parse_errors_total() const -> std::uint64_t {
 auto SchedulerService::owner_engine_index(const DAGId &dag_id) const noexcept
     -> std::size_t {
   const auto engine_count = std::max<std::size_t>(1, engines_.size());
-  return util::shard_of(std::hash<std::string_view>{}(dag_id.value()),
-                        engine_count);
+  return util::shard_of(dag_id.value(), engine_count);
 }
 
 auto SchedulerService::owner_shard(const DAGId &dag_id) const noexcept

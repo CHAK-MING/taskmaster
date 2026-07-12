@@ -119,8 +119,8 @@ TEST_F(DAGValidationTest, ParseStartAndEndDate) {
   std::string toml = R"(
 id = "dated_dag"
 name = "dated_dag"
-start_date = "2025-03-01"
-end_date = "2025-03-15"
+start_date = 2025-03-01
+end_date = 2025-03-15
 
 [[tasks]]
 id = "task1"
@@ -132,6 +132,66 @@ command = "echo hello"
   ASSERT_TRUE(result->start_date.has_value());
   ASSERT_TRUE(result->end_date.has_value());
   EXPECT_LT(*result->start_date, *result->end_date);
+}
+
+TEST_F(DAGValidationTest, RejectQuotedDateStrings) {
+  std::string toml = R"(
+id = "dated_dag"
+start_date = "2025-03-01"
+
+[[tasks]]
+id = "task1"
+command = "echo hello"
+)";
+
+  auto result = DAGInfoLoader::load_from_string(toml);
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(DAGValidationTest, RejectInvalidTomlLocalDate) {
+  std::string toml = R"(
+id = "dated_dag"
+start_date = 2025-02-30
+
+[[tasks]]
+id = "task1"
+command = "echo hello"
+)";
+
+  auto result = DAGInfoLoader::load_from_string(toml);
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(DAGValidationTest, RejectRemovedJsonPathField) {
+  std::string toml = R"(
+id = "xcom_dag"
+
+[[tasks]]
+id = "producer"
+command = "echo '{\"items\":[1]}'"
+
+[[tasks.xcom_push]]
+key = "item"
+source = "json"
+json_path = "items[0]"
+)";
+
+  auto result = DAGInfoLoader::load_from_string(toml);
+  EXPECT_FALSE(result.has_value());
+}
+
+TEST_F(DAGValidationTest, RejectUnknownFields) {
+  std::string toml = R"(
+id = "strict_dag"
+unknown_setting = true
+
+[[tasks]]
+id = "task1"
+command = "echo hello"
+)";
+
+  auto result = DAGInfoLoader::load_from_string(toml);
+  EXPECT_FALSE(result.has_value());
 }
 
 TEST_F(DAGValidationTest, RejectEmptyTasks) {
@@ -674,7 +734,7 @@ TEST_F(DAGValidationTest, ToStringRoundTripsTaskMetadata) {
   task.xcom_push.push_back(XComPushConfig{
       .key = "payload",
       .source = XComSource::Json,
-      .json_path = "$.items[0]",
+      .json_pointer = "/items/0",
       .regex_pattern = "",
       .regex_group = 0,
   });

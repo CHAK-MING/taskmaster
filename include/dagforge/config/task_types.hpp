@@ -8,23 +8,35 @@
 #endif
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include <boost/describe/enum.hpp>
-
 #include <memory>
 #include <ranges>
 #include <regex>
 #include <string>
+#include <utility>
 #include <vector>
 #endif
 
 namespace dagforge {
 
 enum class XComSource : std::uint8_t { Stdout, Stderr, ExitCode, Json };
-BOOST_DESCRIBE_ENUM(XComSource, Stdout, Stderr, ExitCode, Json)
+
+} // namespace dagforge
+
+namespace glz {
+template <> struct meta<dagforge::XComSource> {
+  static constexpr auto value =
+      glz::enumerate("stdout", dagforge::XComSource::Stdout, "stderr",
+                dagforge::XComSource::Stderr, "exit_code",
+                dagforge::XComSource::ExitCode, "json",
+                dagforge::XComSource::Json);
+};
+} // namespace glz
+
+namespace dagforge {
 
 [[nodiscard]] constexpr auto to_string_view(XComSource value) noexcept
     -> std::string_view {
-  return ::dagforge::util::enum_to_snake_case_view(value);
+  return ::dagforge::util::enum_to_string_view(value);
 }
 
 template <>
@@ -36,12 +48,27 @@ template <>
 struct XComPushConfig {
   std::string key;
   XComSource source{XComSource::Stdout};
-  std::string json_path;
+  std::string json_pointer;
   std::string regex_pattern;
   int regex_group{0};
   std::shared_ptr<const std::regex> compiled_regex{};
 
-  [[nodiscard]] auto compile_regex() -> Result<void> {
+  [[nodiscard]] auto prepare() -> Result<void> {
+    if (!json_pointer.empty()) {
+      if (json_pointer.front() != '/') {
+        return fail(Error::InvalidArgument);
+      }
+      for (std::size_t i = 0; i < json_pointer.size(); ++i) {
+        if (json_pointer[i] != '~') {
+          continue;
+        }
+        if (++i >= json_pointer.size() ||
+            (json_pointer[i] != '0' && json_pointer[i] != '1')) {
+          return fail(Error::InvalidArgument);
+        }
+      }
+    }
+
     if (regex_pattern.empty()) {
       compiled_regex.reset();
       return ok();
@@ -95,8 +122,10 @@ struct XComPullConfig {
 };
 
 struct XComRefHash {
-  auto operator()(const XComRef &ref) const -> std::size_t {
-    return util::combine(ref.task_id, ref.key);
+  auto operator()(const XComRef &ref) const noexcept -> std::size_t {
+    using HashKey = std::pair<std::string_view, std::string_view>;
+    return static_cast<std::size_t>(ankerl::unordered_dense::hash<HashKey>{}(
+        HashKey{ref.task_id.value(), ref.key}));
   }
 };
 

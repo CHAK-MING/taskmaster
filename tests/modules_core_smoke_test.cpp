@@ -39,6 +39,25 @@ TEST(ModulesCoreSmokeTest, ImportsNonCoreValueModulesWithoutDagforgeHeaders) {
             "all_success");
 }
 
+TEST(ModulesCoreSmokeTest, DagRunIdsUseUuidV7) {
+  const dagforge::DAGId dag_id{"example"};
+  const auto first = dagforge::generate_dag_run_id(dag_id);
+  const auto second = dagforge::generate_dag_run_id(dag_id);
+
+  constexpr std::string_view kPrefix = "example__";
+  ASSERT_TRUE(first.value().starts_with(kPrefix));
+  ASSERT_TRUE(second.value().starts_with(kPrefix));
+  const auto first_uuid = first.value().substr(kPrefix.size());
+  const auto second_uuid = second.value().substr(kPrefix.size());
+  ASSERT_EQ(first_uuid.size(), 36U);
+  ASSERT_EQ(second_uuid.size(), 36U);
+  EXPECT_EQ(first_uuid[14], '7');
+  EXPECT_NE(std::string_view{"89ab"}.find(first_uuid[19]),
+            std::string_view::npos);
+  EXPECT_NE(first_uuid, second_uuid);
+  EXPECT_EQ(dagforge::dag_id_from_run_id(first), dag_id);
+}
+
 TEST(ModulesCoreSmokeTest, ImportsLeafUtilityAndIoModules) {
   auto parsed = dagforge::util::parse_int<int>("42");
   ASSERT_TRUE(parsed.has_value());
