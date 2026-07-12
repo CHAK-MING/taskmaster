@@ -8,6 +8,8 @@
 
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/local/stream_protocol.hpp>
+#include <boost/asio/ssl/context.hpp>
+#include <boost/asio/ssl/stream.hpp>
 
 #include <chrono>
 #include <concepts>
@@ -39,9 +41,11 @@ concept HttpConnector = requires(T t, HttpRequest req) {
 
 class HttpClient {
 public:
+  using TlsStream =
+      boost::asio::ssl::stream<boost::asio::ip::tcp::socket>;
   using SocketVariant =
       std::variant<boost::asio::ip::tcp::socket,
-                   boost::asio::local::stream_protocol::socket>;
+                   boost::asio::local::stream_protocol::socket, TlsStream>;
 
   HttpClient(SocketVariant socket, HttpClientConfig config = {});
   ~HttpClient();
@@ -52,6 +56,10 @@ public:
   auto operator=(HttpClient &&) noexcept -> HttpClient &;
 
   static auto connect_tcp(io::IoContext &ctx, std::string host, uint16_t port,
+                          HttpClientConfig config = {})
+      -> task<Result<std::unique_ptr<HttpClient>>>;
+
+  static auto connect_tls(io::IoContext &ctx, std::string host, uint16_t port,
                           HttpClientConfig config = {})
       -> task<Result<std::unique_ptr<HttpClient>>>;
 
@@ -80,6 +88,9 @@ public:
   auto close() -> void;
 
 private:
+  HttpClient(SocketVariant socket, HttpClientConfig config,
+             std::shared_ptr<boost::asio::ssl::context> tls_context);
+
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

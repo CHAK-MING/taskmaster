@@ -3,7 +3,6 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/enum.hpp"
 
-#include <chrono>
 #include <cstdint>
 #include <flat_map>
 #include <memory>
@@ -15,7 +14,6 @@ namespace dagforge {
 enum class ExecutorType : std::uint8_t {
   Shell,
   Docker,
-  Sensor,
   Lua,
   Noop,
 };
@@ -32,8 +30,7 @@ namespace glz {
 template <> struct meta<dagforge::ExecutorType> {
   static constexpr auto value = glz::enumerate(
       "shell", dagforge::ExecutorType::Shell, "docker",
-      dagforge::ExecutorType::Docker, "sensor",
-      dagforge::ExecutorType::Sensor, "lua", dagforge::ExecutorType::Lua,
+      dagforge::ExecutorType::Docker, "lua", dagforge::ExecutorType::Lua,
       "noop", dagforge::ExecutorType::Noop);
 };
 
@@ -80,45 +77,6 @@ struct DockerExecutorConfig {
   ImagePullPolicy pull_policy{ImagePullPolicy::Never};
 };
 
-enum class SensorType : std::uint8_t {
-  File,
-  Http,
-  Command,
-};
-
-} // namespace dagforge
-
-namespace glz {
-template <> struct meta<dagforge::SensorType> {
-  static constexpr auto value =
-      glz::enumerate("file", dagforge::SensorType::File, "http",
-                dagforge::SensorType::Http, "command",
-                dagforge::SensorType::Command);
-};
-} // namespace glz
-
-namespace dagforge {
-
-[[nodiscard]] constexpr auto to_string_view(SensorType value) noexcept
-    -> std::string_view {
-  return ::dagforge::util::enum_to_string_view(value);
-}
-
-template <>
-[[nodiscard]] inline auto parse<SensorType>(std::string_view s) noexcept
-    -> SensorType {
-  return ::dagforge::util::parse_enum(s, SensorType::File);
-}
-
-struct SensorExecutorConfig {
-  SensorType type{SensorType::File};
-  std::string target;
-  std::chrono::seconds poke_interval{std::chrono::seconds(30)};
-  bool soft_fail{false};
-  int expected_status{200};
-  std::string http_method{"GET"};
-};
-
 struct LuaExecutorConfig {
   std::string script;
   std::string script_file;
@@ -138,10 +96,6 @@ template <> struct ExecutorConfigTraits<ShellExecutorConfig> {
 
 template <> struct ExecutorConfigTraits<DockerExecutorConfig> {
   static constexpr ExecutorType type = ExecutorType::Docker;
-};
-
-template <> struct ExecutorConfigTraits<SensorExecutorConfig> {
-  static constexpr ExecutorType type = ExecutorType::Sensor;
 };
 
 template <> struct ExecutorConfigTraits<LuaExecutorConfig> {

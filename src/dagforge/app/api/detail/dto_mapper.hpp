@@ -1,15 +1,10 @@
 #pragma once
 
-#include "dagforge/app/api/api_dto.hpp"
 #include "dagforge/client/http/http_types.hpp"
-#include "dagforge/storage/database_service.hpp"
+#include "dagforge/io/result.hpp"
 #include "dagforge/util/json.hpp"
 #include "dagforge/util/log.hpp"
-#include "dagforge/util/util.hpp"
 
-#include <chrono>
-#include <optional>
-#include <sstream>
 #include <string>
 #include <string_view>
 
@@ -22,16 +17,15 @@ inline auto status_from_error(const std::error_code &ec) -> http::HttpStatus {
     switch (static_cast<io::IoError>(ec.value())) {
     case io::IoError::TimedOut:
     case io::IoError::Cancelled:
+    case io::IoError::ConnectionReset:
+    case io::IoError::BrokenPipe:
       return http::HttpStatus::ServiceUnavailable;
     case io::IoError::InvalidArgument:
       return http::HttpStatus::BadRequest;
     case io::IoError::EndOfFile:
       return http::HttpStatus::NotFound;
-    case io::IoError::ConnectionReset:
-    case io::IoError::BrokenPipe:
-      return http::HttpStatus::ServiceUnavailable;
     default:
-      break;
+      return http::HttpStatus::InternalServerError;
     }
   }
 
@@ -44,202 +38,74 @@ inline auto status_from_error(const std::error_code &ec) -> http::HttpStatus {
     case Error::ParseError:
     case Error::InvalidUrl:
       return http::HttpStatus::BadRequest;
-    case Error::Timeout:
-    case Error::Cancelled:
-      return http::HttpStatus::ServiceUnavailable;
-    case Error::AlreadyExists:
-    case Error::HasActiveRuns:
-    case Error::InvalidState:
-      return http::HttpStatus::Conflict;
+    case Error::Unauthorized:
+      return http::HttpStatus::Unauthorized;
     case Error::ReadOnly:
       return http::HttpStatus::Forbidden;
+    case Error::AlreadyExists:
+    case Error::InvalidState:
+      return http::HttpStatus::Conflict;
+    case Error::Timeout:
+    case Error::Cancelled:
     case Error::ResourceExhausted:
     case Error::QueueFull:
+    case Error::RateLimited:
       return http::HttpStatus::ServiceUnavailable;
-    case Error::SystemNotRunning:
-    case Error::DatabaseError:
-      return http::HttpStatus::InternalServerError;
+    case Error::Unsupported:
+      return http::HttpStatus::NotImplemented;
     default:
-      break;
+      return http::HttpStatus::InternalServerError;
     }
-  }
-
-  if (ec == std::make_error_code(std::errc::resource_unavailable_try_again)) {
-    return http::HttpStatus::ServiceUnavailable;
   }
   return http::HttpStatus::InternalServerError;
 }
 
 inline auto text_response(std::string body, http::HttpStatus status,
                           std::string_view content_type) -> http::HttpResponse {
-  http::HttpResponse resp;
-  resp.status = status;
-  resp.set_header("Content-Type", std::string(content_type));
-  resp.body.assign(body.begin(), body.end());
-  return resp;
+  http::HttpResponse response;
+  response.status = status;
+  response.set_header("Content-Type", std::string{content_type});
+  response.set_body(std::move(body));
+  return response;
+}
+
+inline auto json_response(const json &value,
+                          http::HttpStatus status = http::HttpStatus::Ok)
+    -> http::HttpResponse {
+  http::HttpResponse response;
+  response.status = status;
+  response.set_header("Content-Type", "application/json");
+  response.set_body(dump_json(value));
+  return response;
 }
 
 inline auto error_response(int code, std::string_view message)
     -> http::HttpResponse {
-  http::HttpResponse resp{
-      .status = static_cast<http::HttpStatus>(code), .headers = {}, .body = {}};
-  resp.set_header("Content-Type", "application/json");
-  resp.set_body(dump_json(json{{"error", std::string(message)}}));
-  return resp;
-}
-
-inline auto json_response(const json &j,
-                          http::HttpStatus status = http::HttpStatus::Ok)
-    -> http::HttpResponse {
-  http::HttpResponse resp;
-  resp.status = status;
-  resp.set_header("Content-Type", "application/json");
-  auto s = dump_json(j);
-  resp.body.assign(s.begin(), s.end());
-  return resp;
+  return json_response(json{{"error", std::string{message}}},
+                       static_cast<http::HttpStatus>(code));
 }
 
 template <typename T>
 inline auto typed_json_response(
     const T &value, http::HttpStatus status = http::HttpStatus::Ok)
     -> http::HttpResponse {
-  http::HttpResponse resp;
-  resp.status = status;
-  resp.set_header("Content-Type", "application/json");
-
-  if (auto serialized = serialize_json(value); serialized) {
-    resp.body.assign(serialized->begin(), serialized->end());
-  } else {
+  auto serialized = serialize_json(value);
+  if (!serialized) {
     log::error("JSON serialization failed for API response: {}",
                serialized.error().message());
-    resp.status = http::HttpStatus::InternalServerError;
-    constexpr std::string_view fallback =
-        R"({"error":"JSON serialization failed"})";
-    resp.body.assign(fallback.begin(), fallback.end());
+    return error_response(500, "JSON serialization failed");
   }
-  return resp;
+  http::HttpResponse response;
+  response.status = status;
+  response.set_header("Content-Type", "application/json");
+  response.set_body(std::move(*serialized));
+  return response;
 }
 
-inline auto to_result_response(const std::error_code &ec)
+inline auto to_result_response(const std::error_code &error)
     -> Result<http::HttpResponse> {
-  return error_response(static_cast<int>(status_from_error(ec)), ec.message());
-}
-
-inline auto parse_execution_date_arg(std::string_view value)
-    -> std::optional<std::chrono::system_clock::time_point> {
-  if (value.empty() || value == "now") {
-    return std::chrono::system_clock::now();
-  }
-
-  std::chrono::system_clock::time_point tp;
-  std::istringstream ss{std::string(value)};
-
-  if (value.size() == 10) {
-    std::chrono::year_month_day ymd;
-    ss >> std::chrono::parse("%Y-%m-%d", ymd);
-    if (ss.fail()) {
-      return std::nullopt;
-    }
-    tp = std::chrono::sys_days{ymd};
-  } else {
-    ss >> std::chrono::parse("%Y-%m-%dT%H:%M:%SZ", tp);
-    if (ss.fail()) {
-      return std::nullopt;
-    }
-  }
-  return tp;
-}
-
-inline auto to_dto(const DAGInfo &dag_info) -> api_dto::DagInfoDto {
-  api_dto::DagInfoDto dto{
-      .dag_id = dag_info.dag_id.str(),
-      .name = dag_info.name,
-      .description = dag_info.description,
-      .cron = dag_info.cron,
-      .max_concurrent_runs = dag_info.max_concurrent_runs,
-      .is_paused = dag_info.is_paused,
-      .tasks = {},
-  };
-  dto.tasks.reserve(dag_info.tasks.size());
-  for (const auto &t : dag_info.tasks) {
-    dto.tasks.emplace_back(t.task_id.str());
-  }
-  return dto;
-}
-
-inline auto to_run_history_entry(const DAGRun &run, const DAGId &dag_id)
-    -> DatabaseService::RunHistoryEntry {
-  return DatabaseService::RunHistoryEntry{
-      .dag_run_id = run.id().clone(),
-      .dag_id = dag_id.clone(),
-      .dag_rowid = run.dag_rowid(),
-      .run_rowid = run.run_rowid(),
-      .dag_version = run.dag_version(),
-      .state = run.state(),
-      .trigger_type = run.trigger_type(),
-      .scheduled_at = run.scheduled_at(),
-      .started_at = run.started_at(),
-      .finished_at = run.finished_at(),
-      .execution_date = run.execution_date(),
-  };
-}
-
-inline auto to_dto(const DatabaseService::RunHistoryEntry &entry,
-                   DAGRunState resolved_state)
-    -> api_dto::RunHistoryEntryDto {
-  return api_dto::RunHistoryEntryDto{
-      .dag_run_id = entry.dag_run_id.str(),
-      .dag_id = entry.dag_id.str(),
-      .state = enum_to_string(resolved_state),
-      .trigger_type = enum_to_string(entry.trigger_type),
-      .started_at = util::format_iso8601(entry.started_at),
-      .finished_at = util::format_iso8601(entry.finished_at),
-      .execution_date = util::format_iso8601(entry.execution_date),
-  };
-}
-
-inline auto to_dto(const TaskConfig &task) -> api_dto::TaskDetailDto {
-  api_dto::TaskDetailDto dto{
-      .task_id = task.task_id.str(),
-      .name = task.name,
-      .command = task.command,
-      .executor = std::string(to_string_view(task.executor)),
-      .sensor_type = {},
-      .sensor_target = {},
-      .execution_timeout_sec = static_cast<int>(task.execution_timeout.count()),
-      .retry_interval_sec = static_cast<int>(task.retry_interval.count()),
-      .max_retries = task.max_retries,
-      .trigger_rule = std::string(to_string_view(task.trigger_rule)),
-      .is_branch = task.is_branch,
-      .depends_on_past = task.depends_on_past,
-      .xcom_push_count = task.xcom_push.size(),
-      .xcom_pull_count = task.xcom_pull.size(),
-      .dependencies = {},
-  };
-  if (const auto *sensor = task.executor_config.as<SensorExecutorConfig>();
-      sensor != nullptr) {
-    dto.sensor_type = std::string(to_string_view(sensor->type));
-    dto.sensor_target = sensor->target;
-  }
-  dto.dependencies.reserve(task.dependencies.size());
-  for (const auto &dep : task.dependencies) {
-    dto.dependencies.emplace_back(api_dto::TaskDependencyDto{
-        .task = dep.task_id.str(), .label = dep.label});
-  }
-  return dto;
-}
-
-inline auto xcom_entries_to_json_object(const std::vector<XComEntry> &xcoms)
-    -> json {
-  json xcom = json::object_t{};
-  for (const auto &entry : xcoms) {
-    if (auto parsed = parse_json(entry.value); parsed) {
-      xcom[entry.key] = std::move(*parsed);
-    } else {
-      xcom[entry.key] = entry.value;
-    }
-  }
-  return xcom;
+  return ok(error_response(static_cast<int>(status_from_error(error)),
+                           error.message()));
 }
 
 } // namespace dagforge::api_detail

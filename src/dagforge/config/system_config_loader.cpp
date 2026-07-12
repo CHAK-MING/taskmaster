@@ -1,12 +1,14 @@
 #include "dagforge/config/system_config_loader.hpp"
 #include "dagforge/config/toml_util.hpp"
 #include "dagforge/util/log.hpp"
+#include "dagforge/util/url.hpp"
 
 
 #include <boost/lexical_cast.hpp>
 #include <cstdlib>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 
 
 namespace dagforge {
@@ -21,6 +23,7 @@ struct DAGSourceToml {
 struct SystemToml {
   DatabaseConfig database{};
   ComputeConfig compute{};
+  WorkflowConfig workflow{};
   SchedulerConfig scheduler{};
   ApiConfig api{};
   DAGSourceToml dag_source{};
@@ -44,6 +47,30 @@ template <> struct meta<dagforge::ComputeConfig> {
       "threads", &T::threads, "queue_capacity", &T::queue_capacity,
       "pin_threads_to_cores", &T::pin_threads_to_cores,
       "cpu_affinity_offset", &T::cpu_affinity_offset);
+};
+
+template <> struct meta<dagforge::ModelProviderConfig> {
+  using T = dagforge::ModelProviderConfig;
+  static constexpr auto value = object(
+      "name", &T::name, "base_url", &T::base_url, "responses_path",
+      &T::responses_path, "api_key_env", &T::api_key_env, "timeout_sec",
+      &T::timeout_sec, "max_response_bytes", &T::max_response_bytes);
+};
+
+template <> struct meta<dagforge::McpServerConfig> {
+  using T = dagforge::McpServerConfig;
+  static constexpr auto value = object(
+      "name", &T::name, "url", &T::url, "bearer_token_env",
+      &T::bearer_token_env, "protocol_version", &T::protocol_version,
+      "timeout_sec", &T::timeout_sec, "max_response_bytes",
+      &T::max_response_bytes);
+};
+
+template <> struct meta<dagforge::WorkflowConfig> {
+  using T = dagforge::WorkflowConfig;
+  static constexpr auto value = object(
+      "enabled", &T::enabled, "model_providers", &T::model_providers,
+      "mcp_servers", &T::mcp_servers);
 };
 
 template <> struct meta<dagforge::SchedulerConfig> {
@@ -77,8 +104,9 @@ template <> struct meta<dagforge::detail::DAGSourceToml> {
 template <> struct meta<dagforge::detail::SystemToml> {
   using T = dagforge::detail::SystemToml;
   static constexpr auto value = object(
-      "database", &T::database, "compute", &T::compute, "scheduler",
-      &T::scheduler, "api", &T::api, "dag_source", &T::dag_source);
+      "database", &T::database, "compute", &T::compute, "workflow",
+      &T::workflow, "scheduler", &T::scheduler, "api", &T::api,
+      "dag_source", &T::dag_source);
 };
 } // namespace glz
 
@@ -115,6 +143,7 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
   SystemConfig cfg{};
   cfg.database = std::move(raw.database);
   cfg.compute = std::move(raw.compute);
+  cfg.workflow = std::move(raw.workflow);
   cfg.scheduler = std::move(raw.scheduler);
   cfg.api = std::move(raw.api);
 
@@ -137,6 +166,7 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
                           cfg.compute.pin_threads_to_cores);
   apply_env_override("DAGFORGE_COMPUTE_CPU_AFFINITY_OFFSET",
                      cfg.compute.cpu_affinity_offset);
+  apply_env_override_bool("DAGFORGE_WORKFLOW_ENABLED", cfg.workflow.enabled);
 
   apply_env_override("DAGFORGE_SCHEDULER_SHARDS", cfg.scheduler.shards);
   apply_env_override("DAGFORGE_SCHEDULER_MAX_CONCURRENCY",
@@ -171,6 +201,26 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
       cfg.scheduler.zombie_heartbeat_timeout_sec > 0 &&
       cfg.scheduler.zombie_heartbeat_timeout_sec >
           cfg.scheduler.zombie_reaper_interval_sec;
+
+  std::unordered_set<std::string> provider_names;
+  for (const auto &provider : cfg.workflow.model_providers) {
+    if (provider.name.empty() || provider.base_url.empty() ||
+        provider.responses_path.empty() || provider.timeout_sec <= 0 ||
+        provider.max_response_bytes == 0 ||
+        !provider_names.emplace(provider.name).second ||
+        !util::parse_http_url(provider.base_url)) {
+      return fail(Error::ParseError);
+    }
+  }
+  std::unordered_set<std::string> server_names;
+  for (const auto &server : cfg.workflow.mcp_servers) {
+    if (server.name.empty() || server.url.empty() || server.timeout_sec <= 0 ||
+        server.max_response_bytes == 0 ||
+        !server_names.emplace(server.name).second ||
+        !util::parse_http_url(server.url)) {
+      return fail(Error::ParseError);
+    }
+  }
 
   if (cfg.compute.threads < 0 || cfg.compute.queue_capacity <= 0 ||
       cfg.compute.cpu_affinity_offset < 0 ||

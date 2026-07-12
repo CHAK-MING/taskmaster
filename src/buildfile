@@ -12,11 +12,9 @@ lua_lib = ../third_party/lua-5.4.8/src/c{lauxlib lbaselib lcorolib ldblib \
 
 ./: lib{dagforge-foundation}: libul{dagforge-foundation}: \
   mxx{modules/base modules/core modules/util modules/domain modules/io \
-      modules/config modules/scheduler modules/dag modules/storage \
-      modules/client modules/executor modules/task_types modules/app \
-      modules/dagforge \
-      modules/cli modules/xcom} \
-  cxx{modules/scheduler modules/http}
+      modules/config modules/client modules/executor modules/workflow \
+      modules/dagforge} \
+  cxx{modules/http}
 
 lib{dagforge-foundation}:
 {
@@ -36,59 +34,31 @@ lib{dagforge}:                                                   \
   cxx{dagforge/core/shard                                         \
       dagforge/core/compute_pool                                  \
       dagforge/core/runtime                                       \
+      dagforge/workflow/plan_compiler                             \
+      dagforge/workflow/workflow_storage                          \
+      dagforge/workflow/run_value_store                           \
+      dagforge/workflow/workflow_runtime                          \
+      dagforge/workflow/workflow_adapters                         \
+      dagforge/workflow/workflow_control_plane                    \
       dagforge/io/context                                         \
       dagforge/io/timing_wheel                                    \
-      dagforge/scheduler/cron                                     \
-      dagforge/scheduler/engine                                   \
-      dagforge/dag/dag_run                                        \
-      dagforge/dag/dag_manager                                    \
       dagforge/app/metrics_exporter                               \
-      dagforge/app/lifecycle_manager                              \
-      dagforge/storage/mysql_database                             \
       dagforge/executor/shell_executor                            \
       dagforge/executor/docker_executor                           \
-      dagforge/executor/sensor_executor                           \
       dagforge/executor/lua_executor                              \
       dagforge/executor/noop_executor                             \
       dagforge/executor/composite_executor                        \
       dagforge/executor/executor_registry                         \
-      dagforge/app/config_builder                                 \
       dagforge/app/application                                    \
       dagforge/app/api/api_server                                 \
-      dagforge/app/services/execution_service                     \
-      dagforge/app/services/execution_event_bridge                \
-      dagforge/app/services/dag_catalog_service                   \
-      dagforge/app/services/dag_orchestrator                      \
-      dagforge/app/services/scheduler_service                     \
-      dagforge/app/services/persistence_service                   \
       dagforge/client/http/http_parser                            \
       dagforge/app/http/router                                    \
       dagforge/app/http/http_server                               \
       dagforge/client/http/http_client                            \
       dagforge/app/http/websocket                                 \
-      dagforge/config/dag_info_loader                             \
-      dagforge/config/dag_file_loader                             \
-      dagforge/config/config_watcher                              \
       dagforge/config/system_config_loader                        \
-      dagforge/cli/serve                                          \
-      dagforge/cli/run                                            \
-      dagforge/cli/list                                           \
-      dagforge/cli/status                                         \
-      dagforge/cli/validate                                       \
-      dagforge/cli/state                                          \
-      dagforge/cli/clear                                          \
-      dagforge/cli/context                                        \
-      dagforge/cli/db                                             \
-      dagforge/cli/logs                                           \
-      dagforge/cli/test                                           \
-      dagforge/cli/management_client                              \
       dagforge/util/daemon                                        \
-      dagforge/util/log                                           \
-      dagforge/storage/dag_state_adapter                          \
-      dagforge/xcom/xcom_util                                     \
-      dagforge/xcom/xcom_codec                                    \
-      dagforge/xcom/xcom_extractor                                \
-      dagforge/xcom/template_resolver}                            \
+      dagforge/util/log}                                          \
   $lua_core                                                       \
   $lua_lib                                                        \
   $foundation                                                     \
@@ -130,3 +100,4 @@ mxx{modules/task_types}@modules/: cxx.module_name = dagforge.task_types
 mxx{modules/app}@modules/: cxx.module_name = dagforge.metrics
 mxx{modules/cli}@modules/: cxx.module_name = dagforge.cli
 mxx{modules/xcom}@modules/: cxx.module_name = dagforge.xcom
+mxx{modules/workflow}@modules/: cxx.module_name = dagforge.workflow

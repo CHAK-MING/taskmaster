@@ -1,11 +1,8 @@
 #include "dagforge/app/api/api_server.hpp"
 #include "detail/api_context.hpp"
-#include "detail/api_websocket.hpp"
 #include "detail/dto_mapper.hpp"
-#include "detail/routes/dags.hpp"
-#include "detail/routes/logs.hpp"
-#include "detail/routes/runs.hpp"
 #include "detail/routes/system.hpp"
+#include "detail/routes/workflows.hpp"
 #include "dagforge/app/metrics_exporter.hpp"
 #include "dagforge/app/http/http_server.hpp"
 #include "dagforge/app/http/websocket.hpp"
@@ -42,10 +39,7 @@ struct ApiServer::Impl : std::enable_shared_from_this<Impl> {
 
   void init() {
     api_detail::register_system_routes(ctx_);
-    api_detail::register_dag_routes(ctx_);
-    api_detail::register_run_routes(ctx_);
-    api_detail::register_log_routes(ctx_);
-    api_detail::setup_websocket(ctx_);
+    api_detail::register_workflow_routes(ctx_);
   }
 
   auto http_active_requests() const -> std::uint64_t {

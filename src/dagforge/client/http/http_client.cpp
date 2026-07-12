@@ -5,10 +5,15 @@
 
 #include <boost/asio/cancel_after.hpp>
 #include <boost/asio/connect.hpp>
+#include <boost/asio/ssl/host_name_verification.hpp>
+#include <boost/asio/ssl/stream.hpp>
 #include <boost/asio/write.hpp>
 #include <boost/beast/core/flat_buffer.hpp>
 #include <boost/beast/http.hpp>
 
+#include <openssl/ssl.h>
+
+#include <memory>
 #include <string>
 
 namespace dagforge::http {
@@ -53,7 +58,11 @@ auto to_response(
 template <typename Stream>
 auto close_stream(Stream &stream) -> void {
   boost::system::error_code ec;
-  stream.close(ec);
+  if constexpr (requires { stream.next_layer(); }) {
+    stream.next_layer().close(ec);
+  } else {
+    stream.close(ec);
+  }
 }
 
 template <typename Stream>
@@ -110,13 +119,22 @@ struct HttpClient::Impl {
   SocketVariant socket;
   HttpClientConfig config;
   std::string host;
+  std::shared_ptr<boost::asio::ssl::context> tls_context;
 
-  Impl(SocketVariant socket_in, HttpClientConfig cfg)
-      : socket(std::move(socket_in)), config(cfg) {}
+  Impl(SocketVariant socket_in, HttpClientConfig cfg,
+       std::shared_ptr<boost::asio::ssl::context> context = {})
+      : socket(std::move(socket_in)), config(cfg),
+        tls_context(std::move(context)) {}
 };
 
 HttpClient::HttpClient(SocketVariant socket, HttpClientConfig config)
     : impl_(std::make_unique<Impl>(std::move(socket), config)) {}
+
+HttpClient::HttpClient(
+    SocketVariant socket, HttpClientConfig config,
+    std::shared_ptr<boost::asio::ssl::context> tls_context)
+    : impl_(std::make_unique<Impl>(std::move(socket), config,
+                                   std::move(tls_context))) {}
 
 HttpClient::~HttpClient() = default;
 
@@ -147,6 +165,59 @@ auto HttpClient::connect_tcp(io::IoContext &ctx, std::string host,
   (void)*connect_res;
 
   auto client = std::make_unique<HttpClient>(std::move(socket), config);
+  client->impl_->host = std::move(host);
+  co_return ok(std::move(client));
+}
+
+auto HttpClient::connect_tls(io::IoContext &ctx, std::string host,
+                             uint16_t port, HttpClientConfig config)
+    -> task<Result<std::unique_ptr<HttpClient>>> {
+  boost::system::error_code ec;
+  boost::asio::ip::tcp::resolver resolver(ctx);
+  auto endpoints = resolver.resolve(host, std::to_string(port), ec);
+  if (ec) {
+    log::debug("Failed to resolve TLS endpoint {}:{} - {}", host, port,
+               ec.message());
+    co_return fail(Error::InvalidUrl);
+  }
+
+  auto tls_context = std::make_shared<boost::asio::ssl::context>(
+      boost::asio::ssl::context::tls_client);
+  tls_context->set_default_verify_paths(ec);
+  if (ec) {
+    log::debug("Failed to load default TLS trust store: {}", ec.message());
+    co_return fail(ec);
+  }
+  tls_context->set_verify_mode(boost::asio::ssl::verify_peer);
+
+  TlsStream stream(ctx, *tls_context);
+  stream.set_verify_callback(boost::asio::ssl::host_name_verification(host));
+  if (SSL_set_tlsext_host_name(stream.native_handle(), host.c_str()) != 1) {
+    log::debug("Failed to configure TLS SNI for {}", host);
+    co_return fail(Error::InvalidUrl);
+  }
+
+  auto connect_res = co_await co_as_result(boost::asio::async_connect(
+      stream.next_layer(), endpoints,
+      boost::asio::cancel_after(config.connect_timeout, use_nothrow)));
+  if (!connect_res) {
+    log::debug("Failed to connect TLS endpoint {}:{} - {}", host, port,
+               connect_res.error().message());
+    co_return fail(connect_res.error());
+  }
+
+  auto handshake_res = co_await co_as_result(stream.async_handshake(
+      boost::asio::ssl::stream_base::client,
+      boost::asio::cancel_after(config.connect_timeout, use_nothrow)));
+  if (!handshake_res) {
+    log::debug("TLS handshake failed for {}:{} - {}", host, port,
+               handshake_res.error().message());
+    close_stream(stream);
+    co_return fail(handshake_res.error());
+  }
+
+  auto client = std::unique_ptr<HttpClient>(new HttpClient(
+      SocketVariant{std::move(stream)}, config, std::move(tls_context)));
   client->impl_->host = std::move(host);
   co_return ok(std::move(client));
 }
@@ -195,10 +266,20 @@ auto HttpClient::request(HttpRequest req) -> task<Result<HttpResponse>> {
     }
     co_return ok(std::move(*response_res));
   }
-  auto *unix_socket =
-      std::get_if<boost::asio::local::stream_protocol::socket>(&impl_->socket);
-  auto response_res = co_await request_over_stream(*unix_socket, std::move(req),
-                                                   impl_->config, impl_->host);
+  if (auto *unix_socket =
+          std::get_if<boost::asio::local::stream_protocol::socket>(
+              &impl_->socket)) {
+    auto response_res =
+        co_await request_over_stream(*unix_socket, std::move(req),
+                                     impl_->config, impl_->host);
+    if (!response_res) {
+      co_return fail(response_res.error());
+    }
+    co_return ok(std::move(*response_res));
+  }
+  auto *tls = std::get_if<TlsStream>(&impl_->socket);
+  auto response_res = co_await request_over_stream(
+      *tls, std::move(req), impl_->config, impl_->host);
   if (!response_res) {
     co_return fail(response_res.error());
   }
@@ -265,6 +346,9 @@ auto HttpClient::is_connected() const noexcept -> bool {
               &impl_->socket)) {
     return unix_socket->is_open();
   }
+  if (auto *tls = std::get_if<TlsStream>(&impl_->socket)) {
+    return tls->next_layer().is_open();
+  }
   return false;
 }
 
@@ -278,6 +362,10 @@ auto HttpClient::close() -> void {
           std::get_if<boost::asio::local::stream_protocol::socket>(
               &impl_->socket)) {
     unix_socket->close(ec);
+    return;
+  }
+  if (auto *tls = std::get_if<TlsStream>(&impl_->socket)) {
+    tls->next_layer().close(ec);
   }
 }
 

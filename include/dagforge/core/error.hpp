@@ -42,11 +42,12 @@ enum class Error : std::uint8_t {
   ProtocolError,
   Unauthorized,
   RateLimited,
+  Unsupported,
   Unknown,
 };
 
 class ErrorCategory : public std::error_category {
-  static constexpr std::array<std::string_view, 27> messages = {
+  static constexpr std::array<std::string_view, 28> messages = {
       "success",
       "file not found",
       "failed to open file",
@@ -73,6 +74,7 @@ class ErrorCategory : public std::error_category {
       "protocol error",
       "unauthorized",
       "rate limited",
+      "unsupported operation",
       "unknown error",
   };
 

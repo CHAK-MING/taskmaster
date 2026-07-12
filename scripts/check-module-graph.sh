@@ -22,6 +22,7 @@ declare -A expected_module=(
   [storage.cppm]=dagforge.storage.schema
   [task_types.cppm]=dagforge.task_types
   [util.cppm]=dagforge.util
+  [workflow.cppm]=dagforge.workflow
   [xcom.cppm]=dagforge.xcom
 )
 
@@ -39,6 +40,7 @@ declare -A module_rank=(
   [dagforge.config]=3
   [dagforge.dag]=3
   [dagforge.xcom]=3
+  [dagforge.workflow]=3
   [dagforge.metrics]=4
   [dagforge.storage.schema]=4
   [dagforge.foundation]=5

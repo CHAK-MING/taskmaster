@@ -3,6 +3,8 @@
 #include "../api_context.hpp"
 #include "../dto_mapper.hpp"
 #include "dagforge/app/metrics_exporter.hpp"
+#include "dagforge/util/time.hpp"
+#include "dagforge/workflow/workflow_runtime.hpp"
 
 namespace dagforge::api_detail {
 
@@ -20,9 +22,13 @@ inline auto register_system_routes(ApiContext &ctx) -> void {
              ctx.make_instrumented_route(
                  http::HttpMethod::GET, "/api/status",
                  [&ctx](http::HttpRequest) -> task<http::HttpResponse> {
+                   const auto *workflow = ctx.app.workflow_runtime();
                    co_return json_response({
-                       {"dag_count", ctx.app.dag_manager().dag_count()},
-                       {"active_runs", ctx.app.has_active_runs()},
+                       {"runtime", ctx.app.is_running() ? "running" : "stopped"},
+                       {"workflow_enabled", workflow != nullptr},
+                       {"active_workflow_runs",
+                        workflow != nullptr ? workflow->active_run_count() : 0},
+                       {"shards", ctx.app.runtime().shard_count()},
                        {"timestamp", util::format_timestamp()},
                    });
                  }));

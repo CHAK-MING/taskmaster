@@ -1,19 +1,13 @@
 import foundation = ../src/lib{dagforge-foundation}
 import dagforge = ../src/lib{dagforge}
 
-./: exe{dagforge}                     \
-    exe{modules-foundation-smoke}    \
-    exe{core-unit-tests}             \
-    exe{unit-domain-tests}           \
-    exe{unit-runtime-tests}          \
-    exe{unit-storage-tests}          \
-    exe{unit-api-tests}              \
-    exe{unit-e2e-tests}              \
-    exe{all-unit-tests}              \
-    exe{bench-core}                  \
-    exe{bench-storage}               \
-    exe{bench-app}                   \
-    exe{all-benchmarks}
+./: exe{dagforge}                  \
+    exe{modules-foundation-smoke} \
+    exe{core-unit-tests}          \
+    exe{unit-runtime-tests}       \
+    exe{unit-api-tests}           \
+    exe{all-unit-tests}           \
+    exe{bench-core}
 
 exe{dagforge}: ../src/cxx{main} $dagforge $foundation
 {
@@ -23,88 +17,40 @@ exe{dagforge}: ../src/cxx{main} $dagforge $foundation
 
 exe{modules-foundation-smoke}: ../tests/cxx{modules-foundation-smoke} $foundation
 
-exe{core-unit-tests}: ../tests/cxx{test_main dag_test cron_test config_test timing_wheel_test modules_core_smoke_test status_test dag_info_loader_fuzz_test} $dagforge $foundation
+core_tests = ../tests/cxx{test_main runtime_test workflow_test coroutine_test \
+    shard_test shard_affinity_test timing_wheel_test config_test \
+    http_client_test http_server_test http_parser_test router_test \
+    process_management_test io_bridge_test metrics_registry_test \
+    metrics_exporter_test daemon_test log_test docker_client_test \
+    docker_executor_test api_test}
+
+exe{core-unit-tests}: $core_tests $dagforge $foundation
 {
   test = true
   cxx.libs += -lgtest -pthread
 }
 
-exe{unit-domain-tests}: ../tests/cxx{test_main trigger_rule_test branching_test dag_run_test dag_manager_test dag_validation_test dag_catalog_service_test retry_policy_test xcom_test template_resolver_test cli_test cli_binary_test dag_domain_test} $dagforge $foundation
+exe{unit-runtime-tests}: $core_tests $dagforge $foundation
 {
   test = true
   cxx.libs += -lgtest -pthread
 }
 
-exe{unit-runtime-tests}: ../tests/cxx{test_main runtime_test coroutine_test shard_test shard_affinity_test engine_test scheduler_service_test sensor_executor_test websocket_test http_client_test http_server_test http_parser_test router_test process_management_test io_bridge_test execution_service_test execution_event_bridge_test metrics_registry_test metrics_exporter_test config_watcher_test daemon_test log_test executor_test docker_client_test docker_executor_test integration_test api_test} $dagforge $foundation
-{
-  test = true
-  cxx.libs += -lgtest -pthread
-}
-
-exe{unit-storage-tests}: ../tests/cxx{test_main persistence_test} $dagforge $foundation
-{
-  test = true
-  cxx.libs += -lgtest -pthread
-}
-
-exe{unit-api-tests}: ../tests/cxx{test_main api_e2e_test} $dagforge $foundation
-{
-  test = true
-  cxx.libs += -lgtest -pthread
-}
-
-exe{unit-e2e-tests}: ../tests/cxx{test_main edge_case_toml_e2e_test topology_toml_e2e_test} $dagforge $foundation
-{
-  test = true
-  cxx.libs += -lgtest -pthread
-}
-
-exe{all-unit-tests}: ../tests/cxx{test_main                    \
-    dag_test cron_test config_test timing_wheel_test          \
-    modules_core_smoke_test status_test dag_info_loader_fuzz_test \
-    trigger_rule_test branching_test dag_run_test             \
-    dag_manager_test dag_validation_test                      \
-    dag_catalog_service_test retry_policy_test xcom_test      \
-    template_resolver_test cli_test cli_binary_test dag_domain_test \
-    runtime_test coroutine_test shard_test                    \
-    shard_affinity_test engine_test scheduler_service_test    \
-    sensor_executor_test websocket_test http_client_test      \
-    http_server_test http_parser_test router_test             \
-    process_management_test io_bridge_test                    \
-    execution_service_test execution_event_bridge_test        \
-    metrics_registry_test metrics_exporter_test               \
-    config_watcher_test daemon_test log_test                  \
-    executor_test docker_client_test docker_executor_test     \
-    integration_test api_test persistence_test                \
-    api_e2e_test edge_case_toml_e2e_test                      \
-    topology_toml_e2e_test}                                   \
+exe{unit-api-tests}: ../tests/cxx{test_main api_test workflow_test} \
   $dagforge $foundation
 {
   test = true
   cxx.libs += -lgtest -pthread
 }
 
-exe{bench-core}: ../tests/cxx{bench_config_parse bench_dag_engine bench_memory_arena bench_runtime bench_xcom bench_lua_executor} $dagforge $foundation
+exe{all-unit-tests}: $core_tests $dagforge $foundation
 {
-  cxx.libs += -lbenchmark_main -lbenchmark -pthread
+  test = true
+  cxx.libs += -lgtest -pthread
 }
 
-exe{bench-storage}: ../tests/cxx{bench_mysql_storage} $dagforge $foundation
-{
-  cxx.libs += -lbenchmark_main -lbenchmark -pthread
-}
-
-exe{bench-app}: ../tests/cxx{bench_scheduler_service bench_websocket_broadcast} $dagforge $foundation
-{
-  cxx.libs += -lbenchmark_main -lbenchmark -pthread
-}
-
-exe{all-benchmarks}: ../tests/cxx{bench_config_parse          \
-    bench_dag_engine bench_memory_arena bench_runtime         \
-    bench_xcom bench_lua_executor bench_mysql_storage         \
-    bench_scheduler_service                                   \
-    bench_websocket_broadcast bench_executor_compare}         \
-  $dagforge $foundation
+exe{bench-core}: ../tests/cxx{bench_memory_arena bench_runtime \
+    bench_lua_executor} $dagforge $foundation
 {
   cxx.libs += -lbenchmark_main -lbenchmark -pthread
 }

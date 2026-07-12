@@ -1,399 +1,229 @@
-#include "dagforge/cli/commands.hpp"
+#include "dagforge/app/application.hpp"
+#include "dagforge/core/sync_wait.hpp"
+#include "dagforge/util/json.hpp"
 #include "dagforge/util/log.hpp"
+#include "dagforge/workflow/workflow_control_plane.hpp"
+#include "dagforge/workflow/workflow_runtime.hpp"
 
 #include <CLI/CLI.hpp>
 
-#include <cstdio>
+#include <atomic>
+#include <chrono>
+#include <csignal>
 #include <cstdlib>
-#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace {
 
-using namespace dagforge::cli;
+std::atomic<bool> g_shutdown_requested{false};
 
-struct CliOptionStore {
-  ServeStartOptions serve_start;
-  ServeStatusOptions serve_status;
-  ServeStopOptions serve_stop;
-  TriggerOptions trigger;
-  TestTaskOptions test_task;
-  ListDagsOptions list_dags;
-  ListRunsOptions list_runs;
-  ListTasksOptions list_tasks;
-  ClearOptions clear;
-  PauseOptions pause;
-  UnpauseOptions unpause;
-  InspectOptions inspect;
-  LogsOptions logs;
-  ValidateOptions validate;
-  DbOptions db_init;
-  DbOptions db_migrate;
-  DbOptions db_prune_stale;
-};
+extern "C" void handle_signal(int) {
+  g_shutdown_requested.store(true, std::memory_order_release);
+}
 
-auto default_config() -> std::string {
-  if (const char *env = std::getenv("DAGFORGE_CONFIG"); env && *env) {
-    return env;
+[[nodiscard]] auto read_text_file(const std::string &path)
+    -> dagforge::Result<std::string> {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    return dagforge::fail(dagforge::Error::FileOpenFailed);
   }
-  return {};
-}
-
-template <typename Options>
-auto bind_config_option(CLI::App &cmd, Options &opts,
-                        const std::string &env_config,
-                        bool required_if_env_missing = true)
-    -> CLI::Option * {
-  opts.config_file = env_config;
-  auto *opt =
-      cmd.add_option("-c,--config", opts.config_file, "System config file")
-          ->check(CLI::ExistingFile);
-  if (required_if_env_missing && env_config.empty()) {
-    opt->required();
+  std::ostringstream buffer;
+  buffer << input.rdbuf();
+  if (!input.good() && !input.eof()) {
+    return dagforge::fail(dagforge::Error::FileOpenFailed);
   }
-  return opt;
+  return dagforge::ok(buffer.str());
 }
 
-template <typename Options>
-auto bind_json_flag(CLI::App &cmd, Options &opts) -> void {
-  cmd.add_flag("--json", opts.json, "Output JSON");
+[[nodiscard]] auto load_plan(const std::string &path)
+    -> dagforge::Result<dagforge::workflow::WorkflowPlan> {
+  auto text = read_text_file(path);
+  if (!text) {
+    return dagforge::fail(text.error());
+  }
+  const auto extension = std::filesystem::path(path).extension().string();
+  if (extension == ".toml") {
+    return dagforge::workflow::WorkflowPlanLoader::from_toml(*text);
+  }
+  return dagforge::workflow::WorkflowPlanLoader::from_json(*text);
 }
 
-auto bind_output_option(CLI::App &cmd, std::string &output) -> void {
-  cmd.add_option("--output", output, "Output format: table|json")
-      ->check(CLI::IsMember({"table", "json"}, CLI::ignore_case));
+[[nodiscard]] auto terminal(dagforge::workflow::RunState state) noexcept
+    -> bool {
+  using dagforge::workflow::RunState;
+  return state == RunState::Success || state == RunState::Failed ||
+         state == RunState::Cancelled;
 }
 
-auto bind_limit_option(CLI::App &cmd, std::size_t &limit) -> void {
-  cmd.add_option("--limit", limit, "Max records to display (default: 50)")
-      ->check(CLI::PositiveNumber);
+auto run_serve(const std::string &config_path) -> int {
+  dagforge::Application app;
+  auto loaded = app.load_config(config_path);
+  if (!loaded) {
+    std::cerr << "Failed to load config: " << loaded.error().message() << '\n';
+    return 1;
+  }
+  auto started = app.start();
+  if (!started) {
+    std::cerr << "Failed to start DAGForge: " << started.error().message()
+              << '\n';
+    return 1;
+  }
+
+  std::signal(SIGINT, handle_signal);
+  std::signal(SIGTERM, handle_signal);
+  while (!g_shutdown_requested.load(std::memory_order_acquire)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  app.stop();
+  return 0;
 }
 
-template <typename Func>
-auto bind_exit_callback(CLI::App &cmd, Func &&func) -> void {
-  cmd.callback(
-      [func = std::forward<Func>(func)]() mutable { std::exit(func()); });
+auto run_validate(const std::string &plan_path) -> int {
+  auto plan = load_plan(plan_path);
+  if (!plan) {
+    std::cerr << "Invalid workflow plan: " << plan.error().message() << '\n';
+    return 1;
+  }
+  auto compiled = dagforge::workflow::PlanCompiler{}.compile(std::move(*plan));
+  if (!compiled) {
+    std::cerr << "Workflow rejected: " << compiled.error().message() << '\n';
+    return 1;
+  }
+  std::cout << "workflow_id=" << (*compiled)->workflow_id << '\n'
+            << "plan_id=" << (*compiled)->plan_id << '\n'
+            << "digest=" << (*compiled)->digest << '\n'
+            << "nodes=" << (*compiled)->nodes.size() << '\n';
+  return 0;
 }
 
-auto configure_terminate_handler() -> void {
-  std::set_terminate([] {
-    if (auto eptr = std::current_exception(); eptr) {
-      try {
-        std::rethrow_exception(eptr);
-      } catch (const std::exception &e) {
-        dagforge::log::error("Unhandled fatal exception: {}", e.what());
-      } catch (...) {
-        dagforge::log::error("Unhandled fatal non-std exception");
-      }
-    } else {
-      dagforge::log::error("std::terminate called without active exception");
+auto run_local(const std::string &config_path, const std::string &plan_path,
+               const std::string &payload_text, bool wait) -> int {
+  dagforge::Application app;
+  auto loaded = app.load_config(config_path);
+  if (!loaded) {
+    std::cerr << "Failed to load config: " << loaded.error().message() << '\n';
+    return 1;
+  }
+  app.config().api.enabled = false;
+  auto initialized = app.init();
+  if (!initialized) {
+    std::cerr << "Failed to initialize: " << initialized.error().message()
+              << '\n';
+    return 1;
+  }
+  auto started_app = app.start();
+  if (!started_app) {
+    std::cerr << "Failed to start runtime: " << started_app.error().message()
+              << '\n';
+    return 1;
+  }
+
+  auto plan = load_plan(plan_path);
+  if (!plan) {
+    std::cerr << "Invalid workflow plan: " << plan.error().message() << '\n';
+    app.stop();
+    return 1;
+  }
+  auto registered = app.workflow_control_plane()->register_plan(std::move(*plan));
+  if (!registered) {
+    std::cerr << "Workflow rejected: " << registered.error().message() << '\n';
+    app.stop();
+    return 1;
+  }
+
+  dagforge::workflow::WorkflowValue payload;
+  if (!payload_text.empty()) {
+    auto parsed = dagforge::parse_json(payload_text);
+    payload = parsed ? dagforge::workflow::WorkflowValue{std::move(*parsed)}
+                     : dagforge::workflow::WorkflowValue{payload_text};
+  }
+  auto run = app.workflow_runtime()->start(
+      *registered,
+      dagforge::workflow::TriggerEnvelope{
+          .workflow_id = (*registered)->workflow_id.clone(),
+          .source = "cli",
+          .event_type = "request",
+          .payload = std::move(payload),
+          .principal = dagforge::workflow::Principal{.subject = "cli"},
+      });
+  if (!run) {
+    std::cerr << "Failed to start workflow: " << run.error().message() << '\n';
+    app.stop();
+    return 1;
+  }
+  std::cout << run->str() << '\n';
+
+  if (!wait) {
+    app.stop();
+    return 0;
+  }
+
+  for (;;) {
+    auto snapshot = dagforge::sync_wait_on_runtime(
+        app.runtime(), app.workflow_runtime()->snapshot(*run));
+    if (!snapshot) {
+      std::cerr << "Failed to query workflow: " << snapshot.error().message()
+                << '\n';
+      app.stop();
+      return 1;
     }
-    std::abort();
-  });
-}
-
-auto register_serve_commands(CLI::App &app, const std::string &env_config,
-                             CliOptionStore &store) -> void {
-  auto *serve = app.add_subcommand("serve", "Service lifecycle operations");
-  serve->require_subcommand(1);
-  serve->footer("\nExamples:\n"
-                "  dagforge serve start -c system_config.toml\n"
-                "  dagforge serve start -c system_config.toml --daemon "
-                "--log-file dagforge.log\n"
-                "  dagforge serve status -c system_config.toml\n"
-                "  dagforge serve stop -c system_config.toml");
-
-  auto *serve_start = serve->add_subcommand("start", "Start DAGForge service");
-  bind_config_option(*serve_start, store.serve_start, env_config);
-  serve_start->add_flag("--no-api", store.serve_start.no_api,
-                        "Disable REST API");
-  serve_start->add_option("--pid-file", store.serve_start.pid_file,
-                          "PID file path override");
-  serve_start->add_option("--log-file", store.serve_start.log_file,
-                          "Log file path (required for --daemon)");
-  serve_start->add_option("--log-level", store.serve_start.log_level,
-                          "Log level override: trace|debug|info|warn|error");
-  serve_start->add_flag("-d,--daemon", store.serve_start.daemon,
-                        "Run as daemon");
-  serve_start
-      ->add_option("--shards", store.serve_start.shards,
-                   "Number of shards (default: auto-detect CPU cores)")
-      ->check(CLI::PositiveNumber);
-  bind_exit_callback(*serve_start,
-                     [&opts = store.serve_start]() { return cmd_serve_start(opts); });
-
-  auto *serve_status =
-      serve->add_subcommand("status", "Show DAGForge service status");
-  bind_config_option(*serve_status, store.serve_status, env_config);
-  serve_status->add_option("--pid-file", store.serve_status.pid_file,
-                           "PID file path override");
-  bind_json_flag(*serve_status, store.serve_status);
-  bind_exit_callback(*serve_status,
-                     [&opts = store.serve_status]() { return cmd_serve_status(opts); });
-
-  auto *serve_stop = serve->add_subcommand("stop", "Stop DAGForge service");
-  bind_config_option(*serve_stop, store.serve_stop, env_config);
-  serve_stop->add_option("--pid-file", store.serve_stop.pid_file,
-                         "PID file path override");
-  serve_stop
-      ->add_option("--timeout", store.serve_stop.timeout_sec,
-                   "Seconds to wait before failing or forcing stop")
-      ->check(CLI::PositiveNumber);
-  serve_stop->add_flag("--force", store.serve_stop.force,
-                       "Send SIGKILL if graceful stop times out");
-  bind_exit_callback(*serve_stop,
-                     [&opts = store.serve_stop]() { return cmd_serve_stop(opts); });
-}
-
-auto register_run_commands(CLI::App &app, const std::string &env_config,
-                           CliOptionStore &store) -> void {
-  auto *trigger = app.add_subcommand("trigger", "Trigger a DAG run");
-  trigger->footer(
-      "\nExamples:\n"
-      "  dagforge trigger -c system_config.toml my_pipeline\n"
-      "  dagforge trigger -c system_config.toml my_pipeline --wait\n"
-      "  dagforge trigger -c system_config.toml my_pipeline --json");
-  bind_config_option(*trigger, store.trigger, env_config);
-  trigger->add_option("dag_id", store.trigger.dag_id, "DAG ID")->required();
-  trigger->add_option("-e,--execution-date", store.trigger.execution_date,
-                      "Logical execution time (ISO8601 or 'now')");
-  trigger->add_flag("--no-api", store.trigger.no_api,
-                    "Skip API trigger path and force local one-shot execution");
-  trigger->add_flag("--wait", store.trigger.wait,
-                    "Block until run completes and return final status");
-  bind_json_flag(*trigger, store.trigger);
-  bind_exit_callback(*trigger,
-                     [&opts = store.trigger]() { return cmd_trigger(opts); });
-
-  auto *test_task = app.add_subcommand(
-      "test", "Run one task in isolation (Airflow-style test)");
-  test_task->footer(
-      "\nExamples:\n"
-      "  dagforge test -c system_config.toml my_pipeline task_a\n"
-      "  dagforge test -c system_config.toml my_pipeline task_a --json");
-  bind_config_option(*test_task, store.test_task, env_config);
-  test_task->add_option("dag_id", store.test_task.dag_id, "DAG ID")
-      ->required();
-  test_task->add_option("task_id", store.test_task.task_id, "Task ID")
-      ->required();
-  bind_json_flag(*test_task, store.test_task);
-  bind_exit_callback(*test_task,
-                     [&opts = store.test_task]() { return cmd_test_task(opts); });
-}
-
-auto register_list_commands(CLI::App &app, const std::string &env_config,
-                            CliOptionStore &store) -> void {
-  auto *list = app.add_subcommand("list", "List resources");
-  list->require_subcommand(1);
-  list->footer(
-      "\nExamples:\n"
-      "  dagforge list dags -c system_config.toml\n"
-      "  dagforge list dags -c system_config.toml --output json\n"
-      "  dagforge list runs -c system_config.toml my_pipeline --state failed\n"
-      "  dagforge list tasks -c system_config.toml my_pipeline");
-
-  auto *list_dags = list->add_subcommand("dags", "List all DAGs");
-  bind_config_option(*list_dags, store.list_dags, env_config);
-  bind_json_flag(*list_dags, store.list_dags);
-  bind_output_option(*list_dags, store.list_dags.output);
-  list_dags->add_flag("--include-stale", store.list_dags.include_stale,
-                      "Include DB-only stale DAGs in output");
-  bind_limit_option(*list_dags, store.list_dags.limit);
-  bind_exit_callback(*list_dags,
-                     [&opts = store.list_dags]() { return cmd_list_dags(opts); });
-
-  auto *list_runs = list->add_subcommand("runs", "List DAG runs");
-  bind_config_option(*list_runs, store.list_runs, env_config);
-  list_runs->add_option("dag_id", store.list_runs.dag_id,
-                        "Filter by DAG ID (optional)");
-  list_runs->add_option("--state", store.list_runs.state,
-                        "Filter by state (success, failed, running)");
-  bind_json_flag(*list_runs, store.list_runs);
-  bind_output_option(*list_runs, store.list_runs.output);
-  bind_limit_option(*list_runs, store.list_runs.limit);
-  bind_exit_callback(*list_runs,
-                     [&opts = store.list_runs]() { return cmd_list_runs(opts); });
-
-  auto *list_tasks =
-      list->add_subcommand("tasks", "List task definitions in a DAG");
-  bind_config_option(*list_tasks, store.list_tasks, env_config);
-  list_tasks->add_option(
-      "dag_id", store.list_tasks.dag_id,
-      "DAG ID (optional; lists tasks for all DAGs if omitted)");
-  bind_json_flag(*list_tasks, store.list_tasks);
-  bind_output_option(*list_tasks, store.list_tasks.output);
-  bind_exit_callback(*list_tasks,
-                     [&opts = store.list_tasks]() { return cmd_list_tasks(opts); });
-}
-
-auto register_state_commands(CLI::App &app, const std::string &env_config,
-                             CliOptionStore &store) -> void {
-  auto *clear = app.add_subcommand("clear", "Clear task states for re-execution");
-  clear->footer(
-      "\nExamples:\n"
-      "  dagforge clear -c system_config.toml my_dag --run <run_id> --failed\n"
-      "  dagforge clear -c system_config.toml my_dag --run <run_id> --failed "
-      "--dry-run\n"
-      "  dagforge clear -c system_config.toml my_dag --run <run_id> --task "
-      "task_a");
-  bind_config_option(*clear, store.clear, env_config);
-  clear->add_option("dag_id", store.clear.dag_id, "DAG ID")->required();
-  clear->add_option("--run", store.clear.run_id, "Run ID")->required();
-  clear->add_option("--task", store.clear.task,
-                    "Clear specific task (by task_id)");
-  clear->add_flag("--failed", store.clear.failed_only,
-                  "Only clear failed tasks");
-  clear->add_flag("--all", store.clear.all_tasks, "Clear all tasks in the run");
-  clear->add_flag("--downstream", store.clear.downstream,
-                  "Also clear downstream tasks");
-  clear->add_flag("--dry-run", store.clear.dry_run,
-                  "Show what would be cleared without making changes");
-  bind_json_flag(*clear, store.clear);
-  bind_exit_callback(*clear,
-                     [&opts = store.clear]() { return cmd_clear(opts); });
-
-  auto *pause_cmd = app.add_subcommand("pause", "Pause DAG scheduling");
-  pause_cmd->footer("\nExamples:\n"
-                    "  dagforge pause -c system_config.toml my_dag");
-  bind_config_option(*pause_cmd, store.pause, env_config);
-  pause_cmd->add_option("dag_id", store.pause.dag_id, "DAG ID")->required();
-  bind_json_flag(*pause_cmd, store.pause);
-  bind_exit_callback(*pause_cmd,
-                     [&opts = store.pause]() { return cmd_pause(opts); });
-
-  auto *unpause_cmd = app.add_subcommand("unpause", "Resume DAG scheduling");
-  unpause_cmd->footer("\nExamples:\n"
-                      "  dagforge unpause -c system_config.toml my_dag");
-  bind_config_option(*unpause_cmd, store.unpause, env_config);
-  unpause_cmd->add_option("dag_id", store.unpause.dag_id, "DAG ID")
-      ->required();
-  bind_json_flag(*unpause_cmd, store.unpause);
-  bind_exit_callback(*unpause_cmd,
-                     [&opts = store.unpause]() { return cmd_unpause(opts); });
-
-  auto *inspect = app.add_subcommand("inspect", "Inspect DAG run details");
-  inspect->footer(
-      "\nExamples:\n"
-      "  dagforge inspect -c system_config.toml my_dag --latest\n"
-      "  dagforge inspect -c system_config.toml my_dag --run latest\n"
-      "  dagforge inspect -c system_config.toml my_dag --run <run_id> --xcom "
-      "--details");
-  bind_config_option(*inspect, store.inspect, env_config);
-  inspect->add_option("dag_id", store.inspect.dag_id, "DAG ID")->required();
-  inspect->add_option("--run", store.inspect.run_id, "Run ID or 'latest'");
-  inspect->add_flag("--latest", store.inspect.latest,
-                    "Use the most recent run (shortcut for --run latest)");
-  inspect->add_flag("--xcom", store.inspect.xcom, "Show XCom variables");
-  inspect->add_flag("--details", store.inspect.details,
-                    "Show execution time histogram");
-  bind_json_flag(*inspect, store.inspect);
-  bind_exit_callback(*inspect,
-                     [&opts = store.inspect]() { return cmd_inspect(opts); });
-
-  auto *logs_cmd = app.add_subcommand("logs", "View task execution logs");
-  logs_cmd->footer(
-      "\nExamples:\n"
-      "  dagforge logs -c system_config.toml my_dag --latest\n"
-      "  dagforge logs -c system_config.toml my_dag --run latest\n"
-      "  dagforge logs -c system_config.toml my_dag --latest --task task_a -f\n"
-      "  dagforge logs -c system_config.toml my_dag --run <run_id> "
-      "--short-time");
-  bind_config_option(*logs_cmd, store.logs, env_config);
-  logs_cmd->add_option("dag_id", store.logs.dag_id, "DAG ID")->required();
-  logs_cmd->add_option("--run", store.logs.run_id, "Run ID or 'latest'");
-  logs_cmd->add_option("--task", store.logs.task_id, "Filter by task ID");
-  logs_cmd
-      ->add_option("--attempt", store.logs.attempt,
-                   "Attempt number (default: 1)")
-      ->check(CLI::PositiveNumber);
-  logs_cmd->add_flag("--latest", store.logs.latest, "Use the most recent run");
-  logs_cmd->add_flag("--follow,-f", store.logs.follow,
-                     "Poll for new log lines until run completes");
-  logs_cmd->add_flag("--short-time", store.logs.short_time,
-                     "Use compact timestamp display");
-  bind_json_flag(*logs_cmd, store.logs);
-  bind_exit_callback(*logs_cmd,
-                     [&opts = store.logs]() { return cmd_logs(opts); });
-}
-
-auto register_validate_commands(CLI::App &app, const std::string &env_config,
-                                CliOptionStore &store) -> void {
-  auto *validate = app.add_subcommand("validate", "Validate DAG files");
-  validate->footer("\nExamples:\n"
-                   "  dagforge validate -c system_config.toml\n"
-                   "  dagforge validate -f dags/my_dag.toml");
-  bind_config_option(*validate, store.validate, env_config, false);
-  validate
-      ->add_option("-f,--file", store.validate.file,
-                   "Specific TOML file to validate")
-      ->check(CLI::ExistingFile);
-  bind_json_flag(*validate, store.validate);
-  validate->callback([&opts = store.validate]() {
-    if (opts.config_file.empty() && !opts.file.has_value()) {
-      std::fputs("Error: Either --config or --file is required\n", stderr);
-      std::exit(1);
+    if (terminal((*snapshot)->state)) {
+      std::cout << dagforge::workflow::to_string_view((*snapshot)->state)
+                << '\n';
+      const auto exit_code =
+          (*snapshot)->state == dagforge::workflow::RunState::Success ? 0 : 1;
+      app.stop();
+      return exit_code;
     }
-    std::exit(cmd_validate(opts));
-  });
-}
-
-auto register_db_commands(CLI::App &app, const std::string &env_config,
-                          CliOptionStore &store) -> void {
-  auto *db = app.add_subcommand("db", "Database management");
-  db->require_subcommand(1);
-  db->footer("\nExamples:\n"
-             "  dagforge db init -c system_config.toml\n"
-             "  dagforge db migrate -c system_config.toml\n"
-             "  dagforge db prune-stale -c system_config.toml --dry-run");
-
-  auto *db_init = db->add_subcommand("init", "Initialize database schema");
-  bind_config_option(*db_init, store.db_init, env_config);
-  bind_exit_callback(*db_init,
-                     [&opts = store.db_init]() { return cmd_db_init(opts); });
-
-  auto *db_migrate = db->add_subcommand("migrate", "Run database migrations");
-  bind_config_option(*db_migrate, store.db_migrate, env_config);
-  bind_exit_callback(*db_migrate,
-                     [&opts = store.db_migrate]() { return cmd_db_migrate(opts); });
-
-  auto *db_prune_stale = db->add_subcommand(
-      "prune-stale",
-      "Delete DB-only stale DAGs not present in DAG source directory");
-  bind_config_option(*db_prune_stale, store.db_prune_stale, env_config);
-  db_prune_stale->add_flag("--dry-run", store.db_prune_stale.dry_run,
-                           "Show stale DAGs without deleting them");
-  bind_exit_callback(*db_prune_stale, [&opts = store.db_prune_stale]() {
-    return cmd_db_prune_stale(opts);
-  });
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
 }
 
 } // namespace
 
-int main(int argc, char *argv[]) {
-  configure_terminate_handler();
-
-  dagforge::log::set_output_stderr();
-  dagforge::log::set_level(dagforge::log::Level::Warn);
-
-  CLI::App app{"DAGForge", "A DAG-based Task Scheduler"};
+int main(int argc, char **argv) {
+  CLI::App app{"DAGForge 0.4 AI workflow runtime"};
   app.require_subcommand(1);
-  app.footer("\nExamples:\n"
-             "  dagforge serve start -c system_config.toml\n"
-             "  dagforge trigger -c system_config.toml my_pipeline --wait\n"
-             "\nTip: Set DAGFORGE_CONFIG=system_config.toml to skip -c on "
-             "every command.");
 
-  const std::string env_config = default_config();
-  CliOptionStore store;
+  std::string serve_config;
+  auto *serve = app.add_subcommand("serve", "Run the workflow API service");
+  serve->add_option("-c,--config", serve_config, "System config TOML")
+      ->required()
+      ->check(CLI::ExistingFile);
 
-  register_serve_commands(app, env_config, store);
-  register_run_commands(app, env_config, store);
-  register_list_commands(app, env_config, store);
-  register_state_commands(app, env_config, store);
-  register_validate_commands(app, env_config, store);
-  register_db_commands(app, env_config, store);
+  std::string validate_plan;
+  auto *validate = app.add_subcommand("validate", "Compile and validate a plan");
+  validate->add_option("-f,--file", validate_plan, "Workflow JSON or TOML")
+      ->required()
+      ->check(CLI::ExistingFile);
+
+  std::string run_config;
+  std::string run_plan;
+  std::string run_payload;
+  bool run_wait = false;
+  auto *run = app.add_subcommand("run", "Run a workflow plan locally");
+  run->add_option("-c,--config", run_config, "System config TOML")
+      ->required()
+      ->check(CLI::ExistingFile);
+  run->add_option("-f,--file", run_plan, "Workflow JSON or TOML")
+      ->required()
+      ->check(CLI::ExistingFile);
+  run->add_option("--payload", run_payload, "JSON or text trigger payload");
+  run->add_flag("--wait", run_wait, "Wait for terminal state");
 
   CLI11_PARSE(app, argc, argv);
-  return 0;
+  if (*serve) {
+    return run_serve(serve_config);
+  }
+  if (*validate) {
+    return run_validate(validate_plan);
+  }
+  return run_local(run_config, run_plan, run_payload, run_wait);
 }

@@ -1,8 +1,9 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include "dagforge/config/task_types.hpp"
 #include "dagforge/config/task_policies.hpp"
+#include "dagforge/core/error.hpp"
+#include "dagforge/config/task_types.hpp"
 #include "dagforge/executor/executor_types.hpp"
 #include "dagforge/util/id.hpp"
 
@@ -11,11 +12,9 @@
 #include <vector>
 #endif
 
-
 namespace dagforge {
 
 struct TaskConfig {
-  /// Runtime projection used after DAG compilation.
   struct Compiled {
     int64_t task_rowid{0};
     TaskId task_id;
@@ -23,17 +22,12 @@ struct TaskConfig {
     std::string command;
     std::string working_dir;
     std::chrono::seconds execution_timeout{task_defaults::kExecutionTimeout};
-    bool is_branch{false};
-    std::string branch_xcom_key{"branch"};
-    bool depends_on_past{false};
-    std::vector<XComPushConfig> xcom_push;
-    std::vector<XComPullConfig> xcom_pull;
   };
 
   struct Builder;
   static auto builder() -> Builder;
 
-  int64_t task_rowid{0}; // Stable DB reference (FK -> dag_tasks.task_rowid)
+  int64_t task_rowid{0};
   TaskId task_id;
   std::string name;
   std::string command;
@@ -45,12 +39,6 @@ struct TaskConfig {
   std::chrono::seconds retry_interval{task_defaults::kRetryInterval};
   int max_retries{task_defaults::kMaxRetries};
   TriggerRule trigger_rule{TriggerRule::AllSuccess};
-  bool is_branch{false};
-  std::string branch_xcom_key{"branch"};
-  bool depends_on_past{false};
-
-  std::vector<XComPushConfig> xcom_push;
-  std::vector<XComPullConfig> xcom_pull;
 
   [[nodiscard]] auto compiled() const -> Compiled {
     return Compiled{
@@ -60,11 +48,6 @@ struct TaskConfig {
         .command = command,
         .working_dir = working_dir,
         .execution_timeout = execution_timeout,
-        .is_branch = is_branch,
-        .branch_xcom_key = branch_xcom_key,
-        .depends_on_past = depends_on_past,
-        .xcom_push = xcom_push,
-        .xcom_pull = xcom_pull,
     };
   }
 };
@@ -124,27 +107,6 @@ struct TaskConfig::Builder {
     return std::move(*this);
   }
 
-  auto branch(bool is_br, std::string key = "branch") -> Builder && {
-    config_.is_branch = is_br;
-    config_.branch_xcom_key = std::move(key);
-    return std::move(*this);
-  }
-
-  auto depends_on_past(bool d) -> Builder && {
-    config_.depends_on_past = d;
-    return std::move(*this);
-  }
-
-  auto push_xcom(XComPushConfig p) -> Builder && {
-    config_.xcom_push.push_back(std::move(p));
-    return std::move(*this);
-  }
-
-  auto pull_xcom(XComPullConfig p) -> Builder && {
-    config_.xcom_pull.push_back(std::move(p));
-    return std::move(*this);
-  }
-
   [[nodiscard]] auto build() && -> Result<TaskConfig> {
     if (config_.task_id.empty()) {
       if (config_.name.empty()) {
@@ -152,15 +114,9 @@ struct TaskConfig::Builder {
       }
       config_.task_id = TaskId{config_.name};
     }
-    if (config_.command.empty() && config_.executor != ExecutorType::Sensor &&
-        config_.executor != ExecutorType::Lua &&
+    if (config_.command.empty() && config_.executor != ExecutorType::Lua &&
         config_.executor != ExecutorType::Noop) {
       return fail(Error::InvalidArgument);
-    }
-    for (auto &push : config_.xcom_push) {
-      if (auto prepared = push.prepare(); !prepared) {
-        return fail(prepared.error());
-      }
     }
     return ok(std::move(config_));
   }

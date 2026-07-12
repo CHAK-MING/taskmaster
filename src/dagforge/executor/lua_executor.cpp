@@ -417,55 +417,6 @@ int lua_dagforge_sleep(lua_State *L) {
   return 0;
 }
 
-int lua_dagforge_xcom_pull(lua_State *L) {
-  auto *exec = load_execution_context(L);
-  if (exec == nullptr || exec->lua_context == nullptr) {
-    lua_pushnil(L);
-    return 1;
-  }
-  size_t task_size = 0;
-  const char *task_id = luaL_checklstring(L, 1, &task_size);
-  size_t key_size = 0;
-  const char *key = luaL_checklstring(L, 2, &key_size);
-
-  auto task_it =
-      exec->lua_context->xcom_values.find(std::string(task_id, task_size));
-  if (task_it == exec->lua_context->xcom_values.end() || !task_it->second) {
-    lua_pushnil(L);
-    return 1;
-  }
-  auto value_it = task_it->second->find(std::string(key, key_size));
-  if (value_it == task_it->second->end()) {
-    lua_pushnil(L);
-    return 1;
-  }
-
-  auto parsed = parse_json(value_it->second);
-  if (!parsed) {
-    return luaL_error(L, "Failed to parse XCom payload for '%s.%s'", task_id,
-                      key);
-  }
-  push_json_value(L, *parsed);
-  return 1;
-}
-
-int lua_dagforge_xcom_push(lua_State *L) {
-  auto *exec = load_execution_context(L);
-  if (exec == nullptr || exec->result == nullptr) {
-    return luaL_error(L, "Lua execution context unavailable");
-  }
-  size_t key_size = 0;
-  const char *key = luaL_checklstring(L, 1, &key_size);
-  auto encoded = lua_to_json_value(L, 2);
-  if (!encoded) {
-    return luaL_error(L, "%s", encoded.error().message().c_str());
-  }
-  exec->result->xcom_outputs.emplace_back(std::string(key, key_size),
-                                          dump_json(*encoded));
-  lua_pushboolean(L, 1);
-  return 1;
-}
-
 int lua_dagforge_json_decode(lua_State *L) {
   size_t size = 0;
   const char *text = luaL_checklstring(L, 1, &size);
@@ -494,10 +445,6 @@ void install_dagforge_api(lua_State *L, const ExecutorRequest &req,
   lua_settable(L, LUA_REGISTRYINDEX);
 
   lua_newtable(L);
-  lua_pushcfunction(L, &lua_dagforge_xcom_pull);
-  lua_setfield(L, -2, "xcom_pull");
-  lua_pushcfunction(L, &lua_dagforge_xcom_push);
-  lua_setfield(L, -2, "xcom_push");
   lua_pushcfunction(L, &lua_dagforge_log);
   lua_setfield(L, -2, "log");
   lua_pushcfunction(L, &lua_dagforge_sleep);

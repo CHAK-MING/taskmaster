@@ -34,7 +34,6 @@ struct ExecutorResult {
   pmr::string stdout_output{current_memory_resource_or_default()};
   pmr::string stderr_output{current_memory_resource_or_default()};
   pmr::string error{current_memory_resource_or_default()};
-  std::vector<std::pair<std::string, std::string>> xcom_outputs;
   bool timed_out{false};
   bool stdout_streamed{false};
   bool stderr_streamed{false};
@@ -52,18 +51,12 @@ struct ExecutorResult {
 
 struct ExecutorRequest {
   struct LuaRuntimeContext {
-    using TaskXComMap =
-        std::unordered_map<std::string, std::string, StringHash, StringEqual>;
-    using RunXComMap = std::unordered_map<std::string, std::shared_ptr<TaskXComMap>,
-                                          StringHash, StringEqual>;
-
     DAGId dag_id;
     DAGRunId dag_run_id;
     TaskId task_id;
     std::string execution_date;
     std::unordered_map<std::string, std::string, StringHash, StringEqual>
         conf_values;
-    RunXComMap xcom_values;
     std::move_only_function<void(std::string_view)> on_log;
   };
 
@@ -104,9 +97,6 @@ class IExecutor;
     -> std::unique_ptr<IExecutor>;
 
 [[nodiscard]] auto create_docker_executor(Runtime &rt)
-    -> std::unique_ptr<IExecutor>;
-
-[[nodiscard]] auto create_sensor_executor(Runtime &rt)
     -> std::unique_ptr<IExecutor>;
 
 [[nodiscard]] auto create_lua_executor(Runtime &rt)

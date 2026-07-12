@@ -24,19 +24,6 @@ auto build_docker_config(const TaskConfig &task) -> Result<ExecutorConfig> {
   return ok(ExecutorConfig{std::move(exec)});
 }
 
-auto build_sensor_config(const TaskConfig &task) -> Result<ExecutorConfig> {
-  SensorExecutorConfig exec;
-  if (const auto *sensor_cfg = task.executor_config.as<SensorExecutorConfig>()) {
-    exec.type = sensor_cfg->type;
-    exec.target = sensor_cfg->target;
-    exec.poke_interval = sensor_cfg->poke_interval;
-    exec.soft_fail = sensor_cfg->soft_fail;
-    exec.expected_status = sensor_cfg->expected_status;
-    exec.http_method = sensor_cfg->http_method;
-  }
-  return ok(ExecutorConfig{std::move(exec)});
-}
-
 auto build_lua_config(const TaskConfig &task) -> Result<ExecutorConfig> {
   LuaExecutorConfig exec;
   if (const auto *lua_cfg = task.executor_config.as<LuaExecutorConfig>()) {
@@ -69,8 +56,6 @@ auto parse_default_config(ExecutorType type, std::string_view)
     return ok(ExecutorConfig{NoopExecutorConfig{}});
   case ExecutorType::Docker:
     return ok(ExecutorConfig{DockerExecutorConfig{}});
-  case ExecutorType::Sensor:
-    return ok(ExecutorConfig{SensorExecutorConfig{}});
   case ExecutorType::Lua:
     return ok(ExecutorConfig{LuaExecutorConfig{}});
   }
@@ -133,51 +118,6 @@ auto validate_docker_task(const TaskConfig &task, std::vector<std::string> &erro
   }
 }
 
-auto serialize_sensor_config(const ExecutorConfig &config) -> std::string {
-  const auto *sensor = config.as<SensorExecutorConfig>();
-  if (sensor == nullptr) {
-    return "{}";
-  }
-  executor_dto::SensorExecutorConfigJson j{
-      .type = enum_to_string(sensor->type),
-      .target = sensor->target,
-      .poke_interval = sensor->poke_interval.count(),
-      .soft_fail = sensor->soft_fail,
-      .expected_status = sensor->expected_status,
-      .http_method = sensor->http_method,
-  };
-  if (auto out = serialize_json(j); out) {
-    return std::move(*out);
-  }
-  return "{}";
-}
-
-auto parse_sensor_config(std::string_view input) -> Result<ExecutorConfig> {
-  if (input.empty() || input == "{}") {
-    return ok(ExecutorConfig{SensorExecutorConfig{}});
-  }
-
-  auto parsed = parse_json_as<executor_dto::SensorExecutorConfigJson>(input);
-  if (!parsed) {
-    return fail(parsed.error());
-  }
-  auto j = std::move(*parsed);
-
-  SensorExecutorConfig cfg{};
-  if (!j.type.empty()) {
-    cfg.type = parse<SensorType>(j.type);
-  }
-  cfg.target = std::move(j.target);
-  cfg.poke_interval = std::chrono::seconds(j.poke_interval);
-  cfg.soft_fail = j.soft_fail;
-  cfg.expected_status = static_cast<int>(j.expected_status);
-  cfg.http_method = std::move(j.http_method);
-  if (cfg.http_method.empty()) {
-    cfg.http_method = "GET";
-  }
-  return ok(ExecutorConfig{std::move(cfg)});
-}
-
 auto serialize_lua_config(const ExecutorConfig &config) -> std::string {
   const auto *lua = config.as<LuaExecutorConfig>();
   if (lua == nullptr) {
@@ -212,23 +152,6 @@ auto parse_lua_config(std::string_view input) -> Result<ExecutorConfig> {
   cfg.max_instructions = j.max_instructions;
   cfg.max_memory_bytes = j.max_memory_bytes;
   return ok(ExecutorConfig{std::move(cfg)});
-}
-
-auto validate_sensor_task(const TaskConfig &task, std::vector<std::string> &errors)
-    -> void {
-  const auto *sensor = task.executor_config.as<SensorExecutorConfig>();
-  if (sensor == nullptr) {
-    return;
-  }
-  if (!task.command.empty()) {
-    errors.emplace_back(std::format(
-        "Task '{}': command is not allowed for sensor tasks; use target",
-        task.task_id));
-  }
-  if (sensor->target.empty()) {
-    errors.emplace_back(
-        std::format("Task '{}': sensor target cannot be empty", task.task_id));
-  }
 }
 
 auto validate_lua_task(const TaskConfig &task, std::vector<std::string> &errors)
@@ -273,11 +196,6 @@ auto ExecutorRegistry::instance() -> ExecutorRegistry & {
         [](Runtime &rt) { return create_docker_executor(rt); },
         build_docker_config, serialize_docker_config, parse_docker_config,
         validate_docker_task);
-    value.register_type(
-        ExecutorType::Sensor,
-        [](Runtime &rt) { return create_sensor_executor(rt); },
-        build_sensor_config, serialize_sensor_config, parse_sensor_config,
-        validate_sensor_task);
     value.register_type(
         ExecutorType::Lua, [](Runtime &rt) { return create_lua_executor(rt); },
         build_lua_config, serialize_lua_config, parse_lua_config,

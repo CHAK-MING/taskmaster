@@ -36,6 +36,15 @@ struct TaskTag {};
 struct DAGTaskTag {};
 struct DAGRunTag {};
 struct InstanceTag {};
+struct WorkflowTag {};
+struct WorkflowRunTag {};
+struct WorkflowNodeTag {};
+struct WorkflowPlanTag {};
+struct WorkflowPortTag {};
+struct WorkflowTriggerTag {};
+struct ArtifactTag {};
+struct EvidenceTag {};
+struct ApprovalTag {};
 
 template <typename Tag> class TypedId {
 public:
@@ -100,6 +109,15 @@ using TaskId = TypedId<TaskTag>;
 using DAGTaskId = TypedId<DAGTaskTag>;
 using DAGRunId = TypedId<DAGRunTag>;
 using InstanceId = TypedId<InstanceTag>;
+using WorkflowId = TypedId<WorkflowTag>;
+using WorkflowRunId = TypedId<WorkflowRunTag>;
+using WorkflowNodeId = TypedId<WorkflowNodeTag>;
+using WorkflowPlanId = TypedId<WorkflowPlanTag>;
+using WorkflowPortId = TypedId<WorkflowPortTag>;
+using WorkflowTriggerId = TypedId<WorkflowTriggerTag>;
+using ArtifactId = TypedId<ArtifactTag>;
+using EvidenceId = TypedId<EvidenceTag>;
+using ApprovalId = TypedId<ApprovalTag>;
 
 template <typename T>
 concept IsTypedId = requires(T id) {
@@ -177,6 +195,33 @@ inline auto generate_instance_id(const DAGRunId &dag_run_id,
   out.push_back('_');
   out.append(task_id.value());
   return InstanceId{std::move(out)};
+}
+
+[[nodiscard]] inline auto generate_workflow_run_id(const WorkflowId &workflow_id)
+    -> WorkflowRunId {
+  return WorkflowRunId{std::format("{}{}{}", workflow_id,
+                                   detail::kDagRunSeparator,
+                                   detail::generate_uuid_v7())};
+}
+
+[[nodiscard]] inline auto generate_workflow_plan_id() -> WorkflowPlanId {
+  return WorkflowPlanId{detail::generate_uuid_v7()};
+}
+
+[[nodiscard]] inline auto generate_workflow_trigger_id() -> WorkflowTriggerId {
+  return WorkflowTriggerId{detail::generate_uuid_v7()};
+}
+
+[[nodiscard]] inline auto generate_artifact_id() -> ArtifactId {
+  return ArtifactId{detail::generate_uuid_v7()};
+}
+
+[[nodiscard]] inline auto generate_evidence_id() -> EvidenceId {
+  return EvidenceId{detail::generate_uuid_v7()};
+}
+
+[[nodiscard]] inline auto generate_approval_id() -> ApprovalId {
+  return ApprovalId{detail::generate_uuid_v7()};
 }
 
 } // namespace dagforge

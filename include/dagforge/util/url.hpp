@@ -18,6 +18,7 @@ struct ParsedHttpUrl {
   std::string host;
   std::uint16_t port{80};
   std::string path{"/"};
+  bool tls{false};
 };
 
 [[nodiscard]] inline auto url_encode(std::string_view input) -> std::string {
@@ -39,11 +40,13 @@ struct ParsedHttpUrl {
   }
   const auto uri = *parsed;
 
-  if (uri.scheme() != "http") {
+  if (uri.scheme() != "http" && uri.scheme() != "https") {
     return fail(Error::InvalidUrl);
   }
 
   ParsedHttpUrl out;
+  out.tls = uri.scheme() == "https";
+  out.port = out.tls ? 443 : 80;
   out.host = std::string(uri.host());
   if (out.host.empty()) {
     return fail(Error::InvalidUrl);
