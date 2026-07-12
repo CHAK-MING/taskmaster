@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <deque>
 #include <format>
@@ -33,15 +34,22 @@ template <typename T>
   return std::ranges::find(values, value) != values.end();
 }
 
+[[nodiscard]] auto valid_env_key(std::string_view key) -> bool {
+  if (key.empty() ||
+      !(std::isalpha(static_cast<unsigned char>(key.front())) != 0 ||
+        key.front() == '_')) {
+    return false;
+  }
+  return std::ranges::all_of(key.substr(1), [](unsigned char ch) {
+    return std::isalnum(ch) != 0 || ch == '_';
+  });
+}
+
 [[nodiscard]] auto node_type_allowed(NodeType type,
                                      const WorkflowPolicy &policy) -> bool {
   switch (type) {
-  case NodeType::Shell:
-    return policy.allow_shell;
-  case NodeType::Docker:
-    return policy.allow_docker;
-  case NodeType::Lua:
-    return policy.allow_lua;
+  case NodeType::Command:
+    return policy.allow_command;
   case NodeType::Http:
     return policy.allow_network;
   case NodeType::Model:
@@ -116,10 +124,9 @@ template <typename T>
                  plan.workflow_id, plan.schema_version);
   std::format_to(
       std::back_inserter(canonical),
-      "policy={},{},{},{},{},{},{},{},{},{},{},{};",
-      plan.policy.allow_shell, plan.policy.allow_docker, plan.policy.allow_lua,
-      plan.policy.allow_network, plan.policy.allow_model_calls,
-      plan.policy.allow_tools, plan.policy.require_approval_for_shell,
+      "policy={},{},{},{},{},{},{},{},{};",
+      plan.policy.allow_command, plan.policy.allow_network,
+      plan.policy.allow_model_calls, plan.policy.allow_tools,
       plan.policy.budget.max_nodes, plan.policy.budget.max_parallel_nodes,
       plan.policy.budget.max_total_output_bytes,
       plan.policy.budget.max_model_tokens,
@@ -173,23 +180,6 @@ template <typename T>
   return ok(std::move(canonical));
 }
 
-[[nodiscard]] auto has_approval_ancestor(
-    std::size_t node_index, const std::vector<CompiledNode> &nodes,
-    std::vector<std::int8_t> &memo) -> bool {
-  if (memo[node_index] >= 0) {
-    return memo[node_index] != 0;
-  }
-  memo[node_index] = 0;
-  for (const auto dependency : nodes[node_index].dependencies) {
-    if (nodes[dependency].plan.type == NodeType::Approval ||
-        has_approval_ancestor(dependency, nodes, memo)) {
-      memo[node_index] = 1;
-      return true;
-    }
-  }
-  return false;
-}
-
 } // namespace
 
 auto PolicyEngine::validate(const WorkflowPlan &plan) const -> Result<void> {
@@ -210,6 +200,21 @@ auto PolicyEngine::validate(const WorkflowPlan &plan) const -> Result<void> {
     if (node.node_id.empty() || node.timeout <= std::chrono::seconds::zero() ||
         node.max_retries < 0 || !node_type_allowed(node.type, plan.policy)) {
       return fail(Error::Unauthorized);
+    }
+
+    if (node.type == NodeType::Command) {
+      auto config = parse_node_config<CommandNodeConfig>(node.config);
+      if (!config || config->program.empty() ||
+          !std::string_view(config->program).starts_with('/')) {
+        return fail(config ? Error::InvalidArgument : config.error());
+      }
+      std::unordered_set<std::string> env_names;
+      for (const auto &entry : config->env) {
+        if (!valid_env_key(entry.key) ||
+            !env_names.emplace(entry.key).second) {
+          return fail(Error::InvalidArgument);
+        }
+      }
     }
 
     if (node.type == NodeType::Http &&
@@ -340,16 +345,6 @@ auto PlanCompiler::compile(WorkflowPlan plan) const
   }
   if (topological_order.size() != compiled.size()) {
     return fail(Error::CycleDetected);
-  }
-
-  if (plan.policy.require_approval_for_shell) {
-    std::vector<std::int8_t> memo(compiled.size(), -1);
-    for (std::size_t index = 0; index < compiled.size(); ++index) {
-      if (compiled[index].plan.type == NodeType::Shell &&
-          !has_approval_ancestor(index, compiled, memo)) {
-        return fail(Error::Unauthorized);
-      }
-    }
   }
 
   auto plan_digest = digest(plan);

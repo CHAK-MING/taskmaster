@@ -1,0 +1,42 @@
+@denylist
+
+# Kernel attack surface that command nodes do not need. Namespace creation and
+# filesystem setup happen in Minijail before this filter is installed.
+acct: return EPERM
+add_key: return EPERM
+bpf: return EPERM
+delete_module: return EPERM
+fanotify_init: return EPERM
+finit_module: return EPERM
+init_module: return EPERM
+io_uring_enter: return EPERM
+io_uring_register: return EPERM
+io_uring_setup: return EPERM
+ioperm: return EPERM
+iopl: return EPERM
+kcmp: return EPERM
+kexec_file_load: return EPERM
+kexec_load: return EPERM
+keyctl: return EPERM
+lookup_dcookie: return EPERM
+mount: return EPERM
+move_mount: return EPERM
+name_to_handle_at: return EPERM
+open_by_handle_at: return EPERM
+open_tree: return EPERM
+perf_event_open: return EPERM
+pidfd_getfd: return EPERM
+pivot_root: return EPERM
+process_vm_readv: return EPERM
+process_vm_writev: return EPERM
+ptrace: return EPERM
+quotactl: return EPERM
+reboot: return EPERM
+request_key: return EPERM
+setns: return EPERM
+swapoff: return EPERM
+swapon: return EPERM
+syslog: return EPERM
+umount2: return EPERM
+unshare: return EPERM
+userfaultfd: return EPERM

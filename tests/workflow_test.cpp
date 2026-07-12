@@ -9,10 +9,15 @@
 #include "gtest/gtest.h"
 
 #include <chrono>
+#include <cstdlib>
+#include <filesystem>
+#include <format>
 #include <memory>
 #include <string>
 #include <thread>
 #include <utility>
+
+#include <unistd.h>
 
 using namespace dagforge;
 using namespace dagforge::workflow;
@@ -58,8 +63,7 @@ template <typename T> auto config_value(const T &config) -> JsonValue {
 [[nodiscard]] auto base_plan(std::string_view id) -> WorkflowPlan {
   WorkflowPlan plan;
   plan.workflow_id = WorkflowId{id};
-  plan.policy.allow_shell = false;
-  plan.policy.require_approval_for_shell = true;
+  plan.policy.allow_command = false;
   return plan;
 }
 
@@ -108,6 +112,57 @@ checkpoint = true
   EXPECT_EQ(toml_plan->nodes.front().outputs.front(),
             WorkflowPortId{"result"});
   EXPECT_TRUE(PlanCompiler{}.compile(*toml_plan).has_value());
+
+  constexpr std::string_view command_toml = R"(
+workflow_id = "loader-command"
+schema_version = 1
+
+[[nodes]]
+id = "command"
+type = "command"
+outputs = ["stdout", "stderr", "exit_code", "result"]
+timeout_sec = 30
+
+[nodes.config]
+program = "/bin/sh"
+arguments = ["-c", "printf loader-ok"]
+env = [{ key = "MODE", value = "test" }]
+
+[policy]
+allow_command = true
+)";
+  auto command_plan = WorkflowPlanLoader::from_toml(command_toml);
+  ASSERT_TRUE(command_plan.has_value()) << command_plan.error().message();
+  ASSERT_EQ(command_plan->nodes.size(), 1U);
+  EXPECT_EQ(command_plan->nodes.front().type, NodeType::Command);
+  auto command_config = parse_json_as<CommandNodeConfig>(
+      dump_json(command_plan->nodes.front().config));
+  ASSERT_TRUE(command_config.has_value()) << command_config.error().message();
+  EXPECT_EQ(command_config->program, "/bin/sh");
+  ASSERT_EQ(command_config->arguments.size(), 2U);
+  EXPECT_EQ(command_config->arguments.back(), "printf loader-ok");
+  ASSERT_EQ(command_config->env.size(), 1U);
+  EXPECT_EQ(command_config->env.front().key, "MODE");
+  EXPECT_TRUE(PlanCompiler{}.compile(*command_plan).has_value());
+
+  constexpr std::string_view invalid_command_toml = R"(
+workflow_id = "loader-invalid-command"
+
+[[nodes]]
+id = "command"
+type = "command"
+
+[nodes.config]
+program = "/bin/true"
+unknown = true
+
+[policy]
+allow_command = true
+)";
+  auto invalid_command =
+      WorkflowPlanLoader::from_toml(invalid_command_toml);
+  ASSERT_FALSE(invalid_command.has_value());
+  EXPECT_EQ(invalid_command.error(), make_error_code(Error::ParseError));
 }
 
 TEST(WorkflowControlPlaneTest, DeduplicatesPlansByDigest) {
@@ -143,7 +198,7 @@ TEST(WorkflowPlanCompilerTest, EnforcesProviderToolAndHostAllowlists) {
   EXPECT_EQ(blocked.error(), make_error_code(Error::Unauthorized));
 }
 
-TEST(WorkflowPlanCompilerTest, RejectsCyclesAndMissingApprovalForShell) {
+TEST(WorkflowPlanCompilerTest, RejectsCyclesAndUnsafeCommandPlans) {
   PlanCompiler compiler;
 
   auto cycle = base_plan("cycle");
@@ -167,17 +222,28 @@ TEST(WorkflowPlanCompilerTest, RejectsCyclesAndMissingApprovalForShell) {
   ASSERT_FALSE(cycle_result.has_value());
   EXPECT_EQ(cycle_result.error(), make_error_code(Error::CycleDetected));
 
-  auto shell = base_plan("unsafe-shell");
-  shell.policy.allow_shell = true;
-  shell.nodes.push_back(NodePlan{
-      .node_id = WorkflowNodeId{"shell"},
-      .type = NodeType::Shell,
-      .config = config_value(ShellNodeConfig{.command = "true"}),
+  auto relative_command = base_plan("relative-command");
+  relative_command.policy.allow_command = true;
+  relative_command.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .type = NodeType::Command,
+      .config = config_value(CommandNodeConfig{.program = "true"}),
       .outputs = {WorkflowPortId{"result"}},
   });
-  auto shell_result = compiler.compile(std::move(shell));
-  ASSERT_FALSE(shell_result.has_value());
-  EXPECT_EQ(shell_result.error(), make_error_code(Error::Unauthorized));
+  auto relative_result = compiler.compile(std::move(relative_command));
+  ASSERT_FALSE(relative_result.has_value());
+  EXPECT_EQ(relative_result.error(), make_error_code(Error::InvalidArgument));
+
+  auto disabled_command = base_plan("disabled-command");
+  disabled_command.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .type = NodeType::Command,
+      .config = config_value(CommandNodeConfig{.program = "/bin/true"}),
+      .outputs = {WorkflowPortId{"result"}},
+  });
+  auto disabled_result = compiler.compile(std::move(disabled_command));
+  ASSERT_FALSE(disabled_result.has_value());
+  EXPECT_EQ(disabled_result.error(), make_error_code(Error::Unauthorized));
 }
 
 TEST(WorkflowRuntimeTest, ApprovalResumesOwnerShardExecution) {
@@ -289,6 +355,74 @@ TEST(WorkflowRuntimeTest, RunDeadlineFailsSuspendedWorkflow) {
   ASSERT_TRUE(failed.has_value()) << failed.error().message();
   EXPECT_EQ((*failed)->error, "workflow run deadline exceeded");
   core.stop();
+}
+
+TEST(WorkflowRuntimeTest, CommandNodeOwnsRunIdAcrossSuspension) {
+  namespace fs = std::filesystem;
+
+  const char *home = std::getenv("HOME");
+  if (home == nullptr || *home == '\0') {
+    GTEST_SKIP() << "HOME is unavailable";
+  }
+
+  SandboxConfig sandbox;
+  const auto helper = fs::path(home) /
+                      ".local/libexec/dagforge/minijail/minijail0";
+  const auto policy = fs::path(home) /
+                      ".local/libexec/dagforge/minijail/dagforge_command.bpf";
+  if (!fs::is_regular_file(helper) || !fs::is_regular_file(policy)) {
+    GTEST_SKIP() << "Minijail helper is not installed";
+  }
+  sandbox.workspace_root =
+      (fs::path(home) / ".cache" / "dagforge" / "tests" /
+       std::format("workflow-command-{}", ::getpid()))
+          .string();
+  std::error_code cleanup_error;
+  fs::remove_all(sandbox.workspace_root, cleanup_error);
+
+  Runtime core(2, false, 0,
+               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  ASSERT_TRUE(core.start().has_value());
+  auto executor = create_command_executor(core, sandbox);
+  ASSERT_NE(executor, nullptr);
+  WorkflowRuntime runtime(core, *executor);
+
+  auto plan = base_plan("command-suspension");
+  plan.policy.allow_command = true;
+  plan.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .type = NodeType::Command,
+      .config = config_value(CommandNodeConfig{
+          .program = "/bin/sh",
+          .arguments = {"-c", "sleep 0.05; printf workflow-ok"},
+      }),
+      .outputs = {WorkflowPortId{"stdout"}, WorkflowPortId{"stderr"},
+                  WorkflowPortId{"exit_code"}, WorkflowPortId{"result"}},
+  });
+  auto compiled = PlanCompiler{}.compile(std::move(plan));
+  ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
+
+  auto started = runtime.start(
+      *compiled,
+      TriggerEnvelope{.workflow_id = WorkflowId{"command-suspension"},
+                      .source = "test",
+                      .event_type = "request"});
+  ASSERT_TRUE(started.has_value()) << started.error().message();
+  auto completed = wait_for_state(runtime, core, *started, RunState::Success,
+                                  std::chrono::seconds(3));
+  ASSERT_TRUE(completed.has_value()) << completed.error().message();
+
+  auto output = sync_wait_on_runtime(
+      core, runtime.output(*started,
+                           OutputRef{.node_id = WorkflowNodeId{"command"},
+                                     .port = WorkflowPortId{"stdout"}}));
+  ASSERT_TRUE(output.has_value()) << output.error().message();
+  const auto *text = std::get_if<std::string>(output->get());
+  ASSERT_NE(text, nullptr);
+  EXPECT_EQ(*text, "workflow-ok");
+
+  core.stop();
+  fs::remove_all(sandbox.workspace_root, cleanup_error);
 }
 
 TEST(WorkflowRuntimeTest, IdempotentTriggerReturnsExistingRun) {

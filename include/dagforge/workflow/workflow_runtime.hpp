@@ -121,6 +121,7 @@ private:
     std::unique_ptr<RunValueStore> values;
     std::deque<std::size_t> ready;
     std::size_t active_nodes{0};
+    bool dispatching{false};
     std::uint64_t model_tokens_used{0};
     io::TimingWheel::Handle deadline_handle;
     WorkflowCallbacks callbacks;
@@ -143,7 +144,7 @@ private:
       -> void;
   auto dispatch(const WorkflowRunId &run_id) -> void;
   auto start_node(const WorkflowRunId &run_id, std::size_t node_index) -> void;
-  auto start_async_node(const WorkflowRunId &run_id, std::size_t node_index)
+  auto start_async_node(WorkflowRunId run_id, std::size_t node_index)
       -> spawn_task;
   auto start_compute_node(const WorkflowRunId &run_id, std::size_t node_index)
       -> void;
@@ -169,7 +170,7 @@ private:
   auto checkpoint(ActiveRun &run) -> void;
   auto fail_run(ActiveRun &run, std::string error) -> void;
 
-  [[nodiscard]] auto execute_process_node(WorkflowRunId run_id,
+  [[nodiscard]] auto execute_command_node(WorkflowRunId run_id,
                                           NodePlan node, InputMap inputs)
       -> task<Result<NodeOutputs>>;
   [[nodiscard]] auto execute_http_node(WorkflowRunId run_id, NodePlan node,

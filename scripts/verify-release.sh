@@ -54,6 +54,10 @@ fi
 root=${roots[0]}
 for required in \
   bin/dagforge \
+  libexec/dagforge/minijail/minijail0 \
+  libexec/dagforge/minijail/dagforge_command.bpf \
+  libexec/dagforge/minijail/LICENSE.minijail \
+  libexec/dagforge/minijail/REVISION \
   system_config.toml \
   LICENSE \
   README.md \
@@ -71,39 +75,52 @@ if [[ ! -x "${root}/bin/dagforge" ]]; then
   echo "packaged bin/dagforge is not executable" >&2
   exit 1
 fi
-
-mapfile -t needed_libraries < <(
-  readelf -d "${root}/bin/dagforge" 2>/dev/null \
-    | awk '/\(NEEDED\)/ {
-        value = $NF
-        gsub(/^\[/, "", value)
-        gsub(/\]$/, "", value)
-        print value
-      }'
-)
-if [[ ${#needed_libraries[@]} -eq 0 ]]; then
-  echo "packaged bin/dagforge has no readable ELF dependency table" >&2
+if [[ ! -x "${root}/libexec/dagforge/minijail/minijail0" ]]; then
+  echo "packaged Minijail helper is not executable" >&2
   exit 1
 fi
 
-for library in "${needed_libraries[@]}"; do
-  if [[ "$library" == libdagforge.so* ]]; then
-    echo "release binary still depends on build-tree libdagforge.so" >&2
+for executable in \
+  "${root}/bin/dagforge" \
+  "${root}/libexec/dagforge/minijail/minijail0"; do
+  mapfile -t needed_libraries < <(
+    readelf -d "${executable}" 2>/dev/null \
+      | awk '/\(NEEDED\)/ {
+          value = $NF
+          gsub(/^\[/, "", value)
+          gsub(/\]$/, "", value)
+          print value
+        }'
+  )
+  if [[ ${#needed_libraries[@]} -eq 0 ]]; then
+    echo "packaged executable has no readable ELF dependency table: ${executable}" >&2
     exit 1
   fi
-  if ! grep -Fqx "$library" "${root}/RUNTIME-DEPENDENCIES"; then
-    echo "runtime dependency inventory is missing ${library}" >&2
-    exit 1
-  fi
+
+  for library in "${needed_libraries[@]}"; do
+    if [[ "$library" == libdagforge.so* ]]; then
+      echo "release binary still depends on build-tree libdagforge.so" >&2
+      exit 1
+    fi
+    if ! grep -Fqx "$library" "${root}/RUNTIME-DEPENDENCIES"; then
+      echo "runtime dependency inventory is missing ${library}" >&2
+      exit 1
+    fi
+  done
 done
 
 if [[ "$execute" == "1" ]]; then
-  if ldd "${root}/bin/dagforge" 2>&1 | grep -Fq 'not found'; then
-    ldd "${root}/bin/dagforge" >&2 || true
-    echo "release binary has unresolved shared-library dependencies" >&2
-    exit 1
-  fi
+  for executable in \
+    "${root}/bin/dagforge" \
+    "${root}/libexec/dagforge/minijail/minijail0"; do
+    if ldd "${executable}" 2>&1 | grep -Fq 'not found'; then
+      ldd "${executable}" >&2 || true
+      echo "release executable has unresolved shared-library dependencies" >&2
+      exit 1
+    fi
+  done
   "${root}/bin/dagforge" --help >/dev/null
+  "${root}/libexec/dagforge/minijail/minijail0" --help >/dev/null
 fi
 
 printf 'release archive verification passed: %s\n' "$archive"

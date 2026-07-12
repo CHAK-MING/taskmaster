@@ -28,7 +28,10 @@ auto main() -> int {
   if (config.api.port != 8888 || !config.workflow.enabled) {
     return 7;
   }
-  if (dagforge::to_string_view(dagforge::ExecutorType::Shell) != "shell") {
+  dagforge::CommandExecutorConfig command;
+  command.program = "/bin/true";
+  if (command.program.size() != 9 || command.program.front() != '/' ||
+      config.sandbox.tmp_bytes == 0) {
     return 19;
   }
   dagforge::http::QueryParams params{"dag_id=example&limit=10"};

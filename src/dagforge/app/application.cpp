@@ -2,7 +2,7 @@
 
 #include "dagforge/app/api/api_server.hpp"
 #include "dagforge/config/system_config_loader.hpp"
-#include "dagforge/executor/composite_executor.hpp"
+#include "dagforge/executor/executor.hpp"
 #include "dagforge/workflow/workflow_adapters.hpp"
 #include "dagforge/workflow/workflow_control_plane.hpp"
 #include "dagforge/workflow/workflow_runtime.hpp"
@@ -62,7 +62,7 @@ auto Application::rebuild_components() -> Result<void> {
           .cpu_affinity_offset =
               static_cast<unsigned>(config_.compute.cpu_affinity_offset),
       });
-  executor_ = create_composite_executor(*runtime_);
+  executor_ = create_command_executor(*runtime_, config_.sandbox);
   if (!executor_) {
     return fail(Error::InvalidState);
   }

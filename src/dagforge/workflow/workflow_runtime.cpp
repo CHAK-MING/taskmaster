@@ -361,20 +361,30 @@ auto WorkflowRuntime::dispatch(const WorkflowRunId &run_id) -> void {
   }
 
   auto &state = shard_states_[owner];
-  const auto it = state.active_runs.find(run_id.str());
-  if (it == state.active_runs.end()) {
+  auto it = state.active_runs.find(run_id.str());
+  if (it == state.active_runs.end() || it->second.dispatching) {
     return;
   }
-  auto &run = it->second;
-  if (run.snapshot.state == RunState::Cancelled ||
-      run.snapshot.state == RunState::Failed ||
-      run.snapshot.state == RunState::Success) {
-    return;
-  }
+  it->second.dispatching = true;
 
-  const auto limit = std::max<std::size_t>(
-      1, run.plan->policy.budget.max_parallel_nodes);
-  while (!run.ready.empty() && run.active_nodes < limit) {
+  while (true) {
+    it = state.active_runs.find(run_id.str());
+    if (it == state.active_runs.end()) {
+      return;
+    }
+    auto &run = it->second;
+    if (run.snapshot.state == RunState::Cancelled ||
+        run.snapshot.state == RunState::Failed ||
+        run.snapshot.state == RunState::Success) {
+      break;
+    }
+
+    const auto limit = std::max<std::size_t>(
+        1, run.plan->policy.budget.max_parallel_nodes);
+    if (run.ready.empty() || run.active_nodes >= limit) {
+      break;
+    }
+
     const auto node_index = run.ready.front();
     run.ready.pop_front();
     if (node_index >= run.nodes.size() ||
@@ -400,6 +410,11 @@ auto WorkflowRuntime::dispatch(const WorkflowRunId &run_id) -> void {
     start_node(run_id, node_index);
   }
 
+  it = state.active_runs.find(run_id.str());
+  if (it == state.active_runs.end()) {
+    return;
+  }
+  it->second.dispatching = false;
   (void)complete_run_if_terminal(run_id);
 }
 
@@ -440,9 +455,7 @@ auto WorkflowRuntime::start_node(const WorkflowRunId &run_id,
                                       *inputs));
     return;
   }
-  case NodeType::Shell:
-  case NodeType::Docker:
-  case NodeType::Lua:
+  case NodeType::Command:
   case NodeType::Http:
   case NodeType::Model:
   case NodeType::Tool:
@@ -452,7 +465,7 @@ auto WorkflowRuntime::start_node(const WorkflowRunId &run_id,
   }
 }
 
-auto WorkflowRuntime::start_async_node(const WorkflowRunId &run_id,
+auto WorkflowRuntime::start_async_node(WorkflowRunId run_id,
                                        std::size_t node_index) -> spawn_task {
   const auto owner = owner_shard(run_id);
   auto &state = shard_states_[owner];
@@ -462,8 +475,7 @@ auto WorkflowRuntime::start_async_node(const WorkflowRunId &run_id,
   }
 
   auto node = run_it->second.plan->nodes[node_index].plan;
-  if (node.type == NodeType::Shell || node.type == NodeType::Docker ||
-      node.type == NodeType::Lua) {
+  if (node.type == NodeType::Command) {
     run_it->second.nodes[node_index].instance_id =
         instance_id_for(run_id, node.node_id);
   }
@@ -476,10 +488,8 @@ auto WorkflowRuntime::start_async_node(const WorkflowRunId &run_id,
 
   Result<NodeOutputs> result = fail(Error::Unsupported);
   switch (node.type) {
-  case NodeType::Shell:
-  case NodeType::Docker:
-  case NodeType::Lua:
-    result = co_await execute_process_node(run_id.clone(), std::move(node),
+  case NodeType::Command:
+    result = co_await execute_command_node(run_id.clone(), std::move(node),
                                            std::move(*inputs));
     break;
   case NodeType::Http:
@@ -976,75 +986,34 @@ auto WorkflowRuntime::fail_run(ActiveRun &run, std::string error) -> void {
   }
 }
 
-auto WorkflowRuntime::execute_process_node(WorkflowRunId run_id,
+auto WorkflowRuntime::execute_command_node(WorkflowRunId run_id,
                                            NodePlan node, InputMap)
     -> task<Result<NodeOutputs>> {
-  ExecutorConfig executor_config;
-  std::string command;
-  std::string working_dir;
-
-  switch (node.type) {
-  case NodeType::Shell: {
-    auto config = parse_node_config<ShellNodeConfig>(node.config);
-    if (!config) {
-      co_return fail(config.error());
-    }
-    if (config->command.empty()) {
-      co_return fail(Error::InvalidArgument);
-    }
-    ShellExecutorConfig shell;
-    for (auto &entry : config->env) {
-      shell.env.emplace(std::move(entry.key), std::move(entry.value));
-    }
-    executor_config = std::move(shell);
-    command = std::move(config->command);
-    working_dir = std::move(config->working_dir);
-    break;
-  }
-  case NodeType::Docker: {
-    auto config = parse_node_config<DockerNodeConfig>(node.config);
-    if (!config) {
-      co_return fail(config.error());
-    }
-    if (config->image.empty()) {
-      co_return fail(Error::InvalidArgument);
-    }
-    DockerExecutorConfig docker;
-    docker.image = std::move(config->image);
-    docker.docker_socket = std::move(config->docker_socket);
-    for (auto &entry : config->env) {
-      docker.env.emplace(std::move(entry.key), std::move(entry.value));
-    }
-    executor_config = std::move(docker);
-    command = std::move(config->command);
-    working_dir = std::move(config->working_dir);
-    break;
-  }
-  case NodeType::Lua: {
-    auto config = parse_node_config<LuaNodeConfig>(node.config);
-    if (!config) {
-      co_return fail(config.error());
-    }
-    if (config->script.empty() && config->script_file.empty()) {
-      co_return fail(Error::InvalidArgument);
-    }
-    executor_config = LuaExecutorConfig{
-        .script = std::move(config->script),
-        .script_file = std::move(config->script_file),
-        .max_instructions = config->max_instructions,
-        .max_memory_bytes = config->max_memory_bytes,
-    };
-    break;
-  }
-  default:
+  if (node.type != NodeType::Command) {
     co_return fail(Error::Unsupported);
+  }
+
+  auto config = parse_node_config<CommandNodeConfig>(node.config);
+  if (!config || config->program.empty()) {
+    co_return fail(config ? Error::InvalidArgument : config.error());
+  }
+
+  CommandExecutorConfig command{
+      .program = std::move(config->program),
+      .arguments = std::move(config->arguments),
+  };
+  for (auto &entry : config->env) {
+    if (!command.env.emplace(std::move(entry.key), std::move(entry.value))
+             .second) {
+      co_return fail(Error::InvalidArgument);
+    }
   }
 
   const auto instance_id = instance_id_for(run_id, node.node_id);
 
   auto result = co_await execute_async(
-      runtime_, executor_, instance_id, std::move(executor_config), {}, {}, {},
-      {}, std::move(command), std::move(working_dir), node.timeout);
+      runtime_, executor_, instance_id, std::move(command), {}, {}, {}, {},
+      node.timeout);
   if (!result) {
     co_return fail(result.error());
   }

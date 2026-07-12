@@ -17,11 +17,14 @@ Requirements:
 - build2 0.17+
 - Boost 1.88+
 - OpenSSL development libraries
+- libcap development headers
+- Git, Make, and Python 3 for building the pinned Minijail helper
 
 Build the project:
 
 ```bash
 ./scripts/setup-build2.sh
+./scripts/install-minijail.sh
 ./scripts/build.sh
 ```
 
@@ -42,6 +45,16 @@ threads = 0
 queue_capacity = 1024
 pin_threads_to_cores = false
 cpu_affinity_offset = 0
+
+[sandbox]
+minijail_path = "~/.local/libexec/dagforge/minijail/minijail0"
+seccomp_bpf_path = "~/.local/libexec/dagforge/minijail/dagforge_command.bpf"
+workspace_root = "./workspaces"
+max_memory_bytes = 1073741824
+max_file_bytes = 67108864
+tmp_bytes = 67108864
+max_processes = 128
+max_open_files = 256
 
 [workflow]
 enabled = true
@@ -94,7 +107,34 @@ Environment overrides:
 - `DAGFORGE_COMPUTE_PIN_THREADS`
 - `DAGFORGE_COMPUTE_CPU_AFFINITY_OFFSET`
 
-### 2.3 Workflow adapters
+### 2.3 Command sandbox
+
+All Command nodes run through the pinned Google Minijail helper. DAGForge does
+not contain a direct subprocess fallback. Missing Minijail, missing seccomp
+bytecode, unavailable Landlock, or unsupported namespace setup causes the node
+to fail closed.
+
+Each instance receives:
+
+- user, PID, mount, network, IPC, UTS, and cgroup namespaces;
+- `no_new_privs` and the DAGForge seccomp denylist;
+- Landlock read/execute access to system runtimes and read/write access only to
+  its instance workspace and private `/tmp`;
+- CPU, address-space, file-size, process-count, and open-file limits.
+
+The workspace root must not be inside the host temporary directory because the
+sandbox mounts a private tmpfs over `/tmp`. Environment overrides are:
+
+- `DAGFORGE_SANDBOX_MINIJAIL`
+- `DAGFORGE_SANDBOX_SECCOMP_BPF`
+- `DAGFORGE_SANDBOX_WORKSPACE_ROOT`
+- `DAGFORGE_SANDBOX_MAX_MEMORY_BYTES`
+- `DAGFORGE_SANDBOX_MAX_FILE_BYTES`
+- `DAGFORGE_SANDBOX_TMP_BYTES`
+- `DAGFORGE_SANDBOX_MAX_PROCESSES`
+- `DAGFORGE_SANDBOX_MAX_OPEN_FILES`
+
+### 2.4 Workflow adapters
 
 `workflow.enabled` creates the workflow control plane and runtime.
 
@@ -114,7 +154,7 @@ timeout_sec = 120
 max_response_bytes = 16777216
 ```
 
-### 2.4 API
+### 2.5 API
 
 Set `api.enabled = true` to start the HTTP control plane. TLS requires both a
 certificate chain and private key path.
@@ -176,44 +216,19 @@ port = "result"
 
 Returns `true` without inputs, or forwards the first bound input.
 
-#### Shell
+#### Command
 
 ```toml
 [nodes.config]
-command = "printf hello"
-working_dir = "/tmp"
+program = "/usr/bin/python3"
+arguments = ["-c", "print('hello')"]
 env = [{ key = "MODE", value = "test" }]
 ```
 
-Shell execution is disabled by default. When
-`require_approval_for_shell = true`, each Shell node must have an Approval
-ancestor.
-
-#### Docker
-
-```toml
-[nodes.config]
-image = "alpine:3.22"
-command = "printf hello"
-working_dir = "/work"
-docker_socket = "/var/run/docker.sock"
-env = []
-```
-
-#### Lua
-
-Specify exactly one of `script` or `script_file`:
-
-```toml
-[nodes.config]
-script = "return {ok = true}"
-max_instructions = 100000
-max_memory_bytes = 8388608
-```
-
-The sandbox exposes `dagforge.log`, `dagforge.sleep`,
-`dagforge.json_encode`, and `dagforge.json_decode`. The retired 0.3 DAG task
-context is not exposed.
+`program` must be an absolute executable path. Arguments are passed directly;
+there is no implicit shell. Use `/bin/sh` explicitly when shell syntax is
+required. `PATH`, `HOME`, and `TMPDIR` are runtime-owned and cannot be
+overridden by the node.
 
 #### HTTP
 
@@ -294,13 +309,10 @@ Supported condition kinds:
 
 ```toml
 [policy]
-allow_shell = false
-allow_docker = true
-allow_lua = true
+allow_command = false
 allow_network = true
 allow_model_calls = true
 allow_tools = true
-require_approval_for_shell = true
 allowed_http_hosts = []
 allowed_model_providers = []
 allowed_tools = []
@@ -356,8 +368,8 @@ Use `SIGINT` or `SIGTERM` for graceful shutdown.
 - Input values reference explicit upstream output ports.
 - A failed dependency causes downstream nodes to be skipped.
 - A failed node is retried up to `max_retries`.
-- Run and node cancellation is cooperative for Compute and delegated to the
-  active executor for process nodes.
+- Run and node cancellation is cooperative for Compute and kills the complete
+  Minijail process namespace for Command nodes.
 - Duplicate non-empty idempotency keys return the original run ID while the
   process remains alive.
 - Large string and JSON outputs are replaced with Artifact references.
@@ -394,15 +406,18 @@ docker compose up --build
 ```
 
 The Compose stack runs only DAGForge. It does not start MySQL. The Docker
-socket mount is required only for Docker nodes.
+socket is not mounted. The Compose profile disables the outer container's
+default seccomp profile so Minijail can create nested namespaces; command nodes
+still receive the inner DAGForge seccomp and Landlock policy.
 
 ## 9. Verification
 
 ```bash
 bash scripts/check-module-graph.sh
 bash scripts/check-agent-conventions.sh
+bash scripts/install-minijail.sh
 BUILD2_CONFIG_NAME=gcc ./scripts/build.sh
 ~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/all-unit-tests
 ```
 
-Run `bench-core` for Runtime, memory arena, and Lua executor microbenchmarks.
+Run `bench-core` for Runtime and memory-arena microbenchmarks.

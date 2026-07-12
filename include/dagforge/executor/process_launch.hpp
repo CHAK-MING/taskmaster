@@ -61,6 +61,7 @@ template <typename Map>
 }
 
 struct ProcessLaunchSpec {
+  std::string program;
   std::vector<std::string> args;
   std::optional<bp::process_stdio> stdio;
   std::optional<bp::process_environment> env;
@@ -68,62 +69,61 @@ struct ProcessLaunchSpec {
 };
 
 template <typename Launcher, typename... Inits>
-auto invoke_shell_process(Launcher &&launch, io::IoContext &io,
-                          ProcessLaunchSpec spec, Inits &&... extra)
+auto invoke_process(Launcher &&launch, io::IoContext &io,
+                    ProcessLaunchSpec spec, Inits &&... extra)
     -> bp::process {
-  auto command = "/bin/sh";
+  auto program = std::move(spec.program);
 
   if (spec.stdio && spec.env && !spec.working_dir.empty()) {
-    return launch(io, command, std::move(spec.args), std::move(*spec.stdio),
+    return launch(io, program, std::move(spec.args), std::move(*spec.stdio),
                   bp::process_start_dir{std::move(spec.working_dir)},
                   std::move(*spec.env), std::forward<Inits>(extra)...);
   }
   if (spec.stdio && spec.env) {
-    return launch(io, command, std::move(spec.args), std::move(*spec.stdio),
+    return launch(io, program, std::move(spec.args), std::move(*spec.stdio),
                   std::move(*spec.env), std::forward<Inits>(extra)...);
   }
   if (spec.stdio && !spec.working_dir.empty()) {
-    return launch(io, command, std::move(spec.args), std::move(*spec.stdio),
+    return launch(io, program, std::move(spec.args), std::move(*spec.stdio),
                   bp::process_start_dir{std::move(spec.working_dir)},
                   std::forward<Inits>(extra)...);
   }
   if (spec.stdio) {
-    return launch(io, command, std::move(spec.args), std::move(*spec.stdio),
+    return launch(io, program, std::move(spec.args), std::move(*spec.stdio),
                   std::forward<Inits>(extra)...);
   }
   if (spec.env && !spec.working_dir.empty()) {
-    return launch(io, command, std::move(spec.args),
+    return launch(io, program, std::move(spec.args),
                   bp::process_start_dir{std::move(spec.working_dir)},
                   std::move(*spec.env), std::forward<Inits>(extra)...);
   }
   if (spec.env) {
-    return launch(io, command, std::move(spec.args), std::move(*spec.env),
+    return launch(io, program, std::move(spec.args), std::move(*spec.env),
                   std::forward<Inits>(extra)...);
   }
   if (!spec.working_dir.empty()) {
-    return launch(io, command, std::move(spec.args),
+    return launch(io, program, std::move(spec.args),
                   bp::process_start_dir{std::move(spec.working_dir)},
                   std::forward<Inits>(extra)...);
   }
-  return launch(io, command, std::move(spec.args),
+  return launch(io, program, std::move(spec.args),
                 std::forward<Inits>(extra)...);
 }
 
 template <typename... Inits>
-auto launch_shell_process(io::IoContext &io, ProcessLaunchSpec spec,
-                          Inits &&... extra) -> bp::process {
+auto launch_process(io::IoContext &io, ProcessLaunchSpec spec,
+                    Inits &&... extra) -> bp::process {
 #if defined(BOOST_PROCESS_V2_POSIX)
   bp::posix::vfork_launcher launcher;
-  return invoke_shell_process(launcher, io, std::move(spec),
-                              NewProcessGroupInit{},
-                              std::forward<Inits>(extra)...);
+  return invoke_process(launcher, io, std::move(spec), NewProcessGroupInit{},
+                        std::forward<Inits>(extra)...);
 #else
   auto launcher = [](auto &ctx, const char *command, auto args, auto &&... init) {
     return bp::process(ctx, command, std::move(args),
                        std::forward<decltype(init)>(init)...);
   };
-  return invoke_shell_process(launcher, io, std::move(spec),
-                              std::forward<Inits>(extra)...);
+  return invoke_process(launcher, io, std::move(spec),
+                        std::forward<Inits>(extra)...);
 #endif
 }
 

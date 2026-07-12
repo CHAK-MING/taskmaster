@@ -16,9 +16,7 @@
 namespace dagforge::workflow {
 
 enum class NodeType : std::uint8_t {
-  Shell,
-  Docker,
-  Lua,
+  Command,
   Http,
   Model,
   Tool,
@@ -173,13 +171,10 @@ struct ResourceBudget {
 };
 
 struct WorkflowPolicy {
-  bool allow_shell{false};
-  bool allow_docker{true};
-  bool allow_lua{true};
+  bool allow_command{true};
   bool allow_network{true};
   bool allow_model_calls{true};
   bool allow_tools{true};
-  bool require_approval_for_shell{true};
   std::vector<std::string> allowed_http_hosts;
   std::vector<std::string> allowed_model_providers;
   std::vector<std::string> allowed_tools;
@@ -263,12 +258,8 @@ struct RunSnapshot {
 [[nodiscard]] constexpr auto to_string_view(NodeType value) noexcept
     -> std::string_view {
   switch (value) {
-  case NodeType::Shell:
-    return "shell";
-  case NodeType::Docker:
-    return "docker";
-  case NodeType::Lua:
-    return "lua";
+  case NodeType::Command:
+    return "command";
   case NodeType::Http:
     return "http";
   case NodeType::Model:

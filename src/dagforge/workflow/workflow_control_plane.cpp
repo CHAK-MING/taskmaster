@@ -2,6 +2,7 @@
 
 #include "dagforge/config/toml_util.hpp"
 #include "dagforge/util/json.hpp"
+#include "dagforge/workflow/node_configs.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -23,13 +24,10 @@ struct BudgetDto {
 };
 
 struct PolicyDto {
-  bool allow_shell{false};
-  bool allow_docker{true};
-  bool allow_lua{true};
+  bool allow_command{true};
   bool allow_network{true};
   bool allow_model_calls{true};
   bool allow_tools{true};
-  bool require_approval_for_shell{true};
   std::vector<std::string> allowed_http_hosts;
   std::vector<std::string> allowed_model_providers;
   std::vector<std::string> allowed_tools;
@@ -96,11 +94,9 @@ template <> struct meta<dagforge::workflow::detail::BudgetDto> {
 template <> struct meta<dagforge::workflow::detail::PolicyDto> {
   using T = dagforge::workflow::detail::PolicyDto;
   static constexpr auto value = object(
-      "allow_shell", &T::allow_shell, "allow_docker", &T::allow_docker,
-      "allow_lua", &T::allow_lua, "allow_network", &T::allow_network,
+      "allow_command", &T::allow_command, "allow_network", &T::allow_network,
       "allow_model_calls", &T::allow_model_calls, "allow_tools",
-      &T::allow_tools, "require_approval_for_shell",
-      &T::require_approval_for_shell, "allowed_http_hosts",
+      &T::allow_tools, "allowed_http_hosts",
       &T::allowed_http_hosts, "allowed_model_providers",
       &T::allowed_model_providers, "allowed_tools", &T::allowed_tools,
       "budget", &T::budget);
@@ -147,18 +143,149 @@ template <> struct meta<dagforge::workflow::detail::WorkflowPlanDto> {
       "nodes", &T::nodes, "edges", &T::edges, "outputs", &T::outputs,
       "policy", &T::policy);
 };
+
 } // namespace glz
 
 namespace dagforge::workflow {
 namespace {
 
+struct ExtractedToml {
+  std::string plan;
+  std::vector<std::string> node_configs;
+};
+
+[[nodiscard]] auto trim(std::string_view value) -> std::string_view {
+  const auto first = value.find_first_not_of(" \t\r");
+  if (first == std::string_view::npos) {
+    return {};
+  }
+  return value.substr(first, value.find_last_not_of(" \t\r") - first + 1);
+}
+
+[[nodiscard]] auto header_without_comment(std::string_view line)
+    -> std::string_view {
+  line = trim(line);
+  if (const auto comment = line.find('#'); comment != std::string_view::npos) {
+    line = trim(line.substr(0, comment));
+  }
+  return line;
+}
+
+[[nodiscard]] auto extract_node_configs(std::string_view text)
+    -> Result<ExtractedToml> {
+  ExtractedToml extracted;
+  extracted.plan.reserve(text.size());
+
+  std::vector<bool> config_seen;
+  std::size_t current_node = std::string::npos;
+  bool in_config = false;
+
+  std::size_t offset = 0;
+  while (offset < text.size()) {
+    const auto newline = text.find('\n', offset);
+    const auto length = newline == std::string_view::npos
+                            ? text.size() - offset
+                            : newline - offset;
+    const auto line = text.substr(offset, length);
+    const auto header = header_without_comment(line);
+
+    if (in_config && header.starts_with('[')) {
+      in_config = false;
+    }
+
+    if (!in_config && header == "[[nodes]]") {
+      current_node = extracted.node_configs.size();
+      extracted.node_configs.emplace_back();
+      config_seen.push_back(false);
+      extracted.plan.append(line);
+      extracted.plan.push_back('\n');
+    } else if (!in_config && header == "[nodes.config]") {
+      if (current_node == std::string::npos || config_seen[current_node]) {
+        return fail(Error::ParseError);
+      }
+      config_seen[current_node] = true;
+      in_config = true;
+    } else if (!in_config &&
+               (header.starts_with("[nodes.config.") ||
+                header.starts_with("[[nodes.config."))) {
+      return fail(Error::ParseError);
+    } else if (in_config) {
+      extracted.node_configs[current_node].append(line);
+      extracted.node_configs[current_node].push_back('\n');
+    } else {
+      extracted.plan.append(line);
+      extracted.plan.push_back('\n');
+    }
+
+    if (newline == std::string_view::npos) {
+      break;
+    }
+    offset = newline + 1;
+  }
+  return ok(std::move(extracted));
+}
+
+template <typename T>
+[[nodiscard]] auto parse_typed_node_config(std::string_view text)
+    -> Result<JsonValue> {
+  auto config = toml_util::parse_toml<T>(text);
+  if (!config) {
+    return fail(config.error());
+  }
+  auto encoded = serialize_json(*config);
+  if (!encoded) {
+    return fail(encoded.error());
+  }
+  return parse_json(*encoded);
+}
+
+[[nodiscard]] auto parse_empty_node_config(std::string_view text)
+    -> Result<JsonValue> {
+  std::size_t offset = 0;
+  while (offset < text.size()) {
+    const auto newline = text.find('\n', offset);
+    const auto length = newline == std::string_view::npos
+                            ? text.size() - offset
+                            : newline - offset;
+    const auto line = trim(text.substr(offset, length));
+    if (!line.empty() && !line.starts_with('#')) {
+      return fail(Error::ParseError);
+    }
+    if (newline == std::string_view::npos) {
+      break;
+    }
+    offset = newline + 1;
+  }
+  return ok(JsonValue{JsonValue::object_t{}});
+}
+
+[[nodiscard]] auto parse_toml_node_config(NodeType type,
+                                          std::string_view text)
+    -> Result<JsonValue> {
+  switch (type) {
+  case NodeType::Command:
+    return parse_typed_node_config<CommandNodeConfig>(text);
+  case NodeType::Http:
+    return parse_typed_node_config<HttpNodeConfig>(text);
+  case NodeType::Model:
+    return parse_typed_node_config<ModelNodeConfig>(text);
+  case NodeType::Tool:
+    return parse_typed_node_config<ToolNodeConfig>(text);
+  case NodeType::Compute:
+    return parse_typed_node_config<ComputeNodeConfig>(text);
+  case NodeType::Evaluator:
+    return parse_typed_node_config<EvaluatorNodeConfig>(text);
+  case NodeType::Approval:
+    return parse_typed_node_config<ApprovalNodeConfig>(text);
+  case NodeType::Noop:
+    return parse_empty_node_config(text);
+  }
+  return fail(Error::Unsupported);
+}
+
 [[nodiscard]] auto parse_node_type(std::string_view value) -> Result<NodeType> {
-  if (value == "shell")
-    return ok(NodeType::Shell);
-  if (value == "docker")
-    return ok(NodeType::Docker);
-  if (value == "lua")
-    return ok(NodeType::Lua);
+  if (value == "command")
+    return ok(NodeType::Command);
   if (value == "http")
     return ok(NodeType::Http);
   if (value == "model")
@@ -199,13 +326,10 @@ namespace {
   plan.workflow_id = WorkflowId{std::move(dto.workflow_id)};
   plan.schema_version = dto.schema_version;
   plan.policy = WorkflowPolicy{
-      .allow_shell = dto.policy.allow_shell,
-      .allow_docker = dto.policy.allow_docker,
-      .allow_lua = dto.policy.allow_lua,
+      .allow_command = dto.policy.allow_command,
       .allow_network = dto.policy.allow_network,
       .allow_model_calls = dto.policy.allow_model_calls,
       .allow_tools = dto.policy.allow_tools,
-      .require_approval_for_shell = dto.policy.require_approval_for_shell,
       .allowed_http_hosts = std::move(dto.policy.allowed_http_hosts),
       .allowed_model_providers =
           std::move(dto.policy.allowed_model_providers),
@@ -296,9 +420,28 @@ auto WorkflowPlanLoader::from_json(std::string_view text)
 
 auto WorkflowPlanLoader::from_toml(std::string_view text)
     -> Result<WorkflowPlan> {
-  auto dto = toml_util::parse_toml<detail::WorkflowPlanDto>(text);
+  auto extracted = extract_node_configs(text);
+  if (!extracted) {
+    return fail(extracted.error());
+  }
+  auto dto = toml_util::parse_toml<detail::WorkflowPlanDto>(extracted->plan);
   if (!dto) {
     return fail(dto.error());
+  }
+  if (dto->nodes.size() != extracted->node_configs.size()) {
+    return fail(Error::ParseError);
+  }
+  for (std::size_t index = 0; index < dto->nodes.size(); ++index) {
+    auto type = parse_node_type(dto->nodes[index].type);
+    if (!type) {
+      return fail(type.error());
+    }
+    auto config =
+        parse_toml_node_config(*type, extracted->node_configs[index]);
+    if (!config) {
+      return fail(config.error());
+    }
+    dto->nodes[index].config = std::move(*config);
   }
   return convert(std::move(*dto));
 }

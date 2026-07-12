@@ -16,25 +16,10 @@ struct KeyValue {
   std::string value;
 };
 
-struct ShellNodeConfig {
-  std::string command;
-  std::string working_dir;
+struct CommandNodeConfig {
+  std::string program;
+  std::vector<std::string> arguments;
   std::vector<KeyValue> env;
-};
-
-struct DockerNodeConfig {
-  std::string image;
-  std::string command;
-  std::string working_dir;
-  std::vector<KeyValue> env;
-  std::string docker_socket{"/var/run/docker.sock"};
-};
-
-struct LuaNodeConfig {
-  std::string script;
-  std::string script_file;
-  std::uint64_t max_instructions{100'000};
-  std::uint64_t max_memory_bytes{8ULL * 1024ULL * 1024ULL};
 };
 
 struct HttpNodeConfig {
@@ -113,25 +98,10 @@ template <> struct meta<dagforge::workflow::KeyValue> {
   static constexpr auto value = object("key", &T::key, "value", &T::value);
 };
 
-template <> struct meta<dagforge::workflow::ShellNodeConfig> {
-  using T = dagforge::workflow::ShellNodeConfig;
-  static constexpr auto value = object("command", &T::command, "working_dir",
-                                       &T::working_dir, "env", &T::env);
-};
-
-template <> struct meta<dagforge::workflow::DockerNodeConfig> {
-  using T = dagforge::workflow::DockerNodeConfig;
+template <> struct meta<dagforge::workflow::CommandNodeConfig> {
+  using T = dagforge::workflow::CommandNodeConfig;
   static constexpr auto value = object(
-      "image", &T::image, "command", &T::command, "working_dir",
-      &T::working_dir, "env", &T::env, "docker_socket", &T::docker_socket);
-};
-
-template <> struct meta<dagforge::workflow::LuaNodeConfig> {
-  using T = dagforge::workflow::LuaNodeConfig;
-  static constexpr auto value = object(
-      "script", &T::script, "script_file", &T::script_file,
-      "max_instructions", &T::max_instructions, "max_memory_bytes",
-      &T::max_memory_bytes);
+      "program", &T::program, "arguments", &T::arguments, "env", &T::env);
 };
 
 template <> struct meta<dagforge::workflow::HttpNodeConfig> {

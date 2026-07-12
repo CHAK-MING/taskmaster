@@ -1,24 +1,19 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#include "dagforge/config/system_config.hpp"
 #include "dagforge/core/error.hpp"
 #include "dagforge/core/runtime.hpp"
 #include "dagforge/executor/executor_types.hpp"
 #include "dagforge/util/id.hpp"
-#include "dagforge/util/string_hash.hpp"
 #endif
-#include "dagforge/util/log.hpp"
 
-#include <atomic>
 #include <chrono>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
-#include <vector>
 
 #include <boost/asio/async_result.hpp>
 
@@ -49,10 +44,8 @@ struct ExecutorResult {
 
 struct ExecutorRequest {
   InstanceId instance_id;
-  std::string command;
-  std::string working_dir;
   std::chrono::seconds execution_timeout{std::chrono::seconds(3600)};
-  ExecutorConfig config;
+  CommandExecutorConfig command;
   std::shared_ptr<pmr::memory_resource> memory_resource;
 
   [[nodiscard]] auto resource() const noexcept -> pmr::memory_resource * {
@@ -77,19 +70,10 @@ struct ExecutionSink {
       on_complete;
 };
 
-class Runtime;
 class IExecutor;
 
-[[nodiscard]] auto create_shell_executor(Runtime &rt)
-    -> std::unique_ptr<IExecutor>;
-
-[[nodiscard]] auto create_docker_executor(Runtime &rt)
-    -> std::unique_ptr<IExecutor>;
-
-[[nodiscard]] auto create_lua_executor(Runtime &rt)
-    -> std::unique_ptr<IExecutor>;
-
-[[nodiscard]] auto create_noop_executor(Runtime &rt)
+[[nodiscard]] auto create_command_executor(Runtime &runtime,
+                                           SandboxConfig sandbox)
     -> std::unique_ptr<IExecutor>;
 
 class IExecutor {
@@ -100,28 +84,6 @@ public:
       -> Result<void> = 0;
 
   virtual auto cancel(const InstanceId &instance_id) -> void = 0;
-};
-
-class ExecutorRegistry {
-public:
-  using Creator =
-      std::move_only_function<std::unique_ptr<IExecutor>(Runtime &) const>;
-
-  static auto instance() -> ExecutorRegistry &;
-
-  auto register_type(ExecutorType type, Creator creator) -> void;
-
-  [[nodiscard]] auto create(ExecutorType type, Runtime &rt) const
-      -> std::unique_ptr<IExecutor>;
-
-  [[nodiscard]] auto registered_types() const -> std::vector<ExecutorType>;
-
-private:
-  struct Entry {
-    Creator creator;
-  };
-
-  std::flat_map<ExecutorType, Entry> entries_;
 };
 
 inline auto execute_async(Runtime & /*runtime*/, IExecutor &executor,
@@ -178,7 +140,7 @@ inline auto execute_async(Runtime & /*runtime*/, IExecutor &executor,
 }
 
 inline auto execute_async(Runtime &runtime, IExecutor &executor,
-                          InstanceId instance_id, ExecutorConfig config,
+                          InstanceId instance_id, CommandExecutorConfig command,
                           std::shared_ptr<pmr::memory_resource>
                               memory_resource = {},
                           std::move_only_function<void(std::string_view)>
@@ -186,17 +148,13 @@ inline auto execute_async(Runtime &runtime, IExecutor &executor,
                           std::move_only_function<void(std::string_view)>
                               on_stderr = {},
                           ExecutorHeartbeatCallback on_heartbeat = {},
-                          std::string command = {},
-                          std::string working_dir = {},
                           std::chrono::seconds execution_timeout =
                               std::chrono::seconds(3600))
     -> task<Result<ExecutorResult>> {
   return execute_async(runtime, executor,
                        ExecutorRequest{.instance_id = std::move(instance_id),
-                                       .command = std::move(command),
-                                       .working_dir = std::move(working_dir),
                                        .execution_timeout = execution_timeout,
-                                       .config = std::move(config),
+                                       .command = std::move(command),
                                        .memory_resource = {}},
                        std::move(memory_resource), std::move(on_stdout),
                        std::move(on_stderr), std::move(on_heartbeat));

@@ -4,12 +4,6 @@ import foundation = lib{dagforge-foundation}
 
 intf_libs = -lboost_url
 
-lua_core = ../third_party/lua-5.4.8/src/c{lapi lcode lctype ldebug ldo ldump \
-    lfunc lgc llex lmem lobject lopcodes lparser lstate lstring ltable ltm \
-    lundump lvm lzio}
-lua_lib = ../third_party/lua-5.4.8/src/c{lauxlib lbaselib lcorolib ldblib \
-    linit liolib lmathlib loadlib loslib lstrlib ltablib lutf8lib}
-
 ./: lib{dagforge-foundation}: libul{dagforge-foundation}: \
   mxx{modules/base modules/core modules/util modules/domain modules/io \
       modules/config modules/client modules/executor modules/workflow \
@@ -43,12 +37,7 @@ lib{dagforge}:                                                   \
       dagforge/io/context                                         \
       dagforge/io/timing_wheel                                    \
       dagforge/app/metrics_exporter                               \
-      dagforge/executor/shell_executor                            \
-      dagforge/executor/docker_executor                           \
-      dagforge/executor/lua_executor                              \
-      dagforge/executor/noop_executor                             \
-      dagforge/executor/composite_executor                        \
-      dagforge/executor/executor_registry                         \
+      dagforge/executor/command_executor                          \
       dagforge/app/application                                    \
       dagforge/app/api/api_server                                 \
       dagforge/client/http/http_parser                            \
@@ -59,8 +48,6 @@ lib{dagforge}:                                                   \
       dagforge/config/system_config_loader                        \
       dagforge/util/daemon                                        \
       dagforge/util/log}                                          \
-  $lua_core                                                       \
-  $lua_lib                                                        \
   $foundation                                                     \
   ../third_party/prometheus-cpp-core/cxx{check_names             \
       counter                                                     \

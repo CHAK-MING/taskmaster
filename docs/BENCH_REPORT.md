@@ -10,8 +10,11 @@ sensor, and task-configuration stack.
 `bench-core` contains:
 
 - runtime dispatch and cross-shard operations;
-- memory-arena allocation behavior;
-- Lua executor execution and sandbox overhead.
+- memory-arena allocation behavior.
+
+Command sandbox startup is covered by integration tests, not by `bench-core`.
+Any future sandbox benchmark must report the Minijail revision, kernel, enabled
+namespace features, Landlock ABI, and seccomp policy digest.
 
 Build and run:
 

@@ -7,18 +7,20 @@ All notable changes to DAGForge will be documented in this file.
 ### Breaking Changes
 - Removed XCom and XCom-based branching from the C++ runtime, including persistence, APIs, CLI, metrics, modules, tests, and examples.
 - Removed the retired 0.3 TaskConfig, DAG manager, scheduler, cron, sensor, MySQL persistence, management CLI, DAG REST routes, and Web UI stacks.
-- Replaced `[scheduler]`, `[database]`, and `[dag_source]` configuration with the 0.4 `[runtime]`, `[compute]`, `[workflow]`, and `[api]` contract.
+- Replaced `[scheduler]`, `[database]`, and `[dag_source]` configuration with the 0.4 `[runtime]`, `[compute]`, `[sandbox]`, `[workflow]`, and `[api]` contract.
 - Removed legacy DAG/task IDs and the DAG-specific Lua task context.
+- Replaced the Shell, Docker, Lua, Noop, composite, and registry executor stack with one sandboxed Command executor; Noop remains an inline workflow node.
 - Unknown TOML fields are rejected instead of being silently ignored.
 
 ### Added
 - Added a dedicated bounded ComputePool for CPU-intensive work, with priority queues, cooperative cancellation, start deadlines, owner-shard completion routing, configuration, and Prometheus metrics.
 - Added the versioned WorkflowPlan, PlanCompiler, immutable ExecutionPlan, WorkflowRuntime, typed run values, artifacts, evidence, checkpoints, approvals, and workflow control-plane routes.
+- Added a pinned Google Minijail helper with user/PID/mount/network/IPC/UTS/cgroup namespaces, Landlock, seccomp, private tmpfs, resource limits, integration tests, and release packaging.
 
 ### Changed
 - Enum metadata and JSON/TOML enum serialization now share Glaze `enumerate` definitions.
 - HTTP headers use Boost.Beast fields, preserving case-insensitive lookup and duplicate fields.
-- Shard and composite hashes use `ankerl::unordered_dense` hashing.
+- Shard hashes use `ankerl::unordered_dense` hashing.
 - Removed the direct Boost.Filesystem dependency; Boost.Charconv remains linked because Boost.URL uses it in the current system build.
 - Runtime benchmarks now target the shipped 0.4 runtime primitives instead of the retired Airflow-style scheduler stack.
 

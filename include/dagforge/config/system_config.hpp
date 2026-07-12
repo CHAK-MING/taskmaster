@@ -26,6 +26,21 @@ struct RuntimeConfig {
   auto operator==(const RuntimeConfig &) const -> bool = default;
 };
 
+struct SandboxConfig {
+  std::string minijail_path{
+      "~/.local/libexec/dagforge/minijail/minijail0"};
+  std::string seccomp_bpf_path{
+      "~/.local/libexec/dagforge/minijail/dagforge_command.bpf"};
+  std::string workspace_root{"./workspaces"};
+  std::uint64_t max_memory_bytes{1024ULL * 1024ULL * 1024ULL};
+  std::uint64_t max_file_bytes{64ULL * 1024ULL * 1024ULL};
+  std::uint64_t tmp_bytes{64ULL * 1024ULL * 1024ULL};
+  std::uint32_t max_processes{128};
+  std::uint32_t max_open_files{256};
+
+  auto operator==(const SandboxConfig &) const -> bool = default;
+};
+
 struct ModelProviderConfig {
   std::string name{"openai"};
   std::string base_url{"https://api.openai.com"};
@@ -72,6 +87,7 @@ struct SystemConfig {
   ComputeConfig compute;
   WorkflowConfig workflow;
   RuntimeConfig runtime;
+  SandboxConfig sandbox;
   ApiConfig api;
 
   auto operator==(const SystemConfig &) const -> bool = default;

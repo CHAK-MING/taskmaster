@@ -65,7 +65,7 @@
       "tree_sha256": "8f96f48d59affa6dafe7c52c134758f8c319cec097e0eb9a0de5926f15701884",
       "license": "MIT",
       "license_path": "third_party/lua-5.4.8/doc/readme.html",
-      "update_policy": "Stay on the latest 5.4 patch release unless a 5.5 migration has an explicit compatibility rationale."
+      "update_policy": "Frozen historical snapshot; DAGForge 0.4 does not compile or link Lua. Reintroduction requires an ADR and security review."
     }
   ]
 }

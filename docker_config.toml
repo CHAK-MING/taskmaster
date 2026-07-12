@@ -9,6 +9,16 @@ queue_capacity = 1024
 pin_threads_to_cores = false
 cpu_affinity_offset = 0
 
+[sandbox]
+minijail_path = "/opt/dagforge/libexec/dagforge/minijail/minijail0"
+seccomp_bpf_path = "/opt/dagforge/libexec/dagforge/minijail/dagforge_command.bpf"
+workspace_root = "/var/lib/dagforge/workspaces"
+max_memory_bytes = 1073741824
+max_file_bytes = 67108864
+tmp_bytes = 67108864
+max_processes = 128
+max_open_files = 256
+
 [workflow]
 enabled = true
 

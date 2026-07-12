@@ -5,9 +5,11 @@ module;
 #include <chrono>
 #include <cstdint>
 #include <flat_map>
+#include <functional>
 #include <memory>
 #include <new>
 #include <string>
+#include <vector>
 
 export module dagforge.executor;
 

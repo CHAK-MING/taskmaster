@@ -32,6 +32,7 @@
 
 # Local runtime data.
 *.db
+/workspaces/
 
 # Python caches.
 __pycache__/

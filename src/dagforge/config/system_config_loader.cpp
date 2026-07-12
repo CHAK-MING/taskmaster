@@ -18,6 +18,7 @@ struct SystemToml {
   ComputeConfig compute{};
   WorkflowConfig workflow{};
   RuntimeConfig runtime{};
+  SandboxConfig sandbox{};
   ApiConfig api{};
 };
 
@@ -64,6 +65,17 @@ template <> struct meta<dagforge::RuntimeConfig> {
       "cpu_affinity_offset", &T::cpu_affinity_offset);
 };
 
+template <> struct meta<dagforge::SandboxConfig> {
+  using T = dagforge::SandboxConfig;
+  static constexpr auto value = object(
+      "minijail_path", &T::minijail_path, "seccomp_bpf_path",
+      &T::seccomp_bpf_path, "workspace_root", &T::workspace_root,
+      "max_memory_bytes", &T::max_memory_bytes,
+      "max_file_bytes", &T::max_file_bytes, "tmp_bytes", &T::tmp_bytes,
+      "max_processes", &T::max_processes, "max_open_files",
+      &T::max_open_files);
+};
+
 template <> struct meta<dagforge::ApiConfig> {
   using T = dagforge::ApiConfig;
   static constexpr auto value = object(
@@ -76,7 +88,7 @@ template <> struct meta<dagforge::detail::SystemToml> {
   using T = dagforge::detail::SystemToml;
   static constexpr auto value = object(
       "compute", &T::compute, "workflow", &T::workflow, "runtime",
-      &T::runtime, "api", &T::api);
+      &T::runtime, "sandbox", &T::sandbox, "api", &T::api);
 };
 } // namespace glz
 
@@ -114,6 +126,7 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
   cfg.compute = std::move(raw.compute);
   cfg.workflow = std::move(raw.workflow);
   cfg.runtime = std::move(raw.runtime);
+  cfg.sandbox = std::move(raw.sandbox);
   cfg.api = std::move(raw.api);
   if (cfg.workflow.model_providers.empty()) {
     cfg.workflow.model_providers.emplace_back();
@@ -142,6 +155,22 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
   apply_env_override("DAGFORGE_RUNTIME_CPU_AFFINITY_OFFSET",
                      cfg.runtime.cpu_affinity_offset);
 
+  apply_env_override("DAGFORGE_SANDBOX_MINIJAIL",
+                     cfg.sandbox.minijail_path);
+  apply_env_override("DAGFORGE_SANDBOX_SECCOMP_BPF",
+                     cfg.sandbox.seccomp_bpf_path);
+  apply_env_override("DAGFORGE_SANDBOX_WORKSPACE_ROOT",
+                     cfg.sandbox.workspace_root);
+  apply_env_override("DAGFORGE_SANDBOX_MAX_MEMORY_BYTES",
+                     cfg.sandbox.max_memory_bytes);
+  apply_env_override("DAGFORGE_SANDBOX_MAX_FILE_BYTES",
+                     cfg.sandbox.max_file_bytes);
+  apply_env_override("DAGFORGE_SANDBOX_TMP_BYTES", cfg.sandbox.tmp_bytes);
+  apply_env_override("DAGFORGE_SANDBOX_MAX_PROCESSES",
+                     cfg.sandbox.max_processes);
+  apply_env_override("DAGFORGE_SANDBOX_MAX_OPEN_FILES",
+                     cfg.sandbox.max_open_files);
+
   std::unordered_set<std::string> provider_names;
   for (const auto &provider : cfg.workflow.model_providers) {
     if (provider.name.empty() || provider.base_url.empty() ||
@@ -164,7 +193,13 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
 
   if (cfg.compute.threads < 0 || cfg.compute.queue_capacity <= 0 ||
       cfg.compute.cpu_affinity_offset < 0 ||
-      cfg.runtime.shards < 0 || cfg.runtime.cpu_affinity_offset < 0) {
+      cfg.runtime.shards < 0 || cfg.runtime.cpu_affinity_offset < 0 ||
+      cfg.sandbox.minijail_path.empty() ||
+      cfg.sandbox.seccomp_bpf_path.empty() ||
+      cfg.sandbox.workspace_root.empty() ||
+      cfg.sandbox.max_memory_bytes == 0 || cfg.sandbox.max_file_bytes == 0 ||
+      cfg.sandbox.tmp_bytes == 0 || cfg.sandbox.max_processes == 0 ||
+      cfg.sandbox.max_open_files == 0) {
     return fail(Error::ParseError);
   }
   return ok(std::move(cfg));

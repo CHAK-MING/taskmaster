@@ -21,8 +21,7 @@ core_tests = ../tests/cxx{test_main runtime_test workflow_test coroutine_test \
     shard_test shard_affinity_test timing_wheel_test config_test \
     http_client_test http_server_test http_parser_test router_test \
     process_management_test io_bridge_test metrics_registry_test \
-    metrics_exporter_test daemon_test log_test docker_client_test \
-    docker_executor_test api_test}
+    metrics_exporter_test daemon_test log_test command_executor_test api_test}
 
 exe{core-unit-tests}: $core_tests $dagforge $foundation
 {
@@ -49,8 +48,8 @@ exe{all-unit-tests}: $core_tests $dagforge $foundation
   cxx.libs += -lgtest -pthread
 }
 
-exe{bench-core}: ../tests/cxx{bench_memory_arena bench_runtime \
-    bench_lua_executor} $dagforge $foundation
+exe{bench-core}: ../tests/cxx{bench_memory_arena bench_runtime} \
+  $dagforge $foundation
 {
   cxx.libs += -lbenchmark_main -lbenchmark -pthread
 }

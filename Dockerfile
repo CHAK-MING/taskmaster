@@ -32,10 +32,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libboost-process-dev \
     libboost-system-dev \
     libboost-url-dev \
+    libcap-dev \
     libssl-dev \
     liburing-dev \
     make \
     pkg-config \
+    python3 \
     util-linux \
     xz-utils \
     && rm -rf /var/lib/apt/lists/*
@@ -57,13 +59,21 @@ COPY build ./build
 COPY bin ./bin
 COPY include ./include
 COPY scripts ./scripts
+COPY sandbox ./sandbox
 COPY src ./src
 COPY tests ./tests
 COPY third_party ./third_party
 COPY dags ./dags
 COPY system_config.toml ./system_config.toml
+COPY docker_config.toml ./docker_config.toml
 
 RUN bash scripts/check-module-graph.sh
+
+RUN jobs="${BUILD_JOBS}" \
+    && if [ "${jobs}" = "0" ]; then jobs="$(nproc)"; fi \
+    && MINIJAIL_INSTALL_DIR=/release/libexec/dagforge/minijail \
+       BUILD_JOBS="${jobs}" \
+       bash scripts/install-minijail.sh
 
 RUN jobs="${BUILD_JOBS}" \
     && if [ "${jobs}" = "0" ]; then jobs="$(nproc)"; fi \
@@ -77,7 +87,7 @@ RUN set -eux; \
       "${BUILD2_CONFIG_DIR}/dagforge/bin/dagforge" \
       /release/bin/dagforge; \
     cp -a dags/. /release/dags/; \
-    install -m 0644 system_config.toml /release/system_config.toml; \
+    install -m 0644 docker_config.toml /release/system_config.toml; \
     install -m 0644 README.md /release/README.md; \
     install -m 0644 README_CN.md /release/README_CN.md; \
     install -m 0644 LICENSE /release/LICENSE; \
@@ -89,8 +99,12 @@ RUN set -eux; \
         gsub(/\"/, "", $3); print "boost=" $3 \
       }' /usr/include/boost/version.hpp; \
       printf 'project_linkage=static\n'; \
+      printf 'minijail='; cat /release/libexec/dagforge/minijail/REVISION; \
     } > /release/BUILD-INFO; \
-    ldd /release/bin/dagforge \
+    { \
+      ldd /release/bin/dagforge; \
+      ldd /release/libexec/dagforge/minijail/minijail0; \
+    } \
       | awk '/=>/ {print $1} /^[[:space:]]*\// {print $1}' \
       | sort -u > /release/RUNTIME-DEPENDENCIES; \
     if readelf -d /release/bin/dagforge | grep -Fq 'libdagforge.so'; then \
@@ -108,6 +122,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libboost-filesystem1.90.0 \
     libboost-process1.90.0 \
     libboost-url1.90.0 \
+    libcap2 \
     libquadmath0 \
     libssl3t64 \
     libstdc++6 \
@@ -124,7 +139,8 @@ RUN set -eux; \
       ldd ./bin/dagforge >&2; \
       exit 1; \
     fi; \
-    ./bin/dagforge --help >/dev/null
+    ./bin/dagforge --help >/dev/null; \
+    ./libexec/dagforge/minijail/minijail0 --help >/dev/null
 
 FROM scratch AS release-bundle
 COPY --from=release-verify /opt/dagforge/ /

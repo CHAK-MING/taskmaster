@@ -28,6 +28,10 @@ fi
 
 for required in \
   bin/dagforge \
+  libexec/dagforge/minijail/minijail0 \
+  libexec/dagforge/minijail/dagforge_command.bpf \
+  libexec/dagforge/minijail/LICENSE.minijail \
+  libexec/dagforge/minijail/REVISION \
   system_config.toml \
   LICENSE \
   README.md \

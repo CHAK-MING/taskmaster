@@ -29,7 +29,8 @@ AI application / workflow author
             v
       WorkflowRuntime
      /       |        \
- executors  compute   adapters
+ command   compute   adapters
+ sandbox
 ```
 
 The current runtime provides:
@@ -38,7 +39,7 @@ The current runtime provides:
 - immutable compiled plans with cycle, port, policy, and resource validation;
 - explicit typed node outputs and input bindings;
 - bounded node and run concurrency, deadlines, retries, and cancellation;
-- Shell, Docker, Lua, HTTP, Compute, Model, Tool, Evaluator, Approval, and Noop
+- sandboxed Command, HTTP, Compute, Model, Tool, Evaluator, Approval, and Noop
   node types;
 - artifact externalization for large values;
 - checkpoints, evidence records, idempotent triggers, and approval gates;
@@ -55,6 +56,8 @@ property of the current build.
 - build2 0.17+
 - Boost 1.88+
 - OpenSSL development libraries
+- libcap development headers
+- Git, Make, and Python 3 for the pinned Minijail helper build
 
 MySQL and Node.js are not required by the 0.4 runtime core.
 
@@ -62,8 +65,13 @@ MySQL and Node.js are not required by the 0.4 runtime core.
 
 ```bash
 ./scripts/setup-build2.sh
+./scripts/install-minijail.sh
 ./scripts/build.sh
 ```
+
+Command nodes are never executed directly. `install-minijail.sh` builds the
+pinned Google Minijail revision and the architecture-specific DAGForge seccomp
+program into `~/.local/libexec/dagforge/minijail`.
 
 The executable is produced in the selected build2 configuration directory.
 For the default configuration, `scripts/build.sh` prints the exact path.
@@ -80,6 +88,7 @@ The supported top-level sections are:
 
 - `[runtime]`: shard count and shard affinity;
 - `[compute]`: bounded CPU worker pool;
+- `[sandbox]`: Minijail paths, workspace root, and hard resource limits;
 - `[workflow]`: workflow adapters and provider catalogs;
 - `[api]`: HTTP control plane.
 
@@ -126,6 +135,26 @@ timeout_sec = 30
 ```
 
 Plans are accepted as strict JSON or TOML. Unknown fields are rejected.
+
+A command node uses an absolute executable and an explicit argument vector:
+
+```toml
+[[nodes]]
+id = "render"
+type = "command"
+outputs = ["stdout", "stderr", "exit_code", "result"]
+timeout_sec = 30
+
+[nodes.config]
+program = "/usr/bin/python3"
+arguments = ["-c", "print('hello from the sandbox')"]
+env = [{ key = "MODE", value = "test" }]
+```
+
+Each command receives a private user/PID/mount/network/IPC/UTS/cgroup namespace,
+a private size-limited `/tmp`, Landlock filesystem rules, `no_new_privs`, a
+seccomp denylist, and rlimits. Only its per-instance workspace is writable;
+external networking is unavailable.
 
 ## HTTP control plane
 
