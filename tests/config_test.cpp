@@ -62,6 +62,16 @@ tmp_bytes = 16777216
 max_processes = 64
 max_open_files = 128
 
+[admission]
+allow_unlisted_programs = false
+allow_unlisted_environment = false
+allowed_programs = ["/bin/echo"]
+allowed_environment = ["DAGFORGE_INPUT"]
+max_nodes = 64
+max_parallel_nodes = 8
+max_total_output_bytes = 1048576
+max_run_duration_sec = 60
+
 [api]
 enabled = true
 port = 9999
@@ -82,6 +92,10 @@ host = "0.0.0.0"
   EXPECT_EQ(result->sandbox.minijail_path, "/opt/dagforge/minijail0");
   EXPECT_EQ(result->sandbox.max_memory_bytes, 536870912U);
   EXPECT_EQ(result->sandbox.max_processes, 64U);
+  EXPECT_FALSE(result->admission.allow_unlisted_programs);
+  ASSERT_EQ(result->admission.allowed_programs.size(), 1U);
+  EXPECT_EQ(result->admission.allowed_programs.front(), "/bin/echo");
+  EXPECT_EQ(result->admission.max_parallel_nodes, 8U);
   EXPECT_TRUE(result->api.enabled);
   EXPECT_EQ(result->api.port, 9999);
 }

@@ -15,6 +15,7 @@ namespace detail {
 struct SystemToml {
   ComputeConfig compute{};
   WorkflowConfig workflow{};
+  AdmissionConfig admission{};
   RuntimeConfig runtime{};
   SandboxConfig sandbox{};
   ApiConfig api{};
@@ -35,6 +36,18 @@ template <> struct meta<dagforge::ComputeConfig> {
 template <> struct meta<dagforge::WorkflowConfig> {
   using T = dagforge::WorkflowConfig;
   static constexpr auto value = object("enabled", &T::enabled);
+};
+
+template <> struct meta<dagforge::AdmissionConfig> {
+  using T = dagforge::AdmissionConfig;
+  static constexpr auto value = object(
+      "allow_unlisted_programs", &T::allow_unlisted_programs,
+      "allow_unlisted_environment", &T::allow_unlisted_environment,
+      "allowed_programs", &T::allowed_programs, "allowed_environment",
+      &T::allowed_environment, "max_nodes", &T::max_nodes,
+      "max_parallel_nodes", &T::max_parallel_nodes,
+      "max_total_output_bytes", &T::max_total_output_bytes,
+      "max_run_duration_sec", &T::max_run_duration_sec);
 };
 
 template <> struct meta<dagforge::RuntimeConfig> {
@@ -66,8 +79,9 @@ template <> struct meta<dagforge::ApiConfig> {
 template <> struct meta<dagforge::detail::SystemToml> {
   using T = dagforge::detail::SystemToml;
   static constexpr auto value = object(
-      "compute", &T::compute, "workflow", &T::workflow, "runtime",
-      &T::runtime, "sandbox", &T::sandbox, "api", &T::api);
+      "compute", &T::compute, "workflow", &T::workflow, "admission",
+      &T::admission, "runtime", &T::runtime, "sandbox", &T::sandbox, "api",
+      &T::api);
 };
 } // namespace glz
 
@@ -104,6 +118,7 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
   SystemConfig cfg{};
   cfg.compute = std::move(raw.compute);
   cfg.workflow = std::move(raw.workflow);
+  cfg.admission = std::move(raw.admission);
   cfg.runtime = std::move(raw.runtime);
   cfg.sandbox = std::move(raw.sandbox);
   cfg.api = std::move(raw.api);
@@ -155,7 +170,11 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
       cfg.sandbox.workspace_root.empty() ||
       cfg.sandbox.max_memory_bytes == 0 || cfg.sandbox.max_file_bytes == 0 ||
       cfg.sandbox.tmp_bytes == 0 || cfg.sandbox.max_processes == 0 ||
-      cfg.sandbox.max_open_files == 0) {
+      cfg.sandbox.max_open_files == 0 || cfg.admission.max_nodes == 0 ||
+      cfg.admission.max_parallel_nodes == 0 ||
+      cfg.admission.max_parallel_nodes > cfg.admission.max_nodes ||
+      cfg.admission.max_total_output_bytes == 0 ||
+      cfg.admission.max_run_duration_sec <= 0) {
     return fail(Error::ParseError);
   }
   return ok(std::move(cfg));

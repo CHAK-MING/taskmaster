@@ -253,15 +253,19 @@ processes have been reaped.
 
 ## ⚙️ System Configuration
 
-The configuration file contains five top-level sections:
+The configuration file contains six top-level sections:
 
 | Section | Purpose |
 | --- | --- |
 | `[runtime]` | Shard count and CPU affinity |
 | `[compute]` | Bounded CPU worker pool and affinity |
 | `[sandbox]` | Minijail paths, workspace root, and resource limits |
-| `[workflow]` | Workflow switch and adapter/provider catalogs |
+| `[workflow]` | Workflow runtime switch |
+| `[admission]` | Server-owned program, environment, and budget limits |
 | `[api]` | Optional HTTP address, port, and TLS settings |
+
+Workflow Plans cannot authorize themselves. `AdmissionPolicy` evaluates every
+plan against the server configuration before it is compiled and registered.
 
 See [`system_config.toml`](system_config.toml) for a complete example.
 

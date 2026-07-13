@@ -2,6 +2,7 @@
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
+#include "dagforge/workflow/admission_policy.hpp"
 #include "dagforge/workflow/plan_compiler.hpp"
 #include "dagforge/workflow/workflow_types.hpp"
 
@@ -26,7 +27,8 @@ public:
 class WorkflowControlPlane {
 public:
   WorkflowControlPlane();
-  explicit WorkflowControlPlane(PlanCompiler compiler);
+  explicit WorkflowControlPlane(PlanCompiler compiler,
+                                AdmissionPolicy admission = {});
 
   [[nodiscard]] auto register_plan(WorkflowPlan plan)
       -> Result<std::shared_ptr<const ExecutionPlan>>;
@@ -39,6 +41,7 @@ public:
 
 private:
   PlanCompiler compiler_;
+  AdmissionPolicy admission_;
   mutable std::mutex mutex_;
   std::unordered_map<std::string, std::shared_ptr<const ExecutionPlan>>
       plans_by_id_;

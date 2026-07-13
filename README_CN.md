@@ -234,15 +234,19 @@ Plan 中的 Node 在运行时投影为 Task，每次真实执行都会创建独�
 
 ## ⚙️ 系统配置
 
-配置文件包含五个顶层区段：
+配置文件包含六个顶层区段：
 
 | 区段 | 用途 |
 | --- | --- |
 | `[runtime]` | Shard 数量和 CPU 亲和性 |
 | `[compute]` | 有界计算线程池和线程亲和性 |
 | `[sandbox]` | Minijail 路径、Workspace 根目录和资源限制 |
-| `[workflow]` | Workflow 开关和 Adapter/Provider 配置 |
+| `[workflow]` | Workflow 运行时开关 |
+| `[admission]` | 服务端拥有的程序、环境变量和预算限制 |
 | `[api]` | 可选 HTTP 地址、端口和 TLS 配置 |
+
+Workflow Plan 不能自行授权。计划在编译和注册前必须通过服务端
+`AdmissionPolicy`。
 
 完整配置见 [`system_config.toml`](system_config.toml)。
 

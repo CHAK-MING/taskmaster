@@ -27,6 +27,7 @@ lib{dagforge}:                                                   \
   cxx{dagforge/core/shard                                         \
       dagforge/core/compute_pool                                  \
       dagforge/core/runtime                                       \
+      dagforge/workflow/admission_policy                          \
       dagforge/workflow/plan_compiler                             \
       dagforge/workflow/workflow_storage                          \
       dagforge/workflow/run_value_store                           \

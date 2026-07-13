@@ -418,6 +418,62 @@ TEST(WorkflowControlPlaneTest, DeduplicatesPlansByDigest) {
   EXPECT_EQ(control.list_plans().size(), 2U);
 }
 
+TEST(WorkflowControlPlaneTest, EnforcesServerAdmissionPolicy) {
+  AdmissionConfig config;
+  config.allow_unlisted_programs = false;
+  config.allow_unlisted_environment = false;
+  config.allowed_programs = {"/bin/echo"};
+  config.allowed_environment = {"DAGFORGE_INPUT"};
+  config.max_parallel_nodes = 32;
+  WorkflowControlPlane control{PlanCompiler{}, AdmissionPolicy{config}};
+
+  auto allowed = base_plan("admission-allowed");
+  allowed.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{
+          .program = "/bin/echo",
+          .env = {{.key = "DAGFORGE_INPUT", .value = "hello"}},
+      },
+      .outputs = {WorkflowPortId{"result"}},
+  });
+  EXPECT_TRUE(control.register_plan(std::move(allowed)).has_value());
+
+  auto blocked_program = base_plan("admission-program");
+  blocked_program.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{.program = "/bin/cat"},
+      .outputs = {WorkflowPortId{"result"}},
+  });
+  auto program_result = control.register_plan(std::move(blocked_program));
+  ASSERT_FALSE(program_result.has_value());
+  EXPECT_EQ(program_result.error(), make_error_code(Error::Unauthorized));
+
+  auto blocked_environment = base_plan("admission-environment");
+  blocked_environment.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{
+          .program = "/bin/echo",
+          .env = {{.key = "SECRET", .value = "value"}},
+      },
+      .outputs = {WorkflowPortId{"result"}},
+  });
+  auto environment_result =
+      control.register_plan(std::move(blocked_environment));
+  ASSERT_FALSE(environment_result.has_value());
+  EXPECT_EQ(environment_result.error(), make_error_code(Error::Unauthorized));
+
+  auto excessive_budget = base_plan("admission-budget");
+  excessive_budget.policy.budget.max_parallel_nodes = 33;
+  excessive_budget.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{.program = "/bin/echo"},
+      .outputs = {WorkflowPortId{"result"}},
+  });
+  auto budget_result = control.register_plan(std::move(excessive_budget));
+  ASSERT_FALSE(budget_result.has_value());
+  EXPECT_EQ(budget_result.error(), make_error_code(Error::ResourceExhausted));
+}
+
 TEST(WorkflowPlanCompilerTest, RejectsCyclesAndUnsafeCommandPlans) {
   PlanCompiler compiler;
 

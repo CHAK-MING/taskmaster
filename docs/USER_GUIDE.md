@@ -130,7 +130,27 @@ sandbox mounts a private tmpfs over `/tmp`. Environment overrides are:
 
 `workflow.enabled` creates the workflow control plane and runtime.
 
-### 2.5 API
+### 2.5 Admission policy
+
+Admission is owned by the server, not by the Workflow Plan:
+
+```toml
+[admission]
+allow_unlisted_programs = false
+allow_unlisted_environment = false
+allowed_programs = ["/bin/echo", "/usr/bin/python3"]
+allowed_environment = ["DAGFORGE_INPUT", "MODE"]
+max_nodes = 256
+max_parallel_nodes = 32
+max_total_output_bytes = 67108864
+max_run_duration_sec = 3600
+```
+
+When an `allow_unlisted_*` field is false, the matching allowlist is exact.
+Admission also caps every plan budget. A syntactically valid plan can therefore
+be rejected with `unauthorized` or `resource exhausted` before registration.
+
+### 2.6 API
 
 Set `api.enabled = true` to start the HTTP control plane. TLS requires both a
 certificate chain and private key path.
@@ -261,6 +281,10 @@ max_run_duration_sec = 3600
 
 - `continue_independent`: independent branches continue after a task fails;
 - `fail_fast`: the run enters `stopping` and terminates other active attempts.
+
+These fields describe execution behavior and requested resource bounds. They
+do not grant permission to execute programs or expose environment variables;
+that decision belongs to the server admission policy.
 
 ## 4. CLI
 

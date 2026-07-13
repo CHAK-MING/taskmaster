@@ -67,8 +67,9 @@ auto Application::rebuild_components() -> Result<void> {
   }
 
   if (config_.workflow.enabled) {
-    workflow_control_plane_ =
-        std::make_unique<workflow::WorkflowControlPlane>();
+    workflow_control_plane_ = std::make_unique<workflow::WorkflowControlPlane>(
+        workflow::PlanCompiler{},
+        workflow::AdmissionPolicy{config_.admission});
     workflow_runtime_ = std::make_unique<workflow::WorkflowRuntime>(
         *runtime_, *executor_, std::make_shared<workflow::InMemoryArtifactStore>(),
         std::make_shared<workflow::EvidenceLedger>(),

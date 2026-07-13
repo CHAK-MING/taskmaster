@@ -21,6 +21,9 @@ All notable changes to DAGForge will be documented in this file.
 - Unknown TOML fields are rejected instead of being silently ignored.
 
 ### Added
+- Added server-owned `AdmissionPolicy` checks for executable allowlists,
+  environment allowlists, and plan budget ceilings. Workflow Plans no longer
+  contain self-authorizing capability switches.
 - Added an `ISandboxBackend` boundary. `CommandExecutor` delegates launch,
   lifecycle events, and termination to the selected backend; Minijail is the
   shipped implementation.

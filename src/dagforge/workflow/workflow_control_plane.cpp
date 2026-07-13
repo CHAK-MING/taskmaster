@@ -379,11 +379,16 @@ auto WorkflowPlanLoader::from_toml(std::string_view text)
 
 WorkflowControlPlane::WorkflowControlPlane() = default;
 
-WorkflowControlPlane::WorkflowControlPlane(PlanCompiler compiler)
-    : compiler_(std::move(compiler)) {}
+WorkflowControlPlane::WorkflowControlPlane(PlanCompiler compiler,
+                                           AdmissionPolicy admission)
+    : compiler_(std::move(compiler)), admission_(std::move(admission)) {}
 
 auto WorkflowControlPlane::register_plan(WorkflowPlan plan)
     -> Result<std::shared_ptr<const ExecutionPlan>> {
+  auto admitted = admission_.validate(plan);
+  if (!admitted) {
+    return fail(admitted.error());
+  }
   auto compiled = compiler_.compile(std::move(plan));
   if (!compiled) {
     return fail(compiled.error());

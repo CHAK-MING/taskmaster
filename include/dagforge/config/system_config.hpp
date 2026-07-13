@@ -1,8 +1,10 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 #endif
 
 namespace dagforge {
@@ -45,6 +47,19 @@ struct WorkflowConfig {
   auto operator==(const WorkflowConfig &) const -> bool = default;
 };
 
+struct AdmissionConfig {
+  bool allow_unlisted_programs{true};
+  bool allow_unlisted_environment{true};
+  std::vector<std::string> allowed_programs;
+  std::vector<std::string> allowed_environment;
+  std::size_t max_nodes{256};
+  std::size_t max_parallel_nodes{32};
+  std::uint64_t max_total_output_bytes{64ULL * 1024ULL * 1024ULL};
+  int max_run_duration_sec{3600};
+
+  auto operator==(const AdmissionConfig &) const -> bool = default;
+};
+
 struct ApiConfig {
   bool enabled{false};
   std::uint16_t port{8888};
@@ -60,6 +75,7 @@ struct ApiConfig {
 struct SystemConfig {
   ComputeConfig compute;
   WorkflowConfig workflow;
+  AdmissionConfig admission;
   RuntimeConfig runtime;
   SandboxConfig sandbox;
   ApiConfig api;
