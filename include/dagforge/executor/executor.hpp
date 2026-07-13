@@ -94,7 +94,9 @@ inline auto execute_async(Runtime & /*runtime*/, IExecutor &executor,
                               on_stdout = {},
                           std::move_only_function<void(std::string_view)>
                               on_stderr = {},
-                          ExecutorHeartbeatCallback on_heartbeat = {})
+                          ExecutorHeartbeatCallback on_heartbeat = {},
+                          std::move_only_function<void(std::string_view)>
+                              on_state = {})
     -> task<Result<ExecutorResult>> {
   req.memory_resource = std::move(memory_resource);
 
@@ -102,7 +104,8 @@ inline auto execute_async(Runtime & /*runtime*/, IExecutor &executor,
                                      void(Result<ExecutorResult>)>(
       [&executor, req = std::move(req), on_stdout = std::move(on_stdout),
        on_stderr = std::move(on_stderr),
-       on_heartbeat = std::move(on_heartbeat)](auto handler) mutable {
+       on_heartbeat = std::move(on_heartbeat),
+       on_state = std::move(on_state)](auto handler) mutable {
         ExecutionSink sink;
         // Capture handler by shared_ptr so we can call it on start failure too.
         auto shared_h = std::make_shared<decltype(handler)>(std::move(handler));
@@ -124,6 +127,13 @@ inline auto execute_async(Runtime & /*runtime*/, IExecutor &executor,
           sink.on_heartbeat =
               [cb = std::move(on_heartbeat)](const InstanceId &id) mutable {
                 cb(id);
+              };
+        }
+        if (on_state) {
+          sink.on_state =
+              [cb = std::move(on_state)](const InstanceId &,
+                                         std::string_view state) mutable {
+                cb(state);
               };
         }
         sink.on_complete = [shared_h](const InstanceId &,
@@ -149,7 +159,9 @@ inline auto execute_async(Runtime &runtime, IExecutor &executor,
                               on_stderr = {},
                           ExecutorHeartbeatCallback on_heartbeat = {},
                           std::chrono::seconds execution_timeout =
-                              std::chrono::seconds(3600))
+                              std::chrono::seconds(3600),
+                          std::move_only_function<void(std::string_view)>
+                              on_state = {})
     -> task<Result<ExecutorResult>> {
   return execute_async(runtime, executor,
                        ExecutorRequest{.instance_id = std::move(instance_id),
@@ -157,7 +169,8 @@ inline auto execute_async(Runtime &runtime, IExecutor &executor,
                                        .command = std::move(command),
                                        .memory_resource = {}},
                        std::move(memory_resource), std::move(on_stdout),
-                       std::move(on_stderr), std::move(on_heartbeat));
+                       std::move(on_stderr), std::move(on_heartbeat),
+                       std::move(on_state));
 }
 
 } // namespace dagforge

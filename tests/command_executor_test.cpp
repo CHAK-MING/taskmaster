@@ -12,6 +12,7 @@
 #include <memory>
 #include <string>
 #include <system_error>
+#include <vector>
 
 #include <unistd.h>
 
@@ -114,6 +115,28 @@ TEST_F(CommandExecutorTest, RunsInsideWritableWorkspace) {
   std::string contents;
   output >> contents;
   EXPECT_EQ(contents, "artifact");
+}
+
+TEST_F(CommandExecutorTest, ReportsRunningAfterSandboxLaunch) {
+  if (!sandbox_available()) {
+    GTEST_SKIP() << "Minijail helper is not installed";
+  }
+
+  std::vector<std::string> states;
+  const auto instance =
+      InstanceId{std::format("command-test-{}", next_instance_++)};
+  auto result = sync_wait_on_runtime(
+      runtime_, execute_async(
+                    runtime_, *executor_, instance,
+                    CommandExecutorConfig{.program = "/bin/true"}, {}, {}, {},
+                    {}, std::chrono::seconds(5),
+                    [&states](std::string_view state) {
+                      states.emplace_back(state);
+                    }));
+
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  ASSERT_EQ(states.size(), 1U);
+  EXPECT_EQ(states.front(), "running");
 }
 
 TEST_F(CommandExecutorTest, DeniesHostFilesOutsideAllowlist) {

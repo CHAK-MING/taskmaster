@@ -5,6 +5,13 @@ All notable changes to DAGForge will be documented in this file.
 ## [Unreleased]
 
 ### Breaking Changes
+- Replaced the flat run/node lifecycle with explicit Run, Task, and Attempt
+  state machines. Cancellation and fail-fast now remain `stopping` until every
+  active attempt is reaped.
+- Raised the Workflow Plan schema version to 2 for the new lifecycle, retry,
+  and failure-policy contract.
+- Removed Approval nodes and approval control-plane routes. External waits are
+  no longer modeled as executors.
 - Removed XCom and XCom-based branching from the C++ runtime, including persistence, APIs, CLI, metrics, modules, tests, and examples.
 - Removed the retired 0.3 TaskConfig, DAG manager, scheduler, cron, sensor, MySQL persistence, management CLI, DAG REST routes, and Web UI stacks.
 - Replaced `[scheduler]`, `[database]`, and `[dag_source]` configuration with the 0.4 `[runtime]`, `[compute]`, `[sandbox]`, `[workflow]`, and `[api]` contract.
@@ -13,8 +20,11 @@ All notable changes to DAGForge will be documented in this file.
 - Unknown TOML fields are rejected instead of being silently ignored.
 
 ### Added
+- Added pause/resume, delayed retries with bounded exponential backoff,
+  failure classification, per-attempt history, skip reasons, stop intent, and
+  explicit `continue_independent` / `fail_fast` policies.
 - Added a dedicated bounded ComputePool for CPU-intensive work, with priority queues, cooperative cancellation, start deadlines, owner-shard completion routing, configuration, and Prometheus metrics.
-- Added the versioned WorkflowPlan, PlanCompiler, immutable ExecutionPlan, WorkflowRuntime, typed run values, artifacts, evidence, checkpoints, approvals, and workflow control-plane routes.
+- Added the versioned WorkflowPlan, PlanCompiler, immutable ExecutionPlan, WorkflowRuntime, typed run values, artifacts, evidence, checkpoints, and workflow control-plane routes.
 - Added a pinned Google Minijail helper with user/PID/mount/network/IPC/UTS/cgroup namespaces, Landlock, seccomp, private tmpfs, resource limits, integration tests, and release packaging.
 
 ### Changed

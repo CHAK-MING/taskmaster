@@ -419,6 +419,9 @@ auto execute_command(fs::path minijail, std::vector<std::string> arguments,
   }
 
   context.register_process(instance_id, process->id());
+  if (sink.on_state) {
+    sink.on_state(instance_id, "running");
+  }
   log::debug("sandboxed command started pid={} instance_id={}", process->id(),
              instance_id);
 

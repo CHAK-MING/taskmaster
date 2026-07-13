@@ -85,27 +85,43 @@ The response has status `202 Accepted`:
 
 ### `GET /api/v1/workflow-runs/{run_id}`
 
-Returns the run state, node states, attempts, errors, and pending approval IDs.
+Returns the run state, task states, attempt history, stop intent, and errors.
 
 Run states:
 
-- `queued`
 - `running`
-- `awaiting_approval`
-- `success`
+- `pausing`
+- `paused`
+- `stopping`
+- `succeeded`
 - `failed`
 - `cancelled`
 
-Node states:
+Task states:
 
 - `pending`
 - `ready`
 - `running`
-- `awaiting_approval`
-- `success`
+- `retry_waiting`
+- `succeeded`
 - `failed`
 - `skipped`
 - `cancelled`
+
+Attempt states:
+
+- `starting`
+- `running`
+- `terminating`
+- `succeeded`
+- `failed`
+- `timed_out`
+- `cancelled`
+
+Run, task, retry, and attempt timestamps are returned as Unix epoch
+milliseconds with an `_at_ms` suffix when the timestamp exists.
+Failed attempts include `failure_class`; stopped attempts include
+`termination_reason`.
 
 ### `GET /api/v1/workflow-runs/{run_id}/outputs/{node_id}/{port}`
 
@@ -127,37 +143,26 @@ Returns evidence records for the run.
 Requests cancellation and returns:
 
 ```json
-{"status":"cancelled"}
+{"status":"stopping"}
 ```
 
-## Approval endpoints
+The run remains `stopping` until every active attempt has terminated and its
+sandbox process has been reaped.
 
-### `GET /api/v1/workflow-runs/{run_id}/approvals`
+### `POST /api/v1/workflow-runs/{run_id}/pause`
 
-Lists pending approvals with approval ID, node ID, summary, and context.
+Stops dispatching new tasks. Active attempts continue normally. The run moves
+from `pausing` to `paused` after the active-attempt count reaches zero.
 
-### `POST /api/v1/workflow-runs/{run_id}/approvals/{approval_id}`
+### `POST /api/v1/workflow-runs/{run_id}/resume`
 
-Body:
-
-```json
-{
-  "approved": true,
-  "comment": "reviewed",
-  "principal": {
-    "subject": "reviewer-7",
-    "roles": ["reviewer"]
-  }
-}
-```
-
-Returns `202 Accepted` when the decision is accepted.
+Moves a paused run back to `running` and resumes dispatch.
 
 ## Error behavior
 
 - `400`: invalid path parameter, body, plan, or strict parser failure.
 - `401`/`403`: mapped adapter or policy authorization failure.
-- `404`: plan, run, output, or approval not found.
+- `404`: plan, run, or output not found.
 - `409`: state or duplicate conflict when mapped by the core error.
 - `503`: workflow runtime disabled.
 

@@ -34,21 +34,10 @@ struct WorkflowAdapters {
   std::move_only_function<task<Result<ToolResult>>(ToolInvocation)> invoke_tool;
 };
 
-struct ApprovalRequest {
-  ApprovalId approval_id;
-  WorkflowRunId run_id;
-  WorkflowNodeId node_id;
-  Principal requested_by;
-  std::string summary;
-  JsonValue context;
-  std::chrono::system_clock::time_point expires_at{};
-};
-
 struct WorkflowCallbacks {
   std::move_only_function<void(const RunSnapshot &)> on_run_state;
-  std::move_only_function<void(const WorkflowRunId &, const NodeSnapshot &)>
-      on_node_state;
-  std::move_only_function<void(const ApprovalRequest &)> on_approval_requested;
+  std::move_only_function<void(const WorkflowRunId &, const TaskSnapshot &)>
+      on_task_state;
   std::move_only_function<void(const WorkflowRunId &,
                                std::shared_ptr<const RunSnapshot>)>
       on_complete;
@@ -80,12 +69,9 @@ public:
   [[nodiscard]] auto output(const WorkflowRunId &run_id,
                             const OutputRef &output_ref) const
       -> task<Result<std::shared_ptr<const WorkflowValue>>>;
-  [[nodiscard]] auto pending_approvals(const WorkflowRunId &run_id) const
-      -> task<Result<std::vector<ApprovalRequest>>>;
-
-  [[nodiscard]] auto approve(const WorkflowRunId &run_id,
-                             const ApprovalId &approval_id, bool approved,
-                             Principal actor, std::string comment = {})
+  [[nodiscard]] auto pause(const WorkflowRunId &run_id)
+      -> task<Result<void>>;
+  [[nodiscard]] auto resume(const WorkflowRunId &run_id)
       -> task<Result<void>>;
   [[nodiscard]] auto cancel(const WorkflowRunId &run_id)
       -> task<Result<void>>;
@@ -106,21 +92,21 @@ private:
   using InputMap = std::unordered_map<
       std::string, std::shared_ptr<const WorkflowValue>>;
 
-  struct NodeRuntimeState {
-    NodeSnapshot snapshot;
-    std::optional<ApprovalRequest> approval;
+  struct TaskRuntimeState {
+    TaskSnapshot snapshot;
     std::optional<ComputeTaskHandle> compute_handle;
     std::optional<InstanceId> instance_id;
+    io::TimingWheel::Handle retry_handle;
   };
 
   struct ActiveRun {
     std::shared_ptr<const ExecutionPlan> plan;
     TriggerEnvelope trigger;
     RunSnapshot snapshot;
-    std::vector<NodeRuntimeState> nodes;
+    std::vector<TaskRuntimeState> tasks;
     std::unique_ptr<RunValueStore> values;
     std::deque<std::size_t> ready;
-    std::size_t active_nodes{0};
+    std::size_t active_attempts{0};
     bool dispatching{false};
     std::uint64_t model_tokens_used{0};
     io::TimingWheel::Handle deadline_handle;
@@ -143,18 +129,38 @@ private:
                       TriggerEnvelope trigger, WorkflowCallbacks callbacks)
       -> void;
   auto dispatch(const WorkflowRunId &run_id) -> void;
-  auto start_node(const WorkflowRunId &run_id, std::size_t node_index) -> void;
-  auto start_async_node(WorkflowRunId run_id, std::size_t node_index)
+  auto start_task(const WorkflowRunId &run_id, std::size_t task_index) -> void;
+  auto start_async_task(WorkflowRunId run_id, std::size_t task_index,
+                        AttemptId attempt_id)
       -> spawn_task;
-  auto start_compute_node(const WorkflowRunId &run_id, std::size_t node_index)
+  auto start_compute_task(const WorkflowRunId &run_id, std::size_t task_index,
+                          AttemptId attempt_id)
       -> void;
-  auto start_approval_node(const WorkflowRunId &run_id, std::size_t node_index)
+  auto complete_task(const WorkflowRunId &run_id, std::size_t task_index,
+                     const AttemptId &attempt_id, Result<NodeOutputs> result)
       -> void;
-  auto complete_node(const WorkflowRunId &run_id, std::size_t node_index,
-                     Result<NodeOutputs> result) -> void;
-  auto complete_run_if_terminal(const WorkflowRunId &run_id) -> bool;
+  auto finalize_run_if_ready(const WorkflowRunId &run_id) -> bool;
   auto update_dependents(const WorkflowRunId &run_id,
                          std::size_t completed_index) -> void;
+  auto schedule_retry(const WorkflowRunId &run_id, std::size_t task_index)
+      -> void;
+  auto request_stop(const WorkflowRunId &run_id, StopIntent intent,
+                    std::string reason) -> Result<void>;
+  auto settle_control_state(const WorkflowRunId &run_id) -> void;
+  [[nodiscard]] auto begin_attempt(ActiveRun &run, std::size_t task_index)
+      -> AttemptId;
+  auto mark_attempt_running(ActiveRun &run, std::size_t task_index,
+                            const AttemptId &attempt_id) -> void;
+  [[nodiscard]] auto active_attempt(TaskRuntimeState &task,
+                                    const AttemptId &attempt_id)
+      -> AttemptSnapshot *;
+  auto transition_run(ActiveRun &run, RunState state) -> Result<void>;
+  auto transition_task(ActiveRun &run, std::size_t task_index,
+                       TaskState state) -> Result<void>;
+  auto transition_attempt(AttemptSnapshot &attempt, AttemptState state)
+      -> Result<void>;
+  [[nodiscard]] auto invariants_hold(const ActiveRun &run) const noexcept
+      -> bool;
   [[nodiscard]] auto conditions_pass(const ActiveRun &run,
                                      std::size_t node_index) const
       -> Result<bool>;
@@ -164,13 +170,14 @@ private:
   [[nodiscard]] auto make_snapshot(const ActiveRun &run) const
       -> std::shared_ptr<const RunSnapshot>;
   auto emit_run_state(ActiveRun &run) -> void;
-  auto emit_node_state(ActiveRun &run, std::size_t node_index) -> void;
+  auto emit_task_state(ActiveRun &run, std::size_t task_index) -> void;
   auto append_evidence(const ActiveRun &run, std::size_t node_index,
                        EvidenceType type, JsonValue metadata = {}) -> void;
   auto checkpoint(ActiveRun &run) -> void;
-  auto fail_run(ActiveRun &run, std::string error) -> void;
 
   [[nodiscard]] auto execute_command_node(WorkflowRunId run_id,
+                                          std::size_t task_index,
+                                          AttemptId attempt_id,
                                           NodePlan node, InputMap inputs)
       -> task<Result<NodeOutputs>>;
   [[nodiscard]] auto execute_http_node(WorkflowRunId run_id, NodePlan node,

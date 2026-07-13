@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <charconv>
 #include <chrono>
 #include <cstdint>
@@ -28,13 +29,8 @@
 namespace dagforge::workflow {
 namespace {
 
-[[nodiscard]] auto is_terminal(NodeState state) noexcept -> bool {
-  return state == NodeState::Success || state == NodeState::Failed ||
-         state == NodeState::Skipped || state == NodeState::Cancelled;
-}
-
-[[nodiscard]] auto is_success(NodeState state) noexcept -> bool {
-  return state == NodeState::Success;
+[[nodiscard]] auto is_success(TaskState state) noexcept -> bool {
+  return state == TaskState::Succeeded;
 }
 
 [[nodiscard]] auto has_output(const NodePlan &node,
@@ -199,9 +195,56 @@ using RuntimeInputMap = std::unordered_map<
 }
 
 [[nodiscard]] auto instance_id_for(const WorkflowRunId &run_id,
-                                   const WorkflowNodeId &node_id)
+                                   const WorkflowNodeId &node_id,
+                                   const AttemptId &attempt_id)
     -> InstanceId {
-  return InstanceId{std::format("{}_{}", run_id, node_id)};
+  return InstanceId{std::format("{}_{}_{}", run_id, node_id, attempt_id)};
+}
+
+[[nodiscard]] auto classify_failure(std::error_code error) noexcept
+    -> FailureClass {
+  if (error == make_error_code(Error::Cancelled)) {
+    return FailureClass::Cancelled;
+  }
+  if (error == make_error_code(Error::Timeout)) {
+    return FailureClass::Timeout;
+  }
+  if (error == make_error_code(Error::InvalidArgument) ||
+      error == make_error_code(Error::ParseError) ||
+      error == make_error_code(Error::FileNotFound) ||
+      error == make_error_code(Error::NotFound) ||
+      error == make_error_code(Error::AlreadyExists) ||
+      error == make_error_code(Error::InvalidUrl) ||
+      error == make_error_code(Error::ProtocolError) ||
+      error == make_error_code(Error::Unauthorized) ||
+      error == make_error_code(Error::Unsupported) ||
+      error == make_error_code(Error::InvalidState) ||
+      error == make_error_code(Error::ResourceExhausted)) {
+    return FailureClass::Permanent;
+  }
+  if (error == make_error_code(Error::SystemNotRunning) ||
+      error == make_error_code(Error::QueueFull) ||
+      error == make_error_code(Error::ProcessForkFailed)) {
+    return FailureClass::Infrastructure;
+  }
+  return FailureClass::Retryable;
+}
+
+[[nodiscard]] auto retryable(FailureClass failure_class) noexcept -> bool {
+  return failure_class == FailureClass::Retryable ||
+         failure_class == FailureClass::Timeout ||
+         failure_class == FailureClass::Infrastructure;
+}
+
+[[nodiscard]] auto retry_delay(const NodePlan &node,
+                               std::uint32_t attempt_number)
+    -> std::chrono::milliseconds {
+  auto delay = node.retry_initial_delay;
+  for (std::uint32_t current = 1;
+       current < attempt_number && delay < node.retry_max_delay; ++current) {
+    delay = std::min(node.retry_max_delay, delay * 2);
+  }
+  return delay;
 }
 
 [[nodiscard]] auto to_boost_error(std::error_code error)
@@ -305,18 +348,19 @@ auto WorkflowRuntime::initialize_run(
       runtime_, owner, *artifact_store_,
       run.plan->policy.budget.max_total_output_bytes);
 
-  run.nodes.reserve(run.plan->nodes.size());
-  run.snapshot.nodes.reserve(run.plan->nodes.size());
+  run.tasks.reserve(run.plan->nodes.size());
+  run.snapshot.tasks.reserve(run.plan->nodes.size());
   for (const auto &compiled : run.plan->nodes) {
-    NodeRuntimeState node;
-    node.snapshot.node_id = compiled.plan.node_id.clone();
+    TaskRuntimeState task;
+    task.snapshot.node_id = compiled.plan.node_id.clone();
     if (compiled.dependencies.empty()) {
-      node.snapshot.state = NodeState::Ready;
+      task.snapshot.state = TaskState::Ready;
       run.ready.push_back(compiled.index);
     }
-    run.snapshot.nodes.push_back(node.snapshot);
-    run.nodes.push_back(std::move(node));
+    run.snapshot.tasks.push_back(task.snapshot);
+    run.tasks.push_back(std::move(task));
   }
+  assert(invariants_hold(run));
 
   auto [it, inserted] = state.active_runs.emplace(run_id.str(), std::move(run));
   if (!inserted) {
@@ -334,21 +378,195 @@ auto WorkflowRuntime::initialize_run(
         if (active == owner_state.active_runs.end()) {
           return;
         }
-        fail_run(active->second, "workflow run deadline exceeded");
-        (void)complete_run_if_terminal(run_id);
+        (void)request_stop(run_id, StopIntent::Fail,
+                           "workflow run deadline exceeded");
       });
   active_run_count_.fetch_add(1, std::memory_order_release);
-  append_evidence(it->second, it->second.nodes.size(),
+  append_evidence(it->second, it->second.tasks.size(),
                   EvidenceType::TriggerReceived,
                   make_metadata({{"source", it->second.trigger.source},
                                  {"event_type", it->second.trigger.event_type},
                                  {"plan_digest", it->second.plan->digest}}));
-  append_evidence(it->second, it->second.nodes.size(),
+  append_evidence(it->second, it->second.tasks.size(),
                   EvidenceType::PlanCompiled,
                   make_metadata({{"plan_id", it->second.plan->plan_id.str()},
                                  {"digest", it->second.plan->digest}}));
   emit_run_state(it->second);
   dispatch(run_id);
+}
+
+auto WorkflowRuntime::transition_run(ActiveRun &run, RunState state)
+    -> Result<void> {
+  if (!can_transition(run.snapshot.state, state)) {
+    return fail(Error::InvalidState);
+  }
+  run.snapshot.state = state;
+  if (is_terminal(state)) {
+    run.snapshot.finished_at = std::chrono::system_clock::now();
+  }
+  emit_run_state(run);
+  return ok();
+}
+
+auto WorkflowRuntime::transition_task(ActiveRun &run, std::size_t task_index,
+                                      TaskState state) -> Result<void> {
+  if (task_index >= run.tasks.size()) {
+    return fail(Error::InvalidArgument);
+  }
+  auto &task = run.tasks[task_index].snapshot;
+  if (!can_transition(task.state, state)) {
+    return fail(Error::InvalidState);
+  }
+  task.state = state;
+  if (state == TaskState::Running &&
+      task.started_at == std::chrono::system_clock::time_point{}) {
+    task.started_at = std::chrono::system_clock::now();
+  }
+  if (state == TaskState::Ready) {
+    task.next_attempt_at.reset();
+  }
+  if (is_terminal(state)) {
+    task.active_attempt_id.reset();
+    task.next_attempt_at.reset();
+    task.finished_at = std::chrono::system_clock::now();
+  }
+  emit_task_state(run, task_index);
+  return ok();
+}
+
+auto WorkflowRuntime::transition_attempt(AttemptSnapshot &attempt,
+                                         AttemptState state) -> Result<void> {
+  if (!can_transition(attempt.state, state)) {
+    return fail(Error::InvalidState);
+  }
+  attempt.state = state;
+  if (state == AttemptState::Running &&
+      attempt.started_at == std::chrono::system_clock::time_point{}) {
+    attempt.started_at = std::chrono::system_clock::now();
+  }
+  if (is_terminal(state)) {
+    attempt.finished_at = std::chrono::system_clock::now();
+  }
+  return ok();
+}
+
+auto WorkflowRuntime::active_attempt(TaskRuntimeState &task,
+                                     const AttemptId &attempt_id)
+    -> AttemptSnapshot * {
+  if (!task.snapshot.active_attempt_id ||
+      *task.snapshot.active_attempt_id != attempt_id ||
+      task.snapshot.attempts.empty()) {
+    return nullptr;
+  }
+  auto &attempt = task.snapshot.attempts.back();
+  return attempt.attempt_id == attempt_id ? &attempt : nullptr;
+}
+
+auto WorkflowRuntime::invariants_hold(const ActiveRun &run) const noexcept
+    -> bool {
+  if (run.snapshot.tasks.size() != run.tasks.size()) {
+    return false;
+  }
+  std::size_t active_attempts = 0;
+  for (std::size_t index = 0; index < run.tasks.size(); ++index) {
+    const auto &task = run.tasks[index];
+    const auto &published = run.snapshot.tasks[index];
+    if (published.state != task.snapshot.state ||
+        published.attempt_count != task.snapshot.attempt_count ||
+        published.active_attempt_id != task.snapshot.active_attempt_id) {
+      return false;
+    }
+    if (task.snapshot.attempt_count != task.snapshot.attempts.size()) {
+      return false;
+    }
+
+    const AttemptSnapshot *active = nullptr;
+    if (task.snapshot.active_attempt_id) {
+      if (task.snapshot.attempts.empty()) {
+        return false;
+      }
+      const auto &candidate = task.snapshot.attempts.back();
+      if (candidate.attempt_id != *task.snapshot.active_attempt_id ||
+          is_terminal(candidate.state)) {
+        return false;
+      }
+      active = std::addressof(candidate);
+      ++active_attempts;
+    }
+
+    if ((task.snapshot.state == TaskState::Running) != (active != nullptr)) {
+      return false;
+    }
+    if (task.snapshot.state == TaskState::RetryWaiting) {
+      if (task.snapshot.attempts.empty() ||
+          !is_terminal(task.snapshot.attempts.back().state) ||
+          !task.snapshot.next_attempt_at) {
+        return false;
+      }
+    }
+    if (is_terminal(task.snapshot.state) &&
+        task.snapshot.active_attempt_id) {
+      return false;
+    }
+  }
+
+  if (active_attempts != run.active_attempts) {
+    return false;
+  }
+  if (is_terminal(run.snapshot.state)) {
+    if (active_attempts != 0 ||
+        !std::ranges::all_of(run.tasks, [](const auto &task) {
+          return is_terminal(task.snapshot.state);
+        })) {
+      return false;
+    }
+  }
+  return true;
+}
+
+auto WorkflowRuntime::begin_attempt(ActiveRun &run, std::size_t task_index)
+    -> AttemptId {
+  auto &task = run.tasks[task_index];
+  auto attempt_id = generate_attempt_id();
+  task.snapshot.attempt_count += 1;
+  task.snapshot.active_attempt_id = attempt_id.clone();
+  task.snapshot.next_attempt_at.reset();
+  task.snapshot.skip_reason.reset();
+  task.snapshot.attempts.push_back(AttemptSnapshot{
+      .attempt_id = attempt_id.clone(),
+      .number = task.snapshot.attempt_count,
+      .state = AttemptState::Starting,
+      .created_at = std::chrono::system_clock::now(),
+  });
+  run.active_attempts += 1;
+  (void)transition_task(run, task_index, TaskState::Running);
+  append_evidence(run, task_index, EvidenceType::AttemptStarted,
+                  make_metadata({{"attempt_id", attempt_id.str()},
+                                 {"number", task.snapshot.attempt_count}}));
+  append_evidence(run, task_index, EvidenceType::TaskStarted,
+                  make_metadata({{"attempt", task.snapshot.attempt_count},
+                                 {"type", std::string{to_string_view(
+                                              run.plan->nodes[task_index]
+                                                  .plan.type)}}}));
+  assert(invariants_hold(run));
+  return attempt_id;
+}
+
+auto WorkflowRuntime::mark_attempt_running(ActiveRun &run,
+                                           std::size_t task_index,
+                                           const AttemptId &attempt_id)
+    -> void {
+  if (task_index >= run.tasks.size()) {
+    return;
+  }
+  auto *attempt = active_attempt(run.tasks[task_index], attempt_id);
+  if (attempt == nullptr || is_terminal(attempt->state)) {
+    return;
+  }
+  if (transition_attempt(*attempt, AttemptState::Running)) {
+    emit_task_state(run, task_index);
+    assert(invariants_hold(run));
+  }
 }
 
 auto WorkflowRuntime::dispatch(const WorkflowRunId &run_id) -> void {
@@ -365,6 +583,10 @@ auto WorkflowRuntime::dispatch(const WorkflowRunId &run_id) -> void {
   if (it == state.active_runs.end() || it->second.dispatching) {
     return;
   }
+  if (it->second.snapshot.state != RunState::Running) {
+    settle_control_state(run_id);
+    return;
+  }
   it->second.dispatching = true;
 
   while (true) {
@@ -373,41 +595,36 @@ auto WorkflowRuntime::dispatch(const WorkflowRunId &run_id) -> void {
       return;
     }
     auto &run = it->second;
-    if (run.snapshot.state == RunState::Cancelled ||
-        run.snapshot.state == RunState::Failed ||
-        run.snapshot.state == RunState::Success) {
+    if (run.snapshot.state != RunState::Running) {
       break;
     }
 
     const auto limit = std::max<std::size_t>(
         1, run.plan->policy.budget.max_parallel_nodes);
-    if (run.ready.empty() || run.active_nodes >= limit) {
+    if (run.ready.empty() || run.active_attempts >= limit) {
       break;
     }
 
     const auto node_index = run.ready.front();
     run.ready.pop_front();
-    if (node_index >= run.nodes.size() ||
-        run.nodes[node_index].snapshot.state != NodeState::Ready) {
+    if (node_index >= run.tasks.size() ||
+        run.tasks[node_index].snapshot.state != TaskState::Ready) {
       continue;
     }
 
     auto passes = conditions_pass(run, node_index);
     if (!passes) {
-      fail_run(run, passes.error().message());
+      (void)request_stop(run_id, StopIntent::Fail, passes.error().message());
       break;
     }
     if (!*passes) {
-      run.nodes[node_index].snapshot.state = NodeState::Skipped;
-      run.nodes[node_index].snapshot.finished_at =
-          std::chrono::system_clock::now();
-      run.snapshot.nodes[node_index] = run.nodes[node_index].snapshot;
-      emit_node_state(run, node_index);
+      run.tasks[node_index].snapshot.skip_reason = SkipReason::ConditionFalse;
+      (void)transition_task(run, node_index, TaskState::Skipped);
       update_dependents(run_id, node_index);
       continue;
     }
 
-    start_node(run_id, node_index);
+    start_task(run_id, node_index);
   }
 
   it = state.active_runs.find(run_id.str());
@@ -415,43 +632,28 @@ auto WorkflowRuntime::dispatch(const WorkflowRunId &run_id) -> void {
     return;
   }
   it->second.dispatching = false;
-  (void)complete_run_if_terminal(run_id);
+  settle_control_state(run_id);
 }
 
-auto WorkflowRuntime::start_node(const WorkflowRunId &run_id,
-                                 std::size_t node_index) -> void {
+auto WorkflowRuntime::start_task(const WorkflowRunId &run_id,
+                                 std::size_t task_index) -> void {
   auto &run = shard_states_[owner_shard(run_id)].active_runs.at(run_id.str());
-  auto &node_state = run.nodes[node_index];
-  node_state.snapshot.state = NodeState::Running;
-  node_state.snapshot.attempt += 1;
-  node_state.snapshot.started_at = std::chrono::system_clock::now();
-  node_state.snapshot.finished_at = {};
-  node_state.snapshot.error.clear();
-  run.snapshot.nodes[node_index] = node_state.snapshot;
-  run.active_nodes += 1;
-  emit_node_state(run, node_index);
-  append_evidence(run, node_index, EvidenceType::NodeStarted,
-                  make_metadata({{"attempt", node_state.snapshot.attempt},
-                                 {"type", std::string{to_string_view(
-                                              run.plan->nodes[node_index]
-                                                  .plan.type)}}}));
+  const auto attempt_id = begin_attempt(run, task_index);
 
-  switch (run.plan->nodes[node_index].plan.type) {
-  case NodeType::Approval:
-    start_approval_node(run_id, node_index);
-    return;
+  switch (run.plan->nodes[task_index].plan.type) {
   case NodeType::Compute:
   case NodeType::Evaluator:
-    start_compute_node(run_id, node_index);
+    start_compute_task(run_id, task_index, attempt_id.clone());
     return;
   case NodeType::Noop: {
-    auto inputs = input_values(run, node_index);
+    mark_attempt_running(run, task_index, attempt_id);
+    auto inputs = input_values(run, task_index);
     if (!inputs) {
-      complete_node(run_id, node_index, fail(inputs.error()));
+      complete_task(run_id, task_index, attempt_id, fail(inputs.error()));
       return;
     }
-    complete_node(run_id, node_index,
-                  execute_inline_node(run.plan->nodes[node_index].plan,
+    complete_task(run_id, task_index, attempt_id,
+                  execute_inline_node(run.plan->nodes[task_index].plan,
                                       *inputs));
     return;
   }
@@ -460,13 +662,15 @@ auto WorkflowRuntime::start_node(const WorkflowRunId &run_id,
   case NodeType::Model:
   case NodeType::Tool:
     runtime_.spawn_on(owner_shard(run_id),
-                      start_async_node(run_id.clone(), node_index));
+                      start_async_task(run_id.clone(), task_index,
+                                       attempt_id.clone()));
     return;
   }
 }
 
-auto WorkflowRuntime::start_async_node(WorkflowRunId run_id,
-                                       std::size_t node_index) -> spawn_task {
+auto WorkflowRuntime::start_async_task(WorkflowRunId run_id,
+                                       std::size_t task_index,
+                                       AttemptId attempt_id) -> spawn_task {
   const auto owner = owner_shard(run_id);
   auto &state = shard_states_[owner];
   const auto run_it = state.active_runs.find(run_id.str());
@@ -474,14 +678,17 @@ auto WorkflowRuntime::start_async_node(WorkflowRunId run_id,
     co_return;
   }
 
-  auto node = run_it->second.plan->nodes[node_index].plan;
-  if (node.type == NodeType::Command) {
-    run_it->second.nodes[node_index].instance_id =
-        instance_id_for(run_id, node.node_id);
+  auto node = run_it->second.plan->nodes[task_index].plan;
+  if (node.type != NodeType::Command) {
+    mark_attempt_running(run_it->second, task_index, attempt_id);
   }
-  auto inputs = input_values(run_it->second, node_index);
+  if (node.type == NodeType::Command) {
+    run_it->second.tasks[task_index].instance_id =
+        instance_id_for(run_id, node.node_id, attempt_id);
+  }
+  auto inputs = input_values(run_it->second, task_index);
   if (!inputs) {
-    complete_node(run_id, node_index, fail(inputs.error()));
+    complete_task(run_id, task_index, attempt_id, fail(inputs.error()));
     co_return;
   }
   auto trigger = run_it->second.trigger;
@@ -489,21 +696,22 @@ auto WorkflowRuntime::start_async_node(WorkflowRunId run_id,
   Result<NodeOutputs> result = fail(Error::Unsupported);
   switch (node.type) {
   case NodeType::Command:
-    result = co_await execute_command_node(run_id.clone(), std::move(node),
-                                           std::move(*inputs));
+    result = co_await execute_command_node(
+        run_id.clone(), task_index, attempt_id.clone(), std::move(node),
+        std::move(*inputs));
     break;
   case NodeType::Http:
     result = co_await execute_http_node(run_id.clone(), std::move(node),
                                         std::move(*inputs));
     break;
   case NodeType::Model:
-    append_evidence(run_it->second, node_index, EvidenceType::ModelRequest);
+    append_evidence(run_it->second, task_index, EvidenceType::ModelRequest);
     result = co_await execute_model_node(run_id.clone(), std::move(node),
                                          std::move(*inputs),
                                          std::move(trigger));
     break;
   case NodeType::Tool:
-    append_evidence(run_it->second, node_index, EvidenceType::ToolRequest);
+    append_evidence(run_it->second, task_index, EvidenceType::ToolRequest);
     result = co_await execute_tool_node(run_id.clone(), std::move(node),
                                         std::move(*inputs));
     break;
@@ -514,27 +722,31 @@ auto WorkflowRuntime::start_async_node(WorkflowRunId run_id,
   if (!runtime_.is_current_shard() || runtime_.current_shard() != owner) {
     runtime_.post_to(owner,
                      [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
-                      run_id = run_id.clone(), node_index,
+                      run_id = run_id.clone(), task_index,
+                      attempt_id = attempt_id.clone(),
                       result = std::move(result)]() mutable {
                        if (!weak_lifetime.expired()) {
-                         complete_node(run_id, node_index, std::move(result));
+                         complete_task(run_id, task_index, attempt_id,
+                                       std::move(result));
                        }
                      });
     co_return;
   }
-  complete_node(run_id, node_index, std::move(result));
+  complete_task(run_id, task_index, attempt_id, std::move(result));
 }
 
-auto WorkflowRuntime::start_compute_node(const WorkflowRunId &run_id,
-                                         std::size_t node_index) -> void {
+auto WorkflowRuntime::start_compute_task(const WorkflowRunId &run_id,
+                                         std::size_t task_index,
+                                         AttemptId attempt_id) -> void {
   auto &run = shard_states_[owner_shard(run_id)].active_runs.at(run_id.str());
-  auto inputs = input_values(run, node_index);
+  mark_attempt_running(run, task_index, attempt_id);
+  auto inputs = input_values(run, task_index);
   if (!inputs) {
-    complete_node(run_id, node_index, fail(inputs.error()));
+    complete_task(run_id, task_index, attempt_id, fail(inputs.error()));
     return;
   }
 
-  auto node = run.plan->nodes[node_index].plan;
+  auto node = run.plan->nodes[task_index].plan;
   ComputeOptions options;
   options.priority = node.type == NodeType::Evaluator
                          ? ComputePriority::High
@@ -549,84 +761,33 @@ auto WorkflowRuntime::start_compute_node(const WorkflowRunId &run_id,
                                     stop_token);
       },
       [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
-       run_id = run_id.clone(), node_index](Result<NodeOutputs> result) mutable {
+       run_id = run_id.clone(), task_index,
+       attempt_id = attempt_id.clone()](Result<NodeOutputs> result) mutable {
         if (!weak_lifetime.expired()) {
-          complete_node(run_id, node_index, std::move(result));
+          complete_task(run_id, task_index, attempt_id, std::move(result));
         }
       });
   if (!submitted) {
-    complete_node(run_id, node_index, fail(submitted.error()));
+    complete_task(run_id, task_index, attempt_id, fail(submitted.error()));
     return;
   }
-  run.nodes[node_index].compute_handle = std::move(*submitted);
+  run.tasks[task_index].compute_handle = std::move(*submitted);
 }
 
-auto WorkflowRuntime::start_approval_node(const WorkflowRunId &run_id,
-                                          std::size_t node_index) -> void {
-  auto &run = shard_states_[owner_shard(run_id)].active_runs.at(run_id.str());
-  auto config = parse_node_config<ApprovalNodeConfig>(
-      run.plan->nodes[node_index].plan.config);
-  if (!config) {
-    complete_node(run_id, node_index, fail(config.error()));
-    return;
-  }
-  if (config->expires_after_sec <= 0) {
-    complete_node(run_id, node_index, fail(Error::InvalidArgument));
-    return;
-  }
-
-  auto inputs = input_values(run, node_index);
-  if (!inputs) {
-    complete_node(run_id, node_index, fail(inputs.error()));
-    return;
-  }
-
-  JsonValue context = JsonValue::object_t{};
-  for (const auto &[name, value] : *inputs) {
-    context[name] = value_to_string(*value);
-  }
-
-  ApprovalRequest request{
-      .approval_id = generate_approval_id(),
-      .run_id = run_id.clone(),
-      .node_id = run.plan->nodes[node_index].plan.node_id.clone(),
-      .requested_by = run.trigger.principal,
-      .summary = config->summary,
-      .context = std::move(context),
-      .expires_at = std::chrono::system_clock::now() +
-                    std::chrono::seconds(config->expires_after_sec),
-  };
-
-  auto &node = run.nodes[node_index];
-  node.snapshot.state = NodeState::AwaitingApproval;
-  node.approval = request;
-  run.snapshot.nodes[node_index] = node.snapshot;
-  run.snapshot.pending_approvals.push_back(request.approval_id.clone());
-  if (run.active_nodes > 0) {
-    run.active_nodes -= 1;
-  }
-  run.snapshot.state = RunState::AwaitingApproval;
-  emit_node_state(run, node_index);
-  emit_run_state(run);
-  append_evidence(run, node_index, EvidenceType::ApprovalRequested,
-                  make_metadata({{"approval_id", request.approval_id.str()},
-                                 {"summary", request.summary}}));
-  if (run.callbacks.on_approval_requested) {
-    run.callbacks.on_approval_requested(request);
-  }
-}
-
-auto WorkflowRuntime::complete_node(const WorkflowRunId &run_id,
-                                    std::size_t node_index,
+auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
+                                    std::size_t task_index,
+                                    const AttemptId &attempt_id,
                                     Result<NodeOutputs> result) -> void {
   const auto owner = owner_shard(run_id);
   if (!runtime_.is_current_shard() || runtime_.current_shard() != owner) {
     runtime_.post_to(owner,
                      [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
-                      run_id = run_id.clone(), node_index,
+                      run_id = run_id.clone(), task_index,
+                      attempt_id = attempt_id.clone(),
                       result = std::move(result)]() mutable {
                        if (!weak_lifetime.expired()) {
-                         complete_node(run_id, node_index, std::move(result));
+                         complete_task(run_id, task_index, attempt_id,
+                                       std::move(result));
                        }
                      });
     return;
@@ -634,117 +795,217 @@ auto WorkflowRuntime::complete_node(const WorkflowRunId &run_id,
 
   auto &state = shard_states_[owner];
   const auto run_it = state.active_runs.find(run_id.str());
-  if (run_it == state.active_runs.end() || node_index >= run_it->second.nodes.size()) {
+  if (run_it == state.active_runs.end() ||
+      task_index >= run_it->second.tasks.size()) {
     return;
   }
   auto &run = run_it->second;
-  auto &node = run.nodes[node_index];
-  if (is_terminal(node.snapshot.state)) {
+  auto &task = run.tasks[task_index];
+  auto *attempt = active_attempt(task, attempt_id);
+  if (attempt == nullptr || is_terminal(attempt->state) ||
+      is_terminal(task.snapshot.state)) {
     return;
   }
 
-  node.compute_handle.reset();
-  node.instance_id.reset();
-  if (node.snapshot.state == NodeState::Running && run.active_nodes > 0) {
-    run.active_nodes -= 1;
+  task.compute_handle.reset();
+  task.instance_id.reset();
+  if (run.active_attempts > 0) {
+    run.active_attempts -= 1;
   }
 
-  if (!result) {
-    if (node.snapshot.attempt <= run.plan->nodes[node_index].plan.max_retries &&
-        run.snapshot.state != RunState::Cancelled) {
-      node.snapshot.state = NodeState::Ready;
-      node.snapshot.error = result.error().message();
-      run.snapshot.nodes[node_index] = node.snapshot;
-      run.ready.push_back(node_index);
-      emit_node_state(run, node_index);
-      dispatch(run_id);
+  auto finish_failure = [&](std::error_code error) {
+    const auto failure_class = classify_failure(error);
+    attempt->failure_class = failure_class;
+    attempt->error = error.message();
+    task.snapshot.last_error = attempt->error;
+    if (failure_class == FailureClass::Timeout) {
+      attempt->termination_reason = TerminationReason::AttemptTimeout;
+      (void)transition_attempt(*attempt, AttemptState::TimedOut);
+    } else if (failure_class == FailureClass::Cancelled) {
+      (void)transition_attempt(*attempt, AttemptState::Cancelled);
+    } else {
+      (void)transition_attempt(*attempt, AttemptState::Failed);
+    }
+    task.snapshot.active_attempt_id.reset();
+    append_evidence(run, task_index, EvidenceType::AttemptCompleted,
+                    make_metadata({{"attempt_id", attempt_id.str()},
+                                   {"state", std::string{
+                                                 to_string_view(attempt->state)}},
+                                   {"error", attempt->error}}));
+
+    const auto &plan = run.plan->nodes[task_index].plan;
+    if (retryable(failure_class) &&
+        task.snapshot.attempt_count <=
+            static_cast<std::uint32_t>(plan.max_retries) &&
+        run.snapshot.state != RunState::Stopping) {
+      const auto delay = retry_delay(plan, task.snapshot.attempt_count);
+      task.snapshot.next_attempt_at =
+          std::chrono::system_clock::now() + delay;
+      (void)transition_task(run, task_index, TaskState::RetryWaiting);
+      schedule_retry(run_id, task_index);
+      assert(invariants_hold(run));
       return;
     }
 
-    node.snapshot.state = result.error() == make_error_code(Error::Cancelled)
-                              ? NodeState::Cancelled
-                              : NodeState::Failed;
-    node.snapshot.error = result.error().message();
-    node.snapshot.finished_at = std::chrono::system_clock::now();
-    run.snapshot.nodes[node_index] = node.snapshot;
-    append_evidence(run, node_index, EvidenceType::NodeFailed,
-                    make_metadata({{"error", node.snapshot.error}}));
-    emit_node_state(run, node_index);
-    update_dependents(run_id, node_index);
+    const auto final_state = failure_class == FailureClass::Cancelled
+                                 ? TaskState::Cancelled
+                                 : TaskState::Failed;
+    (void)transition_task(run, task_index, final_state);
+    append_evidence(run, task_index, EvidenceType::TaskFailed,
+                    make_metadata({{"error", task.snapshot.last_error}}));
+    assert(invariants_hold(run));
+    if (final_state == TaskState::Failed &&
+        run.plan->policy.failure_policy == FailurePolicy::FailFast) {
+      (void)request_stop(run_id, StopIntent::Fail, task.snapshot.last_error);
+      return;
+    }
+    update_dependents(run_id, task_index);
+  };
+
+  if (run.snapshot.state == RunState::Stopping) {
+    if (attempt->state != AttemptState::Terminating) {
+      (void)transition_attempt(*attempt, AttemptState::Terminating);
+    }
+    attempt->termination_reason =
+        run.snapshot.stop_intent == StopIntent::Cancel
+            ? TerminationReason::RunCancelled
+            : TerminationReason::RunFailed;
+    (void)transition_attempt(*attempt, AttemptState::Cancelled);
+    task.snapshot.active_attempt_id.reset();
+    task.snapshot.last_error = run.snapshot.stop_reason;
+    (void)transition_task(run, task_index, TaskState::Cancelled);
+    append_evidence(run, task_index, EvidenceType::AttemptCompleted,
+                    make_metadata({{"attempt_id", attempt_id.str()},
+                                   {"state", "cancelled"}}));
+    assert(invariants_hold(run));
+    settle_control_state(run_id);
+    return;
+  }
+
+  if (!result) {
+    finish_failure(result.error());
+    settle_control_state(run_id);
     dispatch(run_id);
     return;
   }
 
+  if (attempt->state == AttemptState::Starting) {
+    (void)transition_attempt(*attempt, AttemptState::Running);
+  }
+
+  std::optional<std::error_code> output_error;
   for (auto &[port, value] : *result) {
+    if (port == "exit_code") {
+      if (const auto *exit_code = std::get_if<std::int64_t>(&value)) {
+        attempt->exit_code = static_cast<int>(*exit_code);
+      }
+    }
     if (auto *model = std::get_if<ModelResponse>(&value)) {
       run.model_tokens_used +=
           model->usage.input_tokens + model->usage.output_tokens;
       if (run.model_tokens_used > run.plan->policy.budget.max_model_tokens) {
-        node.snapshot.state = NodeState::Failed;
-        node.snapshot.error = "model token budget exceeded";
-        node.snapshot.finished_at = std::chrono::system_clock::now();
-        run.snapshot.nodes[node_index] = node.snapshot;
-        append_evidence(run, node_index, EvidenceType::NodeFailed,
-                        make_metadata({{"error", node.snapshot.error}}));
-        emit_node_state(run, node_index);
-        update_dependents(run_id, node_index);
-        dispatch(run_id);
-        return;
+        output_error = make_error_code(Error::ResourceExhausted);
+        break;
       }
     }
 
     auto stored = run.values->put(
-        OutputRef{.node_id = run.plan->nodes[node_index].plan.node_id.clone(),
+        OutputRef{.node_id = run.plan->nodes[task_index].plan.node_id.clone(),
                   .port = port.clone()},
         std::move(value));
     if (!stored) {
-      node.snapshot.state = NodeState::Failed;
-      node.snapshot.error = stored.error().message();
-      node.snapshot.finished_at = std::chrono::system_clock::now();
-      run.snapshot.nodes[node_index] = node.snapshot;
-      append_evidence(run, node_index, EvidenceType::NodeFailed,
-                      make_metadata({{"error", node.snapshot.error}}));
-      emit_node_state(run, node_index);
-      update_dependents(run_id, node_index);
-      dispatch(run_id);
-      return;
+      output_error = stored.error();
+      break;
     }
   }
 
-  node.snapshot.state = NodeState::Success;
-  node.snapshot.finished_at = std::chrono::system_clock::now();
-  node.snapshot.error.clear();
-  run.snapshot.nodes[node_index] = node.snapshot;
-  append_evidence(run, node_index, EvidenceType::NodeCompleted);
-  if (run.plan->nodes[node_index].plan.type == NodeType::Model) {
-    append_evidence(run, node_index, EvidenceType::ModelResponse);
-  } else if (run.plan->nodes[node_index].plan.type == NodeType::Tool) {
-    append_evidence(run, node_index, EvidenceType::ToolResponse);
-  } else if (run.plan->nodes[node_index].plan.type == NodeType::Evaluator) {
-    append_evidence(run, node_index, EvidenceType::Evaluation);
+  if (output_error) {
+    finish_failure(*output_error);
+    settle_control_state(run_id);
+    dispatch(run_id);
+    return;
   }
-  emit_node_state(run, node_index);
 
-  if (run.plan->nodes[node_index].plan.checkpoint) {
+  (void)transition_attempt(*attempt, AttemptState::Succeeded);
+  task.snapshot.active_attempt_id.reset();
+  task.snapshot.last_error.clear();
+  (void)transition_task(run, task_index, TaskState::Succeeded);
+  append_evidence(run, task_index, EvidenceType::AttemptCompleted,
+                  make_metadata({{"attempt_id", attempt_id.str()},
+                                 {"state", "succeeded"}}));
+  append_evidence(run, task_index, EvidenceType::TaskCompleted);
+  if (run.plan->nodes[task_index].plan.type == NodeType::Model) {
+    append_evidence(run, task_index, EvidenceType::ModelResponse);
+  } else if (run.plan->nodes[task_index].plan.type == NodeType::Tool) {
+    append_evidence(run, task_index, EvidenceType::ToolResponse);
+  } else if (run.plan->nodes[task_index].plan.type == NodeType::Evaluator) {
+    append_evidence(run, task_index, EvidenceType::Evaluation);
+  }
+
+  if (run.plan->nodes[task_index].plan.checkpoint) {
     checkpoint(run);
   }
-  update_dependents(run_id, node_index);
+  assert(invariants_hold(run));
+  update_dependents(run_id, task_index);
+  settle_control_state(run_id);
   dispatch(run_id);
+}
+
+auto WorkflowRuntime::schedule_retry(const WorkflowRunId &run_id,
+                                     std::size_t task_index) -> void {
+  const auto owner = owner_shard(run_id);
+  auto &state = shard_states_[owner];
+  const auto run_it = state.active_runs.find(run_id.str());
+  if (run_it == state.active_runs.end() ||
+      task_index >= run_it->second.tasks.size()) {
+    return;
+  }
+  auto &run = run_it->second;
+  auto &task = run.tasks[task_index];
+  const auto delay =
+      retry_delay(run.plan->nodes[task_index].plan,
+                  task.snapshot.attempt_count);
+  task.retry_handle = runtime_.schedule_after_on(
+      owner, delay,
+      [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
+       run_id = run_id.clone(), task_index] {
+        if (weak_lifetime.expired()) {
+          return;
+        }
+        auto &owner_state = shard_states_[owner_shard(run_id)];
+        const auto active = owner_state.active_runs.find(run_id.str());
+        if (active == owner_state.active_runs.end() ||
+            task_index >= active->second.tasks.size()) {
+          return;
+        }
+        auto &run = active->second;
+        auto &task = run.tasks[task_index];
+        task.retry_handle = {};
+        if (task.snapshot.state != TaskState::RetryWaiting ||
+            run.snapshot.state == RunState::Stopping ||
+            is_terminal(run.snapshot.state)) {
+          return;
+        }
+        (void)transition_task(run, task_index, TaskState::Ready);
+        run.ready.push_back(task_index);
+        assert(invariants_hold(run));
+        dispatch(run_id);
+      });
 }
 
 auto WorkflowRuntime::update_dependents(const WorkflowRunId &run_id,
                                         std::size_t completed_index) -> void {
   auto &run = shard_states_[owner_shard(run_id)].active_runs.at(run_id.str());
   for (const auto dependent : run.plan->nodes[completed_index].dependents) {
-    if (dependent >= run.nodes.size() ||
-        run.nodes[dependent].snapshot.state != NodeState::Pending) {
+    if (dependent >= run.tasks.size() ||
+        run.tasks[dependent].snapshot.state != TaskState::Pending) {
       continue;
     }
 
     bool all_terminal = true;
     bool all_success = true;
     for (const auto dependency : run.plan->nodes[dependent].dependencies) {
-      const auto state = run.nodes[dependency].snapshot.state;
+      const auto state = run.tasks[dependency].snapshot.state;
       all_terminal = all_terminal && is_terminal(state);
       all_success = all_success && is_success(state);
     }
@@ -753,34 +1014,37 @@ auto WorkflowRuntime::update_dependents(const WorkflowRunId &run_id,
     }
 
     if (!all_success) {
-      run.nodes[dependent].snapshot.state = NodeState::Skipped;
-      run.nodes[dependent].snapshot.finished_at =
-          std::chrono::system_clock::now();
-      run.snapshot.nodes[dependent] = run.nodes[dependent].snapshot;
-      emit_node_state(run, dependent);
+      auto reason = SkipReason::BranchNotSelected;
+      for (const auto dependency : run.plan->nodes[dependent].dependencies) {
+        const auto state = run.tasks[dependency].snapshot.state;
+        if (state == TaskState::Failed) {
+          reason = SkipReason::UpstreamFailed;
+          break;
+        }
+        if (state == TaskState::Cancelled) {
+          reason = SkipReason::UpstreamCancelled;
+        }
+      }
+      run.tasks[dependent].snapshot.skip_reason = reason;
+      (void)transition_task(run, dependent, TaskState::Skipped);
       update_dependents(run_id, dependent);
       continue;
     }
 
     auto passes = conditions_pass(run, dependent);
     if (!passes) {
-      fail_run(run, passes.error().message());
+      (void)request_stop(run_id, StopIntent::Fail, passes.error().message());
       return;
     }
     if (!*passes) {
-      run.nodes[dependent].snapshot.state = NodeState::Skipped;
-      run.nodes[dependent].snapshot.finished_at =
-          std::chrono::system_clock::now();
-      run.snapshot.nodes[dependent] = run.nodes[dependent].snapshot;
-      emit_node_state(run, dependent);
+      run.tasks[dependent].snapshot.skip_reason = SkipReason::ConditionFalse;
+      (void)transition_task(run, dependent, TaskState::Skipped);
       update_dependents(run_id, dependent);
       continue;
     }
 
-    run.nodes[dependent].snapshot.state = NodeState::Ready;
-    run.snapshot.nodes[dependent] = run.nodes[dependent].snapshot;
+    (void)transition_task(run, dependent, TaskState::Ready);
     run.ready.push_back(dependent);
-    emit_node_state(run, dependent);
   }
 }
 
@@ -836,7 +1100,105 @@ auto WorkflowRuntime::input_values(const ActiveRun &run,
   return ok(std::move(inputs));
 }
 
-auto WorkflowRuntime::complete_run_if_terminal(const WorkflowRunId &run_id)
+auto WorkflowRuntime::request_stop(const WorkflowRunId &run_id,
+                                   StopIntent intent, std::string reason)
+    -> Result<void> {
+  const auto owner = owner_shard(run_id);
+  if (!runtime_.is_current_shard() || runtime_.current_shard() != owner) {
+    return fail(Error::InvalidState);
+  }
+  auto &state = shard_states_[owner];
+  const auto it = state.active_runs.find(run_id.str());
+  if (it == state.active_runs.end()) {
+    return fail(Error::NotFound);
+  }
+  auto &run = it->second;
+  if (is_terminal(run.snapshot.state)) {
+    return fail(Error::InvalidState);
+  }
+  if (run.snapshot.state == RunState::Stopping) {
+    return ok();
+  }
+
+  run.snapshot.stop_intent = intent;
+  run.snapshot.stop_reason = std::move(reason);
+  if (intent == StopIntent::Fail) {
+    run.snapshot.error = run.snapshot.stop_reason;
+  }
+  auto transitioned = transition_run(run, RunState::Stopping);
+  if (!transitioned) {
+    return transitioned;
+  }
+  append_evidence(run, run.tasks.size(), EvidenceType::RunStopRequested,
+                  make_metadata({{"intent", std::string{to_string_view(intent)}},
+                                 {"reason", run.snapshot.stop_reason}}));
+  run.ready.clear();
+  std::vector<InstanceId> instances_to_cancel;
+
+  for (std::size_t index = 0; index < run.tasks.size(); ++index) {
+    auto &task = run.tasks[index];
+    if (task.retry_handle.valid()) {
+      runtime_.cancel_after_on(owner, task.retry_handle);
+      task.retry_handle = {};
+    }
+    if (task.snapshot.state == TaskState::Pending ||
+        task.snapshot.state == TaskState::Ready ||
+        task.snapshot.state == TaskState::RetryWaiting) {
+      task.snapshot.last_error = run.snapshot.stop_reason;
+      (void)transition_task(run, index, TaskState::Cancelled);
+      continue;
+    }
+    if (task.snapshot.state != TaskState::Running ||
+        !task.snapshot.active_attempt_id) {
+      continue;
+    }
+    auto *attempt = active_attempt(task, *task.snapshot.active_attempt_id);
+    if (attempt != nullptr && !is_terminal(attempt->state)) {
+      attempt->termination_reason =
+          intent == StopIntent::Cancel ? TerminationReason::RunCancelled
+                                       : TerminationReason::RunFailed;
+      (void)transition_attempt(*attempt, AttemptState::Terminating);
+      emit_task_state(run, index);
+    }
+    if (task.compute_handle) {
+      (void)task.compute_handle->request_stop();
+    }
+    if (task.instance_id) {
+      instances_to_cancel.push_back(task.instance_id->clone());
+    }
+  }
+  assert(invariants_hold(run));
+
+  // Executor callbacks may complete synchronously. Do not retain or access
+  // ActiveRun references after crossing this external boundary.
+  for (const auto &instance_id : instances_to_cancel) {
+    executor_.cancel(instance_id);
+  }
+  (void)finalize_run_if_ready(run_id);
+  return ok();
+}
+
+auto WorkflowRuntime::settle_control_state(const WorkflowRunId &run_id)
+    -> void {
+  if (finalize_run_if_ready(run_id)) {
+    return;
+  }
+  const auto owner = owner_shard(run_id);
+  auto &state = shard_states_[owner];
+  const auto it = state.active_runs.find(run_id.str());
+  if (it == state.active_runs.end()) {
+    return;
+  }
+  auto &run = it->second;
+  if (run.snapshot.state == RunState::Pausing && run.active_attempts == 0) {
+    if (transition_run(run, RunState::Paused)) {
+      append_evidence(run, run.tasks.size(), EvidenceType::RunPaused);
+      assert(invariants_hold(run));
+    }
+  }
+}
+
+auto WorkflowRuntime::finalize_run_if_ready(const WorkflowRunId &run_id)
     -> bool {
   const auto owner = owner_shard(run_id);
   auto &state = shard_states_[owner];
@@ -849,43 +1211,57 @@ auto WorkflowRuntime::complete_run_if_terminal(const WorkflowRunId &run_id)
   bool all_terminal = true;
   bool any_failed = false;
   bool any_cancelled = false;
-  bool any_waiting = false;
-  for (const auto &node : run.nodes) {
-    all_terminal = all_terminal && is_terminal(node.snapshot.state);
-    any_failed = any_failed || node.snapshot.state == NodeState::Failed;
-    any_cancelled = any_cancelled || node.snapshot.state == NodeState::Cancelled;
-    any_waiting = any_waiting ||
-                  node.snapshot.state == NodeState::AwaitingApproval;
+  for (const auto &task : run.tasks) {
+    all_terminal = all_terminal && is_terminal(task.snapshot.state);
+    any_failed = any_failed || task.snapshot.state == TaskState::Failed;
+    any_cancelled =
+        any_cancelled || task.snapshot.state == TaskState::Cancelled;
   }
 
-  if (!all_terminal) {
-    const auto next_state = any_waiting && run.active_nodes == 0 && run.ready.empty()
-                                ? RunState::AwaitingApproval
-                                : RunState::Running;
-    if (run.snapshot.state != next_state) {
-      run.snapshot.state = next_state;
-      emit_run_state(run);
-    }
+  if (!all_terminal || run.active_attempts != 0) {
     return false;
   }
 
-  const auto requested_terminal_state = run.snapshot.state;
-  if (requested_terminal_state == RunState::Failed) {
-    run.snapshot.state = RunState::Failed;
-  } else if (requested_terminal_state == RunState::Cancelled) {
-    run.snapshot.state = RunState::Cancelled;
+  RunState terminal_state = RunState::Succeeded;
+  if (run.snapshot.state == RunState::Stopping) {
+    switch (run.snapshot.stop_intent.value_or(StopIntent::Fail)) {
+    case StopIntent::Succeed:
+      terminal_state = RunState::Succeeded;
+      break;
+    case StopIntent::Fail:
+      terminal_state = RunState::Failed;
+      break;
+    case StopIntent::Cancel:
+      terminal_state = RunState::Cancelled;
+      break;
+    }
   } else {
-    run.snapshot.state = any_cancelled ? RunState::Cancelled
-                                       : (any_failed ? RunState::Failed
-                                                     : RunState::Success);
+    terminal_state = any_cancelled ? RunState::Cancelled
+                                   : (any_failed ? RunState::Failed
+                                                 : RunState::Succeeded);
   }
-  run.snapshot.finished_at = std::chrono::system_clock::now();
-  run.snapshot.pending_approvals.clear();
-  emit_run_state(run);
-  append_evidence(run, run.nodes.size(),
-                  run.snapshot.state == RunState::Success
-                      ? EvidenceType::RunCompleted
-                      : EvidenceType::RunFailed,
+  if (run.snapshot.error.empty() && terminal_state != RunState::Succeeded) {
+    const auto failed_task = std::ranges::find_if(
+        run.tasks, [terminal_state](const auto &task) {
+          return terminal_state == RunState::Failed
+                     ? task.snapshot.state == TaskState::Failed
+                     : task.snapshot.state == TaskState::Cancelled;
+        });
+    if (failed_task != run.tasks.end()) {
+      run.snapshot.error = failed_task->snapshot.last_error;
+    }
+  }
+  if (!transition_run(run, terminal_state)) {
+    return false;
+  }
+  assert(invariants_hold(run));
+  const auto evidence_type =
+      run.snapshot.state == RunState::Succeeded
+          ? EvidenceType::RunCompleted
+          : (run.snapshot.state == RunState::Cancelled
+                 ? EvidenceType::RunCancelled
+                 : EvidenceType::RunFailed);
+  append_evidence(run, run.tasks.size(), evidence_type,
                   make_metadata({{"state", std::string{
                                               to_string_view(run.snapshot.state)}}}));
   checkpoint(run);
@@ -912,10 +1288,10 @@ auto WorkflowRuntime::complete_run_if_terminal(const WorkflowRunId &run_id)
 auto WorkflowRuntime::make_snapshot(const ActiveRun &run) const
     -> std::shared_ptr<const RunSnapshot> {
   auto snapshot = run.snapshot;
-  snapshot.nodes.clear();
-  snapshot.nodes.reserve(run.nodes.size());
-  for (const auto &node : run.nodes) {
-    snapshot.nodes.push_back(node.snapshot);
+  snapshot.tasks.clear();
+  snapshot.tasks.reserve(run.tasks.size());
+  for (const auto &task : run.tasks) {
+    snapshot.tasks.push_back(task.snapshot);
   }
   return std::make_shared<const RunSnapshot>(std::move(snapshot));
 }
@@ -926,12 +1302,12 @@ auto WorkflowRuntime::emit_run_state(ActiveRun &run) -> void {
   }
 }
 
-auto WorkflowRuntime::emit_node_state(ActiveRun &run,
-                                      std::size_t node_index) -> void {
-  run.snapshot.nodes[node_index] = run.nodes[node_index].snapshot;
-  if (run.callbacks.on_node_state) {
-    run.callbacks.on_node_state(run.snapshot.run_id,
-                                run.nodes[node_index].snapshot);
+auto WorkflowRuntime::emit_task_state(ActiveRun &run,
+                                      std::size_t task_index) -> void {
+  run.snapshot.tasks[task_index] = run.tasks[task_index].snapshot;
+  if (run.callbacks.on_task_state) {
+    run.callbacks.on_task_state(run.snapshot.run_id,
+                                run.tasks[task_index].snapshot);
   }
 }
 
@@ -959,34 +1335,20 @@ auto WorkflowRuntime::checkpoint(ActiveRun &run) -> void {
       .run_id = run.snapshot.run_id.clone(),
       .plan_id = run.snapshot.plan_id.clone(),
       .state = run.snapshot.state,
-      .nodes = run.snapshot.nodes,
+      .stop_intent = run.snapshot.stop_intent,
+      .stop_reason = run.snapshot.stop_reason,
+      .tasks = run.snapshot.tasks,
       .values = std::move(*values),
       .created_at = std::chrono::system_clock::now(),
   };
   if (checkpoint_store_->save(std::move(checkpoint))) {
-    append_evidence(run, run.nodes.size(), EvidenceType::Checkpoint);
-  }
-}
-
-auto WorkflowRuntime::fail_run(ActiveRun &run, std::string error) -> void {
-  run.snapshot.state = RunState::Failed;
-  run.snapshot.error = std::move(error);
-  run.snapshot.finished_at = std::chrono::system_clock::now();
-  for (auto &node : run.nodes) {
-    if (!is_terminal(node.snapshot.state)) {
-      if (node.compute_handle) {
-        (void)node.compute_handle->request_stop();
-      }
-      if (node.instance_id) {
-        executor_.cancel(*node.instance_id);
-      }
-      node.snapshot.state = NodeState::Cancelled;
-      node.snapshot.finished_at = run.snapshot.finished_at;
-    }
+    append_evidence(run, run.tasks.size(), EvidenceType::Checkpoint);
   }
 }
 
 auto WorkflowRuntime::execute_command_node(WorkflowRunId run_id,
+                                           std::size_t task_index,
+                                           AttemptId attempt_id,
                                            NodePlan node, InputMap)
     -> task<Result<NodeOutputs>> {
   if (node.type != NodeType::Command) {
@@ -1009,11 +1371,37 @@ auto WorkflowRuntime::execute_command_node(WorkflowRunId run_id,
     }
   }
 
-  const auto instance_id = instance_id_for(run_id, node.node_id);
+  const auto instance_id = instance_id_for(run_id, node.node_id, attempt_id);
 
   auto result = co_await execute_async(
       runtime_, executor_, instance_id, std::move(command), {}, {}, {}, {},
-      node.timeout);
+      node.timeout,
+      [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
+       run_id = run_id.clone(), task_index,
+       attempt_id = attempt_id.clone()](std::string_view state) mutable {
+        if (state != "running" || weak_lifetime.expired()) {
+          return;
+        }
+        const auto owner = owner_shard(run_id);
+        auto mark_running =
+            [this, weak_lifetime, run_id = run_id.clone(), task_index,
+             attempt_id = attempt_id.clone()]() mutable {
+              if (weak_lifetime.expired()) {
+                return;
+              }
+              auto &owner_state = shard_states_[owner_shard(run_id)];
+              const auto active = owner_state.active_runs.find(run_id.str());
+              if (active == owner_state.active_runs.end()) {
+                return;
+              }
+              mark_attempt_running(active->second, task_index, attempt_id);
+            };
+        if (runtime_.is_current_shard() && runtime_.current_shard() == owner) {
+          mark_running();
+        } else {
+          runtime_.post_to(owner, std::move(mark_running));
+        }
+      });
   if (!result) {
     co_return fail(result.error());
   }
@@ -1481,60 +1869,59 @@ auto WorkflowRuntime::output(const WorkflowRunId &run_id,
   co_return ok(std::move(value));
 }
 
-auto WorkflowRuntime::pending_approvals(const WorkflowRunId &run_id) const
-    -> task<Result<std::vector<ApprovalRequest>>> {
+auto WorkflowRuntime::pause(const WorkflowRunId &run_id)
+    -> task<Result<void>> {
   const auto target = owner_shard(run_id);
-  auto [ec, approvals] = co_await boost::asio::async_initiate<
-      const decltype(dagforge::use_nothrow),
-      void(boost::system::error_code, std::vector<ApprovalRequest>)>(
+  auto [ec] = co_await boost::asio::async_initiate<
+      const decltype(dagforge::use_nothrow), void(boost::system::error_code)>(
       [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
        run_id = run_id.clone(), target](auto handler) mutable {
         runtime_.post_to(
             target, [this, weak_lifetime, run_id = std::move(run_id), target,
                      handler = std::move(handler)]() mutable {
               if (weak_lifetime.expired()) {
-                handler(to_boost_error(make_error_code(Error::Cancelled)),
-                        std::vector<ApprovalRequest>{});
+                handler(to_boost_error(make_error_code(Error::Cancelled)));
                 return;
               }
-              const auto &state = shard_states_[target];
+              auto &state = shard_states_[target];
               const auto it = state.active_runs.find(run_id.str());
               if (it == state.active_runs.end()) {
-                handler(to_boost_error(make_error_code(Error::NotFound)),
-                        std::vector<ApprovalRequest>{});
+                handler(to_boost_error(make_error_code(Error::NotFound)));
                 return;
               }
-              std::vector<ApprovalRequest> approvals;
-              for (const auto &node : it->second.nodes) {
-                if (node.approval) {
-                  approvals.push_back(*node.approval);
-                }
+              auto &run = it->second;
+              if (run.snapshot.state == RunState::Pausing ||
+                  run.snapshot.state == RunState::Paused) {
+                handler(boost::system::error_code{});
+                return;
               }
-              handler(boost::system::error_code{}, std::move(approvals));
+              auto transitioned = transition_run(run, RunState::Pausing);
+              if (!transitioned) {
+                handler(to_boost_error(transitioned.error()));
+                return;
+              }
+              append_evidence(run, run.tasks.size(),
+                              EvidenceType::RunPauseRequested);
+              settle_control_state(run_id);
+              handler(boost::system::error_code{});
             });
       },
       dagforge::use_nothrow);
   if (ec) {
     co_return fail(ec);
   }
-  co_return ok(std::move(approvals));
+  co_return ok();
 }
 
-auto WorkflowRuntime::approve(const WorkflowRunId &run_id,
-                              const ApprovalId &approval_id, bool approved,
-                              Principal actor, std::string comment)
+auto WorkflowRuntime::resume(const WorkflowRunId &run_id)
     -> task<Result<void>> {
   const auto target = owner_shard(run_id);
   auto [ec] = co_await boost::asio::async_initiate<
       const decltype(dagforge::use_nothrow), void(boost::system::error_code)>(
       [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
-       run_id = run_id.clone(), approval_id = approval_id.clone(), approved,
-       actor = std::move(actor), comment = std::move(comment),
-       target](auto handler) mutable {
+       run_id = run_id.clone(), target](auto handler) mutable {
         runtime_.post_to(
             target, [this, weak_lifetime, run_id = std::move(run_id),
-                     approval_id = std::move(approval_id), approved,
-                     actor = std::move(actor), comment = std::move(comment),
                      target, handler = std::move(handler)]() mutable {
               if (weak_lifetime.expired()) {
                 handler(to_boost_error(make_error_code(Error::Cancelled)));
@@ -1547,39 +1934,18 @@ auto WorkflowRuntime::approve(const WorkflowRunId &run_id,
                 return;
               }
               auto &run = run_it->second;
-              for (std::size_t index = 0; index < run.nodes.size(); ++index) {
-                auto &node = run.nodes[index];
-                if (!node.approval ||
-                    node.approval->approval_id != approval_id) {
-                  continue;
-                }
-                if (node.approval->expires_at <
-                    std::chrono::system_clock::now()) {
-                  node.approval.reset();
-                  complete_node(run_id, index, fail(Error::Timeout));
-                  handler(to_boost_error(make_error_code(Error::Timeout)));
-                  return;
-                }
-
-                append_evidence(
-                    run, index, EvidenceType::ApprovalResolved,
-                    make_metadata({{"approval_id", approval_id.str()},
-                                   {"approved", approved},
-                                   {"actor", actor.subject},
-                                   {"comment", comment}}));
-                node.approval.reset();
-                std::erase(run.snapshot.pending_approvals, approval_id);
-                node.snapshot.state = NodeState::Running;
-                run.active_nodes += 1;
-                run.snapshot.state = RunState::Running;
-                NodeOutputs outputs;
-                add_output(outputs, run.plan->nodes[index].plan, "result",
-                           approved);
-                complete_node(run_id, index, ok(std::move(outputs)));
+              if (run.snapshot.state == RunState::Running) {
                 handler(boost::system::error_code{});
                 return;
               }
-              handler(to_boost_error(make_error_code(Error::NotFound)));
+              auto transitioned = transition_run(run, RunState::Running);
+              if (!transitioned) {
+                handler(to_boost_error(transitioned.error()));
+                return;
+              }
+              append_evidence(run, run.tasks.size(), EvidenceType::RunResumed);
+              dispatch(run_id);
+              handler(boost::system::error_code{});
             });
       },
       dagforge::use_nothrow);
@@ -1603,30 +1969,12 @@ auto WorkflowRuntime::cancel(const WorkflowRunId &run_id)
                 handler(to_boost_error(make_error_code(Error::Cancelled)));
                 return;
               }
-              auto &state = shard_states_[target];
-              const auto it = state.active_runs.find(run_id.str());
-              if (it == state.active_runs.end()) {
-                handler(to_boost_error(make_error_code(Error::NotFound)));
+              auto stopped =
+                  request_stop(run_id, StopIntent::Cancel, "cancel requested");
+              if (!stopped) {
+                handler(to_boost_error(stopped.error()));
                 return;
               }
-              auto &run = it->second;
-              run.snapshot.state = RunState::Cancelled;
-              run.snapshot.finished_at = std::chrono::system_clock::now();
-              for (auto &node : run.nodes) {
-                if (node.compute_handle) {
-                  (void)node.compute_handle->request_stop();
-                }
-                if (node.instance_id) {
-                  executor_.cancel(*node.instance_id);
-                }
-                if (!is_terminal(node.snapshot.state)) {
-                  node.snapshot.state = NodeState::Cancelled;
-                  node.snapshot.finished_at = run.snapshot.finished_at;
-                }
-              }
-              run.active_nodes = 0;
-              run.ready.clear();
-              (void)complete_run_if_terminal(run_id);
               handler(boost::system::error_code{});
             });
       },

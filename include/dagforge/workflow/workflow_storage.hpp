@@ -78,8 +78,10 @@ private:
 struct WorkflowCheckpoint {
   WorkflowRunId run_id;
   WorkflowPlanId plan_id;
-  RunState state{RunState::Queued};
-  std::vector<NodeSnapshot> nodes;
+  RunState state{RunState::Running};
+  std::optional<StopIntent> stop_intent;
+  std::string stop_reason;
+  std::vector<TaskSnapshot> tasks;
   std::vector<std::pair<OutputRef, WorkflowValue>> values;
   std::chrono::system_clock::time_point created_at{
       std::chrono::system_clock::now()};

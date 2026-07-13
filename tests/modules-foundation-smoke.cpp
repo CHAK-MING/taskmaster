@@ -42,8 +42,12 @@ auto main() -> int {
   if (!limit || limit->size() != 2) {
     return 15;
   }
-  if (dagforge::workflow::kWorkflowSchemaVersion != 1U) {
+  if (dagforge::workflow::kWorkflowSchemaVersion != 2U) {
     return 28;
+  }
+  dagforge::AttemptId attempt_id{"attempt"};
+  if (attempt_id.empty()) {
+    return 29;
   }
   return 0;
 }

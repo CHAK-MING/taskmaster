@@ -32,13 +32,6 @@ namespace workflow_routes_detail {
                                    : std::move(fallback);
 }
 
-[[nodiscard]] inline auto bool_member(const JsonValue &value,
-                                      std::string_view key, bool fallback)
-    -> bool {
-  const auto *item = member(value, key);
-  return item && item->is_boolean() ? item->as<bool>() : fallback;
-}
-
 [[nodiscard]] inline auto principal_from_json(const JsonValue &body)
     -> workflow::Principal {
   workflow::Principal principal;
@@ -55,6 +48,18 @@ namespace workflow_routes_detail {
     }
   }
   return principal;
+}
+
+inline auto add_timestamp(
+    JsonValue &value, std::string_view key,
+    std::chrono::system_clock::time_point timestamp) -> void {
+  if (timestamp == std::chrono::system_clock::time_point{}) {
+    return;
+  }
+  value[std::string{key}] =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          timestamp.time_since_epoch())
+          .count();
 }
 
 [[nodiscard]] inline auto value_json(const workflow::WorkflowValue &value)
@@ -120,25 +125,68 @@ namespace workflow_routes_detail {
 
 [[nodiscard]] inline auto snapshot_json(const workflow::RunSnapshot &snapshot)
     -> JsonValue {
-  json nodes = json::array_t{};
-  for (const auto &node : snapshot.nodes) {
-    nodes.get_array().push_back(
-        json{{"node_id", node.node_id.str()},
-             {"state", std::string{workflow::to_string_view(node.state)}},
-             {"attempt", node.attempt},
-             {"error", node.error}});
+  json tasks = json::array_t{};
+  for (const auto &task : snapshot.tasks) {
+    json attempts = json::array_t{};
+    for (const auto &attempt : task.attempts) {
+      json attempt_json{
+          {"attempt_id", attempt.attempt_id.str()},
+          {"number", attempt.number},
+          {"state", std::string{workflow::to_string_view(attempt.state)}},
+          {"error", attempt.error},
+      };
+      if (attempt.exit_code) {
+        attempt_json["exit_code"] = *attempt.exit_code;
+      }
+      if (attempt.termination_reason) {
+        attempt_json["termination_reason"] = std::string{
+            workflow::to_string_view(*attempt.termination_reason)};
+      }
+      if (attempt.failure_class) {
+        attempt_json["failure_class"] =
+            std::string{workflow::to_string_view(*attempt.failure_class)};
+      }
+      add_timestamp(attempt_json, "created_at_ms", attempt.created_at);
+      add_timestamp(attempt_json, "started_at_ms", attempt.started_at);
+      add_timestamp(attempt_json, "finished_at_ms", attempt.finished_at);
+      attempts.get_array().push_back(std::move(attempt_json));
+    }
+    json task_json{
+        {"node_id", task.node_id.str()},
+        {"state", std::string{workflow::to_string_view(task.state)}},
+        {"attempt_count", task.attempt_count},
+        {"last_error", task.last_error},
+        {"attempts", std::move(attempts)},
+    };
+    if (task.active_attempt_id) {
+      task_json["active_attempt_id"] = task.active_attempt_id->str();
+    }
+    if (task.skip_reason) {
+      task_json["skip_reason"] =
+          std::string{workflow::to_string_view(*task.skip_reason)};
+    }
+    if (task.next_attempt_at) {
+      add_timestamp(task_json, "next_attempt_at_ms", *task.next_attempt_at);
+    }
+    add_timestamp(task_json, "started_at_ms", task.started_at);
+    add_timestamp(task_json, "finished_at_ms", task.finished_at);
+    tasks.get_array().push_back(std::move(task_json));
   }
-  json approvals = json::array_t{};
-  for (const auto &approval : snapshot.pending_approvals) {
-    approvals.get_array().push_back(approval.str());
-  }
-  return json{{"run_id", snapshot.run_id.str()},
+  json result{{"run_id", snapshot.run_id.str()},
               {"workflow_id", snapshot.workflow_id.str()},
               {"plan_id", snapshot.plan_id.str()},
               {"state", std::string{workflow::to_string_view(snapshot.state)}},
               {"error", snapshot.error},
-              {"nodes", std::move(nodes)},
-              {"pending_approvals", std::move(approvals)}};
+              {"stop_reason", snapshot.stop_reason},
+              {"tasks", std::move(tasks)}};
+  if (snapshot.stop_intent) {
+    result["stop_intent"] =
+        std::string{workflow::to_string_view(*snapshot.stop_intent)};
+  }
+  add_timestamp(result, "created_at_ms", snapshot.created_at);
+  add_timestamp(result, "started_at_ms", snapshot.started_at);
+  add_timestamp(result, "finished_at_ms", snapshot.finished_at);
+  return result;
 }
 
 [[nodiscard]] inline auto evidence_json(
@@ -362,11 +410,11 @@ inline auto register_workflow_routes(ApiContext &ctx) -> void {
                   evidence_json(runtime->evidence(WorkflowRunId{*run_id}))}});
           }));
 
-  router.get(
-      "/api/v1/workflow-runs/{run_id}/approvals",
+  router.post(
+      "/api/v1/workflow-runs/{run_id}/pause",
       ctx.make_instrumented_route(
-          http::HttpMethod::GET,
-          "/api/v1/workflow-runs/{run_id}/approvals",
+          http::HttpMethod::POST,
+          "/api/v1/workflow-runs/{run_id}/pause",
           [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
             auto *runtime = ctx.app.workflow_runtime();
             auto run_id = req.path_param("run_id");
@@ -374,48 +422,31 @@ inline auto register_workflow_routes(ApiContext &ctx) -> void {
               co_return runtime ? error_response(400, "Missing run_id")
                                 : unavailable();
             }
-            auto approvals = co_await runtime->pending_approvals(
-                WorkflowRunId{*run_id});
-            if (!approvals) {
-              co_return to_result_response(approvals.error()).value();
-            }
-            json values = json::array_t{};
-            for (const auto &approval : *approvals) {
-              values.get_array().push_back(
-                  json{{"approval_id", approval.approval_id.str()},
-                       {"node_id", approval.node_id.str()},
-                       {"summary", approval.summary},
-                       {"context", approval.context}});
-            }
-            co_return json_response({{"approvals", std::move(values)}});
-          }));
-
-  router.post(
-      "/api/v1/workflow-runs/{run_id}/approvals/{approval_id}",
-      ctx.make_instrumented_route(
-          http::HttpMethod::POST,
-          "/api/v1/workflow-runs/{run_id}/approvals/{approval_id}",
-          [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
-            auto *runtime = ctx.app.workflow_runtime();
-            auto run_id = req.path_param("run_id");
-            auto approval_id = req.path_param("approval_id");
-            if (!runtime || !run_id || !approval_id) {
-              co_return runtime
-                            ? error_response(400, "Missing approval parameter")
-                            : unavailable();
-            }
-            auto body = parse_json(req.body_as_string());
-            if (!body || !body->is_object()) {
-              co_return error_response(400, "Invalid JSON body");
-            }
-            auto result = co_await runtime->approve(
-                WorkflowRunId{*run_id}, ApprovalId{*approval_id},
-                bool_member(*body, "approved", false),
-                principal_from_json(*body), string_member(*body, "comment"));
+            auto result = co_await runtime->pause(WorkflowRunId{*run_id});
             if (!result) {
               co_return to_result_response(result.error()).value();
             }
-            co_return json_response({{"status", "accepted"}},
+            co_return json_response({{"status", "pausing"}},
+                                    http::HttpStatus::Accepted);
+          }));
+
+  router.post(
+      "/api/v1/workflow-runs/{run_id}/resume",
+      ctx.make_instrumented_route(
+          http::HttpMethod::POST,
+          "/api/v1/workflow-runs/{run_id}/resume",
+          [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
+            auto *runtime = ctx.app.workflow_runtime();
+            auto run_id = req.path_param("run_id");
+            if (!runtime || !run_id) {
+              co_return runtime ? error_response(400, "Missing run_id")
+                                : unavailable();
+            }
+            auto result = co_await runtime->resume(WorkflowRunId{*run_id});
+            if (!result) {
+              co_return to_result_response(result.error()).value();
+            }
+            co_return json_response({{"status", "running"}},
                                     http::HttpStatus::Accepted);
           }));
 
@@ -436,7 +467,8 @@ inline auto register_workflow_routes(ApiContext &ctx) -> void {
             if (!result) {
               co_return to_result_response(result.error()).value();
             }
-            co_return json_response({{"status", "cancelled"}});
+            co_return json_response({{"status", "stopping"}},
+                                    http::HttpStatus::Accepted);
           }));
 }
 

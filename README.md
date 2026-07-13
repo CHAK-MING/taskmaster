@@ -38,11 +38,14 @@ The current runtime provides:
 - owner-shard workflow execution on a Boost.Asio-based C++23 runtime;
 - immutable compiled plans with cycle, port, policy, and resource validation;
 - explicit typed node outputs and input bindings;
-- bounded node and run concurrency, deadlines, retries, and cancellation;
-- sandboxed Command, HTTP, Compute, Model, Tool, Evaluator, Approval, and Noop
+- bounded task and run concurrency, deadlines, delayed retries, pause/resume,
+  and cancellation;
+- explicit Run, Task, and Attempt state machines with terminal-state
+  invariants;
+- sandboxed Command, HTTP, Compute, Model, Tool, Evaluator, and Noop
   node types;
 - artifact externalization for large values;
-- checkpoints, evidence records, idempotent triggers, and approval gates;
+- checkpoints, evidence records, and idempotent triggers;
 - REST control-plane endpoints and Prometheus metrics.
 
 The built-in checkpoint, evidence, artifact, plan, and completed-run stores are
@@ -123,7 +126,7 @@ A minimal TOML plan is:
 
 ```toml
 workflow_id = "hello-world"
-schema_version = 1
+schema_version = 2
 
 [[nodes]]
 id = "start"
@@ -159,7 +162,7 @@ external networking is unavailable.
 ## HTTP control plane
 
 The service exposes plan registration, workflow execution, run status,
-outputs, evidence, approvals, cancellation, health, status, and metrics. See
+outputs, evidence, pause/resume, cancellation, health, status, and metrics. See
 [`docs/API.md`](docs/API.md).
 
 ## Benchmarks
@@ -177,6 +180,7 @@ the retired 0.3 DAG/scheduler/storage stack rather than the 0.4 runtime.
 
 - [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)
 - [`docs/API.md`](docs/API.md)
+- [`docs/adr/0001-run-task-attempt-state-machine.md`](docs/adr/0001-run-task-attempt-state-machine.md)
 - [`docs/CLANGD_SETUP.md`](docs/CLANGD_SETUP.md)
 - [`docs/BENCH_REPORT.md`](docs/BENCH_REPORT.md)
 

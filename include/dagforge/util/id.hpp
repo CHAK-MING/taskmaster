@@ -39,7 +39,7 @@ struct WorkflowPortTag {};
 struct WorkflowTriggerTag {};
 struct ArtifactTag {};
 struct EvidenceTag {};
-struct ApprovalTag {};
+struct AttemptTag {};
 
 template <typename Tag> class TypedId {
 public:
@@ -108,7 +108,7 @@ using WorkflowPortId = TypedId<WorkflowPortTag>;
 using WorkflowTriggerId = TypedId<WorkflowTriggerTag>;
 using ArtifactId = TypedId<ArtifactTag>;
 using EvidenceId = TypedId<EvidenceTag>;
-using ApprovalId = TypedId<ApprovalTag>;
+using AttemptId = TypedId<AttemptTag>;
 
 template <typename T>
 concept IsTypedId = requires(T id) {
@@ -175,8 +175,8 @@ inline constexpr std::string_view kRunSeparator = "__";
   return EvidenceId{detail::generate_uuid_v7()};
 }
 
-[[nodiscard]] inline auto generate_approval_id() -> ApprovalId {
-  return ApprovalId{detail::generate_uuid_v7()};
+[[nodiscard]] inline auto generate_attempt_id() -> AttemptId {
+  return AttemptId{detail::generate_uuid_v7()};
 }
 
 } // namespace dagforge

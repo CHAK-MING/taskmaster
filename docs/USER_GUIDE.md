@@ -171,11 +171,11 @@ Environment overrides:
 
 ## 3. Workflow Plan v1
 
-Plans are accepted as JSON or TOML. `schema_version` must be `1`.
+Plans are accepted as JSON or TOML. `schema_version` must be `2`.
 
 ```toml
 workflow_id = "hello-world"
-schema_version = 1
+schema_version = 2
 
 [[nodes]]
 id = "start"
@@ -183,6 +183,8 @@ name = "Start"
 type = "noop"
 outputs = ["result"]
 max_retries = 0
+retry_initial_delay_ms = 1000
+retry_max_delay_ms = 30000
 timeout_sec = 30
 checkpoint = false
 
@@ -198,6 +200,8 @@ checkpoint = false
 - `inputs`: named bindings to an upstream node output.
 - `outputs`: output port names. The default is `result`.
 - `max_retries`: retries after the first attempt.
+- `retry_initial_delay_ms`: delay before the first retry.
+- `retry_max_delay_ms`: maximum exponential retry delay.
 - `timeout_sec`: node deadline.
 - `checkpoint`: save a runtime checkpoint after successful completion.
 
@@ -278,11 +282,6 @@ Supported operations are `identity`, `concat`, `sha256`, `json_parse`, and
 Supported operations are `truthy`, `equals`, `contains`, and
 `score_at_least`.
 
-#### Approval
-
-An Approval node suspends the run until an external approval decision arrives
-or the request expires.
-
 ### 3.3 Conditional edges
 
 Conditions are explicit edges rather than executable branch tasks.
@@ -316,6 +315,7 @@ allow_tools = true
 allowed_http_hosts = []
 allowed_model_providers = []
 allowed_tools = []
+failure_policy = "continue_independent"
 
 [policy.budget]
 max_nodes = 256
@@ -327,6 +327,11 @@ max_run_duration_sec = 3600
 
 The current plan policy is validated by the compiler. Server-side admission
 policy separation is a later 0.4 milestone.
+
+`failure_policy` accepts:
+
+- `continue_independent`: independent branches continue after a task fails;
+- `fail_fast`: the run enters `stopping` and terminates other active attempts.
 
 ## 4. CLI
 
@@ -364,12 +369,23 @@ Use `SIGINT` or `SIGTERM` for graceful shutdown.
 
 - A compiled plan is immutable for the life of a run.
 - Each run is owned by one shard.
-- Node state mutations occur on the owner shard.
+- Run and task state mutations occur on the owner shard.
 - Input values reference explicit upstream output ports.
-- A failed dependency causes downstream nodes to be skipped.
-- A failed node is retried up to `max_retries`.
-- Run and node cancellation is cooperative for Compute and kills the complete
-  Minijail process namespace for Command nodes.
+- A run uses `running`, `pausing`, `paused`, `stopping`, `succeeded`, `failed`,
+  and `cancelled` states.
+- A task uses `pending`, `ready`, `running`, `retry_waiting`, `succeeded`,
+  `failed`, `skipped`, and `cancelled` states.
+- Every execution creates a distinct Attempt record. A task has at most one
+  active Attempt.
+- Pause stops dispatching new tasks but lets active attempts finish; it never
+  freezes sandbox processes.
+- Retryable failures enter `retry_waiting` and use bounded exponential
+  backoff. Permanent configuration and authorization failures do not retry.
+- A failed dependency causes downstream tasks to be skipped with a recorded
+  reason.
+- Cancellation enters `stopping`, terminates active work, and becomes terminal
+  only after every attempt is reaped. Command cancellation kills the complete
+  Minijail process namespace.
 - Duplicate non-empty idempotency keys return the original run ID while the
   process remains alive.
 - Large string and JSON outputs are replaced with Artifact references.

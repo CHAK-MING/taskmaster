@@ -31,6 +31,7 @@ struct PolicyDto {
   std::vector<std::string> allowed_http_hosts;
   std::vector<std::string> allowed_model_providers;
   std::vector<std::string> allowed_tools;
+  std::string failure_policy{"continue_independent"};
   BudgetDto budget;
 };
 
@@ -48,6 +49,8 @@ struct NodeDto {
   std::vector<InputDto> inputs;
   std::vector<std::string> outputs;
   int max_retries{0};
+  int retry_initial_delay_ms{1000};
+  int retry_max_delay_ms{30000};
   int timeout_sec{300};
   bool checkpoint{false};
 };
@@ -72,7 +75,7 @@ struct OutputDto {
 
 struct WorkflowPlanDto {
   std::string workflow_id;
-  std::uint32_t schema_version{1};
+  std::uint32_t schema_version{2};
   std::vector<NodeDto> nodes;
   std::vector<EdgeDto> edges;
   std::vector<OutputDto> outputs;
@@ -99,7 +102,7 @@ template <> struct meta<dagforge::workflow::detail::PolicyDto> {
       &T::allow_tools, "allowed_http_hosts",
       &T::allowed_http_hosts, "allowed_model_providers",
       &T::allowed_model_providers, "allowed_tools", &T::allowed_tools,
-      "budget", &T::budget);
+      "failure_policy", &T::failure_policy, "budget", &T::budget);
 };
 
 template <> struct meta<dagforge::workflow::detail::InputDto> {
@@ -113,8 +116,10 @@ template <> struct meta<dagforge::workflow::detail::NodeDto> {
   static constexpr auto value = object(
       "id", &T::id, "name", &T::name, "type", &T::type, "config",
       &T::config, "inputs", &T::inputs, "outputs", &T::outputs,
-      "max_retries", &T::max_retries, "timeout_sec", &T::timeout_sec,
-      "checkpoint", &T::checkpoint);
+      "max_retries", &T::max_retries, "retry_initial_delay_ms",
+      &T::retry_initial_delay_ms, "retry_max_delay_ms",
+      &T::retry_max_delay_ms, "timeout_sec", &T::timeout_sec, "checkpoint",
+      &T::checkpoint);
 };
 
 template <> struct meta<dagforge::workflow::detail::ConditionDto> {
@@ -275,8 +280,6 @@ template <typename T>
     return parse_typed_node_config<ComputeNodeConfig>(text);
   case NodeType::Evaluator:
     return parse_typed_node_config<EvaluatorNodeConfig>(text);
-  case NodeType::Approval:
-    return parse_typed_node_config<ApprovalNodeConfig>(text);
   case NodeType::Noop:
     return parse_empty_node_config(text);
   }
@@ -296,8 +299,6 @@ template <typename T>
     return ok(NodeType::Compute);
   if (value == "evaluator")
     return ok(NodeType::Evaluator);
-  if (value == "approval")
-    return ok(NodeType::Approval);
   if (value == "noop")
     return ok(NodeType::Noop);
   return fail(Error::InvalidArgument);
@@ -316,9 +317,22 @@ template <typename T>
   return fail(Error::InvalidArgument);
 }
 
+[[nodiscard]] auto parse_failure_policy(std::string_view value)
+    -> Result<FailurePolicy> {
+  if (value == "continue_independent") {
+    return ok(FailurePolicy::ContinueIndependent);
+  }
+  if (value == "fail_fast") {
+    return ok(FailurePolicy::FailFast);
+  }
+  return fail(Error::InvalidArgument);
+}
+
 [[nodiscard]] auto convert(detail::WorkflowPlanDto dto)
     -> Result<WorkflowPlan> {
-  if (dto.workflow_id.empty() || dto.policy.budget.max_run_duration_sec <= 0) {
+  auto failure_policy = parse_failure_policy(dto.policy.failure_policy);
+  if (dto.workflow_id.empty() || dto.policy.budget.max_run_duration_sec <= 0 ||
+      !failure_policy) {
     return fail(Error::InvalidArgument);
   }
 
@@ -334,6 +348,7 @@ template <typename T>
       .allowed_model_providers =
           std::move(dto.policy.allowed_model_providers),
       .allowed_tools = std::move(dto.policy.allowed_tools),
+      .failure_policy = *failure_policy,
       .budget = ResourceBudget{
           .max_nodes = dto.policy.budget.max_nodes,
           .max_parallel_nodes = dto.policy.budget.max_parallel_nodes,
@@ -348,7 +363,9 @@ template <typename T>
   plan.nodes.reserve(dto.nodes.size());
   for (auto &source : dto.nodes) {
     auto type = parse_node_type(source.type);
-    if (!type || source.id.empty() || source.timeout_sec <= 0) {
+    if (!type || source.id.empty() || source.timeout_sec <= 0 ||
+        source.retry_initial_delay_ms < 0 || source.retry_max_delay_ms < 0 ||
+        source.retry_max_delay_ms < source.retry_initial_delay_ms) {
       return fail(type ? Error::InvalidArgument : type.error());
     }
     NodePlan node{
@@ -357,6 +374,10 @@ template <typename T>
         .type = *type,
         .config = std::move(source.config),
         .max_retries = source.max_retries,
+        .retry_initial_delay =
+            std::chrono::milliseconds(source.retry_initial_delay_ms),
+        .retry_max_delay =
+            std::chrono::milliseconds(source.retry_max_delay_ms),
         .timeout = std::chrono::seconds(source.timeout_sec),
         .checkpoint = source.checkpoint,
     };

@@ -63,11 +63,6 @@ struct EvaluatorNodeConfig {
   double minimum_score{1.0};
 };
 
-struct ApprovalNodeConfig {
-  std::string summary;
-  int expires_after_sec{24 * 60 * 60};
-};
-
 struct ModelCall {
   WorkflowRunId run_id;
   WorkflowNodeId node_id;
@@ -141,13 +136,6 @@ template <> struct meta<dagforge::workflow::EvaluatorNodeConfig> {
   static constexpr auto value = object(
       "operation", &T::operation, "input", &T::input, "expected",
       &T::expected, "minimum_score", &T::minimum_score);
-};
-
-template <> struct meta<dagforge::workflow::ApprovalNodeConfig> {
-  using T = dagforge::workflow::ApprovalNodeConfig;
-  static constexpr auto value = object("summary", &T::summary,
-                                       "expires_after_sec",
-                                       &T::expires_after_sec);
 };
 
 template <> struct meta<dagforge::workflow::CredentialRef> {

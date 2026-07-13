@@ -58,7 +58,6 @@ template <typename T>
     return policy.allow_tools;
   case NodeType::Compute:
   case NodeType::Evaluator:
-  case NodeType::Approval:
   case NodeType::Noop:
     return true;
   }
@@ -124,9 +123,10 @@ template <typename T>
                  plan.workflow_id, plan.schema_version);
   std::format_to(
       std::back_inserter(canonical),
-      "policy={},{},{},{},{},{},{},{},{};",
+      "policy={},{},{},{},{},{},{},{},{},{};",
       plan.policy.allow_command, plan.policy.allow_network,
       plan.policy.allow_model_calls, plan.policy.allow_tools,
+      static_cast<unsigned>(plan.policy.failure_policy),
       plan.policy.budget.max_nodes, plan.policy.budget.max_parallel_nodes,
       plan.policy.budget.max_total_output_bytes,
       plan.policy.budget.max_model_tokens,
@@ -145,10 +145,11 @@ template <typename T>
   for (const auto *node : nodes) {
     auto config = dump_json(node->config);
     std::format_to(std::back_inserter(canonical),
-                   "node={};type={};name={};retry={};timeout={};checkpoint={};config={};",
+                   "node={};type={};name={};retry={};retry_initial={};retry_max={};timeout={};checkpoint={};config={};",
                    node->node_id, static_cast<unsigned>(node->type), node->name,
-                   node->max_retries, node->timeout.count(), node->checkpoint,
-                   config);
+                   node->max_retries, node->retry_initial_delay.count(),
+                   node->retry_max_delay.count(), node->timeout.count(),
+                   node->checkpoint, config);
 
     auto outputs = node->outputs;
     std::ranges::sort(outputs);
@@ -183,8 +184,16 @@ template <typename T>
 } // namespace
 
 auto PolicyEngine::validate(const WorkflowPlan &plan) const -> Result<void> {
-  if (plan.workflow_id.empty() || plan.schema_version != 1 ||
+  if (plan.workflow_id.empty() || plan.schema_version != 2 ||
       plan.nodes.empty()) {
+    return fail(Error::InvalidArgument);
+  }
+
+  switch (plan.policy.failure_policy) {
+  case FailurePolicy::ContinueIndependent:
+  case FailurePolicy::FailFast:
+    break;
+  default:
     return fail(Error::InvalidArgument);
   }
 
@@ -198,7 +207,10 @@ auto PolicyEngine::validate(const WorkflowPlan &plan) const -> Result<void> {
 
   for (const auto &node : plan.nodes) {
     if (node.node_id.empty() || node.timeout <= std::chrono::seconds::zero() ||
-        node.max_retries < 0 || !node_type_allowed(node.type, plan.policy)) {
+        node.max_retries < 0 ||
+        node.retry_initial_delay < std::chrono::milliseconds::zero() ||
+        node.retry_max_delay < node.retry_initial_delay ||
+        !node_type_allowed(node.type, plan.policy)) {
       return fail(Error::Unauthorized);
     }
 

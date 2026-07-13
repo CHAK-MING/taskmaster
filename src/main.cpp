@@ -58,9 +58,7 @@ extern "C" void handle_signal(int) {
 
 [[nodiscard]] auto terminal(dagforge::workflow::RunState state) noexcept
     -> bool {
-  using dagforge::workflow::RunState;
-  return state == RunState::Success || state == RunState::Failed ||
-         state == RunState::Cancelled;
+  return dagforge::workflow::is_terminal(state);
 }
 
 auto run_serve(const std::string &config_path) -> int {
@@ -183,7 +181,8 @@ auto run_local(const std::string &config_path, const std::string &plan_path,
       std::println("{}",
                    dagforge::workflow::to_string_view((*snapshot)->state));
       const auto exit_code =
-          (*snapshot)->state == dagforge::workflow::RunState::Success ? 0 : 1;
+          (*snapshot)->state == dagforge::workflow::RunState::Succeeded ? 0
+                                                                        : 1;
       app.stop();
       return exit_code;
     }
