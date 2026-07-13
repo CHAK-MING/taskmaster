@@ -72,6 +72,10 @@ max_parallel_nodes = 8
 max_total_output_bytes = 1048576
 max_run_duration_sec = 60
 
+[storage]
+enabled = true
+directory = "/tmp/dagforge-test-state"
+
 [api]
 enabled = true
 port = 9999
@@ -96,6 +100,8 @@ host = "0.0.0.0"
   ASSERT_EQ(result->admission.allowed_programs.size(), 1U);
   EXPECT_EQ(result->admission.allowed_programs.front(), "/bin/echo");
   EXPECT_EQ(result->admission.max_parallel_nodes, 8U);
+  EXPECT_TRUE(result->storage.enabled);
+  EXPECT_EQ(result->storage.directory, "/tmp/dagforge-test-state");
   EXPECT_TRUE(result->api.enabled);
   EXPECT_EQ(result->api.port, 9999);
 }

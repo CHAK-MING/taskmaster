@@ -23,6 +23,9 @@ public:
 
   [[nodiscard]] auto compile(WorkflowPlan plan) const
       -> Result<std::shared_ptr<const ExecutionPlan>>;
+  [[nodiscard]] auto compile(WorkflowPlan plan,
+                             const WorkflowPlanId &plan_id) const
+      -> Result<std::shared_ptr<const ExecutionPlan>>;
 
   [[nodiscard]] static auto digest(const WorkflowPlan &plan)
       -> Result<std::string>;

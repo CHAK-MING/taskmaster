@@ -171,10 +171,10 @@ behind a trusted gateway when operating outside a development environment.
 
 ## Current limitations
 
-- plan registration and run state are in-memory;
+- plan registration without a Run is not persisted independently;
 - there is no endpoint to upload or download artifact bytes;
 - run creation selects the latest plan for a workflow instead of an explicit
   plan ID;
-- there is no durable event stream or restart recovery.
+- Evidence persistence is append-only JSON Lines rather than a query database.
 
 These are explicit 0.4 follow-up milestones rather than hidden guarantees.

@@ -60,6 +60,13 @@ struct AdmissionConfig {
   auto operator==(const AdmissionConfig &) const -> bool = default;
 };
 
+struct StorageConfig {
+  bool enabled{false};
+  std::string directory{"./state"};
+
+  auto operator==(const StorageConfig &) const -> bool = default;
+};
+
 struct ApiConfig {
   bool enabled{false};
   std::uint16_t port{8888};
@@ -76,6 +83,7 @@ struct SystemConfig {
   ComputeConfig compute;
   WorkflowConfig workflow;
   AdmissionConfig admission;
+  StorageConfig storage;
   RuntimeConfig runtime;
   SandboxConfig sandbox;
   ApiConfig api;

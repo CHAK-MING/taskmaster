@@ -253,7 +253,7 @@ processes have been reaped.
 
 ## ⚙️ System Configuration
 
-The configuration file contains six top-level sections:
+The configuration file contains seven top-level sections:
 
 | Section | Purpose |
 | --- | --- |
@@ -262,6 +262,7 @@ The configuration file contains six top-level sections:
 | `[sandbox]` | Minijail paths, workspace root, and resource limits |
 | `[workflow]` | Workflow runtime switch |
 | `[admission]` | Server-owned program, environment, and budget limits |
+| `[storage]` | Optional durable Run, Evidence, and Artifact directory |
 | `[api]` | Optional HTTP address, port, and TLS settings |
 
 Workflow Plans cannot authorize themselves. `AdmissionPolicy` evaluates every
@@ -291,9 +292,15 @@ See [`docs/API.md`](docs/API.md) for endpoint details.
 
 ## 💾 Storage Boundary
 
-Plan, active/completed Run, Checkpoint, Evidence, and Artifact stores currently
-use in-memory adapters. Process restart recovery and durable event storage are
-not provided by the current build.
+Storage is in-memory by default. Setting `[storage].enabled = true` enables
+atomic file checkpoints, append-only Evidence records, and file-backed
+Artifacts below `[storage].directory`.
+
+Completed Runs and outputs are restored after restart. A process cannot safely
+reattach to a sandbox process created by the previous runtime instance, so any
+non-terminal Run found during recovery is finalized as `failed`; its active
+Attempt is recorded as an infrastructure failure instead of being presented as
+still running.
 
 ---
 

@@ -405,6 +405,19 @@ struct RunSnapshot {
   return "unknown";
 }
 
+[[nodiscard]] constexpr auto to_string_view(ConditionKind value) noexcept
+    -> std::string_view {
+  switch (value) {
+  case ConditionKind::Always:
+    return "always";
+  case ConditionKind::BoolEquals:
+    return "bool_equals";
+  case ConditionKind::StringEquals:
+    return "string_equals";
+  }
+  return "unknown";
+}
+
 [[nodiscard]] constexpr auto is_terminal(RunState state) noexcept -> bool {
   return state == RunState::Succeeded || state == RunState::Failed ||
          state == RunState::Cancelled;

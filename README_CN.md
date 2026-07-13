@@ -234,7 +234,7 @@ Plan 中的 Node 在运行时投影为 Task，每次真实执行都会创建独�
 
 ## ⚙️ 系统配置
 
-配置文件包含六个顶层区段：
+配置文件包含七个顶层区段：
 
 | 区段 | 用途 |
 | --- | --- |
@@ -243,6 +243,7 @@ Plan 中的 Node 在运行时投影为 Task，每次真实执行都会创建独�
 | `[sandbox]` | Minijail 路径、Workspace 根目录和资源限制 |
 | `[workflow]` | Workflow 运行时开关 |
 | `[admission]` | 服务端拥有的程序、环境变量和预算限制 |
+| `[storage]` | 可选的持久化 Run、Evidence 和 Artifact 目录 |
 | `[api]` | 可选 HTTP 地址、端口和 TLS 配置 |
 
 Workflow Plan 不能自行授权。计划在编译和注册前必须通过服务端
@@ -271,8 +272,13 @@ API 禁用时不会分配 HTTP Server。当前控制面没有内置认证中间�
 
 ## 💾 存储边界
 
-Plan、活动与已完成 Run、Checkpoint、Evidence 和 Artifact 当前使用内存适配器。
-当前版本不提供进程重启恢复和持久化事件存储。
+默认使用内存存储。设置 `[storage].enabled = true` 后，运行时会在
+`[storage].directory` 下保存原子 Run Checkpoint、追加式 Evidence 和文件型
+Artifact。
+
+已完成 Run 及其输出会在重启后恢复。新进程无法安全接管上一个运行时实例创建
+的沙箱进程，因此恢复时发现的非终态 Run 会明确结束为 `failed`，活动 Attempt
+记录为基础设施失败，不会继续显示成虚假的 `running`。
 
 ---
 

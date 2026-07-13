@@ -16,6 +16,7 @@ struct SystemToml {
   ComputeConfig compute{};
   WorkflowConfig workflow{};
   AdmissionConfig admission{};
+  StorageConfig storage{};
   RuntimeConfig runtime{};
   SandboxConfig sandbox{};
   ApiConfig api{};
@@ -50,6 +51,12 @@ template <> struct meta<dagforge::AdmissionConfig> {
       "max_run_duration_sec", &T::max_run_duration_sec);
 };
 
+template <> struct meta<dagforge::StorageConfig> {
+  using T = dagforge::StorageConfig;
+  static constexpr auto value = object(
+      "enabled", &T::enabled, "directory", &T::directory);
+};
+
 template <> struct meta<dagforge::RuntimeConfig> {
   using T = dagforge::RuntimeConfig;
   static constexpr auto value = object(
@@ -80,8 +87,8 @@ template <> struct meta<dagforge::detail::SystemToml> {
   using T = dagforge::detail::SystemToml;
   static constexpr auto value = object(
       "compute", &T::compute, "workflow", &T::workflow, "admission",
-      &T::admission, "runtime", &T::runtime, "sandbox", &T::sandbox, "api",
-      &T::api);
+      &T::admission, "storage", &T::storage, "runtime", &T::runtime,
+      "sandbox", &T::sandbox, "api", &T::api);
 };
 } // namespace glz
 
@@ -119,6 +126,7 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
   cfg.compute = std::move(raw.compute);
   cfg.workflow = std::move(raw.workflow);
   cfg.admission = std::move(raw.admission);
+  cfg.storage = std::move(raw.storage);
   cfg.runtime = std::move(raw.runtime);
   cfg.sandbox = std::move(raw.sandbox);
   cfg.api = std::move(raw.api);
@@ -174,7 +182,8 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
       cfg.admission.max_parallel_nodes == 0 ||
       cfg.admission.max_parallel_nodes > cfg.admission.max_nodes ||
       cfg.admission.max_total_output_bytes == 0 ||
-      cfg.admission.max_run_duration_sec <= 0) {
+      cfg.admission.max_run_duration_sec <= 0 ||
+      (cfg.storage.enabled && cfg.storage.directory.empty())) {
     return fail(Error::ParseError);
   }
   return ok(std::move(cfg));

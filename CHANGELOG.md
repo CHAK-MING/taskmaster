@@ -21,6 +21,9 @@ All notable changes to DAGForge will be documented in this file.
 - Unknown TOML fields are rejected instead of being silently ignored.
 
 ### Added
+- Added optional file-backed Run checkpoints, append-only Evidence, durable
+  Artifacts, completed-run recovery, and explicit infrastructure failure for
+  non-terminal Attempts found after restart.
 - Added server-owned `AdmissionPolicy` checks for executable allowlists,
   environment allowlists, and plan budget ceilings. Workflow Plans no longer
   contain self-authorizing capability switches.

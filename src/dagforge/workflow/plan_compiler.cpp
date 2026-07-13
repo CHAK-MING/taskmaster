@@ -312,6 +312,21 @@ auto PlanCompiler::compile(WorkflowPlan plan) const
   return ok(std::shared_ptr<const ExecutionPlan>{std::move(execution_plan)});
 }
 
+auto PlanCompiler::compile(WorkflowPlan plan,
+                           const WorkflowPlanId &plan_id) const
+    -> Result<std::shared_ptr<const ExecutionPlan>> {
+  if (plan_id.empty()) {
+    return fail(Error::InvalidArgument);
+  }
+  auto compiled = compile(std::move(plan));
+  if (!compiled) {
+    return fail(compiled.error());
+  }
+  auto restored = std::make_shared<ExecutionPlan>(**compiled);
+  restored->plan_id = plan_id.clone();
+  return ok(std::shared_ptr<const ExecutionPlan>{std::move(restored)});
+}
+
 auto PlanCompiler::digest(const WorkflowPlan &plan) -> Result<std::string> {
   auto canonical = canonical_plan(plan);
   if (!canonical) {

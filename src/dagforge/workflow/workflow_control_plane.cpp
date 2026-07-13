@@ -377,6 +377,98 @@ auto WorkflowPlanLoader::from_toml(std::string_view text)
   return convert(std::move(*dto));
 }
 
+auto WorkflowPlanLoader::to_json(const WorkflowPlan &plan)
+    -> Result<std::string> {
+  JsonValue root = JsonValue::object_t{};
+  root["workflow_id"] = plan.workflow_id.str();
+  root["schema_version"] = static_cast<std::int64_t>(plan.schema_version);
+
+  JsonValue nodes = JsonValue::array_t{};
+  for (const auto &node : plan.nodes) {
+    auto encoded = serialize_json(node.command);
+    if (!encoded) {
+      return fail(encoded.error());
+    }
+    auto config = parse_json(*encoded);
+    if (!config) {
+      return fail(config.error());
+    }
+    JsonValue inputs = JsonValue::array_t{};
+    for (const auto &input : node.inputs) {
+      JsonValue binding = JsonValue::object_t{};
+      binding["input"] = input.input.str();
+      binding["node"] = input.source.node_id.str();
+      binding["port"] = input.source.port.str();
+      inputs.get_array().push_back(std::move(binding));
+    }
+    JsonValue outputs = JsonValue::array_t{};
+    for (const auto &output : node.outputs) {
+      outputs.get_array().push_back(output.str());
+    }
+    JsonValue serialized = JsonValue::object_t{};
+    serialized["id"] = node.node_id.str();
+    serialized["name"] = node.name;
+    serialized["config"] = std::move(*config);
+    serialized["inputs"] = std::move(inputs);
+    serialized["outputs"] = std::move(outputs);
+    serialized["max_retries"] =
+        static_cast<std::int64_t>(node.max_retries);
+    serialized["retry_initial_delay_ms"] =
+        static_cast<std::int64_t>(node.retry_initial_delay.count());
+    serialized["retry_max_delay_ms"] =
+        static_cast<std::int64_t>(node.retry_max_delay.count());
+    serialized["timeout_sec"] =
+        static_cast<std::int64_t>(node.timeout.count());
+    serialized["checkpoint"] = node.checkpoint;
+    nodes.get_array().push_back(std::move(serialized));
+  }
+  root["nodes"] = std::move(nodes);
+
+  JsonValue edges = JsonValue::array_t{};
+  for (const auto &edge : plan.edges) {
+    JsonValue condition = JsonValue::object_t{};
+    condition["kind"] =
+        std::string{to_string_view(edge.condition.kind)};
+    condition["expected_bool"] = edge.condition.expected_bool;
+    condition["expected_string"] = edge.condition.expected_string;
+
+    JsonValue serialized = JsonValue::object_t{};
+    serialized["source_node"] = edge.source.node_id.str();
+    serialized["source_port"] = edge.source.port.str();
+    serialized["target"] = edge.target.str();
+    serialized["condition"] = std::move(condition);
+    edges.get_array().push_back(std::move(serialized));
+  }
+  root["edges"] = std::move(edges);
+
+  JsonValue outputs = JsonValue::array_t{};
+  for (const auto &output : plan.outputs) {
+    JsonValue serialized = JsonValue::object_t{};
+    serialized["node"] = output.node_id.str();
+    serialized["port"] = output.port.str();
+    outputs.get_array().push_back(std::move(serialized));
+  }
+  root["outputs"] = std::move(outputs);
+  JsonValue budget = JsonValue::object_t{};
+  budget["max_nodes"] =
+      static_cast<std::int64_t>(plan.policy.budget.max_nodes);
+  budget["max_parallel_nodes"] =
+      static_cast<std::int64_t>(plan.policy.budget.max_parallel_nodes);
+  budget["max_total_output_bytes"] = static_cast<std::int64_t>(
+      plan.policy.budget.max_total_output_bytes);
+  budget["max_run_duration_sec"] = static_cast<std::int64_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          plan.policy.budget.max_run_duration)
+          .count());
+
+  JsonValue policy = JsonValue::object_t{};
+  policy["failure_policy"] =
+      std::string{to_string_view(plan.policy.failure_policy)};
+  policy["budget"] = std::move(budget);
+  root["policy"] = std::move(policy);
+  return serialize_json(root);
+}
+
 WorkflowControlPlane::WorkflowControlPlane() = default;
 
 WorkflowControlPlane::WorkflowControlPlane(PlanCompiler compiler,
@@ -400,6 +492,24 @@ auto WorkflowControlPlane::register_plan(WorkflowPlan plan)
     latest_by_workflow_[existing->second->workflow_id.str()] = existing->second;
     return ok(existing->second);
   }
+  plans_by_id_[(*compiled)->plan_id.str()] = *compiled;
+  plans_by_digest_[(*compiled)->digest] = *compiled;
+  latest_by_workflow_[(*compiled)->workflow_id.str()] = *compiled;
+  return ok(std::move(*compiled));
+}
+
+auto WorkflowControlPlane::restore_plan(WorkflowPlan plan,
+                                        const WorkflowPlanId &plan_id)
+    -> Result<std::shared_ptr<const ExecutionPlan>> {
+  auto admitted = admission_.validate(plan);
+  if (!admitted) {
+    return fail(admitted.error());
+  }
+  auto compiled = compiler_.compile(std::move(plan), plan_id);
+  if (!compiled) {
+    return fail(compiled.error());
+  }
+  std::lock_guard lock(mutex_);
   plans_by_id_[(*compiled)->plan_id.str()] = *compiled;
   plans_by_digest_[(*compiled)->digest] = *compiled;
   latest_by_workflow_[(*compiled)->workflow_id.str()] = *compiled;

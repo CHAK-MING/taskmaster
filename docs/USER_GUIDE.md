@@ -150,7 +150,23 @@ When an `allow_unlisted_*` field is false, the matching allowlist is exact.
 Admission also caps every plan budget. A syntactically valid plan can therefore
 be rejected with `unauthorized` or `resource exhausted` before registration.
 
-### 2.6 API
+### 2.6 Storage
+
+The default stores are in-memory. Enable file persistence explicitly:
+
+```toml
+[storage]
+enabled = true
+directory = "./state"
+```
+
+The directory contains atomic Run checkpoint files, an append-only Evidence
+log, and Artifact data plus metadata. Completed Runs and outputs are restored
+on startup. Non-terminal Runs cannot be reattached to an old sandbox process;
+they recover as failed with an infrastructure failure recorded on the active
+Attempt.
+
+### 2.7 API
 
 Set `api.enabled = true` to start the HTTP control plane. TLS requires both a
 certificate chain and private key path.

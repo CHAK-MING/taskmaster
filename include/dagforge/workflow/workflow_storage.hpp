@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -50,6 +51,21 @@ private:
   std::unordered_map<std::string, ArtifactBlob> artifacts_;
 };
 
+class FileArtifactStore final : public IArtifactStore {
+public:
+  explicit FileArtifactStore(std::filesystem::path directory);
+
+  [[nodiscard]] auto put(std::span<const std::byte> data,
+                         std::string media_type) -> Result<ArtifactRef> override;
+  [[nodiscard]] auto get(const ArtifactId &artifact_id) const
+      -> Result<ArtifactBlob> override;
+  auto erase(const ArtifactId &artifact_id) -> Result<void> override;
+
+private:
+  std::filesystem::path directory_;
+  mutable std::mutex mutex_;
+};
+
 struct EvidenceRecord {
   EvidenceId evidence_id;
   WorkflowRunId run_id;
@@ -65,23 +81,27 @@ struct EvidenceRecord {
 
 class EvidenceLedger {
 public:
+  EvidenceLedger() = default;
+  explicit EvidenceLedger(std::filesystem::path file);
+
   [[nodiscard]] auto append(EvidenceRecord record) -> Result<EvidenceId>;
   [[nodiscard]] auto records(const WorkflowRunId &run_id) const
       -> std::vector<EvidenceRecord>;
   [[nodiscard]] auto size() const -> std::size_t;
 
 private:
+  auto load_file() -> void;
+  auto append_file(const EvidenceRecord &record) -> Result<void>;
+
   mutable std::mutex mutex_;
   std::vector<EvidenceRecord> records_;
+  std::filesystem::path file_;
 };
 
 struct WorkflowCheckpoint {
-  WorkflowRunId run_id;
-  WorkflowPlanId plan_id;
-  RunState state{RunState::Running};
-  std::optional<StopIntent> stop_intent;
-  std::string stop_reason;
-  std::vector<TaskSnapshot> tasks;
+  WorkflowPlan plan;
+  TriggerEnvelope trigger;
+  RunSnapshot snapshot;
   std::vector<std::pair<OutputRef, WorkflowValue>> values;
   std::chrono::system_clock::time_point created_at{
       std::chrono::system_clock::now()};
@@ -89,14 +109,22 @@ struct WorkflowCheckpoint {
 
 class CheckpointStore {
 public:
+  CheckpointStore() = default;
+  explicit CheckpointStore(std::filesystem::path directory);
+
   auto save(WorkflowCheckpoint checkpoint) -> Result<void>;
   [[nodiscard]] auto load(const WorkflowRunId &run_id) const
       -> Result<WorkflowCheckpoint>;
   auto erase(const WorkflowRunId &run_id) -> Result<void>;
+  [[nodiscard]] auto list() const -> Result<std::vector<WorkflowCheckpoint>>;
 
 private:
+  [[nodiscard]] auto file_path(const WorkflowRunId &run_id) const
+      -> std::filesystem::path;
+
   mutable std::mutex mutex_;
   std::unordered_map<std::string, WorkflowCheckpoint> checkpoints_;
+  std::filesystem::path directory_;
 };
 
 } // namespace dagforge::workflow

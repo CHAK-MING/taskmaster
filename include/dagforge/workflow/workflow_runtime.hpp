@@ -57,6 +57,8 @@ public:
                            TriggerEnvelope trigger,
                            WorkflowCallbacks callbacks = {})
       -> Result<WorkflowRunId>;
+  auto restore(std::shared_ptr<const ExecutionPlan> plan,
+               WorkflowCheckpoint checkpoint) -> Result<void>;
 
   [[nodiscard]] auto snapshot(const WorkflowRunId &run_id) const
       -> task<Result<std::shared_ptr<const RunSnapshot>>>;

@@ -32,6 +32,10 @@ max_parallel_nodes = 32
 max_total_output_bytes = 67108864
 max_run_duration_sec = 3600
 
+[storage]
+enabled = false
+directory = "/var/lib/dagforge/state"
+
 [api]
 enabled = true
 host = "0.0.0.0"

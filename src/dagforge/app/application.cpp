@@ -7,6 +7,7 @@
 #include "dagforge/workflow/workflow_runtime.hpp"
 
 #include <algorithm>
+#include <filesystem>
 #include <memory>
 #include <thread>
 #include <utility>
@@ -67,13 +68,46 @@ auto Application::rebuild_components() -> Result<void> {
   }
 
   if (config_.workflow.enabled) {
+    std::shared_ptr<workflow::IArtifactStore> artifact_store;
+    std::shared_ptr<workflow::EvidenceLedger> evidence_ledger;
+    std::shared_ptr<workflow::CheckpointStore> checkpoint_store;
+    if (config_.storage.enabled) {
+      const auto root = std::filesystem::path(config_.storage.directory);
+      artifact_store =
+          std::make_shared<workflow::FileArtifactStore>(root / "artifacts");
+      evidence_ledger = std::make_shared<workflow::EvidenceLedger>(
+          root / "evidence.jsonl");
+      checkpoint_store =
+          std::make_shared<workflow::CheckpointStore>(root / "runs");
+    } else {
+      artifact_store = std::make_shared<workflow::InMemoryArtifactStore>();
+      evidence_ledger = std::make_shared<workflow::EvidenceLedger>();
+      checkpoint_store = std::make_shared<workflow::CheckpointStore>();
+    }
+
     workflow_control_plane_ = std::make_unique<workflow::WorkflowControlPlane>(
         workflow::PlanCompiler{},
         workflow::AdmissionPolicy{config_.admission});
     workflow_runtime_ = std::make_unique<workflow::WorkflowRuntime>(
-        *runtime_, *executor_, std::make_shared<workflow::InMemoryArtifactStore>(),
-        std::make_shared<workflow::EvidenceLedger>(),
-        std::make_shared<workflow::CheckpointStore>());
+        *runtime_, *executor_, std::move(artifact_store),
+        std::move(evidence_ledger), checkpoint_store);
+
+    auto checkpoints = checkpoint_store->list();
+    if (!checkpoints) {
+      return fail(checkpoints.error());
+    }
+    for (auto &checkpoint : *checkpoints) {
+      auto plan = workflow_control_plane_->restore_plan(
+          checkpoint.plan, checkpoint.snapshot.plan_id);
+      if (!plan) {
+        return fail(plan.error());
+      }
+      auto restored =
+          workflow_runtime_->restore(*plan, std::move(checkpoint));
+      if (!restored) {
+        return fail(restored.error());
+      }
+    }
   }
   if (config_.api.enabled) {
     api_ = std::make_unique<ApiServer>(*this);

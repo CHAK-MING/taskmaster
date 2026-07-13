@@ -22,6 +22,8 @@ public:
       -> Result<WorkflowPlan>;
   [[nodiscard]] static auto from_toml(std::string_view text)
       -> Result<WorkflowPlan>;
+  [[nodiscard]] static auto to_json(const WorkflowPlan &plan)
+      -> Result<std::string>;
 };
 
 class WorkflowControlPlane {
@@ -31,6 +33,9 @@ public:
                                 AdmissionPolicy admission = {});
 
   [[nodiscard]] auto register_plan(WorkflowPlan plan)
+      -> Result<std::shared_ptr<const ExecutionPlan>>;
+  [[nodiscard]] auto restore_plan(WorkflowPlan plan,
+                                  const WorkflowPlanId &plan_id)
       -> Result<std::shared_ptr<const ExecutionPlan>>;
   [[nodiscard]] auto get_latest(const WorkflowId &workflow_id) const
       -> Result<std::shared_ptr<const ExecutionPlan>>;

@@ -162,6 +162,20 @@ using RuntimeInputMap = std::unordered_map<
   return delay;
 }
 
+[[nodiscard]] auto source_plan(const ExecutionPlan &execution)
+    -> WorkflowPlan {
+  WorkflowPlan plan;
+  plan.workflow_id = execution.workflow_id.clone();
+  plan.nodes.reserve(execution.nodes.size());
+  for (const auto &compiled : execution.nodes) {
+    plan.nodes.push_back(compiled.plan);
+  }
+  plan.edges = execution.edges;
+  plan.outputs = execution.outputs;
+  plan.policy = execution.policy;
+  return plan;
+}
+
 [[nodiscard]] auto to_boost_error(std::error_code error)
     -> boost::system::error_code {
   return boost::system::error_code{error};
@@ -240,6 +254,62 @@ auto WorkflowRuntime::start(std::shared_ptr<const ExecutionPlan> plan,
                        std::move(callbacks));
       });
   return ok(std::move(run_id));
+}
+
+auto WorkflowRuntime::restore(std::shared_ptr<const ExecutionPlan> plan,
+                              WorkflowCheckpoint checkpoint) -> Result<void> {
+  if (runtime_.is_running() || !plan || checkpoint.snapshot.run_id.empty() ||
+      checkpoint.snapshot.plan_id != plan->plan_id ||
+      checkpoint.snapshot.workflow_id != plan->workflow_id) {
+    return fail(Error::InvalidState);
+  }
+
+  auto snapshot = std::move(checkpoint.snapshot);
+  if (!is_terminal(snapshot.state)) {
+    const auto now = std::chrono::system_clock::now();
+    constexpr std::string_view kRestartError =
+        "runtime restarted before workflow completion";
+    for (auto &task : snapshot.tasks) {
+      if (is_terminal(task.state)) {
+        continue;
+      }
+      if (task.active_attempt_id && !task.attempts.empty()) {
+        auto &attempt = task.attempts.back();
+        if (attempt.attempt_id == *task.active_attempt_id &&
+            !is_terminal(attempt.state)) {
+          attempt.state = AttemptState::Failed;
+          attempt.failure_class = FailureClass::Infrastructure;
+          attempt.termination_reason = TerminationReason::RunFailed;
+          attempt.error = kRestartError;
+          attempt.finished_at = now;
+        }
+      }
+      task.active_attempt_id.reset();
+      task.next_attempt_at.reset();
+      task.last_error = kRestartError;
+      task.state = TaskState::Failed;
+      task.finished_at = now;
+    }
+    snapshot.state = RunState::Failed;
+    snapshot.stop_intent = StopIntent::Fail;
+    snapshot.stop_reason = kRestartError;
+    snapshot.error = kRestartError;
+    snapshot.finished_at = now;
+    checkpoint.snapshot = snapshot;
+    (void)checkpoint_store_->save(checkpoint);
+  }
+
+  const auto owner = owner_shard(snapshot.run_id);
+  auto stored = std::make_shared<const RunSnapshot>(snapshot);
+  shard_states_[owner].completed_runs[snapshot.run_id.str()] = stored;
+  shard_states_[owner].completed_values[snapshot.run_id.str()] =
+      std::move(checkpoint.values);
+  if (!checkpoint.trigger.idempotency_key.empty()) {
+    std::lock_guard lock(idempotency_mutex_);
+    idempotency_runs_[checkpoint.trigger.idempotency_key] =
+        snapshot.run_id.clone();
+  }
+  return ok();
 }
 
 auto WorkflowRuntime::initialize_run(
@@ -747,7 +817,7 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
   append_evidence(run, task_index, EvidenceType::TaskCompleted);
 
   if (run.plan->nodes[task_index].plan.checkpoint) {
-    checkpoint(run);
+    append_evidence(run, task_index, EvidenceType::Checkpoint);
   }
   assert(invariants_hold(run));
   update_dependents(run_id, task_index);
@@ -1095,6 +1165,7 @@ auto WorkflowRuntime::emit_run_state(ActiveRun &run) -> void {
   if (run.callbacks.on_run_state) {
     run.callbacks.on_run_state(run.snapshot);
   }
+  checkpoint(run);
 }
 
 auto WorkflowRuntime::emit_task_state(ActiveRun &run,
@@ -1104,6 +1175,7 @@ auto WorkflowRuntime::emit_task_state(ActiveRun &run,
     run.callbacks.on_task_state(run.snapshot.run_id,
                                 run.tasks[task_index].snapshot);
   }
+  checkpoint(run);
 }
 
 auto WorkflowRuntime::append_evidence(const ActiveRun &run,
@@ -1127,18 +1199,13 @@ auto WorkflowRuntime::checkpoint(ActiveRun &run) -> void {
     return;
   }
   WorkflowCheckpoint checkpoint{
-      .run_id = run.snapshot.run_id.clone(),
-      .plan_id = run.snapshot.plan_id.clone(),
-      .state = run.snapshot.state,
-      .stop_intent = run.snapshot.stop_intent,
-      .stop_reason = run.snapshot.stop_reason,
-      .tasks = run.snapshot.tasks,
+      .plan = source_plan(*run.plan),
+      .trigger = run.trigger,
+      .snapshot = *make_snapshot(run),
       .values = std::move(*values),
       .created_at = std::chrono::system_clock::now(),
   };
-  if (checkpoint_store_->save(std::move(checkpoint))) {
-    append_evidence(run, run.tasks.size(), EvidenceType::Checkpoint);
-  }
+  (void)checkpoint_store_->save(std::move(checkpoint));
 }
 
 auto WorkflowRuntime::execute_command_node(WorkflowRunId run_id,

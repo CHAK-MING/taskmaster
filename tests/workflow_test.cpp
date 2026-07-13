@@ -11,6 +11,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <array>
 #include <deque>
 #include <filesystem>
 #include <format>
@@ -26,6 +27,12 @@ using namespace dagforge;
 using namespace dagforge::workflow;
 
 namespace {
+
+[[nodiscard]] auto temporary_test_directory(std::string_view name)
+    -> std::filesystem::path {
+  return std::filesystem::temp_directory_path() /
+         std::format("dagforge-{}-{}", name, ::getpid());
+}
 
 class NullExecutor final : public IExecutor {
 public:
@@ -1139,4 +1146,212 @@ TEST(WorkflowRuntimeTest, LargeCommandOutputIsExternalizedAsArtifact) {
   EXPECT_EQ(blob->data.size(), 300'000U);
 
   core.stop();
+}
+
+TEST(WorkflowStorageTest, FileArtifactStorePersistsAndVerifiesContent) {
+  const auto directory = temporary_test_directory("artifact-store");
+  std::error_code error;
+  std::filesystem::remove_all(directory, error);
+
+  const std::array<std::byte, 4> data{
+      std::byte{'D'}, std::byte{'A'}, std::byte{'G'}, std::byte{'F'}};
+  FileArtifactStore writer(directory);
+  auto stored = writer.put(data, "application/octet-stream");
+  ASSERT_TRUE(stored.has_value()) << stored.error().message();
+
+  FileArtifactStore reader(directory);
+  auto loaded = reader.get(stored->artifact_id);
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().message();
+  EXPECT_EQ(loaded->ref.digest, stored->digest);
+  EXPECT_EQ(loaded->ref.media_type, "application/octet-stream");
+  ASSERT_EQ(loaded->data.size(), data.size());
+  EXPECT_TRUE(std::ranges::equal(loaded->data, data));
+  EXPECT_TRUE(reader.erase(stored->artifact_id).has_value());
+
+  std::filesystem::remove_all(directory, error);
+}
+
+TEST(WorkflowStorageTest, EvidenceLedgerReloadsJsonLines) {
+  const auto directory = temporary_test_directory("evidence-ledger");
+  const auto file = directory / "evidence.jsonl";
+  std::error_code error;
+  std::filesystem::remove_all(directory, error);
+
+  const WorkflowRunId run_id{"evidence-run"};
+  {
+    EvidenceLedger writer(file);
+    EvidenceRecord record;
+    record.run_id = run_id.clone();
+    record.node_id = WorkflowNodeId{"command"};
+    record.type = EvidenceType::TaskCompleted;
+    record.actor.subject = "tester";
+    record.metadata = JsonValue::object_t{};
+    record.metadata["result"] = "ok";
+    ASSERT_TRUE(writer.append(std::move(record)).has_value());
+  }
+
+  EvidenceLedger reader(file);
+  auto records = reader.records(run_id);
+  ASSERT_EQ(records.size(), 1U);
+  EXPECT_EQ(records.front().node_id, WorkflowNodeId{"command"});
+  EXPECT_EQ(records.front().type, EvidenceType::TaskCompleted);
+  EXPECT_EQ(records.front().actor.subject, "tester");
+
+  std::filesystem::remove_all(directory, error);
+}
+
+TEST(WorkflowStorageTest, CheckpointStoreRoundTripsPlanStateAndValues) {
+  const auto directory = temporary_test_directory("checkpoint-store");
+  std::error_code error;
+  std::filesystem::remove_all(directory, error);
+
+  auto plan = base_plan("persisted-plan");
+  plan.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{.program = "/bin/echo",
+                                   .arguments = {"hello"}},
+      .outputs = {WorkflowPortId{"stdout"}},
+  });
+  auto compiled = PlanCompiler{}.compile(plan);
+  ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
+
+  WorkflowCheckpoint checkpoint{
+      .plan = plan,
+      .trigger = TriggerEnvelope{
+          .trigger_id = WorkflowTriggerId{"trigger"},
+          .workflow_id = WorkflowId{"persisted-plan"},
+          .source = "test",
+          .event_type = "request",
+          .payload = std::string{"payload"},
+      },
+      .snapshot = RunSnapshot{
+          .run_id = WorkflowRunId{"persisted-plan__run"},
+          .workflow_id = WorkflowId{"persisted-plan"},
+          .plan_id = (*compiled)->plan_id.clone(),
+          .state = RunState::Succeeded,
+          .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"command"},
+                                 .state = TaskState::Succeeded}},
+      },
+      .values = {{OutputRef{.node_id = WorkflowNodeId{"command"},
+                            .port = WorkflowPortId{"stdout"}},
+                  std::string{"hello"}}},
+  };
+
+  CheckpointStore writer(directory);
+  ASSERT_TRUE(writer.save(checkpoint).has_value());
+
+  CheckpointStore reader(directory);
+  auto loaded = reader.load(checkpoint.snapshot.run_id);
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().message();
+  EXPECT_EQ(loaded->plan.workflow_id, WorkflowId{"persisted-plan"});
+  EXPECT_EQ(loaded->snapshot.state, RunState::Succeeded);
+  ASSERT_EQ(loaded->values.size(), 1U);
+  EXPECT_EQ(std::get<std::string>(loaded->values.front().second), "hello");
+  auto listed = reader.list();
+  ASSERT_TRUE(listed.has_value());
+  EXPECT_EQ(listed->size(), 1U);
+
+  std::filesystem::remove_all(directory, error);
+}
+
+TEST(WorkflowRuntimeTest, RestartConvertsActiveAttemptToInfrastructureFailure) {
+  Runtime core(1, false, 0,
+               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  NullExecutor executor;
+  auto checkpoint_store = std::make_shared<CheckpointStore>();
+  WorkflowRuntime runtime(core, executor, {}, {}, checkpoint_store);
+
+  auto plan = base_plan("restart-active");
+  plan.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{.program = "/bin/true"},
+      .outputs = {WorkflowPortId{"result"}},
+  });
+  const WorkflowPlanId plan_id{"restored-plan"};
+  auto compiled = PlanCompiler{}.compile(plan, plan_id);
+  ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
+
+  WorkflowCheckpoint checkpoint{
+      .plan = plan,
+      .trigger = TriggerEnvelope{
+          .trigger_id = WorkflowTriggerId{"trigger"},
+          .workflow_id = WorkflowId{"restart-active"},
+          .source = "test",
+          .event_type = "request",
+      },
+      .snapshot = RunSnapshot{
+          .run_id = WorkflowRunId{"restart-active__run"},
+          .workflow_id = WorkflowId{"restart-active"},
+          .plan_id = plan_id.clone(),
+          .state = RunState::Running,
+          .tasks = {TaskSnapshot{
+              .node_id = WorkflowNodeId{"command"},
+              .state = TaskState::Running,
+              .attempt_count = 1,
+              .active_attempt_id = AttemptId{"attempt"},
+              .attempts = {AttemptSnapshot{
+                  .attempt_id = AttemptId{"attempt"},
+                  .number = 1,
+                  .state = AttemptState::Running,
+              }},
+          }},
+      },
+  };
+  ASSERT_TRUE(runtime.restore(*compiled, checkpoint).has_value());
+  ASSERT_TRUE(core.start().has_value());
+
+  auto restored = sync_wait_on_runtime(
+      core, runtime.snapshot(checkpoint.snapshot.run_id));
+  ASSERT_TRUE(restored.has_value()) << restored.error().message();
+  EXPECT_EQ((*restored)->state, RunState::Failed);
+  EXPECT_EQ((*restored)->tasks.front().state, TaskState::Failed);
+  ASSERT_EQ((*restored)->tasks.front().attempts.size(), 1U);
+  EXPECT_EQ((*restored)->tasks.front().attempts.front().failure_class,
+            FailureClass::Infrastructure);
+  EXPECT_EQ((*restored)->tasks.front().attempts.front().state,
+            AttemptState::Failed);
+  core.stop();
+}
+
+TEST(WorkflowRuntimeTest, PersistsAuthoritativeRunTransitions) {
+  const auto directory = temporary_test_directory("runtime-persistence");
+  std::error_code error;
+  std::filesystem::remove_all(directory, error);
+
+  Runtime core(1, false, 0,
+               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  ASSERT_TRUE(core.start().has_value());
+  ManualExecutor executor(core);
+  auto checkpoint_store = std::make_shared<CheckpointStore>(directory);
+  WorkflowRuntime runtime(core, executor, {}, {}, checkpoint_store);
+
+  auto plan = base_plan("persisted-runtime");
+  plan.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{.program = "/bin/true"},
+      .outputs = {WorkflowPortId{"stdout"}},
+  });
+  auto compiled = PlanCompiler{}.compile(std::move(plan));
+  ASSERT_TRUE(compiled.has_value());
+  auto started = runtime.start(
+      *compiled,
+      TriggerEnvelope{.workflow_id = WorkflowId{"persisted-runtime"},
+                      .source = "test",
+                      .event_type = "request"});
+  ASSERT_TRUE(started.has_value());
+  ASSERT_TRUE(executor.wait_for_pending(1));
+  ASSERT_TRUE(executor.complete_next(0, "persisted"));
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, *started, RunState::Succeeded).has_value());
+
+  CheckpointStore reader(directory);
+  auto persisted = reader.load(*started);
+  ASSERT_TRUE(persisted.has_value()) << persisted.error().message();
+  EXPECT_EQ(persisted->snapshot.state, RunState::Succeeded);
+  ASSERT_EQ(persisted->values.size(), 1U);
+  EXPECT_EQ(std::get<std::string>(persisted->values.front().second),
+            "persisted");
+
+  core.stop();
+  std::filesystem::remove_all(directory, error);
 }
