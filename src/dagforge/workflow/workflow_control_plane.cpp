@@ -19,18 +19,10 @@ struct BudgetDto {
   std::size_t max_nodes{256};
   std::size_t max_parallel_nodes{32};
   std::uint64_t max_total_output_bytes{64ULL * 1024ULL * 1024ULL};
-  std::uint64_t max_model_tokens{1'000'000};
   int max_run_duration_sec{3600};
 };
 
 struct PolicyDto {
-  bool allow_command{true};
-  bool allow_network{true};
-  bool allow_model_calls{true};
-  bool allow_tools{true};
-  std::vector<std::string> allowed_http_hosts;
-  std::vector<std::string> allowed_model_providers;
-  std::vector<std::string> allowed_tools;
   std::string failure_policy{"continue_independent"};
   BudgetDto budget;
 };
@@ -44,7 +36,6 @@ struct InputDto {
 struct NodeDto {
   std::string id;
   std::string name;
-  std::string type{"noop"};
   JsonValue config{JsonValue::object_t{}};
   std::vector<InputDto> inputs;
   std::vector<std::string> outputs;
@@ -90,18 +81,13 @@ template <> struct meta<dagforge::workflow::detail::BudgetDto> {
   static constexpr auto value = object(
       "max_nodes", &T::max_nodes, "max_parallel_nodes",
       &T::max_parallel_nodes, "max_total_output_bytes",
-      &T::max_total_output_bytes, "max_model_tokens", &T::max_model_tokens,
-      "max_run_duration_sec", &T::max_run_duration_sec);
+      &T::max_total_output_bytes, "max_run_duration_sec",
+      &T::max_run_duration_sec);
 };
 
 template <> struct meta<dagforge::workflow::detail::PolicyDto> {
   using T = dagforge::workflow::detail::PolicyDto;
   static constexpr auto value = object(
-      "allow_command", &T::allow_command, "allow_network", &T::allow_network,
-      "allow_model_calls", &T::allow_model_calls, "allow_tools",
-      &T::allow_tools, "allowed_http_hosts",
-      &T::allowed_http_hosts, "allowed_model_providers",
-      &T::allowed_model_providers, "allowed_tools", &T::allowed_tools,
       "failure_policy", &T::failure_policy, "budget", &T::budget);
 };
 
@@ -114,8 +100,8 @@ template <> struct meta<dagforge::workflow::detail::InputDto> {
 template <> struct meta<dagforge::workflow::detail::NodeDto> {
   using T = dagforge::workflow::detail::NodeDto;
   static constexpr auto value = object(
-      "id", &T::id, "name", &T::name, "type", &T::type, "config",
-      &T::config, "inputs", &T::inputs, "outputs", &T::outputs,
+      "id", &T::id, "name", &T::name, "config", &T::config, "inputs",
+      &T::inputs, "outputs", &T::outputs,
       "max_retries", &T::max_retries, "retry_initial_delay_ms",
       &T::retry_initial_delay_ms, "retry_max_delay_ms",
       &T::retry_max_delay_ms, "timeout_sec", &T::timeout_sec, "checkpoint",
@@ -244,66 +230,6 @@ template <typename T>
   return parse_json(*encoded);
 }
 
-[[nodiscard]] auto parse_empty_node_config(std::string_view text)
-    -> Result<JsonValue> {
-  std::size_t offset = 0;
-  while (offset < text.size()) {
-    const auto newline = text.find('\n', offset);
-    const auto length = newline == std::string_view::npos
-                            ? text.size() - offset
-                            : newline - offset;
-    const auto line = trim(text.substr(offset, length));
-    if (!line.empty() && !line.starts_with('#')) {
-      return fail(Error::ParseError);
-    }
-    if (newline == std::string_view::npos) {
-      break;
-    }
-    offset = newline + 1;
-  }
-  return ok(JsonValue{JsonValue::object_t{}});
-}
-
-[[nodiscard]] auto parse_toml_node_config(NodeType type,
-                                          std::string_view text)
-    -> Result<JsonValue> {
-  switch (type) {
-  case NodeType::Command:
-    return parse_typed_node_config<CommandNodeConfig>(text);
-  case NodeType::Http:
-    return parse_typed_node_config<HttpNodeConfig>(text);
-  case NodeType::Model:
-    return parse_typed_node_config<ModelNodeConfig>(text);
-  case NodeType::Tool:
-    return parse_typed_node_config<ToolNodeConfig>(text);
-  case NodeType::Compute:
-    return parse_typed_node_config<ComputeNodeConfig>(text);
-  case NodeType::Evaluator:
-    return parse_typed_node_config<EvaluatorNodeConfig>(text);
-  case NodeType::Noop:
-    return parse_empty_node_config(text);
-  }
-  return fail(Error::Unsupported);
-}
-
-[[nodiscard]] auto parse_node_type(std::string_view value) -> Result<NodeType> {
-  if (value == "command")
-    return ok(NodeType::Command);
-  if (value == "http")
-    return ok(NodeType::Http);
-  if (value == "model")
-    return ok(NodeType::Model);
-  if (value == "tool" || value == "mcp")
-    return ok(NodeType::Tool);
-  if (value == "compute")
-    return ok(NodeType::Compute);
-  if (value == "evaluator")
-    return ok(NodeType::Evaluator);
-  if (value == "noop")
-    return ok(NodeType::Noop);
-  return fail(Error::InvalidArgument);
-}
-
 [[nodiscard]] auto parse_condition(std::string_view value)
     -> Result<ConditionKind> {
   if (value == "always")
@@ -312,8 +238,6 @@ template <typename T>
     return ok(ConditionKind::BoolEquals);
   if (value == "string_equals")
     return ok(ConditionKind::StringEquals);
-  if (value == "evaluation_passed")
-    return ok(ConditionKind::EvaluationPassed);
   return fail(Error::InvalidArgument);
 }
 
@@ -340,21 +264,12 @@ template <typename T>
   plan.workflow_id = WorkflowId{std::move(dto.workflow_id)};
   plan.schema_version = dto.schema_version;
   plan.policy = WorkflowPolicy{
-      .allow_command = dto.policy.allow_command,
-      .allow_network = dto.policy.allow_network,
-      .allow_model_calls = dto.policy.allow_model_calls,
-      .allow_tools = dto.policy.allow_tools,
-      .allowed_http_hosts = std::move(dto.policy.allowed_http_hosts),
-      .allowed_model_providers =
-          std::move(dto.policy.allowed_model_providers),
-      .allowed_tools = std::move(dto.policy.allowed_tools),
       .failure_policy = *failure_policy,
       .budget = ResourceBudget{
           .max_nodes = dto.policy.budget.max_nodes,
           .max_parallel_nodes = dto.policy.budget.max_parallel_nodes,
           .max_total_output_bytes =
               dto.policy.budget.max_total_output_bytes,
-          .max_model_tokens = dto.policy.budget.max_model_tokens,
           .max_run_duration =
               std::chrono::seconds(dto.policy.budget.max_run_duration_sec),
       },
@@ -362,17 +277,16 @@ template <typename T>
 
   plan.nodes.reserve(dto.nodes.size());
   for (auto &source : dto.nodes) {
-    auto type = parse_node_type(source.type);
-    if (!type || source.id.empty() || source.timeout_sec <= 0 ||
+    auto command = parse_json_as<CommandNodeConfig>(dump_json(source.config));
+    if (!command || source.id.empty() || source.timeout_sec <= 0 ||
         source.retry_initial_delay_ms < 0 || source.retry_max_delay_ms < 0 ||
         source.retry_max_delay_ms < source.retry_initial_delay_ms) {
-      return fail(type ? Error::InvalidArgument : type.error());
+      return fail(command ? Error::InvalidArgument : command.error());
     }
     NodePlan node{
         .node_id = WorkflowNodeId{std::move(source.id)},
         .name = std::move(source.name),
-        .type = *type,
-        .config = std::move(source.config),
+        .command = std::move(*command),
         .max_retries = source.max_retries,
         .retry_initial_delay =
             std::chrono::milliseconds(source.retry_initial_delay_ms),
@@ -453,12 +367,8 @@ auto WorkflowPlanLoader::from_toml(std::string_view text)
     return fail(Error::ParseError);
   }
   for (std::size_t index = 0; index < dto->nodes.size(); ++index) {
-    auto type = parse_node_type(dto->nodes[index].type);
-    if (!type) {
-      return fail(type.error());
-    }
-    auto config =
-        parse_toml_node_config(*type, extracted->node_configs[index]);
+    auto config = parse_typed_node_config<CommandNodeConfig>(
+        extracted->node_configs[index]);
     if (!config) {
       return fail(config.error());
     }

@@ -82,41 +82,6 @@ inline auto add_timestamp(
                       {"media_type", typed.media_type},
                       {"size_bytes", typed.size_bytes},
                       {"digest", typed.digest}};
-        } else if constexpr (std::same_as<T, workflow::EvaluationResult>) {
-          return json{{"type", "evaluation"},
-                      {"passed", typed.passed},
-                      {"score", typed.score},
-                      {"reason", typed.reason},
-                      {"evidence", typed.evidence}};
-        } else if constexpr (std::same_as<T, workflow::ToolResult>) {
-          return json{{"type", "tool_result"},
-                      {"name", typed.name},
-                      {"success", typed.success},
-                      {"output", typed.output},
-                      {"error", typed.error}};
-        } else if constexpr (std::same_as<T, workflow::ModelResponse>) {
-          json tool_calls = json::array_t{};
-          for (const auto &call : typed.tool_calls) {
-            tool_calls.get_array().push_back(
-                json{{"name", call.name}, {"arguments", call.arguments}});
-          }
-          json out{{"type", "model_response"},
-                   {"text", typed.message.content},
-                   {"provider_request_id", typed.provider_request_id},
-                   {"input_tokens", typed.usage.input_tokens},
-                   {"output_tokens", typed.usage.output_tokens},
-                   {"tool_calls", std::move(tool_calls)}};
-          if (typed.structured_output) {
-            out["structured_output"] = *typed.structured_output;
-          }
-          return out;
-        } else if constexpr (std::same_as<T, workflow::MessageList>) {
-          json messages = json::array_t{};
-          for (const auto &message : typed) {
-            messages.get_array().push_back(
-                json{{"role", message.role}, {"content", message.content}});
-          }
-          return messages;
         }
         return JsonValue{nullptr};
       },

@@ -131,8 +131,8 @@ Returns a typed output value:
 {"value":true}
 ```
 
-Artifact, evaluation, tool-result, model-response, and message-list values are
-encoded as structured JSON objects.
+Primitive values and JSON are returned directly. Externalized values are
+encoded as Artifact reference objects.
 
 ### `GET /api/v1/workflow-runs/{run_id}/evidence`
 

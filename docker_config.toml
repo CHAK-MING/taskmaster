@@ -22,14 +22,6 @@ max_open_files = 256
 [workflow]
 enabled = true
 
-[[workflow.model_providers]]
-name = "openai"
-base_url = "https://api.openai.com"
-responses_path = "/v1/responses"
-api_key_env = "OPENAI_API_KEY"
-timeout_sec = 120
-max_response_bytes = 16777216
-
 [api]
 enabled = true
 host = "0.0.0.0"

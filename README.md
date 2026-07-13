@@ -69,8 +69,8 @@ Upstream application / workflow author
                  |
                  v
            Workflow Runtime
-        /          |           \
- CommandExecutor  ComputePool  Adapters
+        /                     \
+ CommandExecutor             ComputePool
         |
         v
   Minijail Sandbox
@@ -87,19 +87,15 @@ state transitions, scheduling, output propagation, and execution cleanup.
 Every command uses an absolute program path and an explicit argument vector;
 the runtime never inserts an implicit shell.
 
-The current Workflow Plan also exposes runtime operators and adapters:
+Every Workflow Plan node is a sandboxed command task. Upstream values are only
+made visible to a command through explicit input bindings and `input_env`
+mappings. HTTP calls, model inference, MCP tools, evaluation, and other domain
+logic run as ordinary programs chosen by the upper layer; the C++ runtime does
+not encode those protocols as node types.
 
-| Type | Role |
-| --- | --- |
-| `command` | Runs an external program inside the mandatory sandbox |
-| `http` | Calls an HTTP endpoint through the runtime HTTP adapter |
-| `model` | Calls a configured model provider |
-| `tool` | Calls a configured MCP tool |
-| `compute` | Runs a bounded built-in operation on the ComputePool |
-| `evaluator` | Produces a structured evaluation result |
-| `noop` | Provides a lightweight connectivity and test node |
-
-These types are workflow semantics, not separate process executors.
+`ComputePool` remains an internal runtime facility. It is not a Workflow Plan
+operator and is selected by runtime implementation code when CPU work needs to
+leave an owner shard.
 
 ---
 
@@ -193,11 +189,12 @@ schema_version = 1
 
 [[nodes]]
 id = "start"
-type = "noop"
-outputs = ["result"]
+outputs = ["stdout", "stderr", "exit_code", "result"]
 timeout_sec = 30
 
 [nodes.config]
+program = "/bin/echo"
+arguments = ["hello from DAGForge"]
 ```
 
 Sandboxed command example:
@@ -205,7 +202,6 @@ Sandboxed command example:
 ```toml
 [[nodes]]
 id = "render"
-type = "command"
 outputs = ["stdout", "stderr", "exit_code", "result"]
 timeout_sec = 30
 
@@ -213,6 +209,17 @@ timeout_sec = 30
 program = "/usr/bin/python3"
 arguments = ["-c", "print('hello from the sandbox')"]
 env = [{ key = "MODE", value = "test" }]
+```
+
+An upstream output can be injected into the environment explicitly:
+
+```toml
+inputs = [{ input = "payload", source_node = "prepare", source_port = "result" }]
+
+[nodes.config]
+program = "/usr/bin/python3"
+arguments = ["/workspace/consume.py"]
+input_env = [{ input = "payload", environment = "DAGFORGE_INPUT" }]
 ```
 
 See [`dags/hello_world.toml`](dags/hello_world.toml) and

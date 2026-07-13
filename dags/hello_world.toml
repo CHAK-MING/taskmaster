@@ -4,8 +4,9 @@ schema_version = 1
 [[nodes]]
 id = "start"
 name = "Start"
-type = "noop"
-outputs = ["result"]
+outputs = ["stdout", "stderr", "exit_code", "result"]
 timeout_sec = 30
 
 [nodes.config]
+program = "/bin/echo"
+arguments = ["hello from DAGForge"]

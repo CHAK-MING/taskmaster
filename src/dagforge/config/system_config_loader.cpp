@@ -1,14 +1,12 @@
 #include "dagforge/config/system_config_loader.hpp"
 #include "dagforge/config/toml_util.hpp"
 #include "dagforge/util/log.hpp"
-#include "dagforge/util/url.hpp"
 
 
 #include <boost/lexical_cast.hpp>
 #include <cstdlib>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 
 
 namespace dagforge {
@@ -34,28 +32,9 @@ template <> struct meta<dagforge::ComputeConfig> {
       "cpu_affinity_offset", &T::cpu_affinity_offset);
 };
 
-template <> struct meta<dagforge::ModelProviderConfig> {
-  using T = dagforge::ModelProviderConfig;
-  static constexpr auto value = object(
-      "name", &T::name, "base_url", &T::base_url, "responses_path",
-      &T::responses_path, "api_key_env", &T::api_key_env, "timeout_sec",
-      &T::timeout_sec, "max_response_bytes", &T::max_response_bytes);
-};
-
-template <> struct meta<dagforge::McpServerConfig> {
-  using T = dagforge::McpServerConfig;
-  static constexpr auto value = object(
-      "name", &T::name, "url", &T::url, "bearer_token_env",
-      &T::bearer_token_env, "protocol_version", &T::protocol_version,
-      "timeout_sec", &T::timeout_sec, "max_response_bytes",
-      &T::max_response_bytes);
-};
-
 template <> struct meta<dagforge::WorkflowConfig> {
   using T = dagforge::WorkflowConfig;
-  static constexpr auto value = object(
-      "enabled", &T::enabled, "model_providers", &T::model_providers,
-      "mcp_servers", &T::mcp_servers);
+  static constexpr auto value = object("enabled", &T::enabled);
 };
 
 template <> struct meta<dagforge::RuntimeConfig> {
@@ -128,9 +107,6 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
   cfg.runtime = std::move(raw.runtime);
   cfg.sandbox = std::move(raw.sandbox);
   cfg.api = std::move(raw.api);
-  if (cfg.workflow.model_providers.empty()) {
-    cfg.workflow.model_providers.emplace_back();
-  }
 
   apply_env_override("DAGFORGE_API_PORT", cfg.api.port);
   apply_env_override("DAGFORGE_API_HOST", cfg.api.host);
@@ -170,26 +146,6 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
                      cfg.sandbox.max_processes);
   apply_env_override("DAGFORGE_SANDBOX_MAX_OPEN_FILES",
                      cfg.sandbox.max_open_files);
-
-  std::unordered_set<std::string> provider_names;
-  for (const auto &provider : cfg.workflow.model_providers) {
-    if (provider.name.empty() || provider.base_url.empty() ||
-        provider.responses_path.empty() || provider.timeout_sec <= 0 ||
-        provider.max_response_bytes == 0 ||
-        !provider_names.emplace(provider.name).second ||
-        !util::parse_http_url(provider.base_url)) {
-      return fail(Error::ParseError);
-    }
-  }
-  std::unordered_set<std::string> server_names;
-  for (const auto &server : cfg.workflow.mcp_servers) {
-    if (server.name.empty() || server.url.empty() || server.timeout_sec <= 0 ||
-        server.max_response_bytes == 0 ||
-        !server_names.emplace(server.name).second ||
-        !util::parse_http_url(server.url)) {
-      return fail(Error::ParseError);
-    }
-  }
 
   if (cfg.compute.threads < 0 || cfg.compute.queue_capacity <= 0 ||
       cfg.compute.cpu_affinity_offset < 0 ||

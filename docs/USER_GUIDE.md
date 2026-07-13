@@ -59,14 +59,6 @@ max_open_files = 256
 [workflow]
 enabled = true
 
-[[workflow.model_providers]]
-name = "openai"
-base_url = "https://api.openai.com"
-responses_path = "/v1/responses"
-api_key_env = "OPENAI_API_KEY"
-timeout_sec = 120
-max_response_bytes = 16777216
-
 [api]
 enabled = false
 host = "127.0.0.1"
@@ -93,8 +85,8 @@ Environment overrides:
 
 ### 2.2 Compute pool
 
-The compute pool is separate from I/O shards and is used by Compute and
-Evaluator nodes.
+The compute pool is separate from I/O shards. It is an internal runtime
+facility and is not exposed as a Workflow Plan node type.
 
 - `threads = 0` selects an automatic thread count.
 - `queue_capacity` is a hard bound on pending compute work.
@@ -134,25 +126,9 @@ sandbox mounts a private tmpfs over `/tmp`. Environment overrides are:
 - `DAGFORGE_SANDBOX_MAX_PROCESSES`
 - `DAGFORGE_SANDBOX_MAX_OPEN_FILES`
 
-### 2.4 Workflow adapters
+### 2.4 Workflow runtime
 
 `workflow.enabled` creates the workflow control plane and runtime.
-
-Model providers use environment variables for credentials. The current plan
-field names the environment variable directly; the secret value itself is never
-embedded in the plan. Server-managed credential aliases are a later milestone.
-
-MCP servers are configured with repeated `workflow.mcp_servers` tables:
-
-```toml
-[[workflow.mcp_servers]]
-name = "tools"
-url = "http://127.0.0.1:9000/mcp"
-bearer_token_env = "MCP_TOKEN"
-protocol_version = "2025-06-18"
-timeout_sec = 120
-max_response_bytes = 16777216
-```
 
 ### 2.5 API
 
@@ -180,8 +156,7 @@ schema_version = 1
 [[nodes]]
 id = "start"
 name = "Start"
-type = "noop"
-outputs = ["result"]
+outputs = ["stdout", "stderr", "exit_code", "result"]
 max_retries = 0
 retry_initial_delay_ms = 1000
 retry_max_delay_ms = 30000
@@ -189,14 +164,15 @@ timeout_sec = 30
 checkpoint = false
 
 [nodes.config]
+program = "/bin/echo"
+arguments = ["hello from DAGForge"]
 ```
 
 ### 3.1 Node fields
 
 - `id`: unique within the workflow.
 - `name`: optional display name.
-- `type`: executor or runtime node type.
-- `config`: type-specific strict configuration object.
+- `config`: strict sandboxed command configuration.
 - `inputs`: named bindings to an upstream node output.
 - `outputs`: output port names. The default is `result`.
 - `max_retries`: retries after the first attempt.
@@ -214,13 +190,7 @@ node = "upstream"
 port = "result"
 ```
 
-### 3.2 Node types
-
-#### Noop
-
-Returns `true` without inputs, or forwards the first bound input.
-
-#### Command
+### 3.2 Command configuration
 
 ```toml
 [nodes.config]
@@ -234,53 +204,24 @@ there is no implicit shell. Use `/bin/sh` explicitly when shell syntax is
 required. `PATH`, `HOME`, and `TMPDIR` are runtime-owned and cannot be
 overridden by the node.
 
-#### HTTP
+Inputs are not injected automatically. Map selected inputs to environment
+variables explicitly:
 
 ```toml
+[[nodes.inputs]]
+input = "payload"
+node = "prepare"
+port = "result"
+
 [nodes.config]
-url = "https://example.com/data"
-method = "GET"
-headers = []
-body = ""
-body_input = ""
-expected_status = 200
+program = "/usr/bin/python3"
+arguments = ["/workspace/consume.py"]
+input_env = [{ input = "payload", environment = "DAGFORGE_INPUT" }]
 ```
 
-#### Model
-
-```toml
-[nodes.config]
-provider = "openai"
-model = "gpt-5"
-system_prompt = "Return valid JSON."
-prompt = "Process: "
-prompt_input = "$trigger"
-credential = { name = "OPENAI_API_KEY" }
-max_output_tokens = 4096
-temperature = 0.0
-```
-
-#### Tool
-
-Tool names use `server/tool` when multiple MCP servers are configured.
-
-```toml
-[nodes.config]
-tool = "tools/search"
-arguments = { query = "dag runtime" }
-arguments_input = ""
-credential = { name = "MCP_TOKEN" }
-```
-
-#### Compute
-
-Supported operations are `identity`, `concat`, `sha256`, `json_parse`, and
-`json_stringify`.
-
-#### Evaluator
-
-Supported operations are `truthy`, `equals`, `contains`, and
-`score_at_least`.
+HTTP calls, model inference, MCP tools, evaluation, and data transformation
+are implemented by ordinary programs selected by the upper layer. They are
+not C++ runtime node types.
 
 ### 3.3 Conditional edges
 
@@ -302,31 +243,19 @@ Supported condition kinds:
 - `always`
 - `bool_equals`
 - `string_equals`
-- `evaluation_passed`
 
 ### 3.4 Policy and budgets
 
 ```toml
 [policy]
-allow_command = false
-allow_network = true
-allow_model_calls = true
-allow_tools = true
-allowed_http_hosts = []
-allowed_model_providers = []
-allowed_tools = []
 failure_policy = "continue_independent"
 
 [policy.budget]
 max_nodes = 256
 max_parallel_nodes = 32
 max_total_output_bytes = 67108864
-max_model_tokens = 1000000
 max_run_duration_sec = 3600
 ```
-
-The current plan policy is validated by the compiler. Server-side admission
-policy separation is a later 0.4 milestone.
 
 `failure_policy` accepts:
 

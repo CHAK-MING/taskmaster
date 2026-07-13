@@ -75,8 +75,7 @@ host = "0.0.0.0"
   EXPECT_EQ(result->compute.queue_capacity, 256);
   EXPECT_TRUE(result->compute.pin_threads_to_cores);
   EXPECT_EQ(result->compute.cpu_affinity_offset, 2);
-  ASSERT_EQ(result->workflow.model_providers.size(), 1U);
-  EXPECT_EQ(result->workflow.model_providers.front().name, "openai");
+  EXPECT_TRUE(result->workflow.enabled);
   EXPECT_EQ(result->runtime.shards, 2);
   EXPECT_TRUE(result->runtime.pin_shards_to_cores);
   EXPECT_EQ(result->runtime.cpu_affinity_offset, 1);

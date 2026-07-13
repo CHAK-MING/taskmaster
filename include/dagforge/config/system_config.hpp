@@ -1,10 +1,8 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include <cstddef>
 #include <cstdint>
 #include <string>
-#include <vector>
 #endif
 
 namespace dagforge {
@@ -41,32 +39,8 @@ struct SandboxConfig {
   auto operator==(const SandboxConfig &) const -> bool = default;
 };
 
-struct ModelProviderConfig {
-  std::string name{"openai"};
-  std::string base_url{"https://api.openai.com"};
-  std::string responses_path{"/v1/responses"};
-  std::string api_key_env{"OPENAI_API_KEY"};
-  int timeout_sec{120};
-  std::size_t max_response_bytes{16UL * 1024UL * 1024UL};
-
-  auto operator==(const ModelProviderConfig &) const -> bool = default;
-};
-
-struct McpServerConfig {
-  std::string name;
-  std::string url;
-  std::string bearer_token_env;
-  std::string protocol_version{"2025-06-18"};
-  int timeout_sec{120};
-  std::size_t max_response_bytes{16UL * 1024UL * 1024UL};
-
-  auto operator==(const McpServerConfig &) const -> bool = default;
-};
-
 struct WorkflowConfig {
   bool enabled{true};
-  std::vector<ModelProviderConfig> model_providers;
-  std::vector<McpServerConfig> mcp_servers;
 
   auto operator==(const WorkflowConfig &) const -> bool = default;
 };

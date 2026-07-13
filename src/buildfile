@@ -31,7 +31,6 @@ lib{dagforge}:                                                   \
       dagforge/workflow/workflow_storage                          \
       dagforge/workflow/run_value_store                           \
       dagforge/workflow/workflow_runtime                          \
-      dagforge/workflow/workflow_adapters                         \
       dagforge/workflow/workflow_control_plane                    \
       dagforge/io/context                                         \
       dagforge/io/timing_wheel                                    \

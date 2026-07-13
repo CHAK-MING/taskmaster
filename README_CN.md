@@ -58,9 +58,8 @@ DAGForge 负责校验、编译、调度、执行、暂停、恢复、取消和�
           |
           v
     Workflow Runtime
-   /        |          \
-Command  ComputePool  Adapter
-Executor
+   /                  \
+CommandExecutor      ComputePool
    |
    v
 Minijail Sandbox
@@ -76,19 +75,13 @@ Workflow Plan 描述执行意图；运行时负责确定性的校验、状态转
 `CommandExecutor` 是唯一会启动外部进程的执行器。Command 必须使用绝对程序
 路径和显式参数数组，运行时不会隐式插入 Shell。
 
-当前 Workflow Plan 还提供以下运行时算子和适配器：
+Workflow Plan 中的每个节点都是沙箱命令任务。上游值只有通过显式输入绑定和
+`input_env` 映射，才会进入命令环境。HTTP 调用、模型推理、MCP Tool、评估和
+其他领域逻辑都由上层选择普通程序实现，C++ 运行时不再把这些协议编码成节点
+类型。
 
-| 类型 | 用途 |
-| --- | --- |
-| `command` | 在强制沙箱中执行外部程序 |
-| `http` | 通过运行时 HTTP 适配器调用服务 |
-| `model` | 调用配置的模型 Provider |
-| `tool` | 调用配置的 MCP Tool |
-| `compute` | 在有界 ComputePool 中执行内置操作 |
-| `evaluator` | 生成结构化评估结果 |
-| `noop` | 用于流程连通、占位和测试 |
-
-这些类型是 Workflow 语义，不是独立的进程执行器。
+`ComputePool` 仍是运行时内部设施，不是 Workflow Plan 算子。Owner Shard
+需要卸载 CPU 工作时，由运行时实现自动选择它。
 
 ---
 
@@ -180,11 +173,12 @@ schema_version = 1
 
 [[nodes]]
 id = "start"
-type = "noop"
-outputs = ["result"]
+outputs = ["stdout", "stderr", "exit_code", "result"]
 timeout_sec = 30
 
 [nodes.config]
+program = "/bin/echo"
+arguments = ["hello from DAGForge"]
 ```
 
 沙箱 Command 示例：
@@ -192,7 +186,6 @@ timeout_sec = 30
 ```toml
 [[nodes]]
 id = "render"
-type = "command"
 outputs = ["stdout", "stderr", "exit_code", "result"]
 timeout_sec = 30
 
@@ -200,6 +193,17 @@ timeout_sec = 30
 program = "/usr/bin/python3"
 arguments = ["-c", "print('hello from the sandbox')"]
 env = [{ key = "MODE", value = "test" }]
+```
+
+上游输出必须显式映射到环境变量：
+
+```toml
+inputs = [{ input = "payload", source_node = "prepare", source_port = "result" }]
+
+[nodes.config]
+program = "/usr/bin/python3"
+arguments = ["/workspace/consume.py"]
+input_env = [{ input = "payload", environment = "DAGFORGE_INPUT" }]
 ```
 
 完整约定见 [`dags/hello_world.toml`](dags/hello_world.toml) 和

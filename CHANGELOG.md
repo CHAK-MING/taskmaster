@@ -5,6 +5,9 @@ All notable changes to DAGForge will be documented in this file.
 ## [Unreleased]
 
 ### Breaking Changes
+- Collapsed Workflow Plan nodes to one sandboxed command contract. Removed the
+  HTTP, Model, Tool, Compute, Evaluator, and Noop node variants, AI/MCP runtime
+  adapters, and plan-owned capability allowlists.
 - Replaced the flat run/node lifecycle with explicit Run, Task, and Attempt
   state machines. Cancellation and fail-fast now remain `stopping` until every
   active attempt is reaped.

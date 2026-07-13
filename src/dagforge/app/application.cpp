@@ -3,7 +3,6 @@
 #include "dagforge/app/api/api_server.hpp"
 #include "dagforge/config/system_config_loader.hpp"
 #include "dagforge/executor/executor.hpp"
-#include "dagforge/workflow/workflow_adapters.hpp"
 #include "dagforge/workflow/workflow_control_plane.hpp"
 #include "dagforge/workflow/workflow_runtime.hpp"
 
@@ -73,8 +72,7 @@ auto Application::rebuild_components() -> Result<void> {
     workflow_runtime_ = std::make_unique<workflow::WorkflowRuntime>(
         *runtime_, *executor_, std::make_shared<workflow::InMemoryArtifactStore>(),
         std::make_shared<workflow::EvidenceLedger>(),
-        std::make_shared<workflow::CheckpointStore>(),
-        workflow::make_default_workflow_adapters(config_.workflow));
+        std::make_shared<workflow::CheckpointStore>());
   }
   if (config_.api.enabled) {
     api_ = std::make_unique<ApiServer>(*this);

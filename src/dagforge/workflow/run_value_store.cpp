@@ -32,32 +32,9 @@ namespace {
           return typed.size();
         } else if constexpr (std::same_as<T, JsonValue>) {
           return dump_json(typed).size();
-        } else if constexpr (std::same_as<T, MessageList>) {
-          std::uint64_t size = 0;
-          for (const auto &message : typed) {
-            size += message.role.size() + message.content.size();
-          }
-          return size;
-        } else if constexpr (std::same_as<T, ToolResult>) {
-          return typed.name.size() + typed.error.size() +
-                 dump_json(typed.output).size();
         } else if constexpr (std::same_as<T, ArtifactRef>) {
           return typed.artifact_id.size() + typed.media_type.size() +
                  typed.digest.size();
-        } else if constexpr (std::same_as<T, ModelResponse>) {
-          std::uint64_t size = typed.message.role.size() +
-                               typed.message.content.size() +
-                               typed.provider_request_id.size();
-          if (typed.structured_output) {
-            size += dump_json(*typed.structured_output).size();
-          }
-          for (const auto &call : typed.tool_calls) {
-            size += call.name.size() + dump_json(call.arguments).size();
-          }
-          return size;
-        } else if constexpr (std::same_as<T, EvaluationResult>) {
-          return typed.reason.size() + dump_json(typed.evidence).size() +
-                 sizeof(typed.score) + sizeof(typed.passed);
         }
         return 0;
       },

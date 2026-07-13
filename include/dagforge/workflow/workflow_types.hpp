@@ -15,16 +15,6 @@
 
 namespace dagforge::workflow {
 
-enum class NodeType : std::uint8_t {
-  Command,
-  Http,
-  Model,
-  Tool,
-  Compute,
-  Evaluator,
-  Noop,
-};
-
 enum class RunState : std::uint8_t {
   Running,
   Pausing,
@@ -92,7 +82,6 @@ enum class ConditionKind : std::uint8_t {
   Always,
   BoolEquals,
   StringEquals,
-  EvaluationPassed,
 };
 
 enum class EvidenceType : std::uint8_t {
@@ -103,11 +92,6 @@ enum class EvidenceType : std::uint8_t {
   TaskStarted,
   TaskCompleted,
   TaskFailed,
-  ModelRequest,
-  ModelResponse,
-  ToolRequest,
-  ToolResponse,
-  Evaluation,
   RunPauseRequested,
   RunPaused,
   RunResumed,
@@ -130,8 +114,21 @@ struct TraceContext {
   std::string parent_span_id;
 };
 
-struct CredentialRef {
-  std::string name;
+struct KeyValue {
+  std::string key;
+  std::string value;
+};
+
+struct InputEnvironmentBinding {
+  std::string input;
+  std::string environment;
+};
+
+struct CommandNodeConfig {
+  std::string program;
+  std::vector<std::string> arguments;
+  std::vector<KeyValue> env;
+  std::vector<InputEnvironmentBinding> input_env;
 };
 
 struct ArtifactRef {
@@ -141,49 +138,9 @@ struct ArtifactRef {
   std::string digest;
 };
 
-struct Message {
-  std::string role;
-  std::string content;
-};
-
-using MessageList = std::vector<Message>;
-
-struct ToolCall {
-  std::string name;
-  JsonValue arguments;
-};
-
-struct ToolResult {
-  std::string name;
-  bool success{false};
-  JsonValue output;
-  std::string error;
-};
-
-struct ModelUsage {
-  std::uint64_t input_tokens{0};
-  std::uint64_t output_tokens{0};
-};
-
-struct ModelResponse {
-  Message message;
-  std::vector<ToolCall> tool_calls;
-  std::optional<JsonValue> structured_output;
-  ModelUsage usage;
-  std::string provider_request_id;
-};
-
-struct EvaluationResult {
-  bool passed{false};
-  double score{0.0};
-  std::string reason;
-  JsonValue evidence;
-};
-
 using WorkflowValue =
     std::variant<std::monostate, bool, std::int64_t, double, std::string,
-                 JsonValue, MessageList, ToolResult, ArtifactRef, ModelResponse,
-                 EvaluationResult>;
+                 JsonValue, ArtifactRef>;
 
 struct OutputRef {
   WorkflowNodeId node_id;
@@ -213,18 +170,10 @@ struct ResourceBudget {
   std::size_t max_nodes{256};
   std::size_t max_parallel_nodes{32};
   std::uint64_t max_total_output_bytes{64ULL * 1024ULL * 1024ULL};
-  std::uint64_t max_model_tokens{1'000'000};
   std::chrono::milliseconds max_run_duration{std::chrono::hours(1)};
 };
 
 struct WorkflowPolicy {
-  bool allow_command{true};
-  bool allow_network{true};
-  bool allow_model_calls{true};
-  bool allow_tools{true};
-  std::vector<std::string> allowed_http_hosts;
-  std::vector<std::string> allowed_model_providers;
-  std::vector<std::string> allowed_tools;
   FailurePolicy failure_policy{FailurePolicy::ContinueIndependent};
   ResourceBudget budget;
 };
@@ -232,8 +181,7 @@ struct WorkflowPolicy {
 struct NodePlan {
   WorkflowNodeId node_id;
   std::string name;
-  NodeType type{NodeType::Noop};
-  JsonValue config;
+  CommandNodeConfig command;
   std::vector<InputBinding> inputs;
   std::vector<WorkflowPortId> outputs;
   int max_retries{0};
@@ -322,27 +270,6 @@ struct RunSnapshot {
   std::chrono::system_clock::time_point finished_at{};
   std::string error;
 };
-
-[[nodiscard]] constexpr auto to_string_view(NodeType value) noexcept
-    -> std::string_view {
-  switch (value) {
-  case NodeType::Command:
-    return "command";
-  case NodeType::Http:
-    return "http";
-  case NodeType::Model:
-    return "model";
-  case NodeType::Tool:
-    return "tool";
-  case NodeType::Compute:
-    return "compute";
-  case NodeType::Evaluator:
-    return "evaluator";
-  case NodeType::Noop:
-    return "noop";
-  }
-  return "unknown";
-}
 
 [[nodiscard]] constexpr auto to_string_view(RunState value) noexcept
     -> std::string_view {

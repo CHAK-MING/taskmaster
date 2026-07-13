@@ -8,7 +8,6 @@
 
 #include "gtest/gtest.h"
 
-#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
@@ -52,6 +51,7 @@ public:
     pending_.push_back(Pending{
         .instance_id = std::move(request.instance_id),
         .owner = runtime_->current_shard(),
+        .command = std::move(request.command),
         .sink = std::move(sink),
     });
     changed_.notify_all();
@@ -111,6 +111,15 @@ public:
     return pending_.size();
   }
 
+  [[nodiscard]] auto next_command() const
+      -> std::optional<CommandExecutorConfig> {
+    std::lock_guard lock(mutex_);
+    if (pending_.empty()) {
+      return std::nullopt;
+    }
+    return pending_.front().command;
+  }
+
   auto complete_next(int exit_code = 0, std::string output = {}) -> bool {
     std::optional<InstanceId> instance_id;
     {
@@ -128,6 +137,7 @@ private:
   struct Pending {
     InstanceId instance_id;
     shard_id owner{kInvalidShard};
+    CommandExecutorConfig command;
     ExecutionSink sink;
   };
 
@@ -187,18 +197,6 @@ private:
   bool synchronous_cancel_{false};
 };
 
-template <typename T> auto config_value(const T &config) -> JsonValue {
-  auto encoded = serialize_json(config);
-  if (!encoded) {
-    throw std::runtime_error("failed to encode workflow node config");
-  }
-  auto parsed = parse_json(*encoded);
-  if (!parsed) {
-    throw std::runtime_error("failed to parse workflow node config");
-  }
-  return std::move(*parsed);
-}
-
 [[nodiscard]] auto wait_for_state(WorkflowRuntime &runtime, Runtime &core,
                                   const WorkflowRunId &run_id, RunState state,
                                   std::chrono::milliseconds timeout =
@@ -253,7 +251,6 @@ template <typename T> auto config_value(const T &config) -> JsonValue {
 [[nodiscard]] auto base_plan(std::string_view id) -> WorkflowPlan {
   WorkflowPlan plan;
   plan.workflow_id = WorkflowId{id};
-  plan.policy.allow_command = false;
   return plan;
 }
 
@@ -263,18 +260,17 @@ TEST(WorkflowPlanLoaderTest, ParsesJsonAndTomlPlans) {
   constexpr std::string_view json_text = R"({
     "workflow_id":"loader-json",
     "nodes":[{
-      "id":"noop",
-      "type":"noop",
+      "id":"command",
       "outputs":["result"],
       "timeout_sec":30,
-      "config":{}
+      "config":{"program":"/bin/true"}
     }]
   })";
   auto json_plan = WorkflowPlanLoader::from_json(json_text);
   ASSERT_TRUE(json_plan.has_value()) << json_plan.error().message();
   EXPECT_EQ(json_plan->workflow_id, WorkflowId{"loader-json"});
   ASSERT_EQ(json_plan->nodes.size(), 1U);
-  EXPECT_EQ(json_plan->nodes.front().type, NodeType::Noop);
+  EXPECT_EQ(json_plan->nodes.front().command.program, "/bin/true");
   ASSERT_EQ(json_plan->nodes.front().outputs.size(), 1U);
   EXPECT_EQ(json_plan->nodes.front().outputs.front(),
             WorkflowPortId{"result"});
@@ -285,13 +281,13 @@ workflow_id = "loader-toml"
 schema_version = 1
 
 [[nodes]]
-id = "noop"
-type = "noop"
+id = "command"
 outputs = ["result"]
 timeout_sec = 30
 checkpoint = true
 
 [nodes.config]
+program = "/bin/true"
 )";
   auto toml_plan = WorkflowPlanLoader::from_toml(toml_text);
   ASSERT_TRUE(toml_plan.has_value()) << toml_plan.error().message();
@@ -309,7 +305,6 @@ schema_version = 1
 
 [[nodes]]
 id = "command"
-type = "command"
 outputs = ["stdout", "stderr", "exit_code", "result"]
 max_retries = 2
 retry_initial_delay_ms = 25
@@ -322,21 +317,17 @@ arguments = ["-c", "printf loader-ok"]
 env = [{ key = "MODE", value = "test" }]
 
 [policy]
-allow_command = true
 failure_policy = "fail_fast"
 )";
   auto command_plan = WorkflowPlanLoader::from_toml(command_toml);
   ASSERT_TRUE(command_plan.has_value()) << command_plan.error().message();
   ASSERT_EQ(command_plan->nodes.size(), 1U);
-  EXPECT_EQ(command_plan->nodes.front().type, NodeType::Command);
-  auto command_config = parse_json_as<CommandNodeConfig>(
-      dump_json(command_plan->nodes.front().config));
-  ASSERT_TRUE(command_config.has_value()) << command_config.error().message();
-  EXPECT_EQ(command_config->program, "/bin/sh");
-  ASSERT_EQ(command_config->arguments.size(), 2U);
-  EXPECT_EQ(command_config->arguments.back(), "printf loader-ok");
-  ASSERT_EQ(command_config->env.size(), 1U);
-  EXPECT_EQ(command_config->env.front().key, "MODE");
+  EXPECT_EQ(command_plan->nodes.front().command.program, "/bin/sh");
+  ASSERT_EQ(command_plan->nodes.front().command.arguments.size(), 2U);
+  EXPECT_EQ(command_plan->nodes.front().command.arguments.back(),
+            "printf loader-ok");
+  ASSERT_EQ(command_plan->nodes.front().command.env.size(), 1U);
+  EXPECT_EQ(command_plan->nodes.front().command.env.front().key, "MODE");
   EXPECT_EQ(command_plan->nodes.front().max_retries, 2);
   EXPECT_EQ(command_plan->nodes.front().retry_initial_delay,
             std::chrono::milliseconds(25));
@@ -350,14 +341,11 @@ workflow_id = "loader-invalid-command"
 
 [[nodes]]
 id = "command"
-type = "command"
 
 [nodes.config]
 program = "/bin/true"
 unknown = true
 
-[policy]
-allow_command = true
 )";
   auto invalid_command =
       WorkflowPlanLoader::from_toml(invalid_command_toml);
@@ -368,11 +356,11 @@ allow_command = true
 workflow_id = "loader-invalid-policy"
 
 [[nodes]]
-id = "noop"
-type = "noop"
+id = "command"
 outputs = ["result"]
 
 [nodes.config]
+program = "/bin/true"
 
 [policy]
 failure_policy = "unknown"
@@ -405,9 +393,10 @@ TEST(WorkflowStateModelTest, RejectsIllegalTerminalTransitions) {
 TEST(WorkflowControlPlaneTest, DeduplicatesPlansByDigest) {
   WorkflowControlPlane control;
   auto plan = base_plan("dedupe");
-  plan.nodes.push_back(NodePlan{.node_id = WorkflowNodeId{"noop"},
-                                .type = NodeType::Noop,
-                                .outputs = {WorkflowPortId{"result"}}});
+  plan.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{.program = "/bin/true"},
+      .outputs = {WorkflowPortId{"result"}}});
   auto first = control.register_plan(plan);
   auto second = control.register_plan(std::move(plan));
   ASSERT_TRUE(first.has_value());
@@ -418,8 +407,8 @@ TEST(WorkflowControlPlaneTest, DeduplicatesPlansByDigest) {
   auto fail_fast = base_plan("dedupe");
   fail_fast.policy.failure_policy = FailurePolicy::FailFast;
   fail_fast.nodes.push_back(NodePlan{
-      .node_id = WorkflowNodeId{"noop"},
-      .type = NodeType::Noop,
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{.program = "/bin/true"},
       .outputs = {WorkflowPortId{"result"}},
   });
   auto changed = control.register_plan(std::move(fail_fast));
@@ -429,39 +418,20 @@ TEST(WorkflowControlPlaneTest, DeduplicatesPlansByDigest) {
   EXPECT_EQ(control.list_plans().size(), 2U);
 }
 
-TEST(WorkflowPlanCompilerTest, EnforcesProviderToolAndHostAllowlists) {
-  PlanCompiler compiler;
-
-  auto plan = base_plan("allowlist");
-  plan.policy.allowed_http_hosts = {"allowed.example"};
-  plan.policy.allowed_model_providers = {"openai"};
-  plan.policy.allowed_tools = {"internal/echo"};
-  plan.nodes = {
-      NodePlan{.node_id = WorkflowNodeId{"http"},
-               .type = NodeType::Http,
-               .config = config_value(
-                   HttpNodeConfig{.url = "https://blocked.example/data"}),
-               .outputs = {WorkflowPortId{"result"}}},
-  };
-  auto blocked = compiler.compile(std::move(plan));
-  ASSERT_FALSE(blocked.has_value());
-  EXPECT_EQ(blocked.error(), make_error_code(Error::Unauthorized));
-}
-
 TEST(WorkflowPlanCompilerTest, RejectsCyclesAndUnsafeCommandPlans) {
   PlanCompiler compiler;
 
   auto cycle = base_plan("cycle");
   cycle.nodes = {
       NodePlan{.node_id = WorkflowNodeId{"a"},
-               .type = NodeType::Noop,
+               .command = CommandNodeConfig{.program = "/bin/true"},
                .inputs = {InputBinding{.input = WorkflowPortId{"value"},
                                       .source = OutputRef{
                                           .node_id = WorkflowNodeId{"b"},
                                           .port = WorkflowPortId{"result"}}}},
                .outputs = {WorkflowPortId{"result"}}},
       NodePlan{.node_id = WorkflowNodeId{"b"},
-               .type = NodeType::Noop,
+               .command = CommandNodeConfig{.program = "/bin/true"},
                .inputs = {InputBinding{.input = WorkflowPortId{"value"},
                                       .source = OutputRef{
                                           .node_id = WorkflowNodeId{"a"},
@@ -473,35 +443,23 @@ TEST(WorkflowPlanCompilerTest, RejectsCyclesAndUnsafeCommandPlans) {
   EXPECT_EQ(cycle_result.error(), make_error_code(Error::CycleDetected));
 
   auto relative_command = base_plan("relative-command");
-  relative_command.policy.allow_command = true;
   relative_command.nodes.push_back(NodePlan{
       .node_id = WorkflowNodeId{"command"},
-      .type = NodeType::Command,
-      .config = config_value(CommandNodeConfig{.program = "true"}),
+      .command = CommandNodeConfig{.program = "true"},
       .outputs = {WorkflowPortId{"result"}},
   });
   auto relative_result = compiler.compile(std::move(relative_command));
   ASSERT_FALSE(relative_result.has_value());
   EXPECT_EQ(relative_result.error(), make_error_code(Error::InvalidArgument));
 
-  auto disabled_command = base_plan("disabled-command");
-  disabled_command.nodes.push_back(NodePlan{
-      .node_id = WorkflowNodeId{"command"},
-      .type = NodeType::Command,
-      .config = config_value(CommandNodeConfig{.program = "/bin/true"}),
-      .outputs = {WorkflowPortId{"result"}},
-  });
-  auto disabled_result = compiler.compile(std::move(disabled_command));
-  ASSERT_FALSE(disabled_result.has_value());
-  EXPECT_EQ(disabled_result.error(), make_error_code(Error::Unauthorized));
 }
 
 TEST(WorkflowPlanCompilerTest, RejectsUnknownFailurePolicy) {
   auto plan = base_plan("invalid-failure-policy");
   plan.policy.failure_policy = static_cast<FailurePolicy>(255);
   plan.nodes.push_back(NodePlan{
-      .node_id = WorkflowNodeId{"noop"},
-      .type = NodeType::Noop,
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{.program = "/bin/true"},
       .outputs = {WorkflowPortId{"result"}},
   });
   auto compiled = PlanCompiler{}.compile(std::move(plan));
@@ -513,8 +471,8 @@ TEST(WorkflowPlanCompilerTest, RejectsUnknownSchemaVersion) {
   auto plan = base_plan("old-schema");
   plan.schema_version = 2;
   plan.nodes.push_back(NodePlan{
-      .node_id = WorkflowNodeId{"noop"},
-      .type = NodeType::Noop,
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{.program = "/bin/true"},
       .outputs = {WorkflowPortId{"result"}},
   });
   auto compiled = PlanCompiler{}.compile(std::move(plan));
@@ -530,18 +488,15 @@ TEST(WorkflowRuntimeTest, PauseDrainsActiveAttemptBeforeResume) {
   WorkflowRuntime runtime(core, executor);
 
   auto plan = base_plan("pause-flow");
-  plan.policy.allow_command = true;
   plan.nodes = {
       NodePlan{
           .node_id = WorkflowNodeId{"first"},
-          .type = NodeType::Command,
-          .config = config_value(CommandNodeConfig{.program = "/bin/true"}),
+          .command = CommandNodeConfig{.program = "/bin/true"},
           .outputs = {WorkflowPortId{"result"}},
       },
       NodePlan{
           .node_id = WorkflowNodeId{"second"},
-          .type = NodeType::Command,
-          .config = config_value(CommandNodeConfig{.program = "/bin/true"}),
+          .command = CommandNodeConfig{.program = "/bin/true"},
           .inputs = {InputBinding{
               .input = WorkflowPortId{"value"},
               .source = OutputRef{.node_id = WorkflowNodeId{"first"},
@@ -604,11 +559,9 @@ TEST(WorkflowRuntimeTest, AttemptStartsBeforeExecutorReportsRunning) {
   WorkflowRuntime runtime(core, executor);
 
   auto plan = base_plan("attempt-starting");
-  plan.policy.allow_command = true;
   plan.nodes.push_back(NodePlan{
       .node_id = WorkflowNodeId{"command"},
-      .type = NodeType::Command,
-      .config = config_value(CommandNodeConfig{.program = "/bin/true"}),
+      .command = CommandNodeConfig{.program = "/bin/true"},
       .outputs = {WorkflowPortId{"result"}},
   });
   auto compiled = PlanCompiler{}.compile(std::move(plan));
@@ -651,12 +604,10 @@ TEST(WorkflowRuntimeTest, RunDeadlineStopsAndReapsActiveAttempt) {
   WorkflowRuntime runtime(core, executor);
 
   auto plan = base_plan("deadline");
-  plan.policy.allow_command = true;
   plan.policy.budget.max_run_duration = std::chrono::milliseconds(25);
   plan.nodes.push_back(NodePlan{
       .node_id = WorkflowNodeId{"command"},
-      .type = NodeType::Command,
-      .config = config_value(CommandNodeConfig{.program = "/bin/true"}),
+      .command = CommandNodeConfig{.program = "/bin/true"},
       .outputs = {WorkflowPortId{"result"}},
   });
   auto compiled = PlanCompiler{}.compile(std::move(plan));
@@ -692,11 +643,9 @@ TEST(WorkflowRuntimeTest, CancelStaysStoppingUntilAttemptIsReaped) {
   WorkflowRuntime runtime(core, executor);
 
   auto plan = base_plan("cancel-drain");
-  plan.policy.allow_command = true;
   plan.nodes.push_back(NodePlan{
       .node_id = WorkflowNodeId{"command"},
-      .type = NodeType::Command,
-      .config = config_value(CommandNodeConfig{.program = "/bin/true"}),
+      .command = CommandNodeConfig{.program = "/bin/true"},
       .outputs = {WorkflowPortId{"result"}},
   });
   auto compiled = PlanCompiler{}.compile(std::move(plan));
@@ -742,11 +691,9 @@ TEST(WorkflowRuntimeTest, SynchronousCancelCompletionIsReentrantSafe) {
   WorkflowRuntime runtime(core, executor);
 
   auto plan = base_plan("sync-cancel");
-  plan.policy.allow_command = true;
   plan.nodes.push_back(NodePlan{
       .node_id = WorkflowNodeId{"command"},
-      .type = NodeType::Command,
-      .config = config_value(CommandNodeConfig{.program = "/bin/true"}),
+      .command = CommandNodeConfig{.program = "/bin/true"},
       .outputs = {WorkflowPortId{"result"}},
   });
   auto compiled = PlanCompiler{}.compile(std::move(plan));
@@ -778,11 +725,9 @@ TEST(WorkflowRuntimeTest, RetryWaitingCreatesDistinctAttempts) {
   WorkflowRuntime runtime(core, executor);
 
   auto plan = base_plan("retry-attempts");
-  plan.policy.allow_command = true;
   plan.nodes.push_back(NodePlan{
       .node_id = WorkflowNodeId{"command"},
-      .type = NodeType::Command,
-      .config = config_value(CommandNodeConfig{.program = "/bin/true"}),
+      .command = CommandNodeConfig{.program = "/bin/true"},
       .outputs = {WorkflowPortId{"stdout"}, WorkflowPortId{"exit_code"},
                   WorkflowPortId{"result"}},
       .max_retries = 1,
@@ -834,11 +779,9 @@ TEST(WorkflowRuntimeTest, PermanentFailureDoesNotRetry) {
   WorkflowRuntime runtime(core, executor);
 
   auto plan = base_plan("permanent-failure");
-  plan.policy.allow_command = true;
   plan.nodes.push_back(NodePlan{
       .node_id = WorkflowNodeId{"command"},
-      .type = NodeType::Command,
-      .config = config_value(CommandNodeConfig{.program = "/bin/true"}),
+      .command = CommandNodeConfig{.program = "/bin/true"},
       .outputs = {WorkflowPortId{"result"}},
       .max_retries = 3,
       .retry_initial_delay = std::chrono::milliseconds(1),
@@ -864,31 +807,19 @@ TEST(WorkflowRuntimeTest, PermanentFailureDoesNotRetry) {
   core.stop();
 }
 
-TEST(WorkflowRuntimeTest, ResourceBudgetFailureDoesNotRetry) {
+TEST(WorkflowRuntimeTest, OutputBudgetFailureDoesNotRetry) {
   Runtime core(1, false, 0,
                ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
   ASSERT_TRUE(core.start().has_value());
-  NullExecutor executor;
-  std::atomic<int> calls{0};
-  WorkflowAdapters adapters;
-  adapters.invoke_model = [&calls](ModelCall)
-      -> task<Result<ModelResponse>> {
-    calls.fetch_add(1, std::memory_order_relaxed);
-    ModelResponse response;
-    response.message = Message{.role = "assistant", .content = "result"};
-    response.usage = ModelUsage{.input_tokens = 2, .output_tokens = 1};
-    co_return ok(std::move(response));
-  };
-  WorkflowRuntime runtime(core, executor, {}, {}, {}, std::move(adapters));
+  ManualExecutor executor(core);
+  WorkflowRuntime runtime(core, executor);
 
-  auto plan = base_plan("budget-permanent");
-  plan.policy.budget.max_model_tokens = 1;
+  auto plan = base_plan("output-budget-permanent");
+  plan.policy.budget.max_total_output_bytes = 4;
   plan.nodes.push_back(NodePlan{
-      .node_id = WorkflowNodeId{"model"},
-      .type = NodeType::Model,
-      .config = config_value(
-          ModelNodeConfig{.provider = "test", .model = "budget"}),
-      .outputs = {WorkflowPortId{"result"}},
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{.program = "/bin/true"},
+      .outputs = {WorkflowPortId{"stdout"}},
       .max_retries = 3,
       .retry_initial_delay = std::chrono::milliseconds(1),
       .retry_max_delay = std::chrono::milliseconds(1),
@@ -898,13 +829,14 @@ TEST(WorkflowRuntimeTest, ResourceBudgetFailureDoesNotRetry) {
 
   auto started = runtime.start(
       *compiled,
-      TriggerEnvelope{.workflow_id = WorkflowId{"budget-permanent"},
+      TriggerEnvelope{.workflow_id = WorkflowId{"output-budget-permanent"},
                       .source = "test",
                       .event_type = "request"});
   ASSERT_TRUE(started.has_value());
+  ASSERT_TRUE(executor.wait_for_pending(1));
+  ASSERT_TRUE(executor.complete_next(0, "too-large"));
   auto failed = wait_for_state(runtime, core, *started, RunState::Failed);
   ASSERT_TRUE(failed.has_value()) << failed.error().message();
-  EXPECT_EQ(calls.load(std::memory_order_relaxed), 1);
   EXPECT_EQ((*failed)->tasks[0].attempt_count, 1U);
   EXPECT_EQ((*failed)->tasks[0].attempts[0].state, AttemptState::Failed);
   EXPECT_EQ((*failed)->tasks[0].attempts[0].failure_class,
@@ -921,20 +853,17 @@ TEST(WorkflowRuntimeTest, FailFastStopsIndependentAttempts) {
   WorkflowRuntime runtime(core, executor);
 
   auto plan = base_plan("fail-fast");
-  plan.policy.allow_command = true;
   plan.policy.failure_policy = FailurePolicy::FailFast;
   plan.policy.budget.max_parallel_nodes = 2;
   plan.nodes = {
       NodePlan{
           .node_id = WorkflowNodeId{"first"},
-          .type = NodeType::Command,
-          .config = config_value(CommandNodeConfig{.program = "/bin/true"}),
+          .command = CommandNodeConfig{.program = "/bin/true"},
           .outputs = {WorkflowPortId{"result"}},
       },
       NodePlan{
           .node_id = WorkflowNodeId{"second"},
-          .type = NodeType::Command,
-          .config = config_value(CommandNodeConfig{.program = "/bin/true"}),
+          .command = CommandNodeConfig{.program = "/bin/true"},
           .outputs = {WorkflowPortId{"result"}},
       },
   };
@@ -996,14 +925,12 @@ TEST(WorkflowRuntimeTest, CommandNodeOwnsRunIdAcrossSuspension) {
   WorkflowRuntime runtime(core, *executor);
 
   auto plan = base_plan("command-suspension");
-  plan.policy.allow_command = true;
   plan.nodes.push_back(NodePlan{
       .node_id = WorkflowNodeId{"command"},
-      .type = NodeType::Command,
-      .config = config_value(CommandNodeConfig{
+      .command = CommandNodeConfig{
           .program = "/bin/sh",
           .arguments = {"-c", "sleep 0.05; printf workflow-ok"},
-      }),
+      },
       .outputs = {WorkflowPortId{"stdout"}, WorkflowPortId{"stderr"},
                   WorkflowPortId{"exit_code"}, WorkflowPortId{"result"}},
   });
@@ -1037,13 +964,14 @@ TEST(WorkflowRuntimeTest, IdempotentTriggerReturnsExistingRun) {
   Runtime core(1, false, 0,
                ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
   ASSERT_TRUE(core.start().has_value());
-  NullExecutor executor;
+  ManualExecutor executor(core);
   WorkflowRuntime runtime(core, executor);
 
   auto plan = base_plan("idempotent");
-  plan.nodes.push_back(NodePlan{.node_id = WorkflowNodeId{"noop"},
-                                .type = NodeType::Noop,
-                                .outputs = {WorkflowPortId{"result"}}});
+  plan.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{.program = "/bin/true"},
+      .outputs = {WorkflowPortId{"result"}}});
   auto compiled = PlanCompiler{}.compile(std::move(plan));
   ASSERT_TRUE(compiled.has_value());
 
@@ -1059,76 +987,39 @@ TEST(WorkflowRuntimeTest, IdempotentTriggerReturnsExistingRun) {
   ASSERT_TRUE(second.has_value());
   EXPECT_EQ(*first, *second);
 
+  ASSERT_TRUE(executor.wait_for_pending(1));
+  ASSERT_TRUE(executor.complete_next(0, "done"));
   auto completed = wait_for_state(runtime, core, *first, RunState::Succeeded);
   EXPECT_TRUE(completed.has_value());
   core.stop();
 }
 
-TEST(WorkflowRuntimeTest, ModelToolEvaluatorPipelineUsesTypedValues) {
+TEST(WorkflowRuntimeTest, InjectsUpstreamOutputIntoCommandEnvironment) {
   Runtime core(2, false, 0,
                ComputePoolConfig{.thread_count = 1, .queue_capacity = 16});
   ASSERT_TRUE(core.start().has_value());
-  NullExecutor executor;
+  ManualExecutor executor(core);
+  WorkflowRuntime runtime(core, executor);
 
-  WorkflowAdapters adapters;
-  adapters.invoke_model = [](ModelCall call) -> task<Result<ModelResponse>> {
-    auto arguments = parse_json(R"({"query":"hello"})");
-    if (!arguments) {
-      co_return fail(arguments.error());
-    }
-    ModelResponse response;
-    response.message = Message{.role = "assistant", .content = "hello"};
-    response.structured_output = std::move(*arguments);
-    response.usage = ModelUsage{.input_tokens = 10, .output_tokens = 2};
-    response.provider_request_id = std::format("req-{}", call.node_id);
-    co_return ok(std::move(response));
-  };
-  adapters.invoke_tool = [](ToolInvocation invocation)
-      -> task<Result<ToolResult>> {
-    co_return ok(ToolResult{.name = std::move(invocation.tool),
-                            .success = true,
-                            .output = std::move(invocation.arguments)});
-  };
-  WorkflowRuntime runtime(core, executor, {}, {}, {}, std::move(adapters));
-
-  auto plan = base_plan("ai-pipeline");
+  auto plan = base_plan("command-dataflow");
   plan.nodes = {
       NodePlan{
-          .node_id = WorkflowNodeId{"model"},
-          .type = NodeType::Model,
-          .config = config_value(ModelNodeConfig{
-              .provider = "test",
-              .model = "test-model",
-              .prompt = "Respond to: ",
-              .prompt_input = "$trigger",
-          }),
-          .outputs = {WorkflowPortId{"result"},
-                      WorkflowPortId{"structured_output"}},
-      },
-      NodePlan{
-          .node_id = WorkflowNodeId{"tool"},
-          .type = NodeType::Tool,
-          .config = config_value(ToolNodeConfig{
-              .tool = "echo",
-              .arguments_input = "arguments",
-          }),
-          .inputs = {InputBinding{
-              .input = WorkflowPortId{"arguments"},
-              .source = OutputRef{.node_id = WorkflowNodeId{"model"},
-                                  .port = WorkflowPortId{
-                                      "structured_output"}}}},
+          .node_id = WorkflowNodeId{"produce"},
+          .command = CommandNodeConfig{.program = "/bin/true"},
           .outputs = {WorkflowPortId{"result"}},
       },
       NodePlan{
-          .node_id = WorkflowNodeId{"evaluate"},
-          .type = NodeType::Evaluator,
-          .config = config_value(EvaluatorNodeConfig{.operation = "truthy"}),
+          .node_id = WorkflowNodeId{"consume"},
+          .command = CommandNodeConfig{
+              .program = "/bin/true",
+              .input_env = {{.input = "value",
+                             .environment = "UPSTREAM_VALUE"}},
+          },
           .inputs = {InputBinding{
-              .input = WorkflowPortId{"tool_result"},
-              .source = OutputRef{.node_id = WorkflowNodeId{"tool"},
+              .input = WorkflowPortId{"value"},
+              .source = OutputRef{.node_id = WorkflowNodeId{"produce"},
                                   .port = WorkflowPortId{"result"}}}},
-          .outputs = {WorkflowPortId{"result"},
-                      WorkflowPortId{"passed"}},
+          .outputs = {WorkflowPortId{"result"}},
       },
   };
   auto compiled = PlanCompiler{}.compile(std::move(plan));
@@ -1136,46 +1027,35 @@ TEST(WorkflowRuntimeTest, ModelToolEvaluatorPipelineUsesTypedValues) {
 
   auto started = runtime.start(
       *compiled,
-      TriggerEnvelope{.workflow_id = WorkflowId{"ai-pipeline"},
-                      .source = "event",
-                      .event_type = "message",
-                      .payload = std::string{"hello"},
-                      .idempotency_key = "ai-1"});
+      TriggerEnvelope{.workflow_id = WorkflowId{"command-dataflow"},
+                      .source = "test",
+                      .event_type = "request"});
   ASSERT_TRUE(started.has_value());
+  ASSERT_TRUE(executor.wait_for_pending(1));
+  ASSERT_TRUE(executor.complete_next(0, "hello"));
+  ASSERT_TRUE(executor.wait_for_pending(1));
+  auto command = executor.next_command();
+  ASSERT_TRUE(command.has_value());
+  ASSERT_TRUE(command->env.contains("UPSTREAM_VALUE"));
+  EXPECT_EQ(command->env.at("UPSTREAM_VALUE"), "hello");
+  ASSERT_TRUE(executor.complete_next(0, "consumed"));
   auto completed = wait_for_state(runtime, core, *started, RunState::Succeeded);
   ASSERT_TRUE(completed.has_value()) << completed.error().message();
-
-  auto passed = sync_wait_on_runtime(
-      core, runtime.output(*started,
-                           OutputRef{.node_id = WorkflowNodeId{"evaluate"},
-                                     .port = WorkflowPortId{"passed"}}));
-  ASSERT_TRUE(passed.has_value());
-  EXPECT_TRUE(std::get<bool>(**passed));
   core.stop();
 }
 
-TEST(WorkflowRuntimeTest, LargeModelTextIsExternalizedAsArtifact) {
+TEST(WorkflowRuntimeTest, LargeCommandOutputIsExternalizedAsArtifact) {
   Runtime core(1, false, 0,
                ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
   ASSERT_TRUE(core.start().has_value());
-  NullExecutor executor;
-
-  WorkflowAdapters adapters;
-  adapters.invoke_model = [](ModelCall) -> task<Result<ModelResponse>> {
-    ModelResponse response;
-    response.message =
-        Message{.role = "assistant", .content = std::string(300'000, 'x')};
-    co_return ok(std::move(response));
-  };
-  WorkflowRuntime runtime(core, executor, {}, {}, {}, std::move(adapters));
+  ManualExecutor executor(core);
+  WorkflowRuntime runtime(core, executor);
 
   auto plan = base_plan("artifact-flow");
   plan.nodes.push_back(NodePlan{
-      .node_id = WorkflowNodeId{"model"},
-      .type = NodeType::Model,
-      .config = config_value(
-          ModelNodeConfig{.provider = "test", .model = "large"}),
-      .outputs = {WorkflowPortId{"text"}},
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{.program = "/bin/true"},
+      .outputs = {WorkflowPortId{"stdout"}},
   });
   auto compiled = PlanCompiler{}.compile(std::move(plan));
   ASSERT_TRUE(compiled.has_value());
@@ -1186,12 +1066,14 @@ TEST(WorkflowRuntimeTest, LargeModelTextIsExternalizedAsArtifact) {
                       .source = "test",
                       .event_type = "request"});
   ASSERT_TRUE(started.has_value());
+  ASSERT_TRUE(executor.wait_for_pending(1));
+  ASSERT_TRUE(executor.complete_next(0, std::string(300'000, 'x')));
   ASSERT_TRUE(wait_for_state(runtime, core, *started, RunState::Succeeded));
 
   auto output = sync_wait_on_runtime(
       core, runtime.output(*started,
-                           OutputRef{.node_id = WorkflowNodeId{"model"},
-                                     .port = WorkflowPortId{"text"}}));
+                           OutputRef{.node_id = WorkflowNodeId{"command"},
+                                     .port = WorkflowPortId{"stdout"}}));
   ASSERT_TRUE(output.has_value());
   const auto *artifact = std::get_if<ArtifactRef>(output->get());
   ASSERT_NE(artifact, nullptr);

@@ -1,24 +1,17 @@
 #include "dagforge/workflow/workflow_runtime.hpp"
 
-#include "dagforge/client/http/http_client.hpp"
 #include "dagforge/util/json.hpp"
 #include "dagforge/util/log.hpp"
-#include "dagforge/util/url.hpp"
 
 #include <boost/asio/async_result.hpp>
 
-#include <openssl/evp.h>
-
 #include <algorithm>
-#include <array>
 #include <cassert>
-#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <format>
 #include <memory>
 #include <ranges>
-#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -72,25 +65,8 @@ template <typename T>
           return typed;
         } else if constexpr (std::same_as<T, JsonValue>) {
           return dump_json(typed);
-        } else if constexpr (std::same_as<T, MessageList>) {
-          std::string out;
-          for (const auto &message : typed) {
-            if (!out.empty()) {
-              out.push_back('\n');
-            }
-            out.append(message.role);
-            out.append(": ");
-            out.append(message.content);
-          }
-          return out;
-        } else if constexpr (std::same_as<T, ToolResult>) {
-          return typed.success ? dump_json(typed.output) : typed.error;
         } else if constexpr (std::same_as<T, ArtifactRef>) {
           return typed.artifact_id.str();
-        } else if constexpr (std::same_as<T, ModelResponse>) {
-          return typed.message.content;
-        } else if constexpr (std::same_as<T, EvaluationResult>) {
-          return typed.reason;
         }
         return {};
       },
@@ -112,17 +88,8 @@ template <typename T>
           return !typed.empty();
         } else if constexpr (std::same_as<T, JsonValue>) {
           return dump_json(typed) != "null";
-        } else if constexpr (std::same_as<T, MessageList>) {
-          return !typed.empty();
-        } else if constexpr (std::same_as<T, ToolResult>) {
-          return typed.success;
         } else if constexpr (std::same_as<T, ArtifactRef>) {
           return !typed.artifact_id.empty();
-        } else if constexpr (std::same_as<T, ModelResponse>) {
-          return !typed.message.content.empty() || !typed.tool_calls.empty() ||
-                 typed.structured_output.has_value();
-        } else if constexpr (std::same_as<T, EvaluationResult>) {
-          return typed.passed;
         }
         return false;
       },
@@ -131,58 +98,6 @@ template <typename T>
 
 using RuntimeInputMap = std::unordered_map<
     std::string, std::shared_ptr<const WorkflowValue>>;
-
-[[nodiscard]] auto first_input(const RuntimeInputMap &inputs)
-    -> Result<std::shared_ptr<const WorkflowValue>> {
-  if (inputs.empty()) {
-    return fail(Error::NotFound);
-  }
-  return ok(inputs.begin()->second);
-}
-
-[[nodiscard]] auto ordered_input_names(
-    const RuntimeInputMap &inputs,
-    const std::vector<std::string> &requested) -> Result<std::vector<std::string>> {
-  if (!requested.empty()) {
-    for (const auto &name : requested) {
-      if (!inputs.contains(name)) {
-        return fail(Error::NotFound);
-      }
-    }
-    return ok(requested);
-  }
-
-  std::vector<std::string> names;
-  names.reserve(inputs.size());
-  for (const auto &[name, _] : inputs) {
-    names.push_back(name);
-  }
-  std::ranges::sort(names);
-  return ok(std::move(names));
-}
-
-[[nodiscard]] auto sha256_text(std::string_view input) -> Result<std::string> {
-  auto context = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>{
-      EVP_MD_CTX_new(), &EVP_MD_CTX_free};
-  if (!context || EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1 ||
-      EVP_DigestUpdate(context.get(), input.data(), input.size()) != 1) {
-    return fail(Error::Unknown);
-  }
-
-  std::array<unsigned char, EVP_MAX_MD_SIZE> bytes{};
-  unsigned int size = 0;
-  if (EVP_DigestFinal_ex(context.get(), bytes.data(), &size) != 1) {
-    return fail(Error::Unknown);
-  }
-
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out(static_cast<std::size_t>(size) * 2, '\0');
-  for (unsigned int i = 0; i < size; ++i) {
-    out[static_cast<std::size_t>(i) * 2] = kHex[bytes[i] >> 4U];
-    out[static_cast<std::size_t>(i) * 2 + 1] = kHex[bytes[i] & 0x0fU];
-  }
-  return ok(std::move(out));
-}
 
 [[nodiscard]] auto make_metadata(
     std::initializer_list<std::pair<std::string, JsonValue>> fields)
@@ -258,13 +173,12 @@ WorkflowRuntime::WorkflowRuntime(
     Runtime &runtime, IExecutor &executor,
     std::shared_ptr<IArtifactStore> artifact_store,
     std::shared_ptr<EvidenceLedger> evidence_ledger,
-    std::shared_ptr<CheckpointStore> checkpoint_store,
-    WorkflowAdapters adapters)
+    std::shared_ptr<CheckpointStore> checkpoint_store)
     : runtime_(runtime), executor_(executor),
       artifact_store_(std::move(artifact_store)),
       evidence_ledger_(std::move(evidence_ledger)),
       checkpoint_store_(std::move(checkpoint_store)),
-      adapters_(std::move(adapters)), shard_states_(runtime.shard_count()) {
+      shard_states_(runtime.shard_count()) {
   if (!artifact_store_) {
     artifact_store_ = std::make_shared<InMemoryArtifactStore>();
   }
@@ -545,9 +459,8 @@ auto WorkflowRuntime::begin_attempt(ActiveRun &run, std::size_t task_index)
                                  {"number", task.snapshot.attempt_count}}));
   append_evidence(run, task_index, EvidenceType::TaskStarted,
                   make_metadata({{"attempt", task.snapshot.attempt_count},
-                                 {"type", std::string{to_string_view(
-                                              run.plan->nodes[task_index]
-                                                  .plan.type)}}}));
+                                 {"program", run.plan->nodes[task_index]
+                                                  .plan.command.program}}));
   assert(invariants_hold(run));
   return attempt_id;
 }
@@ -639,33 +552,9 @@ auto WorkflowRuntime::start_task(const WorkflowRunId &run_id,
                                  std::size_t task_index) -> void {
   auto &run = shard_states_[owner_shard(run_id)].active_runs.at(run_id.str());
   const auto attempt_id = begin_attempt(run, task_index);
-
-  switch (run.plan->nodes[task_index].plan.type) {
-  case NodeType::Compute:
-  case NodeType::Evaluator:
-    start_compute_task(run_id, task_index, attempt_id.clone());
-    return;
-  case NodeType::Noop: {
-    mark_attempt_running(run, task_index, attempt_id);
-    auto inputs = input_values(run, task_index);
-    if (!inputs) {
-      complete_task(run_id, task_index, attempt_id, fail(inputs.error()));
-      return;
-    }
-    complete_task(run_id, task_index, attempt_id,
-                  execute_inline_node(run.plan->nodes[task_index].plan,
-                                      *inputs));
-    return;
-  }
-  case NodeType::Command:
-  case NodeType::Http:
-  case NodeType::Model:
-  case NodeType::Tool:
-    runtime_.spawn_on(owner_shard(run_id),
-                      start_async_task(run_id.clone(), task_index,
-                                       attempt_id.clone()));
-    return;
-  }
+  runtime_.spawn_on(owner_shard(run_id),
+                    start_async_task(run_id.clone(), task_index,
+                                     attempt_id.clone()));
 }
 
 auto WorkflowRuntime::start_async_task(WorkflowRunId run_id,
@@ -679,45 +568,16 @@ auto WorkflowRuntime::start_async_task(WorkflowRunId run_id,
   }
 
   auto node = run_it->second.plan->nodes[task_index].plan;
-  if (node.type != NodeType::Command) {
-    mark_attempt_running(run_it->second, task_index, attempt_id);
-  }
-  if (node.type == NodeType::Command) {
-    run_it->second.tasks[task_index].instance_id =
-        instance_id_for(run_id, node.node_id, attempt_id);
-  }
+  run_it->second.tasks[task_index].instance_id =
+      instance_id_for(run_id, node.node_id, attempt_id);
   auto inputs = input_values(run_it->second, task_index);
   if (!inputs) {
     complete_task(run_id, task_index, attempt_id, fail(inputs.error()));
     co_return;
   }
-  auto trigger = run_it->second.trigger;
-
-  Result<NodeOutputs> result = fail(Error::Unsupported);
-  switch (node.type) {
-  case NodeType::Command:
-    result = co_await execute_command_node(
-        run_id.clone(), task_index, attempt_id.clone(), std::move(node),
-        std::move(*inputs));
-    break;
-  case NodeType::Http:
-    result = co_await execute_http_node(run_id.clone(), std::move(node),
-                                        std::move(*inputs));
-    break;
-  case NodeType::Model:
-    append_evidence(run_it->second, task_index, EvidenceType::ModelRequest);
-    result = co_await execute_model_node(run_id.clone(), std::move(node),
-                                         std::move(*inputs),
-                                         std::move(trigger));
-    break;
-  case NodeType::Tool:
-    append_evidence(run_it->second, task_index, EvidenceType::ToolRequest);
-    result = co_await execute_tool_node(run_id.clone(), std::move(node),
-                                        std::move(*inputs));
-    break;
-  default:
-    break;
-  }
+  auto result = co_await execute_command_node(
+      run_id.clone(), task_index, attempt_id.clone(), std::move(node),
+      std::move(*inputs));
 
   if (!runtime_.is_current_shard() || runtime_.current_shard() != owner) {
     runtime_.post_to(owner,
@@ -733,45 +593,6 @@ auto WorkflowRuntime::start_async_task(WorkflowRunId run_id,
     co_return;
   }
   complete_task(run_id, task_index, attempt_id, std::move(result));
-}
-
-auto WorkflowRuntime::start_compute_task(const WorkflowRunId &run_id,
-                                         std::size_t task_index,
-                                         AttemptId attempt_id) -> void {
-  auto &run = shard_states_[owner_shard(run_id)].active_runs.at(run_id.str());
-  mark_attempt_running(run, task_index, attempt_id);
-  auto inputs = input_values(run, task_index);
-  if (!inputs) {
-    complete_task(run_id, task_index, attempt_id, fail(inputs.error()));
-    return;
-  }
-
-  auto node = run.plan->nodes[task_index].plan;
-  ComputeOptions options;
-  options.priority = node.type == NodeType::Evaluator
-                         ? ComputePriority::High
-                         : ComputePriority::Normal;
-  options.start_deadline = std::chrono::steady_clock::now() + node.timeout;
-
-  auto submitted = runtime_.submit_compute(
-      owner_shard(run_id), options,
-      [this, node = std::move(node), inputs = std::move(*inputs)](
-          std::stop_token stop_token) mutable -> Result<NodeOutputs> {
-        return execute_compute_work(std::move(node), std::move(inputs),
-                                    stop_token);
-      },
-      [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
-       run_id = run_id.clone(), task_index,
-       attempt_id = attempt_id.clone()](Result<NodeOutputs> result) mutable {
-        if (!weak_lifetime.expired()) {
-          complete_task(run_id, task_index, attempt_id, std::move(result));
-        }
-      });
-  if (!submitted) {
-    complete_task(run_id, task_index, attempt_id, fail(submitted.error()));
-    return;
-  }
-  run.tasks[task_index].compute_handle = std::move(*submitted);
 }
 
 auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
@@ -807,7 +628,6 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
     return;
   }
 
-  task.compute_handle.reset();
   task.instance_id.reset();
   if (run.active_attempts > 0) {
     run.active_attempts -= 1;
@@ -900,15 +720,6 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
         attempt->exit_code = static_cast<int>(*exit_code);
       }
     }
-    if (auto *model = std::get_if<ModelResponse>(&value)) {
-      run.model_tokens_used +=
-          model->usage.input_tokens + model->usage.output_tokens;
-      if (run.model_tokens_used > run.plan->policy.budget.max_model_tokens) {
-        output_error = make_error_code(Error::ResourceExhausted);
-        break;
-      }
-    }
-
     auto stored = run.values->put(
         OutputRef{.node_id = run.plan->nodes[task_index].plan.node_id.clone(),
                   .port = port.clone()},
@@ -934,13 +745,6 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
                   make_metadata({{"attempt_id", attempt_id.str()},
                                  {"state", "succeeded"}}));
   append_evidence(run, task_index, EvidenceType::TaskCompleted);
-  if (run.plan->nodes[task_index].plan.type == NodeType::Model) {
-    append_evidence(run, task_index, EvidenceType::ModelResponse);
-  } else if (run.plan->nodes[task_index].plan.type == NodeType::Tool) {
-    append_evidence(run, task_index, EvidenceType::ToolResponse);
-  } else if (run.plan->nodes[task_index].plan.type == NodeType::Evaluator) {
-    append_evidence(run, task_index, EvidenceType::Evaluation);
-  }
 
   if (run.plan->nodes[task_index].plan.checkpoint) {
     checkpoint(run);
@@ -1072,12 +876,6 @@ auto WorkflowRuntime::conditions_pass(const ActiveRun &run,
     case ConditionKind::StringEquals:
       passed = value_to_string(**value) == edge.condition.expected_string;
       break;
-    case ConditionKind::EvaluationPassed:
-      if (const auto *evaluation =
-              std::get_if<EvaluationResult>(value->get())) {
-        passed = evaluation->passed == edge.condition.expected_bool;
-      }
-      break;
     }
     if (!passed) {
       return ok(false);
@@ -1159,9 +957,6 @@ auto WorkflowRuntime::request_stop(const WorkflowRunId &run_id,
                                        : TerminationReason::RunFailed;
       (void)transition_attempt(*attempt, AttemptState::Terminating);
       emit_task_state(run, index);
-    }
-    if (task.compute_handle) {
-      (void)task.compute_handle->request_stop();
     }
     if (task.instance_id) {
       instances_to_cancel.push_back(task.instance_id->clone());
@@ -1349,23 +1144,27 @@ auto WorkflowRuntime::checkpoint(ActiveRun &run) -> void {
 auto WorkflowRuntime::execute_command_node(WorkflowRunId run_id,
                                            std::size_t task_index,
                                            AttemptId attempt_id,
-                                           NodePlan node, InputMap)
+                                           NodePlan node, InputMap inputs)
     -> task<Result<NodeOutputs>> {
-  if (node.type != NodeType::Command) {
-    co_return fail(Error::Unsupported);
-  }
-
-  auto config = parse_node_config<CommandNodeConfig>(node.config);
-  if (!config || config->program.empty()) {
-    co_return fail(config ? Error::InvalidArgument : config.error());
+  if (node.command.program.empty()) {
+    co_return fail(Error::InvalidArgument);
   }
 
   CommandExecutorConfig command{
-      .program = std::move(config->program),
-      .arguments = std::move(config->arguments),
+      .program = std::move(node.command.program),
+      .arguments = std::move(node.command.arguments),
   };
-  for (auto &entry : config->env) {
+  for (auto &entry : node.command.env) {
     if (!command.env.emplace(std::move(entry.key), std::move(entry.value))
+             .second) {
+      co_return fail(Error::InvalidArgument);
+    }
+  }
+  for (const auto &binding : node.command.input_env) {
+    const auto input = inputs.find(binding.input);
+    if (input == inputs.end() ||
+        !command.env.emplace(binding.environment,
+                             value_to_string(*input->second))
              .second) {
       co_return fail(Error::InvalidArgument);
     }
@@ -1419,344 +1218,6 @@ auto WorkflowRuntime::execute_command_node(WorkflowRunId run_id,
     co_return fail(Error::Unknown);
   }
   co_return ok(std::move(outputs));
-}
-
-auto WorkflowRuntime::execute_http_node(WorkflowRunId, NodePlan node,
-                                        InputMap inputs)
-    -> task<Result<NodeOutputs>> {
-  auto config = parse_node_config<HttpNodeConfig>(node.config);
-  if (!config) {
-    co_return fail(config.error());
-  }
-  if (config->url.empty()) {
-    co_return fail(Error::InvalidArgument);
-  }
-
-  auto parsed = util::parse_http_url(config->url);
-  if (!parsed) {
-    co_return fail(parsed.error());
-  }
-
-  const auto client_config = http::HttpClientConfig{
-      .connect_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
-          node.timeout),
-      .read_timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
-          node.timeout)};
-  auto client = parsed->tls
-                    ? co_await http::HttpClient::connect_tls(
-                          current_io_context(), parsed->host, parsed->port,
-                          client_config)
-                    : co_await http::HttpClient::connect_tcp(
-                          current_io_context(), parsed->host, parsed->port,
-                          client_config);
-  if (!client) {
-    co_return fail(client.error());
-  }
-
-  http::HttpRequest request;
-  const auto method = config->method;
-  if (method == "POST") {
-    request.method = http::HttpMethod::POST;
-  } else if (method == "PUT") {
-    request.method = http::HttpMethod::PUT;
-  } else if (method == "DELETE") {
-    request.method = http::HttpMethod::DELETE;
-  } else if (method == "PATCH") {
-    request.method = http::HttpMethod::PATCH;
-  } else {
-    request.method = http::HttpMethod::GET;
-  }
-  request.path = parsed->path;
-  for (const auto &header : config->headers) {
-    request.headers.add(header.key, header.value);
-  }
-
-  std::string body = config->body;
-  if (!config->body_input.empty()) {
-    const auto input = inputs.find(config->body_input);
-    if (input == inputs.end()) {
-      co_return fail(Error::NotFound);
-    }
-    body = value_to_string(*input->second);
-  }
-  request.body.assign(body.begin(), body.end());
-
-  auto response = co_await (*client)->request(std::move(request));
-  (*client)->close();
-  if (!response) {
-    co_return fail(response.error());
-  }
-  const auto status = static_cast<int>(response->status);
-  if (config->expected_status > 0 && status != config->expected_status) {
-    co_return fail(Error::ProtocolError);
-  }
-
-  std::string response_body(response->body.begin(), response->body.end());
-  NodeOutputs outputs;
-  add_output(outputs, node, "status", static_cast<std::int64_t>(status));
-  add_output(outputs, node, "body", response_body);
-  add_output(outputs, node, "result", std::move(response_body));
-  co_return ok(std::move(outputs));
-}
-
-auto WorkflowRuntime::execute_model_node(WorkflowRunId run_id, NodePlan node,
-                                         InputMap inputs,
-                                         TriggerEnvelope trigger)
-    -> task<Result<NodeOutputs>> {
-  if (!adapters_.invoke_model) {
-    co_return fail(Error::Unsupported);
-  }
-  auto config = parse_node_config<ModelNodeConfig>(node.config);
-  if (!config) {
-    co_return fail(config.error());
-  }
-  if (config->model.empty()) {
-    co_return fail(Error::InvalidArgument);
-  }
-
-  MessageList messages;
-  if (!config->system_prompt.empty()) {
-    messages.push_back(Message{.role = "system",
-                               .content = config->system_prompt});
-  }
-  std::string prompt = config->prompt;
-  if (config->prompt_input == "$trigger") {
-    prompt.append(value_to_string(trigger.payload));
-  } else if (!config->prompt_input.empty()) {
-    const auto input = inputs.find(config->prompt_input);
-    if (input == inputs.end()) {
-      co_return fail(Error::NotFound);
-    }
-    prompt.append(value_to_string(*input->second));
-  }
-  messages.push_back(Message{.role = "user", .content = std::move(prompt)});
-
-  auto response = co_await adapters_.invoke_model(ModelCall{
-      .run_id = run_id.clone(),
-      .node_id = node.node_id.clone(),
-      .provider = std::move(config->provider),
-      .model = std::move(config->model),
-      .messages = std::move(messages),
-      .response_schema = std::move(config->response_schema),
-      .max_output_tokens = config->max_output_tokens,
-      .temperature = config->temperature,
-      .credential = std::move(config->credential),
-      .deadline = std::chrono::steady_clock::now() + node.timeout,
-  });
-  if (!response) {
-    co_return fail(response.error());
-  }
-
-  NodeOutputs outputs;
-  if (response->structured_output) {
-    add_output(outputs, node, "structured_output",
-               *response->structured_output);
-  }
-  add_output(outputs, node, "text", response->message.content);
-  add_output(outputs, node, "result", std::move(*response));
-  co_return ok(std::move(outputs));
-}
-
-auto WorkflowRuntime::execute_tool_node(WorkflowRunId run_id, NodePlan node,
-                                        InputMap inputs)
-    -> task<Result<NodeOutputs>> {
-  if (!adapters_.invoke_tool) {
-    co_return fail(Error::Unsupported);
-  }
-  auto config = parse_node_config<ToolNodeConfig>(node.config);
-  if (!config) {
-    co_return fail(config.error());
-  }
-  if (config->tool.empty()) {
-    co_return fail(Error::InvalidArgument);
-  }
-
-  auto arguments = std::move(config->arguments);
-  if (!config->arguments_input.empty()) {
-    const auto input = inputs.find(config->arguments_input);
-    if (input == inputs.end()) {
-      co_return fail(Error::NotFound);
-    }
-    if (const auto *json = std::get_if<JsonValue>(input->second.get())) {
-      arguments = *json;
-    } else {
-      auto parsed = parse_json(value_to_string(*input->second));
-      if (!parsed) {
-        co_return fail(parsed.error());
-      }
-      arguments = std::move(*parsed);
-    }
-  }
-
-  auto result = co_await adapters_.invoke_tool(ToolInvocation{
-      .run_id = run_id.clone(),
-      .node_id = node.node_id.clone(),
-      .tool = std::move(config->tool),
-      .arguments = std::move(arguments),
-      .credential = std::move(config->credential),
-      .deadline = std::chrono::steady_clock::now() + node.timeout,
-  });
-  if (!result) {
-    co_return fail(result.error());
-  }
-  if (!result->success) {
-    co_return fail(Error::Unknown);
-  }
-
-  NodeOutputs outputs;
-  add_output(outputs, node, "output", result->output);
-  add_output(outputs, node, "result", std::move(*result));
-  co_return ok(std::move(outputs));
-}
-
-auto WorkflowRuntime::execute_inline_node(const NodePlan &node,
-                                          const InputMap &inputs) const
-    -> Result<NodeOutputs> {
-  if (node.type != NodeType::Noop) {
-    return fail(Error::Unsupported);
-  }
-  NodeOutputs outputs;
-  if (inputs.empty()) {
-    add_output(outputs, node, "result", true);
-  } else {
-    add_output(outputs, node, "result", *inputs.begin()->second);
-  }
-  return ok(std::move(outputs));
-}
-
-auto WorkflowRuntime::execute_compute_work(NodePlan node, InputMap inputs,
-                                           std::stop_token stop_token)
-    -> Result<NodeOutputs> {
-  if (stop_token.stop_requested()) {
-    return fail(Error::Cancelled);
-  }
-
-  if (node.type == NodeType::Compute) {
-    auto config = parse_node_config<ComputeNodeConfig>(node.config);
-    if (!config) {
-      return fail(config.error());
-    }
-    auto names = ordered_input_names(inputs, config->input_order);
-    if (!names) {
-      return fail(names.error());
-    }
-
-    WorkflowValue result;
-    if (config->operation == "identity") {
-      auto input = first_input(inputs);
-      if (!input) {
-        return fail(input.error());
-      }
-      result = **input;
-    } else if (config->operation == "concat") {
-      std::string text;
-      for (const auto &name : *names) {
-        if (stop_token.stop_requested()) {
-          return fail(Error::Cancelled);
-        }
-        if (!text.empty()) {
-          text.append(config->separator);
-        }
-        text.append(value_to_string(*inputs.at(name)));
-      }
-      result = std::move(text);
-    } else if (config->operation == "sha256") {
-      auto input = first_input(inputs);
-      if (!input) {
-        return fail(input.error());
-      }
-      auto digest = sha256_text(value_to_string(**input));
-      if (!digest) {
-        return fail(digest.error());
-      }
-      result = std::move(*digest);
-    } else if (config->operation == "json_parse") {
-      auto input = first_input(inputs);
-      if (!input) {
-        return fail(input.error());
-      }
-      auto parsed = parse_json(value_to_string(**input));
-      if (!parsed) {
-        return fail(parsed.error());
-      }
-      result = std::move(*parsed);
-    } else if (config->operation == "json_stringify") {
-      auto input = first_input(inputs);
-      if (!input) {
-        return fail(input.error());
-      }
-      result = value_to_string(**input);
-    } else {
-      return fail(Error::Unsupported);
-    }
-
-    NodeOutputs outputs;
-    add_output(outputs, node, "result", std::move(result));
-    return ok(std::move(outputs));
-  }
-
-  if (node.type == NodeType::Evaluator) {
-    auto config = parse_node_config<EvaluatorNodeConfig>(node.config);
-    if (!config) {
-      return fail(config.error());
-    }
-    std::shared_ptr<const WorkflowValue> input;
-    if (!config->input.empty()) {
-      const auto it = inputs.find(config->input);
-      if (it == inputs.end()) {
-        return fail(Error::NotFound);
-      }
-      input = it->second;
-    } else {
-      auto first = first_input(inputs);
-      if (!first) {
-        return fail(first.error());
-      }
-      input = std::move(*first);
-    }
-
-    EvaluationResult evaluation;
-    if (config->operation == "truthy") {
-      evaluation.passed = value_truthy(*input);
-      evaluation.score = evaluation.passed ? 1.0 : 0.0;
-      evaluation.reason = evaluation.passed ? "value is truthy" :
-                                              "value is not truthy";
-    } else if (config->operation == "equals") {
-      evaluation.passed = value_to_string(*input) == config->expected;
-      evaluation.score = evaluation.passed ? 1.0 : 0.0;
-      evaluation.reason = evaluation.passed ? "values match" :
-                                              "values do not match";
-    } else if (config->operation == "contains") {
-      evaluation.passed =
-          value_to_string(*input).find(config->expected) != std::string::npos;
-      evaluation.score = evaluation.passed ? 1.0 : 0.0;
-      evaluation.reason = evaluation.passed ? "substring found" :
-                                              "substring not found";
-    } else if (config->operation == "score_at_least") {
-      const auto *prior = std::get_if<EvaluationResult>(input.get());
-      if (!prior) {
-        return fail(Error::InvalidArgument);
-      }
-      evaluation.passed = prior->score >= config->minimum_score;
-      evaluation.score = prior->score;
-      evaluation.reason = evaluation.passed ? "score threshold met" :
-                                              "score threshold not met";
-    } else {
-      return fail(Error::Unsupported);
-    }
-    evaluation.evidence = make_metadata(
-        {{"input", value_to_string(*input)},
-         {"expected", config->expected},
-         {"operation", config->operation}});
-
-    NodeOutputs outputs;
-    add_output(outputs, node, "passed", evaluation.passed);
-    add_output(outputs, node, "score", evaluation.score);
-    add_output(outputs, node, "result", std::move(evaluation));
-    return ok(std::move(outputs));
-  }
-
-  return fail(Error::Unsupported);
 }
 
 auto WorkflowRuntime::snapshot(const WorkflowRunId &run_id) const

@@ -29,11 +29,6 @@ namespace dagforge::workflow {
 
 using NodeOutputs = std::vector<std::pair<WorkflowPortId, WorkflowValue>>;
 
-struct WorkflowAdapters {
-  std::move_only_function<task<Result<ModelResponse>>(ModelCall)> invoke_model;
-  std::move_only_function<task<Result<ToolResult>>(ToolInvocation)> invoke_tool;
-};
-
 struct WorkflowCallbacks {
   std::move_only_function<void(const RunSnapshot &)> on_run_state;
   std::move_only_function<void(const WorkflowRunId &, const TaskSnapshot &)>
@@ -52,8 +47,7 @@ public:
       std::shared_ptr<EvidenceLedger> evidence_ledger =
           std::make_shared<EvidenceLedger>(),
       std::shared_ptr<CheckpointStore> checkpoint_store =
-          std::make_shared<CheckpointStore>(),
-      WorkflowAdapters adapters = {});
+          std::make_shared<CheckpointStore>());
   ~WorkflowRuntime();
 
   WorkflowRuntime(const WorkflowRuntime &) = delete;
@@ -94,7 +88,6 @@ private:
 
   struct TaskRuntimeState {
     TaskSnapshot snapshot;
-    std::optional<ComputeTaskHandle> compute_handle;
     std::optional<InstanceId> instance_id;
     io::TimingWheel::Handle retry_handle;
   };
@@ -108,7 +101,6 @@ private:
     std::deque<std::size_t> ready;
     std::size_t active_attempts{0};
     bool dispatching{false};
-    std::uint64_t model_tokens_used{0};
     io::TimingWheel::Handle deadline_handle;
     WorkflowCallbacks callbacks;
   };
@@ -133,9 +125,6 @@ private:
   auto start_async_task(WorkflowRunId run_id, std::size_t task_index,
                         AttemptId attempt_id)
       -> spawn_task;
-  auto start_compute_task(const WorkflowRunId &run_id, std::size_t task_index,
-                          AttemptId attempt_id)
-      -> void;
   auto complete_task(const WorkflowRunId &run_id, std::size_t task_index,
                      const AttemptId &attempt_id, Result<NodeOutputs> result)
       -> void;
@@ -180,29 +169,12 @@ private:
                                           AttemptId attempt_id,
                                           NodePlan node, InputMap inputs)
       -> task<Result<NodeOutputs>>;
-  [[nodiscard]] auto execute_http_node(WorkflowRunId run_id, NodePlan node,
-                                       InputMap inputs)
-      -> task<Result<NodeOutputs>>;
-  [[nodiscard]] auto execute_model_node(WorkflowRunId run_id, NodePlan node,
-                                        InputMap inputs, TriggerEnvelope trigger)
-      -> task<Result<NodeOutputs>>;
-  [[nodiscard]] auto execute_tool_node(WorkflowRunId run_id, NodePlan node,
-                                       InputMap inputs)
-      -> task<Result<NodeOutputs>>;
-  [[nodiscard]] auto execute_inline_node(const NodePlan &node,
-                                         const InputMap &inputs) const
-      -> Result<NodeOutputs>;
-  [[nodiscard]] static auto execute_compute_work(NodePlan node,
-                                                 InputMap inputs,
-                                                 std::stop_token stop_token)
-      -> Result<NodeOutputs>;
 
   Runtime &runtime_;
   IExecutor &executor_;
   std::shared_ptr<IArtifactStore> artifact_store_;
   std::shared_ptr<EvidenceLedger> evidence_ledger_;
   std::shared_ptr<CheckpointStore> checkpoint_store_;
-  WorkflowAdapters adapters_;
   std::vector<ShardState> shard_states_;
   std::shared_ptr<int> lifetime_token_{std::make_shared<int>(0)};
   mutable std::mutex idempotency_mutex_;
