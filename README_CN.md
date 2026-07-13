@@ -1,94 +1,141 @@
 # DAGForge
 
-**使用 C++23 构建的通用、高性能 DAG 运行时。**
+<div align="center">
+
+**基于现代 C++23 构建的高性能、分片式工作流运行时**
+
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg?style=flat-square&logo=c%2B%2B)](https://en.cppreference.com/w/cpp/23)
+[![License](https://img.shields.io/badge/license-Apache--2.0-white?labelColor=black&style=flat-square)](LICENSE)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/CHAK-MING/DAGForge)
+[![Release](https://img.shields.io/github/v/release/CHAK-MING/dagforge?include_prereleases&style=flat-square)](https://github.com/CHAK-MING/dagforge/releases)
 
 [English](README.md) | [简体中文](README_CN.md)
 
-DAGForge 0.4 定位为可编程工作流的底层执行层。上层应用——例如 Python
-实现的 AI Planner——生成版本化 Workflow Plan；DAGForge 负责严格校验、
-编译、调度、执行、观测和取消，并提供确定的运行语义。
+</div>
 
-自然语言理解、意图拆解、Agent Loop 和失败后的重新规划不属于底层运行时，
-应由上层 AI 应用负责。
+---
 
-## 架构
+## ⚡ 什么是 DAGForge？
+
+**DAGForge** 是一个通用 DAG 工作流运行时。上层应用提交 Workflow Plan，
+DAGForge 负责校验、编译、调度、执行、暂停、恢复、取消和观测，并提供明确、
+可重复的运行时语义。
+
+运行时采用 Shard 所有权模型、C++23 协程和有界并发，减少多核环境中的共享
+状态竞争。自然语言理解、计划生成和 Agent Loop 属于上层应用，不进入运行时
+核心。
+
+---
+
+## ✨ 核心特性
+
+- **🚀 分片运行时：** 每个 Workflow Run 归属固定 Owner Shard，运行状态采用单写者模型。
+- **🧱 不可变执行计划：** 严格的 JSON 或 TOML Workflow Plan 编译为不可变 Execution Plan。
+- **✅ 编译期准入校验：** 执行前校验节点、依赖、环、端口、条件边、策略、重试设置和资源预算。
+- **🔗 显式强类型数据流：** 节点只通过声明的输入绑定和输出端口传递值，不依赖隐藏共享状态。
+- **🛡️ 强制命令沙箱：** Command 是唯一启动外部进程的执行器，不提供非沙箱降级路径。
+- **🔄 Run / Task / Attempt 状态机：** 暂停、恢复、延迟重试、超时、Fail-fast、取消和进程回收都有明确状态。
+- **📦 Artifact：** 大型值可外置为 Artifact 引用，避免在节点之间复制大对象。
+- **🧾 Evidence 与 Checkpoint：** 记录关键运行事件，并在指定任务边界生成检查点。
+- **🔁 幂等触发：** 相同幂等键复用已有 Run，避免重复执行。
+- **📡 可选 HTTP 控制面：** 提供 Plan、Run、输出、Evidence、生命周期控制、健康检查和 Prometheus 指标。
+
+---
+
+## 🏗️ 运行架构
 
 ```text
-AI 应用 / 工作流作者
-        |
-        v
-  WorkflowPlan v1
-        |
-        v
-   PlanCompiler
-        |
-        v
-不可变 ExecutionPlan
-        |
-        v
-  WorkflowRuntime
- /       |        \
-执行器  计算池    适配器
+上层应用 / 工作流作者
+          |
+          v
+   Workflow Plan v1
+          |
+          v
+     Plan Compiler
+          |
+          v
+  Immutable Execution Plan
+          |
+          v
+    Workflow Runtime
+   /        |          \
+Command  ComputePool  Adapter
+Executor
+   |
+   v
+Minijail Sandbox
 ```
 
-当前运行时提供：
+Workflow Plan 描述执行意图；运行时负责确定性的校验、状态转换、调度、输出传播
+和执行清理。
 
-- 基于 Boost.Asio 和 C++23 协程的 owner-shard 工作流执行；
-- 不可变执行计划，以及环、端口、策略和资源校验；
-- 显式、强类型的节点输出和输入绑定；
-- 有界并发、运行时限、节点超时、重试和取消；
-- Shell、Docker、Lua、HTTP、Compute、Model、Tool、Evaluator、Approval、
-  Noop 节点；
-- 大值 Artifact 外置；
-- Checkpoint、Evidence、幂等触发和人工审批 Gate；
-- REST 控制面和 Prometheus 指标。
+---
 
-当前 Checkpoint、Evidence、Artifact、Plan 和已完成 Run 使用内存适配器。
-持久化恢复是后续 0.4 里程碑，当前版本不宣称进程重启后可恢复。
+## 🧩 执行模型
 
-## 环境要求
+`CommandExecutor` 是唯一会启动外部进程的执行器。Command 必须使用绝对程序
+路径和显式参数数组，运行时不会隐式插入 Shell。
 
-- Linux x86-64 或 ARM64
+当前 Workflow Plan 还提供以下运行时算子和适配器：
+
+| 类型 | 用途 |
+| --- | --- |
+| `command` | 在强制沙箱中执行外部程序 |
+| `http` | 通过运行时 HTTP 适配器调用服务 |
+| `model` | 调用配置的模型 Provider |
+| `tool` | 调用配置的 MCP Tool |
+| `compute` | 在有界 ComputePool 中执行内置操作 |
+| `evaluator` | 生成结构化评估结果 |
+| `noop` | 用于流程连通、占位和测试 |
+
+这些类型是 Workflow 语义，不是独立的进程执行器。
+
+---
+
+## 🛡️ Command 沙箱
+
+Command 通过固定版本的 Google Minijail Helper 启动。每个 Command 都会获得：
+
+- 独立的 user、PID、mount、network、IPC、UTS 和 cgroup namespace；
+- Landlock 文件系统限制；
+- seccomp denylist 和 `no_new_privs`；
+- 独立且限制大小的 `/tmp`；
+- 内存、文件、进程、文件描述符、CPU 和运行时限；
+- 独立可写 Workspace。
+
+沙箱二进制、策略文件或必要内核能力缺失时，任务直接失败。DAGForge 不会退回
+宿主机直接执行。
+
+---
+
+## 🚀 快速开始
+
+### 1) 环境准备
+
+- 支持 user namespace、seccomp 和 Landlock 的 Linux x86-64 或 ARM64
 - GCC 15+
 - build2 0.17+
 - Boost 1.88+
-- OpenSSL 开发库
+- OpenSSL 和 libcap 开发包
+- 用于构建固定 Minijail 的 Git、Make 和 Python 3
 
-0.4 Runtime Core 不依赖 MySQL 或 Node.js。
-
-## 构建
+### 2) 源码构建
 
 ```bash
 ./scripts/setup-build2.sh
+./scripts/install-minijail.sh
 ./scripts/build.sh
 ```
 
-构建脚本会输出实际 build2 配置目录和产物路径。构建后可执行：
+构建脚本会输出使用的 build2 配置和可执行文件路径。
 
-```bash
-~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/all-unit-tests
-```
-
-## 配置
-
-当前支持四个顶层配置区段：
-
-- `[runtime]`：Shard 数量和 CPU 亲和性；
-- `[compute]`：有界 CPU 计算池；
-- `[workflow]`：工作流适配器和 Provider 配置；
-- `[api]`：HTTP 控制面。
-
-完整示例见 [`system_config.toml`](system_config.toml)。
-
-## CLI
-
-校验工作流：
+### 3) 校验 Workflow Plan
 
 ```bash
 dagforge validate --file dags/hello_world.toml
 ```
 
-本地运行并等待结束：
+### 4) 本地运行
 
 ```bash
 dagforge run \
@@ -97,15 +144,35 @@ dagforge run \
   --wait
 ```
 
-启动 REST 服务：
+可通过 `--payload` 传入 JSON 或文本触发数据：
+
+```bash
+dagforge run \
+  --config system_config.toml \
+  --file dags/hello_world.toml \
+  --payload '{"request":"hello"}' \
+  --wait
+```
+
+### 5) 启动 HTTP 控制面
 
 ```bash
 dagforge serve --config system_config.toml
 ```
 
-## Workflow Plan
+### 6) Docker Compose
 
-最小 TOML Plan：
+```bash
+docker compose up --build
+```
+
+---
+
+## 📝 Workflow Plan
+
+DAGForge 接受严格的 JSON 或 TOML Workflow Plan，未知字段会被拒绝。
+
+最小 TOML 示例：
 
 ```toml
 workflow_id = "hello-world"
@@ -120,30 +187,116 @@ timeout_sec = 30
 [nodes.config]
 ```
 
-Plan 支持严格 JSON 或 TOML；未知字段会被拒绝。
+沙箱 Command 示例：
 
-## HTTP 控制面
+```toml
+[[nodes]]
+id = "render"
+type = "command"
+outputs = ["stdout", "stderr", "exit_code", "result"]
+timeout_sec = 30
 
-服务提供 Plan 注册、工作流启动、Run 状态、输出、Evidence、Approval、取消、
-健康检查、状态和指标接口。详见 [`docs/API.md`](docs/API.md)。
+[nodes.config]
+program = "/usr/bin/python3"
+arguments = ["-c", "print('hello from the sandbox')"]
+env = [{ key = "MODE", value = "test" }]
+```
 
-## Benchmark
+完整约定见 [`dags/hello_world.toml`](dags/hello_world.toml) 和
+[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)。
 
-0.4 只保留直接衡量当前 Runtime、ComputePool 和 Lua Executor 的基准：
+---
+
+## 🔄 状态模型
+
+Plan 中的 Node 在运行时投影为 Task，每次真实执行都会创建独立 Attempt 记录。
+
+| 层级 | 状态 |
+| --- | --- |
+| Run | `running`、`pausing`、`paused`、`stopping`、`succeeded`、`failed`、`cancelled` |
+| Task | `pending`、`ready`、`running`、`retry_waiting`、`succeeded`、`failed`、`skipped`、`cancelled` |
+| Attempt | `starting`、`running`、`terminating`、`succeeded`、`failed`、`timed_out`、`cancelled` |
+
+暂停只停止新任务派发，已运行的 Attempt 会正常结束。取消和 Fail-fast 会保持
+`stopping`，直到所有活动 Attempt 终止并完成进程回收。
+
+---
+
+## ⚙️ 系统配置
+
+配置文件包含五个顶层区段：
+
+| 区段 | 用途 |
+| --- | --- |
+| `[runtime]` | Shard 数量和 CPU 亲和性 |
+| `[compute]` | 有界计算线程池和线程亲和性 |
+| `[sandbox]` | Minijail 路径、Workspace 根目录和资源限制 |
+| `[workflow]` | Workflow 开关和 Adapter/Provider 配置 |
+| `[api]` | 可选 HTTP 地址、端口和 TLS 配置 |
+
+完整配置见 [`system_config.toml`](system_config.toml)。
+
+---
+
+## 📡 HTTP 控制面
+
+当 `[api].enabled = true` 时，HTTP 服务提供：
+
+- Plan 注册和列表；
+- Workflow Run 创建和状态查询；
+- Task 输出和 Evidence 查询；
+- 暂停、恢复和取消；
+- 健康检查、运行状态和 Prometheus 指标。
+
+API 禁用时不会分配 HTTP Server。当前控制面没有内置认证中间件，开发环境外
+应绑定回环地址，或部署在可信网关之后。
+
+接口说明见 [`docs/API.md`](docs/API.md)。
+
+---
+
+## 💾 存储边界
+
+Plan、活动与已完成 Run、Checkpoint、Evidence 和 Artifact 当前使用内存适配器。
+当前版本不提供进程重启恢复和持久化事件存储。
+
+---
+
+## 🧪 测试与基准
+
+运行全部单元测试和集成测试：
+
+```bash
+~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/all-unit-tests
+```
+
+运行 Runtime 和内存基准：
 
 ```bash
 ~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/bench-core
 ```
 
-旧 Airflow 风格基准测试的是已经退役的 0.3 Scheduler/Storage 栈，因此已删除。
+---
 
-## 文档
+## 📚 文档指南
 
-- [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)
-- [`docs/API.md`](docs/API.md)
-- [`docs/CLANGD_SETUP.md`](docs/CLANGD_SETUP.md)
-- [`docs/BENCH_REPORT.md`](docs/BENCH_REPORT.md)
+- **[用户指南](docs/USER_GUIDE.md)** — Workflow Plan、配置和运行语义。
+- **[API 参考](docs/API.md)** — HTTP 控制面接口。
+- **[状态机 ADR](docs/adr/0001-run-task-attempt-state-machine.md)** — Run、Task 和 Attempt 设计。
+- **[Clangd 配置](docs/CLANGD_SETUP.md)** — Modules 和编辑器索引。
+- **[基准说明](docs/BENCH_REPORT.md)** — 当前基准目标和报告规则。
 
-## License
+---
 
-Apache License 2.0，详见 [`LICENSE`](LICENSE)。
+## 🤝 贡献代码
+
+1. Fork 本仓库。
+2. 创建功能分支。
+3. 提交代码和测试。
+4. 推送分支并创建 Pull Request。
+
+---
+
+## 📄 开源协议
+
+基于 **Apache License 2.0** 协议发布。详情请参阅 [`LICENSE`](LICENSE)。

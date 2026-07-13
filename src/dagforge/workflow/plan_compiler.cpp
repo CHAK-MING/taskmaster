@@ -184,7 +184,7 @@ template <typename T>
 } // namespace
 
 auto PolicyEngine::validate(const WorkflowPlan &plan) const -> Result<void> {
-  if (plan.workflow_id.empty() || plan.schema_version != 2 ||
+  if (plan.workflow_id.empty() || plan.schema_version != 1 ||
       plan.nodes.empty()) {
     return fail(Error::InvalidArgument);
   }

@@ -282,7 +282,7 @@ TEST(WorkflowPlanLoaderTest, ParsesJsonAndTomlPlans) {
 
   constexpr std::string_view toml_text = R"(
 workflow_id = "loader-toml"
-schema_version = 2
+schema_version = 1
 
 [[nodes]]
 id = "noop"
@@ -305,7 +305,7 @@ checkpoint = true
 
   constexpr std::string_view command_toml = R"(
 workflow_id = "loader-command"
-schema_version = 2
+schema_version = 1
 
 [[nodes]]
 id = "command"
@@ -509,9 +509,9 @@ TEST(WorkflowPlanCompilerTest, RejectsUnknownFailurePolicy) {
   EXPECT_EQ(compiled.error(), make_error_code(Error::InvalidArgument));
 }
 
-TEST(WorkflowPlanCompilerTest, RejectsSchemaVersionOne) {
+TEST(WorkflowPlanCompilerTest, RejectsUnknownSchemaVersion) {
   auto plan = base_plan("old-schema");
-  plan.schema_version = 1;
+  plan.schema_version = 2;
   plan.nodes.push_back(NodePlan{
       .node_id = WorkflowNodeId{"noop"},
       .type = NodeType::Noop,

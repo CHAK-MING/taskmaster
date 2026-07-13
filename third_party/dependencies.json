@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "as_of": "2026-07-11",
+  "as_of": "2026-07-13",
   "vendored_dependencies": [
     {
       "name": "glaze",
@@ -53,19 +53,6 @@
       "license": "MIT",
       "license_path": "third_party/prometheus-cpp-core/licenses/LICENSE",
       "update_policy": "Refresh from a tagged core snapshot and revalidate the selected source subset."
-    },
-    {
-      "name": "lua",
-      "version": "5.4.8",
-      "upstream_tag": null,
-      "upstream_commit": null,
-      "source_url": "https://www.lua.org/ftp/lua-5.4.8.tar.gz",
-      "vendored_path": "third_party/lua-5.4.8",
-      "vendored_content": "official source distribution",
-      "tree_sha256": "8f96f48d59affa6dafe7c52c134758f8c319cec097e0eb9a0de5926f15701884",
-      "license": "MIT",
-      "license_path": "third_party/lua-5.4.8/doc/readme.html",
-      "update_policy": "Frozen historical snapshot; DAGForge 0.4 does not compile or link Lua. Reintroduction requires an ADR and security review."
     }
   ]
 }

@@ -7,8 +7,7 @@ intf_libs = -lboost_url
 ./: lib{dagforge-foundation}: libul{dagforge-foundation}: \
   mxx{modules/base modules/core modules/util modules/domain modules/io \
       modules/config modules/client modules/executor modules/workflow \
-      modules/dagforge} \
-  cxx{modules/http}
+      modules/dagforge}
 
 lib{dagforge-foundation}:
 {
@@ -44,7 +43,6 @@ lib{dagforge}:                                                   \
       dagforge/app/http/router                                    \
       dagforge/app/http/http_server                               \
       dagforge/client/http/http_client                            \
-      dagforge/app/http/websocket                                 \
       dagforge/config/system_config_loader                        \
       dagforge/util/daemon                                        \
       dagforge/util/log}                                          \

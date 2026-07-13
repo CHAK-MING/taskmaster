@@ -171,11 +171,11 @@ Environment overrides:
 
 ## 3. Workflow Plan v1
 
-Plans are accepted as JSON or TOML. `schema_version` must be `2`.
+Plans are accepted as JSON or TOML. `schema_version` must be `1`.
 
 ```toml
 workflow_id = "hello-world"
-schema_version = 2
+schema_version = 1
 
 [[nodes]]
 id = "start"

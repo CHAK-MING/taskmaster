@@ -138,30 +138,6 @@ private:
   return beast_http::obsolete_reason(static_cast<beast_http::status>(status));
 }
 
-class QueryParams {
-public:
-  QueryParams() = default;
-  explicit QueryParams(std::string_view query_string);
-
-  [[nodiscard]] auto get(std::string_view key) const -> Result<std::string> {
-    auto it = params_.find(key);
-    if (it != params_.end()) {
-      return ok(it->second);
-    }
-    return fail(Error::NotFound);
-  }
-
-  [[nodiscard]] auto has(std::string_view key) const -> bool {
-    return params_.contains(key);
-  }
-  [[nodiscard]] auto size() const -> std::size_t { return params_.size(); }
-
-private:
-  std::unordered_map<std::string, std::string, dagforge::StringHash,
-                     dagforge::StringEqual>
-      params_;
-};
-
 struct HttpRequest {
   HttpMethod method{HttpMethod::GET};
   std::string path;
@@ -177,18 +153,6 @@ struct HttpRequest {
 
   [[nodiscard]] auto header(std::string_view key) const -> Result<std::string> {
     return headers.get(key);
-  }
-
-  [[nodiscard]] auto is_websocket_upgrade() const -> bool {
-    auto upgrade = header("Upgrade");
-    auto connection = header("Connection");
-
-    if (!upgrade || !connection) {
-      return false;
-    }
-
-    return boost::algorithm::iequals(*upgrade, "websocket") &&
-           boost::algorithm::icontains(*connection, "upgrade");
   }
 
   [[nodiscard]] auto body_as_string() const -> std::string_view {

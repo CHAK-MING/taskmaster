@@ -1,9 +1,8 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include "dagforge/app/http/websocket.hpp"
-#include "dagforge/io/result.hpp"
-#include "dagforge/util/id.hpp"
+#include "dagforge/app/metrics_registry.hpp"
+#include "dagforge/core/error.hpp"
 #endif
 
 #include <memory>
@@ -18,7 +17,6 @@ class Application;
 
 namespace http {
 class HttpServer;
-class WebSocketHub;
 } // namespace http
 
 class ApiServer {
@@ -29,8 +27,6 @@ public:
   [[nodiscard]] auto start() -> Result<void>;
   void stop();
   [[nodiscard]] bool is_running() const;
-  http::WebSocketHub &websocket_hub();
-  [[nodiscard]] auto websocket_hub() const -> const http::WebSocketHub &;
 
   [[nodiscard]] auto http_active_requests() const -> std::uint64_t;
   [[nodiscard]] auto http_request_counts() const

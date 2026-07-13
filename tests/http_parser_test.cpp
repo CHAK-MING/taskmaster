@@ -119,16 +119,3 @@ TEST(HttpHeadersTest, PreservesDuplicatesAndSetsCaseInsensitively) {
   ASSERT_TRUE(headers.get("set-cookie").has_value());
   EXPECT_EQ(*headers.get("set-cookie"), "c=3");
 }
-
-TEST(HttpParserTest, QueryParamsDecodesPercentEncodedComponents) {
-  http::QueryParams params{"name=hello%20world&empty&pointer=%2Fitems%2F0"};
-  EXPECT_EQ(*params.get("name"), "hello world");
-  EXPECT_EQ(*params.get("empty"), "");
-  EXPECT_EQ(*params.get("pointer"), "/items/0");
-}
-
-TEST(HttpParserTest, QueryParamsIgnoresInvalidEncoding) {
-  http::QueryParams params{"dag_id=%zz&limit=10"};
-  EXPECT_FALSE(params.has("dag_id"));
-  EXPECT_EQ(params.size(), 0U);
-}

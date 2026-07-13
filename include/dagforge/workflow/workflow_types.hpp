@@ -245,7 +245,7 @@ struct NodePlan {
 
 struct WorkflowPlan {
   WorkflowId workflow_id;
-  std::uint32_t schema_version{2};
+  std::uint32_t schema_version{1};
   std::vector<NodePlan> nodes;
   std::vector<ConditionalEdge> edges;
   std::vector<OutputRef> outputs;

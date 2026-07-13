@@ -8,8 +8,6 @@ All notable changes to DAGForge will be documented in this file.
 - Replaced the flat run/node lifecycle with explicit Run, Task, and Attempt
   state machines. Cancellation and fail-fast now remain `stopping` until every
   active attempt is reaped.
-- Raised the Workflow Plan schema version to 2 for the new lifecycle, retry,
-  and failure-policy contract.
 - Removed Approval nodes and approval control-plane routes. External waits are
   no longer modeled as executors.
 - Removed XCom and XCom-based branching from the C++ runtime, including persistence, APIs, CLI, metrics, modules, tests, and examples.
@@ -28,6 +26,10 @@ All notable changes to DAGForge will be documented in this file.
 - Added a pinned Google Minijail helper with user/PID/mount/network/IPC/UTS/cgroup namespaces, Landlock, seccomp, private tmpfs, resource limits, integration tests, and release packaging.
 
 ### Changed
+- Removed the unused vendored Lua source distribution and its verification
+  metadata.
+- Removed the unused QueryParams helper and WebSocket stack; the optional API
+  now contains only the HTTP control plane used by the runtime.
 - Enum metadata and JSON/TOML enum serialization now share Glaze `enumerate` definitions.
 - HTTP headers use Boost.Beast fields, preserving case-insensitive lookup and duplicate fields.
 - Shard hashes use `ankerl::unordered_dense` hashing.

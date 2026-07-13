@@ -1,70 +1,137 @@
 # DAGForge
 
-**A general-purpose, high-performance DAG runtime built with C++23.**
+<div align="center">
+
+**A high-performance, sharded workflow runtime built with modern C++23**
+
+[![C++23](https://img.shields.io/badge/C%2B%2B-23-blue.svg?style=flat-square&logo=c%2B%2B)](https://en.cppreference.com/w/cpp/23)
+[![License](https://img.shields.io/badge/license-Apache--2.0-white?labelColor=black&style=flat-square)](LICENSE)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/CHAK-MING/DAGForge)
+[![Release](https://img.shields.io/github/v/release/CHAK-MING/dagforge?include_prereleases&style=flat-square)](https://github.com/CHAK-MING/dagforge/releases)
 
 [English](README.md) | [简体中文](README_CN.md)
 
-DAGForge 0.4 is the execution layer for programmable workflows. An upstream
-application—such as a Python AI planner—produces a versioned workflow plan;
-DAGForge validates, compiles, schedules, executes, observes, and cancels that
-plan with deterministic runtime semantics.
+</div>
 
-The runtime does not interpret natural language or own an agent loop. Those
-concerns belong above the execution seam.
+---
 
-## Architecture
+## ⚡ What is DAGForge?
+
+**DAGForge** is a general-purpose DAG workflow runtime. An upstream
+application submits a Workflow Plan; DAGForge validates, compiles, schedules,
+executes, pauses, resumes, cancels, and observes that plan with deterministic
+runtime semantics.
+
+The runtime uses owner-shard state, C++23 coroutines, and bounded concurrency
+to reduce cross-thread coordination on multi-core systems. Natural-language
+understanding, planning, and agent loops stay above the runtime boundary.
+
+---
+
+## ✨ Core Features
+
+- **🚀 Sharded runtime:** Workflow state belongs to one owner shard and is
+  mutated through single-writer execution.
+- **🧱 Immutable execution plans:** Strict JSON or TOML plans compile into
+  immutable Execution Plans.
+- **✅ Compile-time admission checks:** Nodes, dependencies, cycles, ports,
+  conditional edges, policies, retry settings, and budgets are validated
+  before execution.
+- **🔗 Explicit typed data flow:** Nodes exchange values through declared
+  input bindings and output ports instead of hidden shared state.
+- **🛡️ Mandatory command sandboxing:** Command is the only external-process
+  executor, and it has no unsandboxed fallback.
+- **🔄 Run / Task / Attempt states:** Pause, resume, delayed retry, timeout,
+  fail-fast, cancellation, and process reaping have explicit lifecycle states.
+- **📦 Artifacts:** Large values can be externalized as Artifact references.
+- **🧾 Evidence and checkpoints:** Runtime decisions and selected task
+  boundaries can be recorded for inspection.
+- **🔁 Idempotent triggers:** Repeated idempotency keys reuse the existing Run.
+- **📡 Optional HTTP control plane:** REST endpoints expose plans, Runs,
+  outputs, evidence, lifecycle controls, health, status, and Prometheus
+  metrics.
+
+---
+
+## 🏗️ Runtime Architecture
 
 ```text
-AI application / workflow author
-            |
-            v
-      WorkflowPlan v1
-            |
-            v
-       PlanCompiler
-            |
-            v
-   immutable ExecutionPlan
-            |
-            v
-      WorkflowRuntime
-     /       |        \
- command   compute   adapters
- sandbox
+Upstream application / workflow author
+                 |
+                 v
+          Workflow Plan v1
+                 |
+                 v
+            Plan Compiler
+                 |
+                 v
+       Immutable Execution Plan
+                 |
+                 v
+           Workflow Runtime
+        /          |           \
+ CommandExecutor  ComputePool  Adapters
+        |
+        v
+  Minijail Sandbox
 ```
 
-The current runtime provides:
+The plan describes workflow intent. The runtime owns deterministic validation,
+state transitions, scheduling, output propagation, and execution cleanup.
 
-- owner-shard workflow execution on a Boost.Asio-based C++23 runtime;
-- immutable compiled plans with cycle, port, policy, and resource validation;
-- explicit typed node outputs and input bindings;
-- bounded task and run concurrency, deadlines, delayed retries, pause/resume,
-  and cancellation;
-- explicit Run, Task, and Attempt state machines with terminal-state
-  invariants;
-- sandboxed Command, HTTP, Compute, Model, Tool, Evaluator, and Noop
-  node types;
-- artifact externalization for large values;
-- checkpoints, evidence records, and idempotent triggers;
-- REST control-plane endpoints and Prometheus metrics.
+---
 
-The built-in checkpoint, evidence, artifact, plan, and completed-run stores are
-currently in-memory adapters. Durable recovery is a later 0.4 milestone, not a
-property of the current build.
+## 🧩 Execution Model
 
-## Requirements
+`CommandExecutor` is the only executor that launches an external process.
+Every command uses an absolute program path and an explicit argument vector;
+the runtime never inserts an implicit shell.
 
-- Linux x86-64 or ARM64
+The current Workflow Plan also exposes runtime operators and adapters:
+
+| Type | Role |
+| --- | --- |
+| `command` | Runs an external program inside the mandatory sandbox |
+| `http` | Calls an HTTP endpoint through the runtime HTTP adapter |
+| `model` | Calls a configured model provider |
+| `tool` | Calls a configured MCP tool |
+| `compute` | Runs a bounded built-in operation on the ComputePool |
+| `evaluator` | Produces a structured evaluation result |
+| `noop` | Provides a lightweight connectivity and test node |
+
+These types are workflow semantics, not separate process executors.
+
+---
+
+## 🛡️ Command Sandbox
+
+Commands are started through a pinned Google Minijail helper. Each command
+receives:
+
+- private user, PID, mount, network, IPC, UTS, and cgroup namespaces;
+- Landlock filesystem restrictions;
+- a seccomp denylist and `no_new_privs`;
+- a private size-limited `/tmp`;
+- memory, file, process, descriptor, CPU, and wall-time limits;
+- an isolated writable workspace.
+
+Missing sandbox binaries, policies, or required kernel capabilities cause the
+task to fail. DAGForge does not fall back to direct host execution.
+
+---
+
+## 🚀 Quick Start
+
+### 1) Requirements
+
+- Linux x86-64 or ARM64 with user namespace, seccomp, and Landlock support
 - GCC 15+
 - build2 0.17+
 - Boost 1.88+
-- OpenSSL development libraries
-- libcap development headers
-- Git, Make, and Python 3 for the pinned Minijail helper build
+- OpenSSL and libcap development packages
+- Git, Make, and Python 3 for the pinned Minijail build
 
-MySQL and Node.js are not required by the 0.4 runtime core.
-
-## Build
+### 2) Build
 
 ```bash
 ./scripts/setup-build2.sh
@@ -72,40 +139,15 @@ MySQL and Node.js are not required by the 0.4 runtime core.
 ./scripts/build.sh
 ```
 
-Command nodes are never executed directly. `install-minijail.sh` builds the
-pinned Google Minijail revision and the architecture-specific DAGForge seccomp
-program into `~/.local/libexec/dagforge/minijail`.
+The build scripts print the selected build2 configuration and executable path.
 
-The executable is produced in the selected build2 configuration directory.
-For the default configuration, `scripts/build.sh` prints the exact path.
-
-Run the unit-test executable after building:
-
-```bash
-~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/all-unit-tests
-```
-
-## Configuration
-
-The supported top-level sections are:
-
-- `[runtime]`: shard count and shard affinity;
-- `[compute]`: bounded CPU worker pool;
-- `[sandbox]`: Minijail paths, workspace root, and hard resource limits;
-- `[workflow]`: workflow adapters and provider catalogs;
-- `[api]`: HTTP control plane.
-
-See [`system_config.toml`](system_config.toml) for a complete example.
-
-## CLI
-
-Validate a workflow plan:
+### 3) Validate a Workflow Plan
 
 ```bash
 dagforge validate --file dags/hello_world.toml
 ```
 
-Run a plan locally and wait for completion:
+### 4) Run Locally
 
 ```bash
 dagforge run \
@@ -114,19 +156,40 @@ dagforge run \
   --wait
 ```
 
-Start the REST service:
+Trigger data can be supplied as JSON or text:
+
+```bash
+dagforge run \
+  --config system_config.toml \
+  --file dags/hello_world.toml \
+  --payload '{"request":"hello"}' \
+  --wait
+```
+
+### 5) Start the HTTP Control Plane
 
 ```bash
 dagforge serve --config system_config.toml
 ```
 
-## Workflow plan
+### 6) Docker Compose
 
-A minimal TOML plan is:
+```bash
+docker compose up --build
+```
+
+---
+
+## 📝 Workflow Plan
+
+DAGForge accepts strict JSON or TOML Workflow Plans. Unknown fields are
+rejected.
+
+Minimal TOML plan:
 
 ```toml
 workflow_id = "hello-world"
-schema_version = 2
+schema_version = 1
 
 [[nodes]]
 id = "start"
@@ -137,9 +200,7 @@ timeout_sec = 30
 [nodes.config]
 ```
 
-Plans are accepted as strict JSON or TOML. Unknown fields are rejected.
-
-A command node uses an absolute executable and an explicit argument vector:
+Sandboxed command example:
 
 ```toml
 [[nodes]]
@@ -154,36 +215,105 @@ arguments = ["-c", "print('hello from the sandbox')"]
 env = [{ key = "MODE", value = "test" }]
 ```
 
-Each command receives a private user/PID/mount/network/IPC/UTS/cgroup namespace,
-a private size-limited `/tmp`, Landlock filesystem rules, `no_new_privs`, a
-seccomp denylist, and rlimits. Only its per-instance workspace is writable;
-external networking is unavailable.
+See [`dags/hello_world.toml`](dags/hello_world.toml) and
+[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) for the complete contract.
 
-## HTTP control plane
+---
 
-The service exposes plan registration, workflow execution, run status,
-outputs, evidence, pause/resume, cancellation, health, status, and metrics. See
-[`docs/API.md`](docs/API.md).
+## 🔄 State Model
 
-## Benchmarks
+Plan nodes are represented as Tasks at runtime. Each real execution creates a
+separate Attempt record.
 
-The 0.4 benchmark targets measure the current runtime primitives directly:
+| Layer | States |
+| --- | --- |
+| Run | `running`, `pausing`, `paused`, `stopping`, `succeeded`, `failed`, `cancelled` |
+| Task | `pending`, `ready`, `running`, `retry_waiting`, `succeeded`, `failed`, `skipped`, `cancelled` |
+| Attempt | `starting`, `running`, `terminating`, `succeeded`, `failed`, `timed_out`, `cancelled` |
+
+Pause stops new dispatches while active attempts finish. Cancellation and
+fail-fast remain in `stopping` until active attempts have terminated and their
+processes have been reaped.
+
+---
+
+## ⚙️ System Configuration
+
+The configuration file contains five top-level sections:
+
+| Section | Purpose |
+| --- | --- |
+| `[runtime]` | Shard count and CPU affinity |
+| `[compute]` | Bounded CPU worker pool and affinity |
+| `[sandbox]` | Minijail paths, workspace root, and resource limits |
+| `[workflow]` | Workflow switch and adapter/provider catalogs |
+| `[api]` | Optional HTTP address, port, and TLS settings |
+
+See [`system_config.toml`](system_config.toml) for a complete example.
+
+---
+
+## 📡 HTTP Control Plane
+
+When `[api].enabled = true`, the service provides:
+
+- Plan registration and listing;
+- Workflow Run creation and status;
+- Task output and Evidence queries;
+- pause, resume, and cancellation;
+- health, runtime status, and Prometheus metrics.
+
+The HTTP server is not allocated when the API is disabled. The current control
+plane has no built-in authentication middleware; bind it to loopback or place
+it behind a trusted gateway.
+
+See [`docs/API.md`](docs/API.md) for endpoint details.
+
+---
+
+## 💾 Storage Boundary
+
+Plan, active/completed Run, Checkpoint, Evidence, and Artifact stores currently
+use in-memory adapters. Process restart recovery and durable event storage are
+not provided by the current build.
+
+---
+
+## 🧪 Tests and Benchmarks
+
+Run all unit and integration tests:
+
+```bash
+~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/all-unit-tests
+```
+
+Run the runtime and memory benchmarks:
 
 ```bash
 ~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/bench-core
 ```
 
-Historical Airflow-style scheduler benchmarks were removed because they tested
-the retired 0.3 DAG/scheduler/storage stack rather than the 0.4 runtime.
+---
 
-## Documentation
+## 📚 Documentation
 
-- [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)
-- [`docs/API.md`](docs/API.md)
-- [`docs/adr/0001-run-task-attempt-state-machine.md`](docs/adr/0001-run-task-attempt-state-machine.md)
-- [`docs/CLANGD_SETUP.md`](docs/CLANGD_SETUP.md)
-- [`docs/BENCH_REPORT.md`](docs/BENCH_REPORT.md)
+- **[User Guide](docs/USER_GUIDE.md)** — Workflow plans, configuration, and runtime behavior.
+- **[API Reference](docs/API.md)** — HTTP control-plane endpoints.
+- **[State Machine ADR](docs/adr/0001-run-task-attempt-state-machine.md)** — Run, Task, and Attempt decisions.
+- **[Clangd Setup](docs/CLANGD_SETUP.md)** — Modules and editor indexing.
+- **[Benchmark Scope](docs/BENCH_REPORT.md)** — Current benchmark targets and reporting rules.
 
-## License
+---
 
-Apache License 2.0. See [`LICENSE`](LICENSE).
+## 🤝 Contributing
+
+1. Fork the repository.
+2. Create a feature branch.
+3. Add code and tests.
+4. Push the branch and open a Pull Request.
+
+---
+
+## 📄 License
+
+Released under the **Apache License 2.0**. See [`LICENSE`](LICENSE).

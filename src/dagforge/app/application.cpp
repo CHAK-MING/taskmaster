@@ -76,12 +76,16 @@ auto Application::rebuild_components() -> Result<void> {
         std::make_shared<workflow::CheckpointStore>(),
         workflow::make_default_workflow_adapters(config_.workflow));
   }
-  api_ = std::make_unique<ApiServer>(*this);
+  if (config_.api.enabled) {
+    api_ = std::make_unique<ApiServer>(*this);
+  }
   return ok();
 }
 
 auto Application::init() -> Result<void> {
-  if (!runtime_ || !executor_ || !api_) {
+  const auto api_configuration_changed =
+      config_.api.enabled != static_cast<bool>(api_);
+  if (!runtime_ || !executor_ || api_configuration_changed) {
     return rebuild_components();
   }
   return ok();
@@ -91,7 +95,9 @@ auto Application::start() -> Result<void> {
   if (running_.exchange(true, std::memory_order_acq_rel)) {
     return ok();
   }
-  if (!runtime_) {
+  const auto api_configuration_changed =
+      config_.api.enabled != static_cast<bool>(api_);
+  if (!runtime_ || !executor_ || api_configuration_changed) {
     auto initialized = init();
     if (!initialized) {
       running_.store(false, std::memory_order_release);

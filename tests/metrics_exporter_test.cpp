@@ -20,7 +20,9 @@ TEST(MetricsExporterTest, RendersCoreMetricFamiliesWithoutStartingApp) {
 }
 
 TEST(MetricsExporterTest, RendersHttpActiveRequestsWhenApiServerExists) {
-  Application app;
+  SystemConfig cfg;
+  cfg.api.enabled = true;
+  Application app(std::move(cfg));
   ASSERT_TRUE(app.init().has_value());
   ASSERT_NE(app.api_server(), nullptr);
 

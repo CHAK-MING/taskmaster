@@ -42,7 +42,6 @@ verify_file "$repo_root/third_party/glaze/LICENSE"
 verify_file "$repo_root/third_party/CLI11/LICENSE"
 verify_file "$repo_root/third_party/unordered_dense/LICENSE"
 verify_file "$repo_root/third_party/prometheus-cpp-core/licenses/LICENSE"
-verify_file "$repo_root/third_party/lua-5.4.8/doc/readme.html"
 
 grep -Eq 'major = 7;' "$repo_root/third_party/glaze/include/glaze/version.hpp"
 grep -Eq 'minor = 8;' "$repo_root/third_party/glaze/include/glaze/version.hpp"
@@ -55,9 +54,6 @@ grep -Eq 'ANKERL_UNORDERED_DENSE_VERSION_MINOR 8' \
   "$repo_root/third_party/unordered_dense/include/ankerl/unordered_dense.h"
 grep -Eq 'ANKERL_UNORDERED_DENSE_VERSION_PATCH 1' \
   "$repo_root/third_party/unordered_dense/include/ankerl/unordered_dense.h"
-grep -Eq '^This is Lua 5\.4\.8,' \
-  "$repo_root/third_party/lua-5.4.8/README"
-
 verify_tree glaze "$repo_root/third_party/glaze" \
   24bf87d23fa1f7d9da1b8a5eec477331bce84742ab5c2da866ee4ba1e53cef6a
 verify_tree CLI11 "$repo_root/third_party/CLI11" \
@@ -66,7 +62,5 @@ verify_tree unordered_dense "$repo_root/third_party/unordered_dense" \
   0116d9bbd17ccf3da85d35a4c93b65ad8abd625a944282d9540a3ea40f756bfe
 verify_tree prometheus-cpp-core "$repo_root/third_party/prometheus-cpp-core" \
   afb86d02fe7b9fab4d0480ef0c707153f86b8d46b99b5517d1b9fb732598184a
-verify_tree lua-5.4.8 "$repo_root/third_party/lua-5.4.8" \
-  8f96f48d59affa6dafe7c52c134758f8c319cec097e0eb9a0de5926f15701884
 
 echo "vendored dependency verification passed"

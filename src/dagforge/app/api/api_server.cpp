@@ -5,9 +5,7 @@
 #include "detail/routes/workflows.hpp"
 #include "dagforge/app/metrics_exporter.hpp"
 #include "dagforge/app/http/http_server.hpp"
-#include "dagforge/app/http/websocket.hpp"
 #include "dagforge/util/log.hpp"
-#include <thread>
 #include <tuple>
 
 namespace dagforge {
@@ -15,7 +13,6 @@ namespace dagforge {
 struct ApiServer::Impl : std::enable_shared_from_this<Impl> {
   Application &app_;
   std::shared_ptr<http::HttpServer> server_;
-  std::unique_ptr<http::WebSocketHub> ws_hub_;
   std::atomic<std::uint64_t> http_active_requests_{0};
   detail::HttpMetricsRegistry http_metrics_;
   api_detail::ApiContext ctx_;
@@ -23,10 +20,8 @@ struct ApiServer::Impl : std::enable_shared_from_this<Impl> {
   explicit Impl(Application &app)
       : app_(app),
         server_(std::make_shared<http::HttpServer>(app_.runtime())),
-        ws_hub_(std::make_unique<http::WebSocketHub>(app_.runtime())),
         ctx_{.app = app_,
              .server = *server_,
-             .ws_hub = *ws_hub_,
              .http_active_requests = http_active_requests_,
              .http_metrics = http_metrics_} {
     if (!server_) {
@@ -70,15 +65,6 @@ struct ApiServer::Impl : std::enable_shared_from_this<Impl> {
   }
 
   void stop() {
-    if (ws_hub_) {
-      ws_hub_->close_all();
-      const auto deadline =
-          std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
-      while (ws_hub_->connection_count() > 0 &&
-             std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-      }
-    }
     if (server_) {
       server_->stop();
     }
@@ -88,9 +74,6 @@ struct ApiServer::Impl : std::enable_shared_from_this<Impl> {
     return server_ && server_->is_running();
   }
 
-  [[nodiscard]] auto websocket_hub() const -> http::WebSocketHub & {
-    return *ws_hub_;
-  }
 };
 
 ApiServer::ApiServer(Application &app) : impl_(std::make_shared<Impl>(app)) {
@@ -111,16 +94,6 @@ void ApiServer::stop() {
 auto ApiServer::is_running() const -> bool {
   auto impl = impl_;
   return impl->is_running();
-}
-
-auto ApiServer::websocket_hub() -> http::WebSocketHub & {
-  auto impl = impl_;
-  return impl->websocket_hub();
-}
-
-auto ApiServer::websocket_hub() const -> const http::WebSocketHub & {
-  auto impl = impl_;
-  return impl->websocket_hub();
 }
 
 auto ApiServer::http_active_requests() const -> std::uint64_t {

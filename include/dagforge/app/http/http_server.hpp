@@ -1,16 +1,11 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include "dagforge/app/http/websocket.hpp"
 #include "dagforge/client/http/http_types.hpp"
 #include "dagforge/core/error.hpp"
 #endif
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include "dagforge/core/coroutine.hpp"
-#endif
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -24,9 +19,6 @@ namespace dagforge::http {
 
 class Router;
 
-using WebSocketHandler = std::move_only_function<spawn_task(
-    std::shared_ptr<IWebSocketConnection> connection)>;
-
 class HttpServer {
 public:
   explicit HttpServer(Runtime &runtime);
@@ -36,7 +28,6 @@ public:
   auto operator=(const HttpServer &) -> HttpServer & = delete;
 
   auto router() -> Router &;
-  auto set_websocket_handler(WebSocketHandler handler) -> void;
   [[nodiscard]] auto set_tls_credentials(std::string cert_chain_file,
                                          std::string private_key_file)
       -> Result<void>;

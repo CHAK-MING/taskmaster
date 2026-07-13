@@ -34,15 +34,7 @@ auto main() -> int {
       config.sandbox.tmp_bytes == 0) {
     return 19;
   }
-  dagforge::http::QueryParams params{"dag_id=example&limit=10"};
-  if (!params.has("dag_id")) {
-    return 14;
-  }
-  auto limit = params.get("limit");
-  if (!limit || limit->size() != 2) {
-    return 15;
-  }
-  if (dagforge::workflow::kWorkflowSchemaVersion != 2U) {
+  if (dagforge::workflow::kWorkflowSchemaVersion != 1U) {
     return 28;
   }
   dagforge::AttemptId attempt_id{"attempt"};

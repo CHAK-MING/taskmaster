@@ -41,11 +41,5 @@ __pycache__/
 # Generated benchmark results.
 /bench_results/
 
-# Artifacts produced by the vendored Lua Makefile.
-/third_party/lua-5.4.8/src/*.o
-/third_party/lua-5.4.8/src/liblua.a
-/third_party/lua-5.4.8/src/lua
-/third_party/lua-5.4.8/src/luac
-
 docs/ai/*
 AGENTS.md

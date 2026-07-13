@@ -3,7 +3,6 @@
 #include "dagforge/app/application.hpp"
 #include "dagforge/app/http/http_server.hpp"
 #include "dagforge/app/http/router.hpp"
-#include "dagforge/app/http/websocket.hpp"
 #include "dagforge/app/metrics_registry.hpp"
 
 #include <array>
@@ -25,7 +24,6 @@ inline constexpr std::array<std::uint64_t, 12> kHttpDurationBucketsNs{
 struct ApiContext {
   Application &app;
   http::HttpServer &server;
-  http::WebSocketHub &ws_hub;
   std::atomic<std::uint64_t> &http_active_requests;
   detail::HttpMetricsRegistry &http_metrics;
 

@@ -96,7 +96,6 @@ auto to_beast_response(const HttpResponse &resp, unsigned version,
 struct HttpServer::Impl {
   Runtime &runtime;
   Router router_;
-  WebSocketHandler ws_handler_;
   std::shared_ptr<boost::asio::ssl::context> tls_ctx;
   struct ShardState {
     std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor;
@@ -142,41 +141,6 @@ struct HttpServer::Impl {
         auto beast_req = parser.release();
         auto req = to_request(beast_req);
         log::debug("HTTP request: {} {} (fd={})", req.method, req.path, fd_num);
-
-        if (req.is_websocket_upgrade()) {
-          log::debug("WebSocket upgrade request: {}", req.path);
-          if (self->ws_handler_) {
-            boost::asio::generic::stream_protocol::socket ws_socket(
-                current_io_context());
-            boost::system::error_code assign_ec;
-            const int raw_fd = socket.release(assign_ec);
-            if (assign_ec || raw_fd < 0) {
-              log::warn("WebSocket socket release failed: {}",
-                        assign_ec.message());
-              co_return;
-            }
-            int family = AF_INET;
-            boost::system::error_code ep_ec;
-            auto local_ep = socket.local_endpoint(ep_ec);
-            if (!ep_ec) {
-              family = local_ep.protocol().family();
-            }
-            ws_socket.assign(
-                boost::asio::generic::stream_protocol(family, SOCK_STREAM),
-                raw_fd, assign_ec);
-            if (assign_ec) {
-              log::warn("WebSocket socket assign failed: {}",
-                        assign_ec.message());
-              co_return;
-            }
-            auto conn = std::make_shared<WebSocketConnection>(
-                std::move(ws_socket), std::move(req));
-            co_await self->ws_handler_(std::move(conn));
-          } else {
-            log::warn("WebSocket upgrade but no handler set");
-          }
-          co_return;
-        }
 
         auto resp = co_await self->router_.route(req);
         auto beast_resp = to_beast_response(resp, beast_req.version(),
@@ -275,17 +239,6 @@ struct HttpServer::Impl {
       auto beast_req = parser.release();
       auto req = to_request(beast_req);
 
-      if (req.is_websocket_upgrade()) {
-        if (self->ws_handler_) {
-          auto conn = std::make_shared<TlsWebSocketConnection>(
-              std::move(stream), std::move(req));
-          co_await self->ws_handler_(std::move(conn));
-        } else {
-          log::warn("WebSocket upgrade over TLS but no handler set");
-        }
-        co_return;
-      }
-
       auto resp = co_await self->router_.route(req);
       auto beast_resp =
           to_beast_response(resp, beast_req.version(), beast_req.keep_alive());
@@ -376,10 +329,6 @@ HttpServer::HttpServer(Runtime &runtime)
 HttpServer::~HttpServer() { stop(); }
 
 auto HttpServer::router() -> Router & { return impl_->router_; }
-
-auto HttpServer::set_websocket_handler(WebSocketHandler handler) -> void {
-  impl_->ws_handler_ = std::move(handler);
-}
 
 auto HttpServer::set_tls_credentials(std::string cert_chain_file,
                                      std::string private_key_file)

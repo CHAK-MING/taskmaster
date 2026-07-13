@@ -9,7 +9,7 @@ audit_targets="${BUILD2_AUDIT_TARGETS:-}"
 if [[ -z "$audit_targets" ]]; then
   audit_targets='bin/exe{modules-foundation-smoke} bin/exe{unit-runtime-tests}'
 fi
-runtime_filter="${RUNTIME_TEST_FILTER:-WebSocketTest.HubStress_RepeatedConnectAndCloseAllWhileBroadcasting:ConfigWatcherTest.RapidStartStopStress}"
+runtime_filter="${RUNTIME_TEST_FILTER:-WorkflowRuntimeTest.PauseDrainsActiveAttemptBeforeResume:WorkflowRuntimeTest.CancelStaysStoppingUntilAttemptIsReaped:WorkflowRuntimeTest.SynchronousCancelCompletionIsReentrantSafe:WorkflowRuntimeTest.RetryWaitingCreatesDistinctAttempts}"
 
 run_binary() {
   local config_name="$1"

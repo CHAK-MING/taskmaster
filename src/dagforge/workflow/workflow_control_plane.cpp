@@ -75,7 +75,7 @@ struct OutputDto {
 
 struct WorkflowPlanDto {
   std::string workflow_id;
-  std::uint32_t schema_version{2};
+  std::uint32_t schema_version{1};
   std::vector<NodeDto> nodes;
   std::vector<EdgeDto> edges;
   std::vector<OutputDto> outputs;
