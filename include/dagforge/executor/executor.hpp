@@ -19,6 +19,8 @@
 
 namespace dagforge {
 
+class ISandboxBackend;
+
 using ExecutorHeartbeatCallback =
     std::move_only_function<void(const InstanceId &instance_id)>;
 
@@ -74,6 +76,9 @@ class IExecutor;
 
 [[nodiscard]] auto create_command_executor(Runtime &runtime,
                                            SandboxConfig sandbox)
+    -> std::unique_ptr<IExecutor>;
+[[nodiscard]] auto create_command_executor(
+    std::unique_ptr<ISandboxBackend> sandbox_backend)
     -> std::unique_ptr<IExecutor>;
 
 class IExecutor {

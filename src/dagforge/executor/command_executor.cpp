@@ -1,4 +1,5 @@
 #include "dagforge/executor/executor.hpp"
+#include "dagforge/executor/sandbox_backend.hpp"
 #include "dagforge/executor/executor_state.hpp"
 #include "dagforge/executor/executor_utils.hpp"
 #include "dagforge/executor/process_launch.hpp"
@@ -466,13 +467,13 @@ auto execute_command(fs::path minijail, std::vector<std::string> arguments,
   }
 }
 
-class CommandExecutor final : public IExecutor {
+class MinijailSandboxBackend final : public ISandboxBackend {
 public:
-  CommandExecutor(Runtime &runtime, SandboxConfig sandbox)
+  MinijailSandboxBackend(Runtime &runtime, SandboxConfig sandbox)
       : runtime_(&runtime), sandbox_(std::move(sandbox)),
         shard_states_(runtime.shard_count()) {}
 
-  auto start(ExecutorRequest request, ExecutionSink sink)
+  auto launch(SandboxRequest request, SandboxEvents sink)
       -> Result<void> override {
     if (!landlock_available()) {
       return fail(Error::Unsupported);
@@ -491,7 +492,7 @@ public:
     }
     auto arguments = build_sandbox_arguments(
         sandbox_, *seccomp, *workspace, request.command,
-        request.execution_timeout);
+        request.timeout);
     if (!arguments) {
       return fail(arguments.error());
     }
@@ -506,13 +507,18 @@ public:
     }
     runtime_->spawn(execute_command(
         std::move(*minijail), std::move(*arguments), std::move(*workspace),
-        request.execution_timeout, request.instance_id, std::move(sink),
+        request.timeout, request.instance_id,
+        ExecutionSink{.on_heartbeat = std::move(sink.on_heartbeat),
+                      .on_state = std::move(sink.on_state),
+                      .on_stdout = std::move(sink.on_stdout),
+                      .on_stderr = std::move(sink.on_stderr),
+                      .on_complete = std::move(sink.on_complete)},
         std::move(heartbeat), ExecutionContext{.state = &shard_states_[shard]},
         request.memory_resource, *runtime_));
     return ok();
   }
 
-  auto cancel(const InstanceId &instance_id) -> void override {
+  auto terminate(const InstanceId &instance_id) -> void override {
     cancel_on_all_shards(*runtime_, shard_states_, instance_id,
                          [](CommandShardState &state, const InstanceId &id) {
                            auto active = state.find_active_mut(id);
@@ -531,11 +537,54 @@ private:
   std::vector<CommandShardState> shard_states_;
 };
 
+class CommandExecutor final : public IExecutor {
+public:
+  explicit CommandExecutor(std::unique_ptr<ISandboxBackend> backend)
+      : backend_(std::move(backend)) {}
+
+  auto start(ExecutorRequest request, ExecutionSink sink)
+      -> Result<void> override {
+    if (!backend_) {
+      return fail(Error::InvalidState);
+    }
+    return backend_->launch(
+        SandboxRequest{.instance_id = std::move(request.instance_id),
+                       .command = std::move(request.command),
+                       .timeout = request.execution_timeout,
+                       .memory_resource = std::move(request.memory_resource)},
+        SandboxEvents{.on_heartbeat = std::move(sink.on_heartbeat),
+                      .on_state = std::move(sink.on_state),
+                      .on_stdout = std::move(sink.on_stdout),
+                      .on_stderr = std::move(sink.on_stderr),
+                      .on_complete = std::move(sink.on_complete)});
+  }
+
+  auto cancel(const InstanceId &instance_id) -> void override {
+    if (backend_) {
+      backend_->terminate(instance_id);
+    }
+  }
+
+private:
+  std::unique_ptr<ISandboxBackend> backend_;
+};
+
 } // namespace
 
 auto create_command_executor(Runtime &runtime, SandboxConfig sandbox)
     -> std::unique_ptr<IExecutor> {
-  return std::make_unique<CommandExecutor>(runtime, std::move(sandbox));
+  return create_command_executor(
+      create_minijail_sandbox_backend(runtime, std::move(sandbox)));
+}
+
+auto create_command_executor(std::unique_ptr<ISandboxBackend> sandbox_backend)
+    -> std::unique_ptr<IExecutor> {
+  return std::make_unique<CommandExecutor>(std::move(sandbox_backend));
+}
+
+auto create_minijail_sandbox_backend(Runtime &runtime, SandboxConfig config)
+    -> std::unique_ptr<ISandboxBackend> {
+  return std::make_unique<MinijailSandboxBackend>(runtime, std::move(config));
 }
 
 } // namespace dagforge

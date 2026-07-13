@@ -21,6 +21,9 @@ All notable changes to DAGForge will be documented in this file.
 - Unknown TOML fields are rejected instead of being silently ignored.
 
 ### Added
+- Added an `ISandboxBackend` boundary. `CommandExecutor` delegates launch,
+  lifecycle events, and termination to the selected backend; Minijail is the
+  shipped implementation.
 - Added pause/resume, delayed retries with bounded exponential backoff,
   failure classification, per-attempt history, skip reasons, stop intent, and
   explicit `continue_independent` / `fail_fast` policies.

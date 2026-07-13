@@ -73,6 +73,9 @@ Upstream application / workflow author
  CommandExecutor             ComputePool
         |
         v
+   SandboxBackend
+        |
+        v
   Minijail Sandbox
 ```
 
@@ -113,6 +116,10 @@ receives:
 
 Missing sandbox binaries, policies, or required kernel capabilities cause the
 task to fail. DAGForge does not fall back to direct host execution.
+
+`CommandExecutor` depends on the `ISandboxBackend` interface. Minijail is the
+shipped backend; workflow scheduling and command execution do not depend on
+Minijail arguments or process-management details.
 
 ---
 

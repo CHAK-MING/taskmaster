@@ -62,6 +62,9 @@ DAGForge 负责校验、编译、调度、执行、暂停、恢复、取消和�
 CommandExecutor      ComputePool
    |
    v
+SandboxBackend
+   |
+   v
 Minijail Sandbox
 ```
 
@@ -98,6 +101,9 @@ Command 通过固定版本的 Google Minijail Helper 启动。每个 Command 都
 
 沙箱二进制、策略文件或必要内核能力缺失时，任务直接失败。DAGForge 不会退回
 宿主机直接执行。
+
+`CommandExecutor` 只依赖 `ISandboxBackend` 接口。当前发布的实现是
+Minijail；工作流调度和命令执行不再依赖 Minijail 参数或进程管理细节。
 
 ---
 

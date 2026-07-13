@@ -1,6 +1,7 @@
 #include "dagforge/core/runtime.hpp"
 #include "dagforge/core/sync_wait.hpp"
 #include "dagforge/executor/executor.hpp"
+#include "dagforge/executor/sandbox_backend.hpp"
 
 #include <gtest/gtest.h>
 
@@ -20,6 +21,33 @@ namespace dagforge::test {
 namespace {
 
 namespace fs = std::filesystem;
+
+class RecordingSandboxBackend final : public ISandboxBackend {
+public:
+  auto launch(SandboxRequest request, SandboxEvents events)
+      -> Result<void> override {
+    last_request = request;
+    if (events.on_state) {
+      events.on_state(request.instance_id, "running");
+    }
+    if (events.on_complete) {
+      auto result = make_executor_result(
+          request.memory_resource != nullptr
+              ? request.memory_resource.get()
+              : current_memory_resource_or_default());
+      result.stdout_output = "backend-ok";
+      events.on_complete(request.instance_id, std::move(result));
+    }
+    return ok();
+  }
+
+  auto terminate(const InstanceId &instance_id) -> void override {
+    terminated = instance_id.clone();
+  }
+
+  std::optional<SandboxRequest> last_request;
+  std::optional<InstanceId> terminated;
+};
 
 [[nodiscard]] auto configured_path(const char *environment,
                                    std::string_view relative) -> std::string {
@@ -91,6 +119,30 @@ protected:
   std::unique_ptr<IExecutor> executor_;
   std::size_t next_instance_{0};
 };
+
+TEST(CommandExecutorBoundaryTest, DelegatesOnlyThroughSandboxBackend) {
+  Runtime runtime(1, false, 0,
+                  ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  ASSERT_TRUE(runtime.start().has_value());
+  auto backend = std::make_unique<RecordingSandboxBackend>();
+  auto *recording = backend.get();
+  auto executor = create_command_executor(std::move(backend));
+
+  const InstanceId instance{"sandbox-boundary"};
+  auto result = sync_wait_on_runtime(
+      runtime, execute_async(runtime, *executor, instance.clone(),
+                             CommandExecutorConfig{.program = "/bin/true"}));
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_EQ(result->stdout_output, "backend-ok");
+  ASSERT_TRUE(recording->last_request.has_value());
+  EXPECT_EQ(recording->last_request->instance_id, instance);
+  EXPECT_EQ(recording->last_request->command.program, "/bin/true");
+
+  executor->cancel(instance);
+  ASSERT_TRUE(recording->terminated.has_value());
+  EXPECT_EQ(*recording->terminated, instance);
+  runtime.stop();
+}
 
 TEST_F(CommandExecutorTest, RunsInsideWritableWorkspace) {
   if (!sandbox_available()) {
