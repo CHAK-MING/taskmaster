@@ -13,9 +13,6 @@ TEST(MetricsExporterTest, RendersCoreMetricFamiliesWithoutStartingApp) {
 
   EXPECT_NE(text.find("dagforge_runtime_running"), std::string::npos);
   EXPECT_NE(text.find("dagforge_runtime_shards"), std::string::npos);
-  EXPECT_NE(text.find("dagforge_compute_queue_depth"), std::string::npos);
-  EXPECT_NE(text.find("dagforge_compute_execution_seconds"),
-            std::string::npos);
   EXPECT_NE(text.find("dagforge_workflow_active_runs"), std::string::npos);
 }
 
@@ -41,10 +38,6 @@ TEST(MetricsExporterTest, PrometheusOutputIncludesCurrentHelpAndTypes) {
           "# HELP dagforge_runtime_running Whether the DAGForge runtime is running"),
       std::string::npos);
   EXPECT_NE(text.find("# TYPE dagforge_runtime_running gauge"),
-            std::string::npos);
-  EXPECT_NE(text.find("# TYPE dagforge_compute_submitted_total counter"),
-            std::string::npos);
-  EXPECT_NE(text.find("# TYPE dagforge_compute_execution_seconds histogram"),
             std::string::npos);
 }
 

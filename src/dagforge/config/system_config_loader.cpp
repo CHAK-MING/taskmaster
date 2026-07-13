@@ -13,7 +13,6 @@ namespace dagforge {
 namespace detail {
 
 struct SystemToml {
-  ComputeConfig compute{};
   WorkflowConfig workflow{};
   AdmissionConfig admission{};
   StorageConfig storage{};
@@ -26,14 +25,6 @@ struct SystemToml {
 } // namespace dagforge
 
 namespace glz {
-template <> struct meta<dagforge::ComputeConfig> {
-  using T = dagforge::ComputeConfig;
-  static constexpr auto value = object(
-      "threads", &T::threads, "queue_capacity", &T::queue_capacity,
-      "pin_threads_to_cores", &T::pin_threads_to_cores,
-      "cpu_affinity_offset", &T::cpu_affinity_offset);
-};
-
 template <> struct meta<dagforge::WorkflowConfig> {
   using T = dagforge::WorkflowConfig;
   static constexpr auto value = object("enabled", &T::enabled);
@@ -89,9 +80,9 @@ template <> struct meta<dagforge::ApiConfig> {
 template <> struct meta<dagforge::detail::SystemToml> {
   using T = dagforge::detail::SystemToml;
   static constexpr auto value = object(
-      "compute", &T::compute, "workflow", &T::workflow, "admission",
-      &T::admission, "storage", &T::storage, "runtime", &T::runtime,
-      "sandbox", &T::sandbox, "api", &T::api);
+      "workflow", &T::workflow, "admission", &T::admission, "storage",
+      &T::storage, "runtime", &T::runtime, "sandbox", &T::sandbox, "api",
+      &T::api);
 };
 } // namespace glz
 
@@ -126,7 +117,6 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
   auto raw = std::move(*raw_result);
 
   SystemConfig cfg{};
-  cfg.compute = std::move(raw.compute);
   cfg.workflow = std::move(raw.workflow);
   cfg.admission = std::move(raw.admission);
   cfg.storage = std::move(raw.storage);
@@ -148,13 +138,6 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
   apply_env_override("DAGFORGE_API_MAX_CONCURRENT_REQUESTS",
                      cfg.api.max_concurrent_requests);
 
-  apply_env_override("DAGFORGE_COMPUTE_THREADS", cfg.compute.threads);
-  apply_env_override("DAGFORGE_COMPUTE_QUEUE_CAPACITY",
-                     cfg.compute.queue_capacity);
-  apply_env_override_bool("DAGFORGE_COMPUTE_PIN_THREADS",
-                          cfg.compute.pin_threads_to_cores);
-  apply_env_override("DAGFORGE_COMPUTE_CPU_AFFINITY_OFFSET",
-                     cfg.compute.cpu_affinity_offset);
   apply_env_override_bool("DAGFORGE_WORKFLOW_ENABLED", cfg.workflow.enabled);
 
   apply_env_override("DAGFORGE_RUNTIME_SHARDS", cfg.runtime.shards);
@@ -179,9 +162,7 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
   apply_env_override("DAGFORGE_SANDBOX_MAX_OPEN_FILES",
                      cfg.sandbox.max_open_files);
 
-  if (cfg.compute.threads < 0 || cfg.compute.queue_capacity <= 0 ||
-      cfg.compute.cpu_affinity_offset < 0 ||
-      cfg.runtime.shards < 0 || cfg.runtime.cpu_affinity_offset < 0 ||
+  if (cfg.runtime.shards < 0 || cfg.runtime.cpu_affinity_offset < 0 ||
       cfg.sandbox.minijail_path.empty() ||
       cfg.sandbox.seccomp_bpf_path.empty() ||
       cfg.sandbox.workspace_root.empty() ||

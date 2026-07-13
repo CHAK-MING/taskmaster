@@ -544,8 +544,7 @@ TEST(WorkflowPlanCompilerTest, RejectsUnknownSchemaVersion) {
 }
 
 TEST(WorkflowRuntimeTest, PauseDrainsActiveAttemptBeforeResume) {
-  Runtime core(2, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 16});
+  Runtime core(2, false, 0);
   ASSERT_TRUE(core.start().has_value());
   ManualExecutor executor(core);
   WorkflowRuntime runtime(core, executor);
@@ -614,8 +613,7 @@ TEST(WorkflowRuntimeTest, PauseDrainsActiveAttemptBeforeResume) {
 }
 
 TEST(WorkflowRuntimeTest, AttemptStartsBeforeExecutorReportsRunning) {
-  Runtime core(1, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  Runtime core(1, false, 0);
   ASSERT_TRUE(core.start().has_value());
   ManualExecutor executor(core);
   executor.defer_running_signal();
@@ -660,8 +658,7 @@ TEST(WorkflowRuntimeTest, AttemptStartsBeforeExecutorReportsRunning) {
 }
 
 TEST(WorkflowRuntimeTest, RunDeadlineStopsAndReapsActiveAttempt) {
-  Runtime core(1, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  Runtime core(1, false, 0);
   ASSERT_TRUE(core.start().has_value());
   ManualExecutor executor(core);
   WorkflowRuntime runtime(core, executor);
@@ -698,8 +695,7 @@ TEST(WorkflowRuntimeTest, RunDeadlineStopsAndReapsActiveAttempt) {
 }
 
 TEST(WorkflowRuntimeTest, CancelStaysStoppingUntilAttemptIsReaped) {
-  Runtime core(1, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  Runtime core(1, false, 0);
   ASSERT_TRUE(core.start().has_value());
   ManualExecutor executor(core);
   executor.defer_cancel_completion();
@@ -746,8 +742,7 @@ TEST(WorkflowRuntimeTest, CancelStaysStoppingUntilAttemptIsReaped) {
 }
 
 TEST(WorkflowRuntimeTest, SynchronousCancelCompletionIsReentrantSafe) {
-  Runtime core(1, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  Runtime core(1, false, 0);
   ASSERT_TRUE(core.start().has_value());
   ManualExecutor executor(core);
   executor.synchronous_cancel_completion();
@@ -781,8 +776,7 @@ TEST(WorkflowRuntimeTest, SynchronousCancelCompletionIsReentrantSafe) {
 }
 
 TEST(WorkflowRuntimeTest, RetryWaitingCreatesDistinctAttempts) {
-  Runtime core(1, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  Runtime core(1, false, 0);
   ASSERT_TRUE(core.start().has_value());
   ManualExecutor executor(core);
   WorkflowRuntime runtime(core, executor);
@@ -835,8 +829,7 @@ TEST(WorkflowRuntimeTest, RetryWaitingCreatesDistinctAttempts) {
 }
 
 TEST(WorkflowRuntimeTest, PermanentFailureDoesNotRetry) {
-  Runtime core(1, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  Runtime core(1, false, 0);
   ASSERT_TRUE(core.start().has_value());
   NullExecutor executor;
   WorkflowRuntime runtime(core, executor);
@@ -871,8 +864,7 @@ TEST(WorkflowRuntimeTest, PermanentFailureDoesNotRetry) {
 }
 
 TEST(WorkflowRuntimeTest, OutputBudgetFailureDoesNotRetry) {
-  Runtime core(1, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  Runtime core(1, false, 0);
   ASSERT_TRUE(core.start().has_value());
   ManualExecutor executor(core);
   WorkflowRuntime runtime(core, executor);
@@ -908,8 +900,7 @@ TEST(WorkflowRuntimeTest, OutputBudgetFailureDoesNotRetry) {
 }
 
 TEST(WorkflowRuntimeTest, FailFastStopsIndependentAttempts) {
-  Runtime core(1, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  Runtime core(1, false, 0);
   ASSERT_TRUE(core.start().has_value());
   ManualExecutor executor(core);
   executor.defer_cancel_completion();
@@ -980,8 +971,7 @@ TEST(WorkflowRuntimeTest, CommandNodeOwnsRunIdAcrossSuspension) {
   std::error_code cleanup_error;
   fs::remove_all(sandbox.workspace_root, cleanup_error);
 
-  Runtime core(2, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  Runtime core(2, false, 0);
   ASSERT_TRUE(core.start().has_value());
   auto executor = create_command_executor(core, sandbox);
   ASSERT_NE(executor, nullptr);
@@ -1024,8 +1014,7 @@ TEST(WorkflowRuntimeTest, CommandNodeOwnsRunIdAcrossSuspension) {
 }
 
 TEST(WorkflowRuntimeTest, IdempotentTriggerReturnsExistingRun) {
-  Runtime core(1, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  Runtime core(1, false, 0);
   ASSERT_TRUE(core.start().has_value());
   ManualExecutor executor(core);
   WorkflowRuntime runtime(core, executor);
@@ -1058,8 +1047,7 @@ TEST(WorkflowRuntimeTest, IdempotentTriggerReturnsExistingRun) {
 }
 
 TEST(WorkflowRuntimeTest, InjectsUpstreamOutputIntoCommandEnvironment) {
-  Runtime core(2, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 16});
+  Runtime core(2, false, 0);
   ASSERT_TRUE(core.start().has_value());
   ManualExecutor executor(core);
   WorkflowRuntime runtime(core, executor);
@@ -1108,8 +1096,7 @@ TEST(WorkflowRuntimeTest, InjectsUpstreamOutputIntoCommandEnvironment) {
 }
 
 TEST(WorkflowRuntimeTest, LargeCommandOutputIsExternalizedAsArtifact) {
-  Runtime core(1, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  Runtime core(1, false, 0);
   ASSERT_TRUE(core.start().has_value());
   ManualExecutor executor(core);
   WorkflowRuntime runtime(core, executor);
@@ -1255,8 +1242,7 @@ TEST(WorkflowStorageTest, CheckpointStoreRoundTripsPlanStateAndValues) {
 }
 
 TEST(WorkflowRuntimeTest, RestartConvertsActiveAttemptToInfrastructureFailure) {
-  Runtime core(1, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  Runtime core(1, false, 0);
   NullExecutor executor;
   auto checkpoint_store = std::make_shared<CheckpointStore>();
   WorkflowRuntime runtime(core, executor, {}, {}, checkpoint_store);
@@ -1318,8 +1304,7 @@ TEST(WorkflowRuntimeTest, PersistsAuthoritativeRunTransitions) {
   std::error_code error;
   std::filesystem::remove_all(directory, error);
 
-  Runtime core(1, false, 0,
-               ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  Runtime core(1, false, 0);
   ASSERT_TRUE(core.start().has_value());
   ManualExecutor executor(core);
   auto checkpoint_store = std::make_shared<CheckpointStore>(directory);

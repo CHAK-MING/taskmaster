@@ -2,24 +2,10 @@ namespace dagforge {
 
 inline constexpr shard_id kInvalidShard = std::numeric_limits<shard_id>::max();
 
-namespace detail {
-template <typename T>
-concept DagforgeResult = requires {
-  typename std::remove_cvref_t<T>::value_type;
-  typename std::remove_cvref_t<T>::error_type;
-} && std::same_as<typename std::remove_cvref_t<T>::error_type,
-                  std::error_code>;
-
-template <typename Work>
-using ComputeWorkResult = std::remove_cvref_t<
-    std::invoke_result_t<std::decay_t<Work> &, std::stop_token>>;
-} // namespace detail
-
 class Runtime {
 public:
   explicit Runtime(unsigned num_shards = 0, bool pin_shards_to_cores = false,
-                   unsigned cpu_affinity_offset = 0,
-                   ComputePoolConfig compute_pool_config = {});
+                   unsigned cpu_affinity_offset = 0);
   ~Runtime() noexcept;
 
   Runtime(const Runtime &) = delete;
@@ -93,70 +79,6 @@ public:
   auto note_timer_finished(shard_id id) -> void;
   [[nodiscard]] auto stall_age_ms(shard_id id) const -> std::uint64_t;
   [[nodiscard]] auto pinned_cpu_for_shard(shard_id id) const noexcept -> int;
-  [[nodiscard]] auto compute_pool_snapshot() const -> ComputePoolSnapshot {
-    return compute_pool_.snapshot();
-  }
-
-  template <typename Work, typename Completion>
-    requires detail::DagforgeResult<detail::ComputeWorkResult<Work>>
-  [[nodiscard]] auto submit_compute(shard_id owner, ComputeOptions options,
-                                    Work &&work, Completion &&completion)
-      -> Result<ComputeTaskHandle> {
-    using WorkFn = std::decay_t<Work>;
-    using CompletionFn = std::decay_t<Completion>;
-    using WorkResult = detail::ComputeWorkResult<Work>;
-
-    static_assert(
-        std::invocable<CompletionFn &, WorkResult &&>,
-        "Compute completion must accept the Result<T> returned by the work");
-
-    if (owner >= num_shards_) {
-      return fail(Error::InvalidArgument);
-    }
-
-    auto deliver =
-        std::make_shared<std::move_only_function<void(WorkResult)>>(
-            [this, owner,
-             completion = CompletionFn(std::forward<Completion>(completion))](
-                WorkResult result) mutable {
-              if (!running_.load(std::memory_order_acquire)) {
-                return;
-              }
-              post_to(owner,
-                      [completion = std::move(completion),
-                       result = std::move(result)]() mutable {
-                        try {
-                          std::invoke(completion, std::move(result));
-                        } catch (...) {
-                        }
-                      });
-            });
-
-    auto discard = [deliver](Error error) mutable {
-      WorkResult result = fail(error);
-      (*deliver)(std::move(result));
-    };
-
-    return compute_pool_.submit(
-        std::move(options),
-        [work = WorkFn(std::forward<Work>(work)), deliver](
-            std::stop_token stop_token) mutable {
-          if (stop_token.stop_requested()) {
-            WorkResult result = fail(Error::Cancelled);
-            (*deliver)(std::move(result));
-            return;
-          }
-
-          try {
-            auto result = std::invoke(work, stop_token);
-            (*deliver)(std::move(result));
-          } catch (...) {
-            WorkResult result = fail(Error::Unknown);
-            (*deliver)(std::move(result));
-          }
-        },
-        std::move(discard));
-  }
   template <typename Rep, typename Period, typename F>
   auto schedule_after_on(shard_id target, std::chrono::duration<Rep, Period> delay,
                          F &&fn) -> io::TimingWheel::Handle {
@@ -310,7 +232,6 @@ private:
   auto start_timing_wheel_on_shard(shard_id id) -> void;
 
   alignas(64) std::atomic<bool> running_{false};
-  ComputePool compute_pool_;
   bool pin_shards_to_cores_{false};
   unsigned cpu_affinity_offset_{0};
   unsigned num_shards_;

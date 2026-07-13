@@ -6,14 +6,6 @@
 
 using namespace dagforge;
 
-TEST(ConfigTest, ComputeDefaults) {
-  ComputeConfig cfg;
-  EXPECT_EQ(cfg.threads, 0);
-  EXPECT_EQ(cfg.queue_capacity, 1024);
-  EXPECT_FALSE(cfg.pin_threads_to_cores);
-  EXPECT_EQ(cfg.cpu_affinity_offset, 0);
-}
-
 TEST(ConfigTest, RuntimeDefaults) {
   RuntimeConfig cfg;
   EXPECT_EQ(cfg.shards, 0);
@@ -41,12 +33,6 @@ TEST(ConfigTest, ApiDefaults) {
 
 TEST(ConfigTest, LoadFromTomlString) {
   std::string toml = R"(
-[compute]
-threads = 3
-queue_capacity = 256
-pin_threads_to_cores = true
-cpu_affinity_offset = 2
-
 [runtime]
 shards = 2
 pin_shards_to_cores = true
@@ -88,10 +74,6 @@ max_concurrent_requests = 7
   auto result = SystemConfigLoader::load_from_string(toml);
   ASSERT_TRUE(result.has_value()) << result.error().message();
 
-  EXPECT_EQ(result->compute.threads, 3);
-  EXPECT_EQ(result->compute.queue_capacity, 256);
-  EXPECT_TRUE(result->compute.pin_threads_to_cores);
-  EXPECT_EQ(result->compute.cpu_affinity_offset, 2);
   EXPECT_TRUE(result->workflow.enabled);
   EXPECT_EQ(result->runtime.shards, 2);
   EXPECT_TRUE(result->runtime.pin_shards_to_cores);
@@ -112,22 +94,6 @@ max_concurrent_requests = 7
   EXPECT_EQ(result->api.max_concurrent_requests, 7U);
 }
 
-TEST(ConfigTest, RejectsInvalidComputeConfiguration) {
-  auto negative_threads = SystemConfigLoader::load_from_string(R"(
-[compute]
-threads = -1
-)");
-  ASSERT_FALSE(negative_threads.has_value());
-  EXPECT_EQ(negative_threads.error(), make_error_code(Error::ParseError));
-
-  auto empty_queue = SystemConfigLoader::load_from_string(R"(
-[compute]
-queue_capacity = 0
-)");
-  ASSERT_FALSE(empty_queue.has_value());
-  EXPECT_EQ(empty_queue.error(), make_error_code(Error::ParseError));
-}
-
 TEST(ConfigTest, RejectsInvalidSandboxConfiguration) {
   auto missing_helper = SystemConfigLoader::load_from_string(R"(
 [sandbox]
@@ -146,12 +112,10 @@ max_memory_bytes = 0
 
 TEST(ConfigTest, EnvironmentOverridesTakePrecedence) {
   constexpr auto *kApiPort = "DAGFORGE_API_PORT";
-  constexpr auto *kComputeThreads = "DAGFORGE_COMPUTE_THREADS";
   constexpr auto *kRuntimeShards = "DAGFORGE_RUNTIME_SHARDS";
   constexpr auto *kSandboxRoot = "DAGFORGE_SANDBOX_WORKSPACE_ROOT";
 
   ::setenv(kApiPort, "7777", 1);
-  ::setenv(kComputeThreads, "6", 1);
   ::setenv(kRuntimeShards, "3", 1);
   ::setenv(kSandboxRoot, "/tmp/dagforge-test-workspaces", 1);
 
@@ -163,13 +127,11 @@ port = 8080
   auto result = SystemConfigLoader::load_from_string(toml);
 
   ::unsetenv(kApiPort);
-  ::unsetenv(kComputeThreads);
   ::unsetenv(kRuntimeShards);
   ::unsetenv(kSandboxRoot);
 
   ASSERT_TRUE(result.has_value()) << result.error().message();
   EXPECT_EQ(result->api.port, 7777);
-  EXPECT_EQ(result->compute.threads, 6);
   EXPECT_EQ(result->runtime.shards, 3);
   EXPECT_EQ(result->sandbox.workspace_root, "/tmp/dagforge-test-workspaces");
 }

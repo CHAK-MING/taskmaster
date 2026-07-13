@@ -53,15 +53,7 @@ auto Application::rebuild_components() -> Result<void> {
           : std::max(1U, std::thread::hardware_concurrency());
   runtime_ = std::make_unique<Runtime>(
       shard_count, config_.runtime.pin_shards_to_cores,
-      static_cast<unsigned>(config_.runtime.cpu_affinity_offset),
-      ComputePoolConfig{
-          .thread_count = static_cast<std::size_t>(config_.compute.threads),
-          .queue_capacity =
-              static_cast<std::size_t>(config_.compute.queue_capacity),
-          .pin_threads_to_cores = config_.compute.pin_threads_to_cores,
-          .cpu_affinity_offset =
-              static_cast<unsigned>(config_.compute.cpu_affinity_offset),
-      });
+      static_cast<unsigned>(config_.runtime.cpu_affinity_offset));
   executor_ = create_command_executor(*runtime_, config_.sandbox);
   if (!executor_) {
     return fail(Error::InvalidState);

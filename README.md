@@ -69,8 +69,9 @@ Upstream application / workflow author
                  |
                  v
            Workflow Runtime
-        /                     \
- CommandExecutor             ComputePool
+                 |
+                 v
+         CommandExecutor
         |
         v
    SandboxBackend
@@ -96,9 +97,9 @@ mappings. HTTP calls, model inference, MCP tools, evaluation, and other domain
 logic run as ordinary programs chosen by the upper layer; the C++ runtime does
 not encode those protocols as node types.
 
-`ComputePool` remains an internal runtime facility. It is not a Workflow Plan
-operator and is selected by runtime implementation code when CPU work needs to
-leave an owner shard.
+All workflow work runs as sandboxed external commands. Coroutine owner shards
+coordinate scheduling, timers, process I/O, cancellation, and state changes;
+they do not execute user CPU workloads in-process.
 
 ---
 
@@ -253,12 +254,11 @@ processes have been reaped.
 
 ## ⚙️ System Configuration
 
-The configuration file contains seven top-level sections:
+The configuration file contains six top-level sections:
 
 | Section | Purpose |
 | --- | --- |
 | `[runtime]` | Shard count and CPU affinity |
-| `[compute]` | Bounded CPU worker pool and affinity |
 | `[sandbox]` | Minijail paths, workspace root, and resource limits |
 | `[workflow]` | Workflow runtime switch |
 | `[admission]` | Server-owned program, environment, and budget limits |

@@ -113,16 +113,14 @@ protected:
            std::format("command-test-{}", instance);
   }
 
-  Runtime runtime_{1, false, 0,
-                   ComputePoolConfig{.thread_count = 1, .queue_capacity = 8}};
+  Runtime runtime_{1, false, 0};
   SandboxConfig sandbox_;
   std::unique_ptr<IExecutor> executor_;
   std::size_t next_instance_{0};
 };
 
 TEST(CommandExecutorBoundaryTest, DelegatesOnlyThroughSandboxBackend) {
-  Runtime runtime(1, false, 0,
-                  ComputePoolConfig{.thread_count = 1, .queue_capacity = 8});
+  Runtime runtime(1, false, 0);
   ASSERT_TRUE(runtime.start().has_value());
   auto backend = std::make_unique<RecordingSandboxBackend>();
   auto *recording = backend.get();

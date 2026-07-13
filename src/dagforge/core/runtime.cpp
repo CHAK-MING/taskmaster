@@ -78,10 +78,8 @@ auto for_each_shard(unsigned num_shards, Fn &&fn) -> void {
 } // namespace
 
 Runtime::Runtime(unsigned num_shards, bool pin_shards_to_cores,
-                 unsigned cpu_affinity_offset,
-                 ComputePoolConfig compute_pool_config)
-    : compute_pool_(std::move(compute_pool_config)),
-      pin_shards_to_cores_(pin_shards_to_cores),
+                 unsigned cpu_affinity_offset)
+    : pin_shards_to_cores_(pin_shards_to_cores),
       cpu_affinity_offset_(cpu_affinity_offset) {
   if (num_shards == 0) {
     num_shards = 4;
@@ -157,12 +155,6 @@ auto Runtime::start() -> Result<void> {
     threads_.emplace_back([this, i] { run_shard(i); });
   });
 
-  auto compute_started = compute_pool_.start();
-  if (!compute_started) {
-    stop();
-    return fail(compute_started.error());
-  }
-
   start_stall_detection();
 
   return ok();
@@ -172,7 +164,6 @@ auto Runtime::stop() noexcept -> void {
   if (!running_.exchange(false))
     return;
 
-  compute_pool_.stop(ComputeShutdownMode::CancelPending);
   stop_stall_detection();
 
   for (auto i : std::views::iota(0U, num_shards_)) {

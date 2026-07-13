@@ -9,15 +9,6 @@
 
 namespace dagforge {
 
-struct ComputeConfig {
-  int threads{0}; // 0 = auto
-  int queue_capacity{1024};
-  bool pin_threads_to_cores{false};
-  int cpu_affinity_offset{0};
-
-  auto operator==(const ComputeConfig &) const -> bool = default;
-};
-
 struct RuntimeConfig {
   int shards{0}; // 0 = auto (hardware_concurrency)
   bool pin_shards_to_cores{false};
@@ -83,7 +74,6 @@ struct ApiConfig {
 };
 
 struct SystemConfig {
-  ComputeConfig compute;
   WorkflowConfig workflow;
   AdmissionConfig admission;
   StorageConfig storage;

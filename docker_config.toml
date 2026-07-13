@@ -3,12 +3,6 @@ shards = 0
 pin_shards_to_cores = false
 cpu_affinity_offset = 0
 
-[compute]
-threads = 0
-queue_capacity = 1024
-pin_threads_to_cores = false
-cpu_affinity_offset = 0
-
 [sandbox]
 minijail_path = "/opt/dagforge/libexec/dagforge/minijail/minijail0"
 seccomp_bpf_path = "/opt/dagforge/libexec/dagforge/minijail/dagforge_command.bpf"

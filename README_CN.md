@@ -58,8 +58,9 @@ DAGForge 负责校验、编译、调度、执行、暂停、恢复、取消和�
           |
           v
     Workflow Runtime
-   /                  \
-CommandExecutor      ComputePool
+          |
+          v
+  CommandExecutor
    |
    v
 SandboxBackend
@@ -83,8 +84,8 @@ Workflow Plan 中的每个节点都是沙箱命令任务。上游值只有通过
 其他领域逻辑都由上层选择普通程序实现，C++ 运行时不再把这些协议编码成节点
 类型。
 
-`ComputePool` 仍是运行时内部设施，不是 Workflow Plan 算子。Owner Shard
-需要卸载 CPU 工作时，由运行时实现自动选择它。
+所有 Workflow 工作都通过沙箱外部命令执行。协程 Owner Shard 只负责调度、
+定时器、进程 I/O、取消和状态转换，不在 DAGForge 进程内执行用户的 CPU 任务。
 
 ---
 
@@ -234,12 +235,11 @@ Plan 中的 Node 在运行时投影为 Task，每次真实执行都会创建独�
 
 ## ⚙️ 系统配置
 
-配置文件包含七个顶层区段：
+配置文件包含六个顶层区段：
 
 | 区段 | 用途 |
 | --- | --- |
 | `[runtime]` | Shard 数量和 CPU 亲和性 |
-| `[compute]` | 有界计算线程池和线程亲和性 |
 | `[sandbox]` | Minijail 路径、Workspace 根目录和资源限制 |
 | `[workflow]` | Workflow 运行时开关 |
 | `[admission]` | 服务端拥有的程序、环境变量和预算限制 |

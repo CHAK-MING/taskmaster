@@ -5,7 +5,6 @@
 #include "dagforge/core/coroutine.hpp"
 #include "dagforge/core/error.hpp"
 #include "dagforge/core/asio_awaitable.hpp"
-#include "dagforge/core/compute_pool.hpp"
 #include "dagforge/io/timing_wheel.hpp"
 #include "dagforge/core/metrics.hpp"
 #include "dagforge/core/shard.hpp"
@@ -27,9 +26,7 @@
 #include <memory>
 #include <memory_resource>
 #include <span>
-#include <stop_token>
 #include <thread>
-#include <type_traits>
 #include <vector>
 
 #include "dagforge/core/detail/runtime.inc"

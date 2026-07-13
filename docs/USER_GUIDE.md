@@ -40,12 +40,6 @@ shards = 0
 pin_shards_to_cores = false
 cpu_affinity_offset = 0
 
-[compute]
-threads = 0
-queue_capacity = 1024
-pin_threads_to_cores = false
-cpu_affinity_offset = 0
-
 [sandbox]
 minijail_path = "~/.local/libexec/dagforge/minijail/minijail0"
 seccomp_bpf_path = "~/.local/libexec/dagforge/minijail/dagforge_command.bpf"
@@ -77,29 +71,17 @@ concurrency reported by the operating system.
 CPU affinity is optional. When enabled, shard `0` begins at
 `cpu_affinity_offset`.
 
+Owner shards run coroutine I/O, timers, scheduling, and workflow state
+transitions. Workflow CPU work is always executed by sandboxed command
+processes, not by an in-process worker pool.
+
 Environment overrides:
 
 - `DAGFORGE_RUNTIME_SHARDS`
 - `DAGFORGE_RUNTIME_PIN_SHARDS`
 - `DAGFORGE_RUNTIME_CPU_AFFINITY_OFFSET`
 
-### 2.2 Compute pool
-
-The compute pool is separate from I/O shards. It is an internal runtime
-facility and is not exposed as a Workflow Plan node type.
-
-- `threads = 0` selects an automatic thread count.
-- `queue_capacity` is a hard bound on pending compute work.
-- optional affinity settings control compute worker placement.
-
-Environment overrides:
-
-- `DAGFORGE_COMPUTE_THREADS`
-- `DAGFORGE_COMPUTE_QUEUE_CAPACITY`
-- `DAGFORGE_COMPUTE_PIN_THREADS`
-- `DAGFORGE_COMPUTE_CPU_AFFINITY_OFFSET`
-
-### 2.3 Command sandbox
+### 2.2 Command sandbox
 
 All Command nodes run through the pinned Google Minijail helper. DAGForge does
 not contain a direct subprocess fallback. Missing Minijail, missing seccomp
@@ -126,11 +108,11 @@ sandbox mounts a private tmpfs over `/tmp`. Environment overrides are:
 - `DAGFORGE_SANDBOX_MAX_PROCESSES`
 - `DAGFORGE_SANDBOX_MAX_OPEN_FILES`
 
-### 2.4 Workflow runtime
+### 2.3 Workflow runtime
 
 `workflow.enabled` creates the workflow control plane and runtime.
 
-### 2.5 Admission policy
+### 2.4 Admission policy
 
 Admission is owned by the server, not by the Workflow Plan:
 
@@ -150,7 +132,7 @@ When an `allow_unlisted_*` field is false, the matching allowlist is exact.
 Admission also caps every plan budget. A syntactically valid plan can therefore
 be rejected with `unauthorized` or `resource exhausted` before registration.
 
-### 2.6 Storage
+### 2.5 Storage
 
 The default stores are in-memory. Enable file persistence explicitly:
 
@@ -166,7 +148,7 @@ on startup. Non-terminal Runs cannot be reattached to an old sandbox process;
 they recover as failed with an infrastructure failure recorded on the active
 Attempt.
 
-### 2.7 API
+### 2.6 API
 
 Set `api.enabled = true` to start the HTTP control plane. TLS requires both a
 certificate chain and private key path.
