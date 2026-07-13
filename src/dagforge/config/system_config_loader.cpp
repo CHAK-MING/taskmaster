@@ -45,7 +45,9 @@ template <> struct meta<dagforge::AdmissionConfig> {
 template <> struct meta<dagforge::StorageConfig> {
   using T = dagforge::StorageConfig;
   static constexpr auto value = object(
-      "enabled", &T::enabled, "directory", &T::directory);
+      "enabled", &T::enabled, "directory", &T::directory,
+      "max_completed_runs", &T::max_completed_runs,
+      "max_evidence_records", &T::max_evidence_records);
 };
 
 template <> struct meta<dagforge::RuntimeConfig> {
@@ -174,6 +176,8 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
       cfg.admission.max_total_output_bytes == 0 ||
       cfg.admission.max_run_duration_sec <= 0 ||
       (cfg.storage.enabled && cfg.storage.directory.empty()) ||
+      cfg.storage.max_completed_runs == 0 ||
+      cfg.storage.max_evidence_records == 0 ||
       cfg.api.max_request_body_bytes == 0 ||
       cfg.api.max_concurrent_requests == 0) {
     return fail(Error::ParseError);

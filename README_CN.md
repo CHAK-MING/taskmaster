@@ -283,6 +283,9 @@ Artifact。
 的沙箱进程，因此恢复时发现的非终态 Run 会明确结束为 `failed`，活动 Attempt
 记录为基础设施失败，不会继续显示成虚假的 `running`。
 
+`storage.max_completed_runs` 和 `storage.max_evidence_records` 限制历史保留
+数量。API 集合接口通过 `offset` 和 `limit` 分页。
+
 ---
 
 ## 🧪 测试与基准

@@ -306,6 +306,9 @@ non-terminal Run found during recovery is finalized as `failed`; its active
 Attempt is recorded as an infrastructure failure instead of being presented as
 still running.
 
+`storage.max_completed_runs` and `storage.max_evidence_records` bound retained
+history. API collection responses use `offset` and `limit` pagination.
+
 ---
 
 ## 🧪 Tests and Benchmarks

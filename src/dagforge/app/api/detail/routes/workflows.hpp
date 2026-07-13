@@ -6,12 +6,55 @@
 #include "dagforge/workflow/workflow_runtime.hpp"
 
 #include <chrono>
+#include <charconv>
+#include <cstring>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <utility>
 
 namespace dagforge::api_detail {
 namespace workflow_routes_detail {
+
+struct PageRequest {
+  std::size_t offset{0};
+  std::size_t limit{100};
+};
+
+[[nodiscard]] inline auto query_number(std::string_view query,
+                                       std::string_view key)
+    -> std::optional<std::size_t> {
+  while (!query.empty()) {
+    const auto separator = query.find('&');
+    const auto item = query.substr(0, separator);
+    const auto equals = item.find('=');
+    if (equals != std::string_view::npos && item.substr(0, equals) == key) {
+      std::size_t value = 0;
+      const auto token = item.substr(equals + 1);
+      const auto [end, error] =
+          std::from_chars(token.data(), token.data() + token.size(), value);
+      if (error == std::errc{} && end == token.data() + token.size()) {
+        return value;
+      }
+      return std::nullopt;
+    }
+    if (separator == std::string_view::npos) {
+      break;
+    }
+    query.remove_prefix(separator + 1);
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] inline auto page_request(const http::HttpRequest &request)
+    -> PageRequest {
+  const auto query = std::string_view{request.query_string};
+  return PageRequest{
+      .offset = query_number(query, "offset").value_or(0),
+      .limit = std::clamp<std::size_t>(
+          query_number(query, "limit").value_or(100), 1, 1000),
+  };
+}
 
 [[nodiscard]] inline auto member(const JsonValue &value, std::string_view key)
     -> const JsonValue * {
@@ -238,20 +281,31 @@ inline auto register_workflow_routes(ApiContext &ctx) -> void {
       "/api/v1/workflows/plans",
       ctx.make_instrumented_route(
           http::HttpMethod::GET, "/api/v1/workflows/plans",
-          [&ctx](http::HttpRequest) -> task<http::HttpResponse> {
+          [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
             auto *control = ctx.app.workflow_control_plane();
             if (!control) {
               co_return unavailable();
             }
+            auto page = page_request(req);
+            auto registered = control->list_plans();
+            std::ranges::sort(registered, {}, [](const auto &plan) {
+              return plan->plan_id.str();
+            });
             json plans = json::array_t{};
-            for (const auto &plan : control->list_plans()) {
+            const auto begin = std::min(page.offset, registered.size());
+            const auto end = std::min(begin + page.limit, registered.size());
+            for (std::size_t index = begin; index < end; ++index) {
+              const auto &plan = registered[index];
               plans.get_array().push_back(
                   json{{"workflow_id", plan->workflow_id.str()},
                        {"plan_id", plan->plan_id.str()},
                        {"digest", plan->digest},
                        {"nodes", plan->nodes.size()}});
             }
-            co_return json_response({{"plans", std::move(plans)}});
+            co_return json_response({{"plans", std::move(plans)},
+                                     {"total", registered.size()},
+                                     {"offset", page.offset},
+                                     {"limit", page.limit}});
           }));
 
   router.post(
@@ -269,11 +323,6 @@ inline auto register_workflow_routes(ApiContext &ctx) -> void {
             if (!workflow_id) {
               co_return error_response(400, "Missing workflow_id");
             }
-            auto plan = control->get_latest(WorkflowId{*workflow_id});
-            if (!plan) {
-              co_return to_result_response(plan.error()).value();
-            }
-
             JsonValue body = JsonValue::object_t{};
             if (!req.body.empty()) {
               auto parsed = parse_json(req.body_as_string());
@@ -281,6 +330,18 @@ inline auto register_workflow_routes(ApiContext &ctx) -> void {
                 co_return error_response(400, "Invalid JSON body");
               }
               body = std::move(*parsed);
+            }
+            const auto requested_plan = string_member(body, "plan_id");
+            auto plan = requested_plan.empty()
+                            ? control->get_latest(WorkflowId{*workflow_id})
+                            : control->get_plan(
+                                  WorkflowPlanId{requested_plan});
+            if (!plan) {
+              co_return to_result_response(plan.error()).value();
+            }
+            if ((*plan)->workflow_id != WorkflowId{*workflow_id}) {
+              co_return error_response(400,
+                                       "plan_id does not belong to workflow");
             }
             std::string idempotency_key =
                 string_member(body, "idempotency_key");
@@ -370,9 +431,89 @@ inline auto register_workflow_routes(ApiContext &ctx) -> void {
               co_return runtime ? error_response(400, "Missing run_id")
                                 : unavailable();
             }
+            auto records = runtime->evidence(WorkflowRunId{*run_id});
+            const auto page = page_request(req);
+            const auto begin = std::min(page.offset, records.size());
+            const auto end = std::min(begin + page.limit, records.size());
+            std::vector<workflow::EvidenceRecord> selected;
+            selected.reserve(end - begin);
+            for (std::size_t index = begin; index < end; ++index) {
+              selected.push_back(records[index]);
+            }
+            co_return json_response({{"evidence", evidence_json(selected)},
+                                     {"total", records.size()},
+                                     {"offset", page.offset},
+                                     {"limit", page.limit}});
+          }));
+
+  router.post(
+      "/api/v1/artifacts",
+      ctx.make_instrumented_route(
+          http::HttpMethod::POST, "/api/v1/artifacts",
+          [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
+            auto *runtime = ctx.app.workflow_runtime();
+            if (!runtime) {
+              co_return unavailable();
+            }
+            const auto media_type =
+                req.header("Content-Type").value_or("application/octet-stream");
+            const auto data = std::span<const std::byte>{
+                reinterpret_cast<const std::byte *>(req.body.data()),
+                req.body.size()};
+            auto stored = runtime->artifact_store().put(data, media_type);
+            if (!stored) {
+              co_return to_result_response(stored.error()).value();
+            }
             co_return json_response(
-                {{"evidence",
-                  evidence_json(runtime->evidence(WorkflowRunId{*run_id}))}});
+                {{"artifact_id", stored->artifact_id.str()},
+                 {"media_type", stored->media_type},
+                 {"size_bytes", stored->size_bytes},
+                 {"digest", stored->digest}},
+                http::HttpStatus::Created);
+          }));
+
+  router.get(
+      "/api/v1/artifacts/{artifact_id}",
+      ctx.make_instrumented_route(
+          http::HttpMethod::GET, "/api/v1/artifacts/{artifact_id}",
+          [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
+            auto *runtime = ctx.app.workflow_runtime();
+            auto artifact_id = req.path_param("artifact_id");
+            if (!runtime || !artifact_id) {
+              co_return runtime ? error_response(400, "Missing artifact_id")
+                                : unavailable();
+            }
+            auto artifact =
+                runtime->artifact_store().get(ArtifactId{*artifact_id});
+            if (!artifact) {
+              co_return to_result_response(artifact.error()).value();
+            }
+            http::HttpResponse response{.status = http::HttpStatus::Ok};
+            response.headers.set("Content-Type", artifact->ref.media_type);
+            response.headers.set("ETag", artifact->ref.digest);
+            response.body.resize(artifact->data.size());
+            std::memcpy(response.body.data(), artifact->data.data(),
+                        artifact->data.size());
+            co_return response;
+          }));
+
+  router.del(
+      "/api/v1/artifacts/{artifact_id}",
+      ctx.make_instrumented_route(
+          http::HttpMethod::DELETE, "/api/v1/artifacts/{artifact_id}",
+          [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
+            auto *runtime = ctx.app.workflow_runtime();
+            auto artifact_id = req.path_param("artifact_id");
+            if (!runtime || !artifact_id) {
+              co_return runtime ? error_response(400, "Missing artifact_id")
+                                : unavailable();
+            }
+            auto erased =
+                runtime->artifact_store().erase(ArtifactId{*artifact_id});
+            if (!erased) {
+              co_return to_result_response(erased.error()).value();
+            }
+            co_return json_response({{"status", "deleted"}});
           }));
 
   router.post(

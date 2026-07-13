@@ -54,6 +54,8 @@ struct AdmissionConfig {
 struct StorageConfig {
   bool enabled{false};
   std::string directory{"./state"};
+  std::size_t max_completed_runs{10'000};
+  std::size_t max_evidence_records{100'000};
 
   auto operator==(const StorageConfig &) const -> bool = default;
 };

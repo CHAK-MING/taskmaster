@@ -81,8 +81,10 @@ struct EvidenceRecord {
 
 class EvidenceLedger {
 public:
-  EvidenceLedger() = default;
-  explicit EvidenceLedger(std::filesystem::path file);
+  explicit EvidenceLedger(std::size_t max_records = 100'000)
+      : max_records_(max_records) {}
+  EvidenceLedger(std::filesystem::path file,
+                 std::size_t max_records = 100'000);
 
   [[nodiscard]] auto append(EvidenceRecord record) -> Result<EvidenceId>;
   [[nodiscard]] auto records(const WorkflowRunId &run_id) const
@@ -92,10 +94,12 @@ public:
 private:
   auto load_file() -> void;
   auto append_file(const EvidenceRecord &record) -> Result<void>;
+  auto rewrite_file() -> Result<void>;
 
   mutable std::mutex mutex_;
   std::vector<EvidenceRecord> records_;
   std::filesystem::path file_;
+  std::size_t max_records_{100'000};
 };
 
 struct WorkflowCheckpoint {

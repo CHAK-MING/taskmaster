@@ -789,8 +789,9 @@ auto FileArtifactStore::erase(const ArtifactId &artifact_id) -> Result<void> {
   return removed_data || removed_metadata ? ok() : fail(Error::NotFound);
 }
 
-EvidenceLedger::EvidenceLedger(std::filesystem::path file)
-    : file_(std::move(file)) {
+EvidenceLedger::EvidenceLedger(std::filesystem::path file,
+                               std::size_t max_records)
+    : file_(std::move(file)), max_records_(max_records) {
   load_file();
 }
 
@@ -812,6 +813,11 @@ auto EvidenceLedger::load_file() -> void {
     if (record) {
       records_.push_back(std::move(*record));
     }
+  }
+  if (records_.size() > max_records_) {
+    records_.erase(records_.begin(),
+                   records_.end() - static_cast<std::ptrdiff_t>(max_records_));
+    (void)rewrite_file();
   }
 }
 
@@ -837,6 +843,22 @@ auto EvidenceLedger::append_file(const EvidenceRecord &record) -> Result<void> {
   return output ? ok() : fail(Error::Unknown);
 }
 
+auto EvidenceLedger::rewrite_file() -> Result<void> {
+  if (file_.empty()) {
+    return ok();
+  }
+  std::string contents;
+  for (const auto &record : records_) {
+    auto encoded = serialize_json(evidence_to_dto(record));
+    if (!encoded) {
+      return fail(encoded.error());
+    }
+    contents.append(*encoded);
+    contents.push_back('\n');
+  }
+  return write_text_file_atomic(file_, contents);
+}
+
 auto EvidenceLedger::append(EvidenceRecord record) -> Result<EvidenceId> {
   if (record.run_id.empty()) {
     return fail(Error::InvalidArgument);
@@ -846,11 +868,23 @@ auto EvidenceLedger::append(EvidenceRecord record) -> Result<EvidenceId> {
   }
   auto id = record.evidence_id;
   std::lock_guard lock(mutex_);
-  auto persisted = append_file(record);
+  if (records_.size() < max_records_) {
+    auto persisted = append_file(record);
+    if (!persisted) {
+      return fail(persisted.error());
+    }
+    records_.push_back(std::move(record));
+    return ok(std::move(id));
+  }
+
+  auto previous = records_;
+  records_.push_back(std::move(record));
+  records_.erase(records_.begin());
+  auto persisted = rewrite_file();
   if (!persisted) {
+    records_ = std::move(previous);
     return fail(persisted.error());
   }
-  records_.push_back(std::move(record));
   return ok(std::move(id));
 }
 
@@ -982,7 +1016,11 @@ auto CheckpointStore::list() const
       checkpoints.push_back(std::move(*checkpoint));
     }
   }
-  return error ? fail(error) : ok(std::move(checkpoints));
+  if (error) {
+    return fail(error);
+  }
+  std::ranges::sort(checkpoints, {}, &WorkflowCheckpoint::created_at);
+  return ok(std::move(checkpoints));
 }
 
 } // namespace dagforge::workflow

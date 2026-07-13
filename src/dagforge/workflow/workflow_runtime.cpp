@@ -187,11 +187,13 @@ WorkflowRuntime::WorkflowRuntime(
     Runtime &runtime, IExecutor &executor,
     std::shared_ptr<IArtifactStore> artifact_store,
     std::shared_ptr<EvidenceLedger> evidence_ledger,
-    std::shared_ptr<CheckpointStore> checkpoint_store)
+    std::shared_ptr<CheckpointStore> checkpoint_store,
+    std::size_t max_completed_runs)
     : runtime_(runtime), executor_(executor),
       artifact_store_(std::move(artifact_store)),
       evidence_ledger_(std::move(evidence_ledger)),
       checkpoint_store_(std::move(checkpoint_store)),
+      max_completed_runs_(std::max<std::size_t>(1, max_completed_runs)),
       shard_states_(runtime.shard_count()) {
   if (!artifact_store_) {
     artifact_store_ = std::make_shared<InMemoryArtifactStore>();
@@ -301,9 +303,22 @@ auto WorkflowRuntime::restore(std::shared_ptr<const ExecutionPlan> plan,
 
   const auto owner = owner_shard(snapshot.run_id);
   auto stored = std::make_shared<const RunSnapshot>(snapshot);
-  shard_states_[owner].completed_runs[snapshot.run_id.str()] = stored;
-  shard_states_[owner].completed_values[snapshot.run_id.str()] =
+  auto &state = shard_states_[owner];
+  state.completed_runs[snapshot.run_id.str()] = stored;
+  state.completed_values[snapshot.run_id.str()] =
       std::move(checkpoint.values);
+  state.completed_order.push_back(snapshot.run_id.str());
+  while (state.completed_order.size() > max_completed_runs_) {
+    auto expired = std::move(state.completed_order.front());
+    state.completed_order.pop_front();
+    state.completed_runs.erase(expired);
+    state.completed_values.erase(expired);
+    (void)checkpoint_store_->erase(WorkflowRunId{expired});
+    std::lock_guard lock(idempotency_mutex_);
+    std::erase_if(idempotency_runs_, [&](const auto &entry) {
+      return entry.second.str() == expired;
+    });
+  }
   if (!checkpoint.trigger.idempotency_key.empty()) {
     std::lock_guard lock(idempotency_mutex_);
     idempotency_runs_[checkpoint.trigger.idempotency_key] =
@@ -1142,11 +1157,23 @@ auto WorkflowRuntime::finalize_run_if_ready(const WorkflowRunId &run_id)
     state.completed_values[run_id.str()] = std::move(*values);
   }
   state.completed_runs[run_id.str()] = snapshot;
+  state.completed_order.push_back(run_id.str());
   if (run.callbacks.on_complete) {
     run.callbacks.on_complete(run_id, snapshot);
   }
   state.active_runs.erase(it);
   active_run_count_.fetch_sub(1, std::memory_order_release);
+  while (state.completed_order.size() > max_completed_runs_) {
+    auto expired = std::move(state.completed_order.front());
+    state.completed_order.pop_front();
+    state.completed_runs.erase(expired);
+    state.completed_values.erase(expired);
+    (void)checkpoint_store_->erase(WorkflowRunId{expired});
+    std::lock_guard lock(idempotency_mutex_);
+    std::erase_if(idempotency_runs_, [&](const auto &entry) {
+      return entry.second.str() == expired;
+    });
+  }
   return true;
 }
 

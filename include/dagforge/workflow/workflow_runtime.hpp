@@ -47,7 +47,8 @@ public:
       std::shared_ptr<EvidenceLedger> evidence_ledger =
           std::make_shared<EvidenceLedger>(),
       std::shared_ptr<CheckpointStore> checkpoint_store =
-          std::make_shared<CheckpointStore>());
+          std::make_shared<CheckpointStore>(),
+      std::size_t max_completed_runs = 10'000);
   ~WorkflowRuntime();
 
   WorkflowRuntime(const WorkflowRuntime &) = delete;
@@ -114,6 +115,7 @@ private:
     std::unordered_map<std::string,
                        std::vector<std::pair<OutputRef, WorkflowValue>>>
         completed_values;
+    std::deque<std::string> completed_order;
   };
 
   [[nodiscard]] auto owner_shard(const WorkflowRunId &run_id) const noexcept
@@ -177,6 +179,7 @@ private:
   std::shared_ptr<IArtifactStore> artifact_store_;
   std::shared_ptr<EvidenceLedger> evidence_ledger_;
   std::shared_ptr<CheckpointStore> checkpoint_store_;
+  std::size_t max_completed_runs_{10'000};
   std::vector<ShardState> shard_states_;
   std::shared_ptr<int> lifetime_token_{std::make_shared<int>(0)};
   mutable std::mutex idempotency_mutex_;

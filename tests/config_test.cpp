@@ -61,6 +61,8 @@ max_run_duration_sec = 60
 [storage]
 enabled = true
 directory = "/tmp/dagforge-test-state"
+max_completed_runs = 20
+max_evidence_records = 200
 
 [api]
 enabled = true
@@ -87,6 +89,8 @@ max_concurrent_requests = 7
   EXPECT_EQ(result->admission.max_parallel_nodes, 8U);
   EXPECT_TRUE(result->storage.enabled);
   EXPECT_EQ(result->storage.directory, "/tmp/dagforge-test-state");
+  EXPECT_EQ(result->storage.max_completed_runs, 20U);
+  EXPECT_EQ(result->storage.max_evidence_records, 200U);
   EXPECT_TRUE(result->api.enabled);
   EXPECT_EQ(result->api.port, 9999);
   EXPECT_EQ(result->api.bearer_token_env, "DAGFORGE_TEST_TOKEN");

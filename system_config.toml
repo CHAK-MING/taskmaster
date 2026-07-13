@@ -29,6 +29,8 @@ max_run_duration_sec = 3600
 [storage]
 enabled = false
 directory = "./state"
+max_completed_runs = 10000
+max_evidence_records = 100000
 
 [api]
 enabled = true

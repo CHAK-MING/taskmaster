@@ -1187,6 +1187,33 @@ TEST(WorkflowStorageTest, EvidenceLedgerReloadsJsonLines) {
   std::filesystem::remove_all(directory, error);
 }
 
+TEST(WorkflowStorageTest, EvidenceLedgerRetainsNewestRecords) {
+  const auto directory = temporary_test_directory("evidence-retention");
+  const auto file = directory / "evidence.jsonl";
+  std::error_code error;
+  std::filesystem::remove_all(directory, error);
+  const WorkflowRunId run_id{"retained-run"};
+
+  {
+    EvidenceLedger writer(file, 2);
+    for (std::string_view node : {"first", "second", "third"}) {
+      EvidenceRecord record;
+      record.run_id = run_id.clone();
+      record.node_id = WorkflowNodeId{node};
+      record.type = EvidenceType::TaskCompleted;
+      ASSERT_TRUE(writer.append(std::move(record)).has_value());
+    }
+    EXPECT_EQ(writer.size(), 2U);
+  }
+
+  EvidenceLedger reader(file, 2);
+  auto records = reader.records(run_id);
+  ASSERT_EQ(records.size(), 2U);
+  EXPECT_EQ(records[0].node_id, WorkflowNodeId{"second"});
+  EXPECT_EQ(records[1].node_id, WorkflowNodeId{"third"});
+  std::filesystem::remove_all(directory, error);
+}
+
 TEST(WorkflowStorageTest, CheckpointStoreRoundTripsPlanStateAndValues) {
   const auto directory = temporary_test_directory("checkpoint-store");
   std::error_code error;
@@ -1339,4 +1366,49 @@ TEST(WorkflowRuntimeTest, PersistsAuthoritativeRunTransitions) {
 
   core.stop();
   std::filesystem::remove_all(directory, error);
+}
+
+TEST(WorkflowRuntimeTest, CompletedRunRetentionEvictsOldestRun) {
+  Runtime core(1, false, 0);
+  ASSERT_TRUE(core.start().has_value());
+  ManualExecutor executor(core);
+  WorkflowRuntime runtime(
+      core, executor, std::make_shared<InMemoryArtifactStore>(),
+      std::make_shared<EvidenceLedger>(),
+      std::make_shared<CheckpointStore>(), 1);
+
+  auto plan = base_plan("retention");
+  plan.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .command = CommandNodeConfig{.program = "/bin/true"},
+      .outputs = {WorkflowPortId{"result"}},
+  });
+  auto compiled = PlanCompiler{}.compile(std::move(plan));
+  ASSERT_TRUE(compiled.has_value());
+
+  auto first = runtime.start(
+      *compiled, TriggerEnvelope{.workflow_id = WorkflowId{"retention"},
+                                 .source = "test",
+                                 .event_type = "first"});
+  ASSERT_TRUE(first.has_value());
+  ASSERT_TRUE(executor.wait_for_pending(1));
+  ASSERT_TRUE(executor.complete_next(0, "first"));
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, *first, RunState::Succeeded).has_value());
+
+  auto second = runtime.start(
+      *compiled, TriggerEnvelope{.workflow_id = WorkflowId{"retention"},
+                                 .source = "test",
+                                 .event_type = "second"});
+  ASSERT_TRUE(second.has_value());
+  ASSERT_TRUE(executor.wait_for_pending(1));
+  ASSERT_TRUE(executor.complete_next(0, "second"));
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, *second, RunState::Succeeded).has_value());
+
+  auto expired = sync_wait_on_runtime(core, runtime.snapshot(*first));
+  ASSERT_FALSE(expired.has_value());
+  EXPECT_EQ(expired.error(), make_error_code(Error::NotFound));
+  EXPECT_TRUE(sync_wait_on_runtime(core, runtime.snapshot(*second)).has_value());
+  core.stop();
 }

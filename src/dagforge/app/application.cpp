@@ -68,12 +68,13 @@ auto Application::rebuild_components() -> Result<void> {
       artifact_store =
           std::make_shared<workflow::FileArtifactStore>(root / "artifacts");
       evidence_ledger = std::make_shared<workflow::EvidenceLedger>(
-          root / "evidence.jsonl");
+          root / "evidence.jsonl", config_.storage.max_evidence_records);
       checkpoint_store =
           std::make_shared<workflow::CheckpointStore>(root / "runs");
     } else {
       artifact_store = std::make_shared<workflow::InMemoryArtifactStore>();
-      evidence_ledger = std::make_shared<workflow::EvidenceLedger>();
+      evidence_ledger = std::make_shared<workflow::EvidenceLedger>(
+          config_.storage.max_evidence_records);
       checkpoint_store = std::make_shared<workflow::CheckpointStore>();
     }
 
@@ -82,7 +83,8 @@ auto Application::rebuild_components() -> Result<void> {
         workflow::AdmissionPolicy{config_.admission});
     workflow_runtime_ = std::make_unique<workflow::WorkflowRuntime>(
         *runtime_, *executor_, std::move(artifact_store),
-        std::move(evidence_ledger), checkpoint_store);
+        std::move(evidence_ledger), checkpoint_store,
+        config_.storage.max_completed_runs);
 
     auto checkpoints = checkpoint_store->list();
     if (!checkpoints) {

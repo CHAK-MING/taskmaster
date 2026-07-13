@@ -140,6 +140,8 @@ The default stores are in-memory. Enable file persistence explicitly:
 [storage]
 enabled = true
 directory = "./state"
+max_completed_runs = 10000
+max_evidence_records = 100000
 ```
 
 The directory contains atomic Run checkpoint files, an append-only Evidence
@@ -147,6 +149,9 @@ log, and Artifact data plus metadata. Completed Runs and outputs are restored
 on startup. Non-terminal Runs cannot be reattached to an old sandbox process;
 they recover as failed with an infrastructure failure recorded on the active
 Attempt.
+
+When a retention limit is exceeded, the oldest completed Run or Evidence
+record is removed. Evicted durable Run checkpoints are deleted as well.
 
 ### 2.6 API
 
