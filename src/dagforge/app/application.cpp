@@ -154,11 +154,11 @@ auto Application::stop() noexcept -> void {
   if (api_) {
     api_->stop();
   }
-  workflow_runtime_.reset();
-  workflow_control_plane_.reset();
   if (runtime_) {
     runtime_->stop();
   }
+  workflow_runtime_.reset();
+  workflow_control_plane_.reset();
 }
 
 auto Application::is_running() const noexcept -> bool {
