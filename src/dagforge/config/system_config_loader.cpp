@@ -80,7 +80,10 @@ template <> struct meta<dagforge::ApiConfig> {
   static constexpr auto value = object(
       "enabled", &T::enabled, "port", &T::port, "host", &T::host, "reuse_port",
       &T::reuse_port, "tls_enabled", &T::tls_enabled, "tls_cert_file",
-      &T::tls_cert_file, "tls_key_file", &T::tls_key_file);
+      &T::tls_cert_file, "tls_key_file", &T::tls_key_file,
+      "bearer_token_env", &T::bearer_token_env, "max_request_body_bytes",
+      &T::max_request_body_bytes, "max_concurrent_requests",
+      &T::max_concurrent_requests);
 };
 
 template <> struct meta<dagforge::detail::SystemToml> {
@@ -138,6 +141,12 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
   apply_env_override_bool("DAGFORGE_API_TLS_ENABLED", cfg.api.tls_enabled);
   apply_env_override("DAGFORGE_API_TLS_CERT_FILE", cfg.api.tls_cert_file);
   apply_env_override("DAGFORGE_API_TLS_KEY_FILE", cfg.api.tls_key_file);
+  apply_env_override("DAGFORGE_API_BEARER_TOKEN_ENV",
+                     cfg.api.bearer_token_env);
+  apply_env_override("DAGFORGE_API_MAX_REQUEST_BODY_BYTES",
+                     cfg.api.max_request_body_bytes);
+  apply_env_override("DAGFORGE_API_MAX_CONCURRENT_REQUESTS",
+                     cfg.api.max_concurrent_requests);
 
   apply_env_override("DAGFORGE_COMPUTE_THREADS", cfg.compute.threads);
   apply_env_override("DAGFORGE_COMPUTE_QUEUE_CAPACITY",
@@ -183,7 +192,9 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
       cfg.admission.max_parallel_nodes > cfg.admission.max_nodes ||
       cfg.admission.max_total_output_bytes == 0 ||
       cfg.admission.max_run_duration_sec <= 0 ||
-      (cfg.storage.enabled && cfg.storage.directory.empty())) {
+      (cfg.storage.enabled && cfg.storage.directory.empty()) ||
+      cfg.api.max_request_body_bytes == 0 ||
+      cfg.api.max_concurrent_requests == 0) {
     return fail(Error::ParseError);
   }
   return ok(std::move(cfg));

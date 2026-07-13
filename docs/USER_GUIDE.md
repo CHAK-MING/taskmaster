@@ -171,6 +171,21 @@ Attempt.
 Set `api.enabled = true` to start the HTTP control plane. TLS requires both a
 certificate chain and private key path.
 
+```toml
+[api]
+enabled = true
+host = "127.0.0.1"
+port = 8888
+bearer_token_env = "DAGFORGE_API_TOKEN"
+max_request_body_bytes = 1048576
+max_concurrent_requests = 128
+```
+
+When `bearer_token_env` is set, the named environment variable must contain a
+non-empty token before the server starts. Clients send it as
+`Authorization: Bearer <token>`. Oversized requests are rejected at both the
+HTTP parser and route boundary; saturated routes return `429`.
+
 Environment overrides:
 
 - `DAGFORGE_API_ENABLED`
@@ -180,6 +195,9 @@ Environment overrides:
 - `DAGFORGE_API_TLS_ENABLED`
 - `DAGFORGE_API_TLS_CERT_FILE`
 - `DAGFORGE_API_TLS_KEY_FILE`
+- `DAGFORGE_API_BEARER_TOKEN_ENV`
+- `DAGFORGE_API_MAX_REQUEST_BODY_BYTES`
+- `DAGFORGE_API_MAX_CONCURRENT_REQUESTS`
 
 ## 3. Workflow Plan v1
 

@@ -31,6 +31,7 @@ public:
   [[nodiscard]] auto set_tls_credentials(std::string cert_chain_file,
                                          std::string private_key_file)
       -> Result<void>;
+  auto set_request_body_limit(std::uint64_t bytes) -> Result<void>;
 
   auto start(std::string_view host, uint16_t port) -> Result<void>;
   auto start(std::string_view host, uint16_t port, bool reuse_port)

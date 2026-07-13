@@ -44,3 +44,6 @@ reuse_port = false
 tls_enabled = false
 tls_cert_file = ""
 tls_key_file = ""
+bearer_token_env = ""
+max_request_body_bytes = 1048576
+max_concurrent_requests = 128

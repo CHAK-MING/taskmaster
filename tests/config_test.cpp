@@ -80,6 +80,9 @@ directory = "/tmp/dagforge-test-state"
 enabled = true
 port = 9999
 host = "0.0.0.0"
+bearer_token_env = "DAGFORGE_TEST_TOKEN"
+max_request_body_bytes = 4096
+max_concurrent_requests = 7
 )";
 
   auto result = SystemConfigLoader::load_from_string(toml);
@@ -104,6 +107,9 @@ host = "0.0.0.0"
   EXPECT_EQ(result->storage.directory, "/tmp/dagforge-test-state");
   EXPECT_TRUE(result->api.enabled);
   EXPECT_EQ(result->api.port, 9999);
+  EXPECT_EQ(result->api.bearer_token_env, "DAGFORGE_TEST_TOKEN");
+  EXPECT_EQ(result->api.max_request_body_bytes, 4096U);
+  EXPECT_EQ(result->api.max_concurrent_requests, 7U);
 }
 
 TEST(ConfigTest, RejectsInvalidComputeConfiguration) {

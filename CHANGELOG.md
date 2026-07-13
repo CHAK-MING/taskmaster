@@ -21,6 +21,8 @@ All notable changes to DAGForge will be documented in this file.
 - Unknown TOML fields are rejected instead of being silently ignored.
 
 ### Added
+- Added environment-backed Bearer authentication, parser and route request-body
+  limits, and a global concurrent-request ceiling for the HTTP control plane.
 - Added optional file-backed Run checkpoints, append-only Evidence, durable
   Artifacts, completed-run recovery, and explicit infrastructure failure for
   non-terminal Attempts found after restart.

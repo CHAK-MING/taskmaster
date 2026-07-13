@@ -268,6 +268,10 @@ The configuration file contains seven top-level sections:
 Workflow Plans cannot authorize themselves. `AdmissionPolicy` evaluates every
 plan against the server configuration before it is compiled and registered.
 
+The HTTP control plane supports a Bearer Token loaded from the environment,
+plus configurable request-body and concurrent-request limits. Authentication
+is disabled only when `api.bearer_token_env` is empty.
+
 See [`system_config.toml`](system_config.toml) for a complete example.
 
 ---

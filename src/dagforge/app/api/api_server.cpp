@@ -6,6 +6,7 @@
 #include "dagforge/app/metrics_exporter.hpp"
 #include "dagforge/app/http/http_server.hpp"
 #include "dagforge/util/log.hpp"
+#include <cstdlib>
 #include <tuple>
 
 namespace dagforge {
@@ -16,6 +17,7 @@ struct ApiServer::Impl : std::enable_shared_from_this<Impl> {
   std::atomic<std::uint64_t> http_active_requests_{0};
   detail::HttpMetricsRegistry http_metrics_;
   api_detail::ApiContext ctx_;
+  bool auth_configuration_valid_{true};
 
   explicit Impl(Application &app)
       : app_(app),
@@ -23,7 +25,20 @@ struct ApiServer::Impl : std::enable_shared_from_this<Impl> {
         ctx_{.app = app_,
              .server = *server_,
              .http_active_requests = http_active_requests_,
-             .http_metrics = http_metrics_} {
+             .http_metrics = http_metrics_,
+             .max_request_body_bytes =
+                 app_.config().api.max_request_body_bytes,
+             .max_concurrent_requests =
+                 app_.config().api.max_concurrent_requests} {
+    const auto &token_env = app_.config().api.bearer_token_env;
+    if (!token_env.empty()) {
+      if (const char *token = std::getenv(token_env.c_str());
+          token != nullptr && *token != '\0') {
+        ctx_.bearer_token = token;
+      } else {
+        auth_configuration_valid_ = false;
+      }
+    }
     if (!server_) {
       log::error("ApiServer: HttpServer allocation failed (server_ is null)");
     } else {
@@ -53,6 +68,16 @@ struct ApiServer::Impl : std::enable_shared_from_this<Impl> {
 
   auto start() -> Result<void> {
     const auto &api_cfg = app_.config().api;
+    if (!auth_configuration_valid_) {
+      log::error("API bearer token environment variable '{}' is unset",
+                 api_cfg.bearer_token_env);
+      return fail(Error::InvalidArgument);
+    }
+    auto body_limit =
+        server_->set_request_body_limit(api_cfg.max_request_body_bytes);
+    if (!body_limit) {
+      return fail(body_limit.error());
+    }
     if (api_cfg.tls_enabled) {
       auto tls_res = server_->set_tls_credentials(api_cfg.tls_cert_file,
                                                   api_cfg.tls_key_file);

@@ -75,6 +75,9 @@ struct ApiConfig {
   bool tls_enabled{false};
   std::string tls_cert_file;
   std::string tls_key_file;
+  std::string bearer_token_env;
+  std::uint64_t max_request_body_bytes{1024ULL * 1024ULL};
+  std::size_t max_concurrent_requests{128};
 
   auto operator==(const ApiConfig &) const -> bool = default;
 };

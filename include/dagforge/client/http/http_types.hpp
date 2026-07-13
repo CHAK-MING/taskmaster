@@ -71,6 +71,8 @@ enum class HttpStatus : std::uint16_t {
   NotFound = 404,
   MethodNotAllowed = 405,
   Conflict = 409,
+  PayloadTooLarge = 413,
+  TooManyRequests = 429,
 
   InternalServerError = 500,
   NotImplemented = 501,

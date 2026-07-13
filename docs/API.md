@@ -3,6 +3,17 @@
 The API is available when `[api].enabled = true`. JSON responses use the
 standard HTTP status code for success or failure.
 
+When `api.bearer_token_env` is configured, every endpoint requires:
+
+```http
+Authorization: Bearer <token>
+```
+
+The token is read from the named environment variable. Missing or empty token
+configuration prevents the API server from starting. Request body and
+concurrency ceilings are controlled by `api.max_request_body_bytes` and
+`api.max_concurrent_requests`.
+
 ## System endpoints
 
 ### `GET /api/health`
@@ -164,10 +175,9 @@ Moves a paused run back to `running` and resumes dispatch.
 - `401`/`403`: mapped adapter or policy authorization failure.
 - `404`: plan, run, or output not found.
 - `409`: state or duplicate conflict when mapped by the core error.
+- `413`: request body exceeds the configured limit.
+- `429`: concurrent request limit reached.
 - `503`: workflow runtime disabled.
-
-The current API has no authentication middleware. Bind to loopback or place it
-behind a trusted gateway when operating outside a development environment.
 
 ## Current limitations
 

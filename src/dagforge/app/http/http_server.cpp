@@ -27,7 +27,7 @@ namespace dagforge::http {
 namespace {
 constexpr auto kHttpIoTimeout = std::chrono::seconds(30);
 constexpr std::uint32_t kParserHeaderLimit = 256 * 1024;
-constexpr std::uint64_t kParserBodyLimit = 10ULL * 1024ULL * 1024ULL;
+constexpr std::uint64_t kDefaultParserBodyLimit = 10ULL * 1024ULL * 1024ULL;
 
 namespace beast = boost::beast;
 namespace beast_http = beast::http;
@@ -102,6 +102,7 @@ struct HttpServer::Impl {
   };
   std::vector<ShardState> shard_states;
   std::atomic<bool> running{false};
+  std::atomic<std::uint64_t> body_limit{kDefaultParserBodyLimit};
 
   explicit Impl(Runtime &rt) : runtime(rt), shard_states(rt.shard_count()) {}
 
@@ -117,7 +118,7 @@ struct HttpServer::Impl {
       while (self->running.load(std::memory_order_acquire)) {
         beast_http::request_parser<beast_http::vector_body<uint8_t>> parser;
         parser.header_limit(kParserHeaderLimit);
-        parser.body_limit(kParserBodyLimit);
+        parser.body_limit(self->body_limit.load(std::memory_order_relaxed));
 
         auto read_res = co_await co_as_result(beast_http::async_read(
             socket, read_buffer, parser,
@@ -215,7 +216,7 @@ struct HttpServer::Impl {
     while (self->running.load(std::memory_order_acquire)) {
       beast_http::request_parser<beast_http::vector_body<uint8_t>> parser;
       parser.header_limit(kParserHeaderLimit);
-      parser.body_limit(kParserBodyLimit);
+      parser.body_limit(self->body_limit.load(std::memory_order_relaxed));
       auto read_res = co_await co_as_result(beast_http::async_read(
           stream, read_buffer, parser,
           boost::asio::cancel_after(kHttpIoTimeout, dagforge::use_nothrow)));
@@ -362,6 +363,14 @@ auto HttpServer::set_tls_credentials(std::string cert_chain_file,
   impl_->tls_ctx = std::move(ctx);
   log::debug("TLS enabled for HTTP server (cert='{}', key='{}')",
              cert_chain_file, private_key_file);
+  return ok();
+}
+
+auto HttpServer::set_request_body_limit(std::uint64_t bytes) -> Result<void> {
+  if (bytes == 0 || is_running()) {
+    return fail(Error::InvalidState);
+  }
+  impl_->body_limit.store(bytes, std::memory_order_relaxed);
   return ok();
 }
 

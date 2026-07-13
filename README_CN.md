@@ -249,6 +249,9 @@ Plan 中的 Node 在运行时投影为 Task，每次真实执行都会创建独�
 Workflow Plan 不能自行授权。计划在编译和注册前必须通过服务端
 `AdmissionPolicy`。
 
+HTTP 控制面支持从环境变量加载 Bearer Token，并限制请求体大小和并发请求数。
+只有 `api.bearer_token_env` 为空时才关闭认证。
+
 完整配置见 [`system_config.toml`](system_config.toml)。
 
 ---
