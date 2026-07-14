@@ -1,19 +1,16 @@
 #include "dagforge/util/daemon.hpp"
 
-
-#include <boost/interprocess/sync/file_lock.hpp>
-
 #include <charconv>
 #include <csignal>
-#include <cstdlib>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
-#include <sys/stat.h>
+#include <fcntl.h>
+#include <format>
+#include <sys/file.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
-
-
 namespace dagforge {
 
 std::atomic<bool> g_shutdown_requested{false};
@@ -55,16 +52,26 @@ auto ensure_parent_directory(std::string_view path) -> Result<void> {
   return ok();
 }
 
-auto write_pid_to_file(std::string_view path, std::int64_t pid)
+auto write_pid_to_file(int fd, std::int64_t pid)
     -> Result<void> {
-  std::ofstream out(std::string(path), std::ios::trunc);
-  if (!out.is_open()) {
-    return fail(Error::FileOpenFailed);
+  if (::ftruncate(fd, 0) != 0 || ::lseek(fd, 0, SEEK_SET) < 0) {
+    return fail(std::error_code(errno, std::system_category()));
   }
-  out << pid << '\n';
-  out.flush();
-  if (!out.good()) {
-    return fail(Error::FileOpenFailed);
+  const auto text = std::format("{}\n", pid);
+  std::size_t written = 0;
+  while (written < text.size()) {
+    const auto count =
+        ::write(fd, text.data() + written, text.size() - written);
+    if (count < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return fail(std::error_code(errno, std::system_category()));
+    }
+    written += static_cast<std::size_t>(count);
+  }
+  if (::fsync(fd) != 0) {
+    return fail(std::error_code(errno, std::system_category()));
   }
   return ok();
 }
@@ -75,15 +82,16 @@ void signal_handler(int) {
 }
 } // namespace
 
-PidFileGuard::PidFileGuard(std::string path,
-                           std::unique_ptr<boost::interprocess::file_lock> lock) noexcept
-    : path_(std::move(path)), lock_(std::move(lock)), owns_(true) {}
+PidFileGuard::PidFileGuard() = default;
+
+PidFileGuard::PidFileGuard(std::string path, int fd) noexcept
+    : path_(std::move(path)), fd_(fd), owns_(true) {}
 
 PidFileGuard::~PidFileGuard() { release(); }
 
 PidFileGuard::PidFileGuard(PidFileGuard &&other) noexcept
-    : path_(std::move(other.path_)), lock_(std::move(other.lock_)),
-      owns_(other.owns_) {
+    : path_(std::move(other.path_)), fd_(other.fd_), owns_(other.owns_) {
+  other.fd_ = -1;
   other.owns_ = false;
 }
 
@@ -93,8 +101,9 @@ auto PidFileGuard::operator=(PidFileGuard &&other) noexcept -> PidFileGuard & {
   }
   release();
   path_ = std::move(other.path_);
-  lock_ = std::move(other.lock_);
+  fd_ = other.fd_;
   owns_ = other.owns_;
+  other.fd_ = -1;
   other.owns_ = false;
   return *this;
 }
@@ -107,26 +116,27 @@ auto PidFileGuard::acquire(std::string_view path) -> Result<PidFileGuard> {
   if (auto r = ensure_parent_directory(path); !r) {
     return fail(r.error());
   }
-  {
-    std::ofstream touch(std::string(path), std::ios::app);
-    if (!touch.is_open()) {
-      return fail(Error::FileOpenFailed);
-    }
-  }
-
   const std::string path_str(path);
-  auto lock = std::make_unique<boost::interprocess::file_lock>(path_str.c_str());
-  if (!lock->try_lock()) {
-    return fail(Error::AlreadyExists);
+  const int fd =
+      ::open(path_str.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0644);
+  if (fd < 0) {
+    return fail(std::error_code(errno, std::system_category()));
+  }
+  if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+    const auto error = errno == EWOULDBLOCK || errno == EAGAIN
+                           ? make_error_code(Error::AlreadyExists)
+                           : std::error_code(errno, std::system_category());
+    ::close(fd);
+    return fail(error);
   }
 
-  if (auto r = write_pid_to_file(path, static_cast<std::int64_t>(::getpid()));
+  if (auto r = write_pid_to_file(fd, static_cast<std::int64_t>(::getpid()));
       !r) {
-    lock->unlock();
+    (void)::flock(fd, LOCK_UN);
+    ::close(fd);
     return fail(r.error());
   }
-
-  return ok(PidFileGuard(std::string(path), std::move(lock)));
+  return ok(PidFileGuard(std::move(path_str), fd));
 }
 
 auto PidFileGuard::release() noexcept -> void {
@@ -135,37 +145,13 @@ auto PidFileGuard::release() noexcept -> void {
   }
   owns_ = false;
 
-  if (lock_) {
-    lock_->unlock();
-  }
-  lock_.reset();
-
   std::error_code ec;
   std::filesystem::remove(std::filesystem::path(path_), ec);
-}
-
-auto daemonize() -> Result<void> {
-  return sys_check(fork())
-      .and_then([](pid_t pid) -> Result<void> {
-        if (pid > 0)
-          _Exit(0);
-        return ok();
-      })
-      .and_then([]() { return sys_check(setsid()); })
-      .and_then([](auto) { return sys_check(fork()); })
-      .and_then([](pid_t pid) -> Result<void> {
-        if (pid > 0)
-          _Exit(0);
-        return ok();
-      })
-      .and_then([]() { return sys_check(chdir("/")); })
-      .and_then([](auto) -> Result<void> {
-        umask(0);
-        (void)close(STDIN_FILENO);
-        (void)close(STDOUT_FILENO);
-        (void)close(STDERR_FILENO);
-        return ok();
-      });
+  if (fd_ >= 0) {
+    (void)::flock(fd_, LOCK_UN);
+    ::close(fd_);
+    fd_ = -1;
+  }
 }
 
 auto read_pid_file(std::string_view path) -> Result<std::int64_t> {

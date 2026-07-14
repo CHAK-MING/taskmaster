@@ -2,21 +2,17 @@ module;
 
 #include <glaze/core/reflect.hpp>
 
-#include <chrono>
 #include <cstdint>
 #include <flat_map>
-#include <functional>
-#include <memory>
-#include <new>
 #include <string>
 #include <vector>
 
-export module dagforge.executor;
+export module dagforge.sandbox;
 
 export import dagforge.util;
 
 export {
 #define DAGFORGE_BUILDING_MODULE_INTERFACE 1
-#include "dagforge/executor/command_spec.hpp"
+#include "dagforge/sandbox/command_spec.hpp"
 #undef DAGFORGE_BUILDING_MODULE_INTERFACE
 }

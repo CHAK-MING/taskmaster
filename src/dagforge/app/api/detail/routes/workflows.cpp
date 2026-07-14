@@ -107,30 +107,38 @@ inline auto add_timestamp(
 
 [[nodiscard]] inline auto value_json(const workflow::WorkflowValue &value)
     -> JsonValue {
-  return std::visit(
-      [](const auto &typed) -> JsonValue {
-        using T = std::decay_t<decltype(typed)>;
-        if constexpr (std::same_as<T, std::monostate>) {
-          return JsonValue{nullptr};
-        } else if constexpr (std::same_as<T, bool> ||
-                             std::same_as<T, std::int64_t> ||
-                             std::same_as<T, double> ||
-                             std::same_as<T, std::string>) {
-          JsonValue value;
-          value = typed;
-          return value;
-        } else if constexpr (std::same_as<T, JsonValue>) {
-          return typed;
-        } else if constexpr (std::same_as<T, workflow::ArtifactRef>) {
-          return json{{"type", "artifact"},
-                      {"artifact_id", typed.artifact_id.str()},
-                      {"media_type", typed.media_type},
-                      {"size_bytes", typed.size_bytes},
-                      {"digest", typed.digest}};
-        }
-        return JsonValue{nullptr};
-      },
-      value);
+  if (std::holds_alternative<std::monostate>(value)) {
+    return JsonValue{nullptr};
+  }
+  if (const auto *boolean = std::get_if<bool>(&value)) {
+    JsonValue result;
+    result = *boolean;
+    return result;
+  }
+  if (const auto *integer = std::get_if<std::int64_t>(&value)) {
+    JsonValue result;
+    result = *integer;
+    return result;
+  }
+  if (const auto *real = std::get_if<double>(&value)) {
+    JsonValue result;
+    result = *real;
+    return result;
+  }
+  if (const auto *text = std::get_if<std::string>(&value)) {
+    JsonValue result;
+    result = *text;
+    return result;
+  }
+  if (const auto *value_json = std::get_if<JsonValue>(&value)) {
+    return *value_json;
+  }
+  const auto &artifact = std::get<workflow::ArtifactRef>(value);
+  return json{{"type", "artifact"},
+              {"artifact_id", artifact.artifact_id.str()},
+              {"media_type", artifact.media_type},
+              {"size_bytes", artifact.size_bytes},
+              {"digest", artifact.digest}};
 }
 
 [[nodiscard]] inline auto snapshot_json(const workflow::RunSnapshot &snapshot)

@@ -4,16 +4,13 @@
 #include "dagforge/core/coroutine.hpp"
 #include "dagforge/core/error.hpp"
 #include "dagforge/core/runtime.hpp"
-#include "dagforge/util/json.hpp"
-#include "dagforge/workflow/workflow_plan.hpp"
+#include "dagforge/workflow/task_executor.hpp"
 
 #include <boost/asio/async_result.hpp>
 
 #include <atomic>
 #include <chrono>
-#include <functional>
 #include <memory>
-#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -22,44 +19,6 @@
 #endif
 
 namespace dagforge::workflow {
-
-using ExecutorInputs = std::unordered_map<
-    std::string, std::shared_ptr<const WorkflowValue>>;
-using ExecutorOutputs =
-    std::vector<std::pair<WorkflowPortId, WorkflowValue>>;
-
-struct ExecutorCompileContext {
-  std::span<const InputBinding> inputs;
-  std::span<const WorkflowPortId> outputs;
-};
-
-struct TaskExecutionRequest {
-  InstanceId instance_id;
-  JsonValue config{JsonValue::object_t{}};
-  ExecutorInputs inputs;
-  std::vector<WorkflowPortId> outputs;
-  std::chrono::seconds timeout{std::chrono::minutes(5)};
-};
-
-struct TaskExecutionSink {
-  std::move_only_function<void(const InstanceId &, std::string_view)> on_state;
-  std::move_only_function<void(const InstanceId &,
-                               Result<ExecutorOutputs>)>
-      on_complete;
-};
-
-class ITaskExecutor {
-public:
-  virtual ~ITaskExecutor() = default;
-
-  [[nodiscard]] virtual auto type() const noexcept -> std::string_view = 0;
-  [[nodiscard]] virtual auto compile(JsonValue config,
-                                     ExecutorCompileContext context) const
-      -> Result<JsonValue> = 0;
-  virtual auto start(TaskExecutionRequest request, TaskExecutionSink sink)
-      -> Result<void> = 0;
-  virtual auto cancel(const InstanceId &instance_id) -> void = 0;
-};
 
 class ExecutorRegistry {
 public:
@@ -71,10 +30,13 @@ public:
   auto start(std::string_view type, TaskExecutionRequest request,
              TaskExecutionSink sink) -> Result<void>;
   auto cancel(std::string_view type, const InstanceId &instance_id) -> void;
+  [[nodiscard]] auto quiesce(std::chrono::milliseconds timeout)
+      -> Result<void>;
   [[nodiscard]] auto contains(std::string_view type) const -> bool;
 
 private:
   std::unordered_map<std::string, std::shared_ptr<ITaskExecutor>> executors_;
+  std::atomic_bool quiescing_{false};
 };
 
 inline auto execute_task_async(

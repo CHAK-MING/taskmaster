@@ -51,13 +51,13 @@ public:
 
   Logger(const Logger &) = delete;
   Logger &operator=(const Logger &) = delete;
-  Logger(Logger &&) noexcept;
-  auto operator=(Logger &&) noexcept -> Logger &;
+  Logger(Logger &&) = delete;
+  auto operator=(Logger &&) -> Logger & = delete;
 
   auto start() -> void;
   auto stop() -> void;
   auto set_level(Level level) noexcept -> void;
-  auto set_output_stderr() noexcept -> void;
+  auto set_output_stderr() -> void;
   auto set_output_file(std::string_view path) -> bool;
   [[nodiscard]] auto level() const noexcept -> Level;
 
@@ -88,7 +88,7 @@ inline auto set_output_file(std::string_view path) -> bool {
   return logger().set_output_file(path);
 }
 
-inline auto set_output_stderr() noexcept -> void {
+inline auto set_output_stderr() -> void {
   logger().set_output_stderr();
 }
 

@@ -29,49 +29,47 @@ namespace {
 }
 
 [[nodiscard]] auto value_to_string(const WorkflowValue &value) -> std::string {
-  return std::visit(
-      [](const auto &typed) -> std::string {
-        using T = std::decay_t<decltype(typed)>;
-        if constexpr (std::same_as<T, std::monostate>) {
-          return {};
-        } else if constexpr (std::same_as<T, bool>) {
-          return typed ? "true" : "false";
-        } else if constexpr (std::same_as<T, std::int64_t> ||
-                             std::same_as<T, double>) {
-          return std::format("{}", typed);
-        } else if constexpr (std::same_as<T, std::string>) {
-          return typed;
-        } else if constexpr (std::same_as<T, JsonValue>) {
-          return dump_json(typed);
-        } else if constexpr (std::same_as<T, ArtifactRef>) {
-          return typed.artifact_id.str();
-        }
-        return {};
-      },
-      value);
+  if (std::holds_alternative<std::monostate>(value)) {
+    return {};
+  }
+  if (const auto *boolean = std::get_if<bool>(&value)) {
+    return *boolean ? "true" : "false";
+  }
+  if (const auto *integer = std::get_if<std::int64_t>(&value)) {
+    return std::format("{}", *integer);
+  }
+  if (const auto *real = std::get_if<double>(&value)) {
+    return std::format("{}", *real);
+  }
+  if (const auto *text = std::get_if<std::string>(&value)) {
+    return *text;
+  }
+  if (const auto *json = std::get_if<JsonValue>(&value)) {
+    return dump_json(*json);
+  }
+  return std::get<ArtifactRef>(value).artifact_id.str();
 }
 
 [[nodiscard]] auto value_truthy(const WorkflowValue &value) -> bool {
-  return std::visit(
-      [](const auto &typed) -> bool {
-        using T = std::decay_t<decltype(typed)>;
-        if constexpr (std::same_as<T, std::monostate>) {
-          return false;
-        } else if constexpr (std::same_as<T, bool>) {
-          return typed;
-        } else if constexpr (std::same_as<T, std::int64_t> ||
-                             std::same_as<T, double>) {
-          return typed != 0;
-        } else if constexpr (std::same_as<T, std::string>) {
-          return !typed.empty();
-        } else if constexpr (std::same_as<T, JsonValue>) {
-          return dump_json(typed) != "null";
-        } else if constexpr (std::same_as<T, ArtifactRef>) {
-          return !typed.artifact_id.empty();
-        }
-        return false;
-      },
-      value);
+  if (std::holds_alternative<std::monostate>(value)) {
+    return false;
+  }
+  if (const auto *boolean = std::get_if<bool>(&value)) {
+    return *boolean;
+  }
+  if (const auto *integer = std::get_if<std::int64_t>(&value)) {
+    return *integer != 0;
+  }
+  if (const auto *real = std::get_if<double>(&value)) {
+    return *real != 0;
+  }
+  if (const auto *text = std::get_if<std::string>(&value)) {
+    return !text->empty();
+  }
+  if (const auto *json = std::get_if<JsonValue>(&value)) {
+    return dump_json(*json) != "null";
+  }
+  return !std::get<ArtifactRef>(value).artifact_id.empty();
 }
 
 [[nodiscard]] auto outputs_match_contract(
@@ -107,10 +105,12 @@ namespace {
 
 [[nodiscard]] auto classify_failure(std::error_code error) noexcept
     -> FailureClass {
-  if (error == make_error_code(Error::Cancelled)) {
+  if (error == make_error_code(Error::Cancelled) ||
+      error == std::errc::operation_canceled) {
     return FailureClass::Cancelled;
   }
-  if (error == make_error_code(Error::Timeout)) {
+  if (error == make_error_code(Error::Timeout) ||
+      error == std::errc::timed_out) {
     return FailureClass::Timeout;
   }
   if (error == make_error_code(Error::InvalidArgument) ||
@@ -939,6 +939,7 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
   append_evidence(run, task_index, EvidenceType::TaskCompleted);
 
   if (run.plan->nodes[task_index].plan.checkpoint) {
+    checkpoint(run);
     append_evidence(run, task_index, EvidenceType::Checkpoint);
   }
   assert(invariants_hold(run));
@@ -1210,6 +1211,31 @@ auto WorkflowRuntime::finalize_run_if_ready(const WorkflowRunId &run_id)
     return false;
   }
 
+  // A task-level cancellation is also a run-level cancellation, but the run
+  // state machine deliberately requires cancellation to pass through
+  // Stopping. Without this bridge, an executor that rejects start with
+  // Error::Cancelled leaves the run permanently active because
+  // Running -> Cancelled is not a legal transition.
+  if (any_cancelled && run.snapshot.state != RunState::Stopping) {
+    run.snapshot.stop_intent = StopIntent::Cancel;
+    if (run.snapshot.stop_reason.empty()) {
+      const auto cancelled_task = std::ranges::find_if(
+          run.tasks, [](const auto &task) {
+            return task.snapshot.state == TaskState::Cancelled;
+          });
+      if (cancelled_task != run.tasks.end()) {
+        run.snapshot.stop_reason = cancelled_task->snapshot.last_error;
+      }
+    }
+    if (!transition_run(run, RunState::Stopping)) {
+      return false;
+    }
+    append_evidence(
+        run, run.tasks.size(), EvidenceType::RunStopRequested,
+        make_metadata({{"intent", std::string{to_string_view(StopIntent::Cancel)}},
+                       {"reason", run.snapshot.stop_reason}}));
+  }
+
   RunState terminal_state = RunState::Succeeded;
   if (run.snapshot.state == RunState::Stopping) {
     switch (run.snapshot.stop_intent.value_or(StopIntent::Fail)) {
@@ -1313,22 +1339,19 @@ auto WorkflowRuntime::emit_run_state(ActiveRun &run) -> void {
   if (run.callbacks.on_run_state) {
     run.callbacks.on_run_state(run.snapshot);
   }
-  checkpoint(run);
 }
 
-auto WorkflowRuntime::emit_task_state(ActiveRun &run,
-                                      std::size_t task_index) -> void {
+auto WorkflowRuntime::emit_task_state(ActiveRun &run, std::size_t task_index)
+    -> void {
   run.snapshot.tasks[task_index] = run.tasks[task_index].snapshot;
   if (run.callbacks.on_task_state) {
     run.callbacks.on_task_state(run.snapshot.run_id,
                                 run.tasks[task_index].snapshot);
   }
-  checkpoint(run);
 }
 
 auto WorkflowRuntime::append_evidence(const ActiveRun &run,
-                                      std::size_t node_index,
-                                      EvidenceType type,
+                                      std::size_t node_index, EvidenceType type,
                                       JsonValue metadata) -> void {
   EvidenceRecord record;
   record.run_id = run.snapshot.run_id.clone();
@@ -1425,7 +1448,7 @@ auto WorkflowRuntime::snapshot(const WorkflowRunId &run_id) const
     co_return copy_snapshot();
   }
 
-  auto [ec, value] = co_await boost::asio::async_initiate<
+  auto result = co_await co_as_result(boost::asio::async_initiate<
       const decltype(dagforge::use_nothrow),
       void(boost::system::error_code, std::shared_ptr<const RunSnapshot>)>(
       [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
@@ -1455,18 +1478,18 @@ auto WorkflowRuntime::snapshot(const WorkflowRunId &run_id) const
                       std::shared_ptr<const RunSnapshot>{});
             });
       },
-      dagforge::use_nothrow);
-  if (ec) {
-    co_return fail(ec);
+      dagforge::use_nothrow));
+  if (!result) {
+    co_return fail(result.error());
   }
-  co_return ok(std::move(value));
+  co_return ok(std::move(*result));
 }
 
 auto WorkflowRuntime::output(const WorkflowRunId &run_id,
                              const OutputRef &output_ref) const
     -> task<Result<std::shared_ptr<const WorkflowValue>>> {
   const auto target = owner_shard(run_id);
-  auto [ec, value] = co_await boost::asio::async_initiate<
+  auto result = co_await co_as_result(boost::asio::async_initiate<
       const decltype(dagforge::use_nothrow),
       void(boost::system::error_code, std::shared_ptr<const WorkflowValue>)>(
       [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
@@ -1507,17 +1530,17 @@ auto WorkflowRuntime::output(const WorkflowRunId &run_id,
                       std::shared_ptr<const WorkflowValue>{});
             });
       },
-      dagforge::use_nothrow);
-  if (ec) {
-    co_return fail(ec);
+      dagforge::use_nothrow));
+  if (!result) {
+    co_return fail(result.error());
   }
-  co_return ok(std::move(value));
+  co_return ok(std::move(*result));
 }
 
 auto WorkflowRuntime::pause(const WorkflowRunId &run_id)
     -> task<Result<void>> {
   const auto target = owner_shard(run_id);
-  auto [ec] = co_await boost::asio::async_initiate<
+  auto result = co_await co_as_result(boost::asio::async_initiate<
       const decltype(dagforge::use_nothrow), void(boost::system::error_code)>(
       [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
        run_id = run_id.clone(), target](auto handler) mutable {
@@ -1551,9 +1574,9 @@ auto WorkflowRuntime::pause(const WorkflowRunId &run_id)
               handler(boost::system::error_code{});
             });
       },
-      dagforge::use_nothrow);
-  if (ec) {
-    co_return fail(ec);
+      dagforge::use_nothrow));
+  if (!result) {
+    co_return fail(result.error());
   }
   co_return ok();
 }
@@ -1561,7 +1584,7 @@ auto WorkflowRuntime::pause(const WorkflowRunId &run_id)
 auto WorkflowRuntime::resume(const WorkflowRunId &run_id)
     -> task<Result<void>> {
   const auto target = owner_shard(run_id);
-  auto [ec] = co_await boost::asio::async_initiate<
+  auto result = co_await co_as_result(boost::asio::async_initiate<
       const decltype(dagforge::use_nothrow), void(boost::system::error_code)>(
       [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
        run_id = run_id.clone(), target](auto handler) mutable {
@@ -1593,9 +1616,9 @@ auto WorkflowRuntime::resume(const WorkflowRunId &run_id)
               handler(boost::system::error_code{});
             });
       },
-      dagforge::use_nothrow);
-  if (ec) {
-    co_return fail(ec);
+      dagforge::use_nothrow));
+  if (!result) {
+    co_return fail(result.error());
   }
   co_return ok();
 }
@@ -1603,7 +1626,7 @@ auto WorkflowRuntime::resume(const WorkflowRunId &run_id)
 auto WorkflowRuntime::cancel(const WorkflowRunId &run_id)
     -> task<Result<void>> {
   const auto target = owner_shard(run_id);
-  auto [ec] = co_await boost::asio::async_initiate<
+  auto result = co_await co_as_result(boost::asio::async_initiate<
       const decltype(dagforge::use_nothrow), void(boost::system::error_code)>(
       [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
        run_id = run_id.clone(), target](auto handler) mutable {
@@ -1623,9 +1646,9 @@ auto WorkflowRuntime::cancel(const WorkflowRunId &run_id)
               handler(boost::system::error_code{});
             });
       },
-      dagforge::use_nothrow);
-  if (ec) {
-    co_return fail(ec);
+      dagforge::use_nothrow));
+  if (!result) {
+    co_return fail(result.error());
   }
   co_return ok();
 }

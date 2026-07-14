@@ -6,7 +6,7 @@
 #include <vector>
 #endif
 
-namespace dagforge {
+namespace dagforge::sandbox {
 
 struct CommandSpec {
   std::string program;
@@ -18,4 +18,4 @@ struct CommandSpec {
 
 inline constexpr int kExitCodeTimeout = 124;
 
-} // namespace dagforge
+} // namespace dagforge::sandbox

@@ -1,124 +1,33 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include <cstddef>
-#include <cstdint>
-#include <string>
-#include <vector>
+#include "dagforge/config/admission_config.hpp"
+#include "dagforge/config/api_config.hpp"
+#include "dagforge/config/command_executor_config.hpp"
+#include "dagforge/config/http_executor_config.hpp"
+#include "dagforge/config/runtime_config.hpp"
+#include "dagforge/config/storage_config.hpp"
+#include "dagforge/config/workflow_config.hpp"
 #endif
 
-namespace dagforge {
+namespace dagforge::config {
 
-struct RuntimeConfig {
-  int shards{0}; // 0 = auto (hardware_concurrency)
-  bool pin_shards_to_cores{false};
-  int cpu_affinity_offset{0};
+struct ExecutorsConfig {
+  CommandExecutorConfig command;
+  HttpExecutorConfig http;
 
-  auto operator==(const RuntimeConfig &) const -> bool = default;
-};
-
-struct SandboxConfig {
-  std::string minijail_path{
-      "~/.local/libexec/dagforge/minijail/minijail0"};
-  std::string seccomp_bpf_path{
-      "~/.local/libexec/dagforge/minijail/dagforge_command.bpf"};
-  std::string workspace_root{"./workspaces"};
-  std::uint64_t max_memory_bytes{1024ULL * 1024ULL * 1024ULL};
-  std::uint64_t max_file_bytes{64ULL * 1024ULL * 1024ULL};
-  std::uint64_t tmp_bytes{64ULL * 1024ULL * 1024ULL};
-  std::uint64_t max_stdout_bytes{10ULL * 1024ULL * 1024ULL};
-  std::uint64_t max_stderr_bytes{10ULL * 1024ULL * 1024ULL};
-  std::uint64_t max_stream_line_bytes{64ULL * 1024ULL};
-  std::uint32_t max_processes{128};
-  std::uint32_t max_open_files{256};
-  bool allow_unlisted_programs{false};
-  bool allow_unlisted_environment{false};
-  bool require_trusted_files{true};
-  bool retain_workspaces{false};
-  std::vector<std::string> allowed_programs;
-  std::vector<std::string> allowed_environment;
-
-  auto operator==(const SandboxConfig &) const -> bool = default;
-};
-
-struct WorkflowConfig {
-  bool enabled{true};
-
-  auto operator==(const WorkflowConfig &) const -> bool = default;
-};
-
-struct HttpExecutorConfig {
-  bool enabled{false};
-  bool allow_plaintext{false};
-  bool deny_private_networks{true};
-  std::vector<std::string> allowed_origins;
-  std::vector<std::string> allowed_ip_cidrs;
-  std::size_t max_request_headers{64};
-  std::uint64_t max_request_header_bytes{64ULL * 1024ULL};
-  std::uint64_t max_request_body_bytes{1024ULL * 1024ULL};
-  std::size_t max_response_headers{128};
-  std::uint64_t max_response_header_bytes{64ULL * 1024ULL};
-  std::uint64_t max_response_body_bytes{10ULL * 1024ULL * 1024ULL};
-  std::size_t max_concurrent_requests_per_shard{32};
-  std::size_t max_concurrent_requests{256};
-  std::string tls_min_version{"1.2"};
-  std::string tls_ca_file;
-  std::string tls_client_cert_file;
-  std::string tls_client_key_file;
-
-  auto operator==(const HttpExecutorConfig &) const -> bool = default;
-};
-
-struct AdmissionConfig {
-  bool allow_unlisted_executors{false};
-  std::vector<std::string> allowed_executors;
-  std::size_t max_nodes{256};
-  std::size_t max_parallel_nodes{32};
-  std::uint64_t max_total_output_bytes{64ULL * 1024ULL * 1024ULL};
-  int max_run_duration_sec{3600};
-
-  auto operator==(const AdmissionConfig &) const -> bool = default;
-};
-
-struct StorageConfig {
-  bool enabled{false};
-  std::string directory{"./state"};
-  std::size_t max_completed_runs{10'000};
-  std::size_t max_evidence_records{100'000};
-
-  auto operator==(const StorageConfig &) const -> bool = default;
-};
-
-struct ApiConfig {
-  bool enabled{false};
-  std::uint16_t port{8888};
-  std::string host{"127.0.0.1"};
-  bool reuse_port{false};
-  bool tls_enabled{false};
-  std::string tls_cert_file;
-  std::string tls_key_file;
-  std::string tls_min_version{"1.2"};
-  std::string bearer_token_env;
-  std::uint64_t max_request_header_bytes{64ULL * 1024ULL};
-  std::uint64_t max_request_body_bytes{1024ULL * 1024ULL};
-  std::uint64_t connection_idle_timeout_ms{30'000};
-  std::size_t max_connections{1024};
-  std::size_t max_requests_per_connection{100};
-  std::size_t max_concurrent_requests{128};
-
-  auto operator==(const ApiConfig &) const -> bool = default;
+  auto operator==(const ExecutorsConfig &) const -> bool = default;
 };
 
 struct SystemConfig {
   WorkflowConfig workflow;
-  HttpExecutorConfig http_executor;
+  ExecutorsConfig executors;
   AdmissionConfig admission;
   StorageConfig storage;
   RuntimeConfig runtime;
-  SandboxConfig sandbox;
   ApiConfig api;
 
   auto operator==(const SystemConfig &) const -> bool = default;
 };
 
-} // namespace dagforge
+} // namespace dagforge::config

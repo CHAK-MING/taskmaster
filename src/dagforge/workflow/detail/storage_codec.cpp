@@ -243,37 +243,43 @@ namespace {
 
 [[nodiscard]] auto value_to_dto(const WorkflowValue &value)
     -> detail::ValueDto {
-  return std::visit(
-      [](const auto &typed) -> detail::ValueDto {
-        using T = std::decay_t<decltype(typed)>;
-        detail::ValueDto dto;
-        if constexpr (std::same_as<T, std::monostate>) {
-          dto.type = "null";
-        } else if constexpr (std::same_as<T, bool>) {
-          dto.type = "bool";
-          dto.boolean = typed;
-        } else if constexpr (std::same_as<T, std::int64_t>) {
-          dto.type = "int";
-          dto.integer = typed;
-        } else if constexpr (std::same_as<T, double>) {
-          dto.type = "double";
-          dto.number = typed;
-        } else if constexpr (std::same_as<T, std::string>) {
-          dto.type = "string";
-          dto.text = typed;
-        } else if constexpr (std::same_as<T, JsonValue>) {
-          dto.type = "json";
-          dto.json = typed;
-        } else if constexpr (std::same_as<T, ArtifactRef>) {
-          dto.type = "artifact";
-          dto.artifact_id = typed.artifact_id.str();
-          dto.media_type = typed.media_type;
-          dto.size_bytes = typed.size_bytes;
-          dto.digest = typed.digest;
-        }
-        return dto;
-      },
-      value);
+  detail::ValueDto dto;
+  if (std::holds_alternative<std::monostate>(value)) {
+    dto.type = "null";
+    return dto;
+  }
+  if (const auto *boolean = std::get_if<bool>(&value)) {
+    dto.type = "bool";
+    dto.boolean = *boolean;
+    return dto;
+  }
+  if (const auto *integer = std::get_if<std::int64_t>(&value)) {
+    dto.type = "int";
+    dto.integer = *integer;
+    return dto;
+  }
+  if (const auto *real = std::get_if<double>(&value)) {
+    dto.type = "double";
+    dto.number = *real;
+    return dto;
+  }
+  if (const auto *text = std::get_if<std::string>(&value)) {
+    dto.type = "string";
+    dto.text = *text;
+    return dto;
+  }
+  if (const auto *json = std::get_if<JsonValue>(&value)) {
+    dto.type = "json";
+    dto.json = *json;
+    return dto;
+  }
+  const auto &artifact = std::get<ArtifactRef>(value);
+  dto.type = "artifact";
+  dto.artifact_id = artifact.artifact_id.str();
+  dto.media_type = artifact.media_type;
+  dto.size_bytes = artifact.size_bytes;
+  dto.digest = artifact.digest;
+  return dto;
 }
 
 [[nodiscard]] auto value_from_dto(detail::ValueDto dto)

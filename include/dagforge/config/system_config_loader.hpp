@@ -6,7 +6,7 @@
 #endif
 
 
-namespace dagforge {
+namespace dagforge::config {
 
 class SystemConfigLoader {
 public:
@@ -16,4 +16,4 @@ public:
       -> Result<SystemConfig>;
 };
 
-} // namespace dagforge
+} // namespace dagforge::config

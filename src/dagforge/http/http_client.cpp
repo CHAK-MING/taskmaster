@@ -4,9 +4,8 @@
 #include "dagforge/util/log.hpp"
 
 #include <boost/algorithm/string/predicate.hpp>
-#include <boost/asio/bind_cancellation_slot.hpp>
-#include <boost/asio/cancel_after.hpp>
 #include <boost/asio/connect.hpp>
+#include <boost/asio/steady_timer.hpp>
 #include <boost/asio/ssl/host_name_verification.hpp>
 #include <boost/asio/ssl/stream.hpp>
 #include <boost/asio/write.hpp>
@@ -16,6 +15,7 @@
 #include <openssl/ssl.h>
 
 #include <algorithm>
+#include <atomic>
 #include <experimental/scope>
 #include <iterator>
 #include <memory>
@@ -28,26 +28,6 @@ namespace {
 
 namespace beast = boost::beast;
 namespace beast_http = beast::http;
-
-auto method_to_string(HttpMethod method) -> std::string_view {
-  switch (method) {
-  case HttpMethod::GET:
-    return "GET";
-  case HttpMethod::POST:
-    return "POST";
-  case HttpMethod::PUT:
-    return "PUT";
-  case HttpMethod::DELETE:
-    return "DELETE";
-  case HttpMethod::PATCH:
-    return "PATCH";
-  case HttpMethod::OPTIONS:
-    return "OPTIONS";
-  case HttpMethod::HEAD:
-    return "HEAD";
-  }
-  return "GET";
-}
 
 auto to_beast_method(HttpMethod method) noexcept -> beast_http::verb {
   switch (method) {
@@ -139,6 +119,99 @@ auto to_response(
   return out;
 }
 
+struct StreamResponse {
+  HttpResponse response;
+  bool reusable{false};
+};
+
+class OperationDeadline {
+public:
+  template <typename Executor, typename Callback>
+  OperationDeadline(Executor executor, std::chrono::milliseconds timeout,
+                    Callback callback)
+      : state_(std::make_shared<State>(executor, std::move(callback))) {
+    state_->timer.expires_after(timeout);
+    state_->timer.async_wait([state = state_](boost::system::error_code error) {
+      if (!error &&
+          !state->completed.exchange(true, std::memory_order_acq_rel)) {
+        state->timed_out.store(true, std::memory_order_release);
+        state->on_timeout();
+      }
+    });
+  }
+
+  ~OperationDeadline() { cancel(); }
+
+  OperationDeadline(const OperationDeadline &) = delete;
+  auto operator=(const OperationDeadline &) -> OperationDeadline & = delete;
+
+  [[nodiscard]] auto timed_out() const noexcept -> bool {
+    return state_->timed_out.load(std::memory_order_acquire);
+  }
+
+  auto cancel() noexcept -> void {
+    if (!state_) {
+      return;
+    }
+    state_->completed.store(true, std::memory_order_release);
+    try {
+      (void)state_->timer.cancel();
+    } catch (const std::exception &) {
+    }
+  }
+
+private:
+  struct State {
+    template <typename Executor, typename Callback>
+    State(Executor executor, Callback callback)
+        : timer(executor), on_timeout(std::move(callback)) {}
+
+    boost::asio::steady_timer timer;
+    std::function<void()> on_timeout;
+    std::atomic_bool timed_out{false};
+    std::atomic_bool completed{false};
+  };
+
+  std::shared_ptr<State> state_;
+};
+
+[[nodiscard]] auto operation_timed_out(std::error_code error) noexcept -> bool {
+  return error == std::errc::timed_out;
+}
+
+[[nodiscard]] auto stage_error(std::error_code error,
+                               HttpClientError failure,
+                               HttpClientError timeout,
+                               bool deadline_expired = false,
+                               bool externally_cancelled = false)
+    -> std::error_code {
+  if (deadline_expired || operation_timed_out(error)) {
+    return make_error_code(timeout);
+  }
+  if (externally_cancelled || error == std::errc::operation_canceled) {
+    return std::make_error_code(std::errc::operation_canceled);
+  }
+  return make_error_code(failure);
+}
+
+[[nodiscard]] auto response_read_error(std::error_code error,
+                                       HttpClientError failure,
+                                       HttpClientError timeout,
+                                       bool deadline_expired = false,
+                                       bool externally_cancelled = false)
+    -> std::error_code {
+  if (error.value() == static_cast<int>(beast_http::error::header_limit) ||
+      error.value() == static_cast<int>(beast_http::error::body_limit)) {
+    return make_error_code(Error::ResourceExhausted);
+  }
+  if (error.category() ==
+      beast_http::make_error_code(beast_http::error::bad_method).category()) {
+    return make_error_code(Error::ProtocolError);
+  }
+  return stage_error(error, failure, timeout, deadline_expired,
+                     externally_cancelled);
+}
+
 template <typename Stream>
 auto close_stream(Stream &stream) -> void {
   boost::system::error_code ec;
@@ -153,7 +226,23 @@ template <typename Stream>
 auto request_over_stream(Stream &stream, HttpRequest req,
                          HttpClientConfig config, const std::string &host,
                          boost::asio::cancellation_slot cancellation)
-    -> task<Result<HttpResponse>> {
+    -> task<Result<StreamResponse>> {
+  auto externally_cancelled = std::make_shared<std::atomic_bool>(false);
+  if (cancellation.is_connected()) {
+    cancellation.assign(
+        [stream_ptr = &stream,
+         externally_cancelled](boost::asio::cancellation_type) {
+          externally_cancelled->store(true, std::memory_order_release);
+          close_stream(*stream_ptr);
+        });
+  }
+  const auto clear_cancellation =
+      std::experimental::scope_exit([cancellation]() mutable {
+        if (cancellation.is_connected()) {
+          cancellation.clear();
+        }
+      });
+
   const auto method = req.method;
   const auto target = req.query_string.empty()
                           ? req.path
@@ -162,17 +251,22 @@ auto request_over_stream(Stream &stream, HttpRequest req,
   if (!request_message) {
     co_return fail(request_message.error());
   }
+  OperationDeadline write_deadline(
+      stream.get_executor(), config.write_timeout,
+      [stream_ptr = &stream] { close_stream(*stream_ptr); });
   auto write_res = co_await co_as_result(beast_http::async_write(
-      stream, *request_message,
-      boost::asio::bind_cancellation_slot(
-          cancellation,
-          boost::asio::cancel_after(config.read_timeout, use_nothrow))));
+      stream, *request_message, use_nothrow));
+  write_deadline.cancel();
   if (!write_res) {
     close_stream(stream);
     log::error("HTTP request write failed host={} method={} target={}: {}",
-               host, method_to_string(method), target,
+               host, http_method_name(method), target,
                write_res.error().message());
-    co_return fail(write_res.error());
+    co_return fail(stage_error(write_res.error(), HttpClientError::WriteFailure,
+                               HttpClientError::WriteTimeout,
+                               write_deadline.timed_out(),
+                               externally_cancelled->load(
+                                   std::memory_order_acquire)));
   }
   (void)*write_res;
 
@@ -182,19 +276,23 @@ auto request_over_stream(Stream &stream, HttpRequest req,
   parser.body_limit(config.max_response_size);
   parser.skip(method == HttpMethod::HEAD);
 
-  auto read_res = co_await co_as_result(beast_http::async_read(
-      stream, read_buffer, parser,
-      boost::asio::bind_cancellation_slot(
-          cancellation,
-          boost::asio::cancel_after(config.read_timeout, use_nothrow))));
-  if (!read_res) {
+  OperationDeadline first_byte_deadline(
+      stream.get_executor(), config.first_byte_timeout,
+      [stream_ptr = &stream] { close_stream(*stream_ptr); });
+  auto header_res = co_await co_as_result(beast_http::async_read_header(
+      stream, read_buffer, parser, use_nothrow));
+  first_byte_deadline.cancel();
+  if (!header_res) {
     close_stream(stream);
-    log::error("HTTP response read failed host={} method={} target={}: {}",
-               host, method_to_string(method), target,
-               read_res.error().message());
-    co_return fail(read_res.error());
+    log::error("HTTP response first byte failed host={} method={} target={}: {}",
+               host, http_method_name(method), target,
+               header_res.error().message());
+    co_return fail(response_read_error(
+        header_res.error(), HttpClientError::FirstByteFailure,
+        HttpClientError::FirstByteTimeout, first_byte_deadline.timed_out(),
+        externally_cancelled->load(std::memory_order_acquire)));
   }
-  (void)*read_res;
+  (void)*header_res;
 
   const auto header_count = static_cast<std::size_t>(
       std::distance(parser.get().base().begin(), parser.get().base().end()));
@@ -203,7 +301,32 @@ auto request_over_stream(Stream &stream, HttpRequest req,
     co_return fail(Error::ResourceExhausted);
   }
 
-  co_return ok(to_response(parser.release()));
+  while (!parser.is_done()) {
+    OperationDeadline read_deadline(
+        stream.get_executor(), config.read_timeout,
+        [stream_ptr = &stream] { close_stream(*stream_ptr); });
+    auto read_res = co_await co_as_result(beast_http::async_read_some(
+        stream, read_buffer, parser, use_nothrow));
+    read_deadline.cancel();
+    if (!read_res) {
+      close_stream(stream);
+      log::error("HTTP response read failed host={} method={} target={}: {}",
+                 host, http_method_name(method), target,
+                 read_res.error().message());
+      co_return fail(response_read_error(
+          read_res.error(), HttpClientError::ReadFailure,
+          HttpClientError::ReadTimeout, read_deadline.timed_out(),
+          externally_cancelled->load(std::memory_order_acquire)));
+    }
+  }
+
+  auto message = parser.release();
+  const bool reusable = config.keep_alive && message.keep_alive();
+  if (!reusable) {
+    close_stream(stream);
+  }
+  co_return ok(StreamResponse{.response = to_response(message),
+                              .reusable = reusable});
 }
 
 } // namespace
@@ -213,6 +336,7 @@ struct HttpClient::Impl {
   HttpClientConfig config;
   std::string host;
   std::shared_ptr<boost::asio::ssl::context> tls_context;
+  bool reusable{false};
 
   Impl(SocketVariant socket_in, HttpClientConfig cfg,
        std::shared_ptr<boost::asio::ssl::context> context = {})
@@ -239,10 +363,14 @@ auto HttpClient::connect_tcp(io::IoContext &ctx, std::string host,
                              boost::asio::cancellation_slot cancellation)
     -> task<Result<std::unique_ptr<HttpClient>>> {
   auto resolver = std::make_shared<boost::asio::ip::tcp::resolver>(ctx);
+  auto externally_cancelled = std::make_shared<std::atomic_bool>(false);
   if (cancellation.is_connected()) {
-    cancellation.assign([resolver](boost::asio::cancellation_type) {
-      resolver->cancel();
-    });
+    cancellation.assign(
+        [resolver,
+         externally_cancelled](boost::asio::cancellation_type) {
+          externally_cancelled->store(true, std::memory_order_release);
+          resolver->cancel();
+        });
   }
   const auto clear_cancellation =
       std::experimental::scope_exit([cancellation]() mutable {
@@ -251,13 +379,19 @@ auto HttpClient::connect_tcp(io::IoContext &ctx, std::string host,
         }
       });
   std::string port_str = std::to_string(port);
-  auto resolve_res = co_await co_as_result(resolver->async_resolve(
-      host, port_str,
-      boost::asio::cancel_after(config.connect_timeout, use_nothrow)));
+  OperationDeadline dns_deadline(resolver->get_executor(), config.dns_timeout,
+                                 [resolver] { resolver->cancel(); });
+  auto resolve_res = co_await co_as_result(
+      resolver->async_resolve(host, port_str, use_nothrow));
+  dns_deadline.cancel();
   if (!resolve_res) {
     log::debug("Failed to resolve {}:{} - {}", host, port,
                resolve_res.error().message());
-    co_return fail(resolve_res.error());
+    co_return fail(stage_error(resolve_res.error(), HttpClientError::DnsFailure,
+                               HttpClientError::DnsTimeout,
+                               dns_deadline.timed_out(),
+                               externally_cancelled->load(
+                                   std::memory_order_acquire)));
   }
   auto endpoints = permitted_endpoints(*resolve_res, config);
   if (!endpoints) {
@@ -268,17 +402,27 @@ auto HttpClient::connect_tcp(io::IoContext &ctx, std::string host,
 
   auto socket = std::make_shared<boost::asio::ip::tcp::socket>(ctx);
   if (cancellation.is_connected()) {
-    cancellation.assign([socket](boost::asio::cancellation_type) {
-      close_stream(*socket);
-    });
+    cancellation.assign(
+        [socket, externally_cancelled](boost::asio::cancellation_type) {
+          externally_cancelled->store(true, std::memory_order_release);
+          close_stream(*socket);
+        });
   }
-  auto connect_res = co_await co_as_result(boost::asio::async_connect(
-      *socket, *endpoints,
-      boost::asio::cancel_after(config.connect_timeout, use_nothrow)));
+  OperationDeadline connect_deadline(
+      socket->get_executor(), config.connect_timeout,
+      [socket] { close_stream(*socket); });
+  auto connect_res = co_await co_as_result(
+      boost::asio::async_connect(*socket, *endpoints, use_nothrow));
+  connect_deadline.cancel();
   if (!connect_res) {
     log::debug("Failed to connect to {}:{} - {}", host, port,
                connect_res.error().message());
-    co_return fail(connect_res.error());
+    co_return fail(stage_error(connect_res.error(),
+                               HttpClientError::ConnectFailure,
+                               HttpClientError::ConnectTimeout,
+                               connect_deadline.timed_out(),
+                               externally_cancelled->load(
+                                   std::memory_order_acquire)));
   }
   (void)*connect_res;
 
@@ -302,10 +446,14 @@ auto HttpClient::connect_tls(io::IoContext &ctx, std::string host,
   }
   boost::system::error_code ec;
   auto resolver = std::make_shared<boost::asio::ip::tcp::resolver>(ctx);
+  auto externally_cancelled = std::make_shared<std::atomic_bool>(false);
   if (cancellation.is_connected()) {
-    cancellation.assign([resolver](boost::asio::cancellation_type) {
-      resolver->cancel();
-    });
+    cancellation.assign(
+        [resolver,
+         externally_cancelled](boost::asio::cancellation_type) {
+          externally_cancelled->store(true, std::memory_order_release);
+          resolver->cancel();
+        });
   }
   const auto clear_cancellation =
       std::experimental::scope_exit([cancellation]() mutable {
@@ -313,13 +461,19 @@ auto HttpClient::connect_tls(io::IoContext &ctx, std::string host,
           cancellation.clear();
         }
       });
-  auto resolve_res = co_await co_as_result(resolver->async_resolve(
-      host, std::to_string(port),
-      boost::asio::cancel_after(config.connect_timeout, use_nothrow)));
+  OperationDeadline dns_deadline(resolver->get_executor(), config.dns_timeout,
+                                 [resolver] { resolver->cancel(); });
+  auto resolve_res = co_await co_as_result(
+      resolver->async_resolve(host, std::to_string(port), use_nothrow));
+  dns_deadline.cancel();
   if (!resolve_res) {
     log::debug("Failed to resolve TLS endpoint {}:{} - {}", host, port,
                resolve_res.error().message());
-    co_return fail(resolve_res.error());
+    co_return fail(stage_error(resolve_res.error(), HttpClientError::DnsFailure,
+                               HttpClientError::DnsTimeout,
+                               dns_deadline.timed_out(),
+                               externally_cancelled->load(
+                                   std::memory_order_acquire)));
   }
   auto endpoints = permitted_endpoints(*resolve_res, config);
   if (!endpoints) {
@@ -369,9 +523,11 @@ auto HttpClient::connect_tls(io::IoContext &ctx, std::string host,
 
   auto stream = std::make_shared<TlsStream>(ctx, *tls_context);
   if (cancellation.is_connected()) {
-    cancellation.assign([stream](boost::asio::cancellation_type) {
-      close_stream(*stream);
-    });
+    cancellation.assign(
+        [stream, externally_cancelled](boost::asio::cancellation_type) {
+          externally_cancelled->store(true, std::memory_order_release);
+          close_stream(*stream);
+        });
   }
   stream->set_verify_callback(boost::asio::ssl::host_name_verification(host));
   if (SSL_set_tlsext_host_name(stream->native_handle(), host.c_str()) != 1) {
@@ -379,23 +535,40 @@ auto HttpClient::connect_tls(io::IoContext &ctx, std::string host,
     co_return fail(Error::InvalidUrl);
   }
 
-  auto connect_res = co_await co_as_result(boost::asio::async_connect(
-      stream->next_layer(), *endpoints,
-      boost::asio::cancel_after(config.connect_timeout, use_nothrow)));
+  OperationDeadline connect_deadline(
+      stream->get_executor(), config.connect_timeout,
+      [stream] { close_stream(*stream); });
+  auto connect_res = co_await co_as_result(
+      boost::asio::async_connect(stream->next_layer(), *endpoints,
+                                 use_nothrow));
+  connect_deadline.cancel();
   if (!connect_res) {
     log::debug("Failed to connect TLS endpoint {}:{} - {}", host, port,
                connect_res.error().message());
-    co_return fail(connect_res.error());
+    co_return fail(stage_error(connect_res.error(),
+                               HttpClientError::ConnectFailure,
+                               HttpClientError::ConnectTimeout,
+                               connect_deadline.timed_out(),
+                               externally_cancelled->load(
+                                   std::memory_order_acquire)));
   }
 
+  OperationDeadline handshake_deadline(
+      stream->get_executor(), config.tls_handshake_timeout,
+      [stream] { close_stream(*stream); });
   auto handshake_res = co_await co_as_result(stream->async_handshake(
-      boost::asio::ssl::stream_base::client,
-      boost::asio::cancel_after(config.connect_timeout, use_nothrow)));
+      boost::asio::ssl::stream_base::client, use_nothrow));
+  handshake_deadline.cancel();
   if (!handshake_res) {
     log::debug("TLS handshake failed for {}:{} - {}", host, port,
                handshake_res.error().message());
     close_stream(*stream);
-    co_return fail(handshake_res.error());
+    co_return fail(stage_error(handshake_res.error(),
+                               HttpClientError::TlsHandshakeFailure,
+                               HttpClientError::TlsHandshakeTimeout,
+                               handshake_deadline.timed_out(),
+                               externally_cancelled->load(
+                                   std::memory_order_acquire)));
   }
 
   if (cancellation.is_connected()) {
@@ -414,10 +587,13 @@ auto HttpClient::connect_unix(io::IoContext &ctx, std::string socket_path,
   boost::system::error_code ec;
   auto socket =
       std::make_shared<boost::asio::local::stream_protocol::socket>(ctx);
+  auto externally_cancelled = std::make_shared<std::atomic_bool>(false);
   if (cancellation.is_connected()) {
-    cancellation.assign([socket](boost::asio::cancellation_type) {
-      close_stream(*socket);
-    });
+    cancellation.assign(
+        [socket, externally_cancelled](boost::asio::cancellation_type) {
+          externally_cancelled->store(true, std::memory_order_release);
+          close_stream(*socket);
+        });
   }
   const auto clear_cancellation =
       std::experimental::scope_exit([cancellation]() mutable {
@@ -436,13 +612,22 @@ auto HttpClient::connect_unix(io::IoContext &ctx, std::string socket_path,
                ec.message());
     co_return fail(std::error_code(ec.value(), std::system_category()));
   }
+  OperationDeadline connect_deadline(
+      socket->get_executor(), config.connect_timeout,
+      [socket] { close_stream(*socket); });
   auto connect_res = co_await co_as_result(socket->async_connect(
       boost::asio::local::stream_protocol::endpoint(socket_path),
-      boost::asio::cancel_after(config.connect_timeout, use_nothrow)));
+      use_nothrow));
+  connect_deadline.cancel();
   if (!connect_res) {
     log::debug("Failed to connect to {} - {}", socket_path,
                connect_res.error().message());
-    co_return fail(connect_res.error());
+    co_return fail(stage_error(connect_res.error(),
+                               HttpClientError::ConnectFailure,
+                               HttpClientError::ConnectTimeout,
+                               connect_deadline.timed_out(),
+                               externally_cancelled->load(
+                                   std::memory_order_acquire)));
   }
 
   if (cancellation.is_connected()) {
@@ -459,6 +644,7 @@ auto HttpClient::request(HttpRequest req,
   if (!is_connected()) {
     co_return fail(Error::InvalidState);
   }
+  impl_->reusable = false;
 
   if (auto *tcp = std::get_if<boost::asio::ip::tcp::socket>(&impl_->socket)) {
     auto response_res =
@@ -467,7 +653,8 @@ auto HttpClient::request(HttpRequest req,
     if (!response_res) {
       co_return fail(response_res.error());
     }
-    co_return ok(std::move(*response_res));
+    impl_->reusable = response_res->reusable;
+    co_return ok(std::move(response_res->response));
   }
   if (auto *unix_socket =
           std::get_if<boost::asio::local::stream_protocol::socket>(
@@ -478,7 +665,8 @@ auto HttpClient::request(HttpRequest req,
     if (!response_res) {
       co_return fail(response_res.error());
     }
-    co_return ok(std::move(*response_res));
+    impl_->reusable = response_res->reusable;
+    co_return ok(std::move(response_res->response));
   }
   auto *tls = std::get_if<TlsStream>(&impl_->socket);
   auto response_res = co_await request_over_stream(
@@ -486,7 +674,8 @@ auto HttpClient::request(HttpRequest req,
   if (!response_res) {
     co_return fail(response_res.error());
   }
-  co_return ok(std::move(*response_res));
+  impl_->reusable = response_res->reusable;
+  co_return ok(std::move(response_res->response));
 }
 
 auto HttpClient::get(std::string_view path, const HttpHeaders &headers)
@@ -555,7 +744,12 @@ auto HttpClient::is_connected() const noexcept -> bool {
   return false;
 }
 
+auto HttpClient::is_reusable() const noexcept -> bool {
+  return impl_->reusable && is_connected();
+}
+
 auto HttpClient::close() -> void {
+  impl_->reusable = false;
   boost::system::error_code ec;
   if (auto *tcp = std::get_if<boost::asio::ip::tcp::socket>(&impl_->socket)) {
     tcp->close(ec);

@@ -60,16 +60,18 @@ extern "C" void handle_signal(int) {
 }
 
 [[nodiscard]] auto offline_validation_config(
-    const dagforge::workflow::WorkflowPlan &plan) -> dagforge::SystemConfig {
-  dagforge::SystemConfig config;
+    const dagforge::workflow::WorkflowPlan &plan)
+    -> dagforge::config::SystemConfig {
+  dagforge::config::SystemConfig config;
   config.api.enabled = false;
   config.admission.allow_unlisted_executors = true;
-  config.sandbox.allow_unlisted_programs = true;
-  config.sandbox.allow_unlisted_environment = true;
-  config.sandbox.require_trusted_files = false;
-  config.http_executor.enabled = true;
-  config.http_executor.allow_plaintext = true;
-  config.http_executor.deny_private_networks = false;
+  config.executors.command.policy.allow_unlisted_programs = true;
+  config.executors.command.policy.allow_unlisted_environment = true;
+  config.executors.command.policy.require_trusted_programs = false;
+  config.executors.command.minijail.require_trusted_files = false;
+  config.executors.http.enabled = true;
+  config.executors.http.egress.allow_plaintext = true;
+  config.executors.http.egress.deny_private_networks = false;
 
   for (const auto &node : plan.nodes) {
     if (node.executor != "http" || !node.config.is_object()) {
@@ -80,13 +82,19 @@ extern "C" void handle_signal(int) {
     if (url == object.end() || !url->second.is_string()) {
       continue;
     }
-    const auto parsed =
-        boost::urls::parse_uri(url->second.as<std::string>());
+    const auto url_text = url->second.as<std::string>();
+    const auto parsed = boost::urls::parse_uri(url_text);
     if (!parsed || parsed->scheme().empty() || parsed->host().empty()) {
       continue;
     }
-    config.http_executor.allowed_origins.push_back(std::format(
-        "{}://{}", parsed->scheme(), parsed->encoded_authority()));
+    std::string origin;
+    origin.reserve(parsed->scheme().size() + parsed->encoded_authority().size() +
+                   3);
+    origin.append(parsed->scheme().data(), parsed->scheme().size());
+    origin.append("://");
+    origin.append(parsed->encoded_authority().data(),
+                  parsed->encoded_authority().size());
+    config.executors.http.egress.allowed_origins.push_back(std::move(origin));
   }
   return config;
 }
@@ -124,7 +132,7 @@ auto run_validate(const std::string &config_path,
   }
   dagforge::Application app{config_path.empty()
                                 ? offline_validation_config(*plan)
-                                : dagforge::SystemConfig{}};
+                                : dagforge::config::SystemConfig{}};
   if (!config_path.empty()) {
     auto loaded = app.load_config(config_path);
     if (!loaded) {
@@ -132,6 +140,12 @@ auto run_validate(const std::string &config_path,
                    loaded.error().message());
       return 1;
     }
+  }
+  auto initialized = app.init();
+  if (!initialized) {
+    std::println(stderr, "Failed to initialize workflow validation: {}",
+                 initialized.error().message());
+    return 1;
   }
   if (app.workflow_control_plane() == nullptr) {
     std::println(stderr, "Failed to initialize workflow validation components");

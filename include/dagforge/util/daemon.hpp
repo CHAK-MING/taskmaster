@@ -1,21 +1,14 @@
 #pragma once
 
-
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <string_view>
 #endif
-
-
-namespace boost::interprocess {
-class file_lock;
-}
 
 namespace dagforge {
 
@@ -23,7 +16,7 @@ extern std::atomic<bool> g_shutdown_requested;
 
 class PidFileGuard {
 public:
-  PidFileGuard() = default;
+  PidFileGuard();
   ~PidFileGuard();
 
   PidFileGuard(const PidFileGuard &) = delete;
@@ -36,15 +29,13 @@ public:
 
 private:
   std::string path_;
-  std::unique_ptr<boost::interprocess::file_lock> lock_{nullptr};
+  int fd_{-1};
   bool owns_{false};
 
-  explicit PidFileGuard(std::string path,
-                        std::unique_ptr<boost::interprocess::file_lock> lock) noexcept;
+  explicit PidFileGuard(std::string path, int fd) noexcept;
   auto release() noexcept -> void;
 };
 
-[[nodiscard]] auto daemonize() -> Result<void>;
 [[nodiscard]] auto read_pid_file(std::string_view path) -> Result<std::int64_t>;
 [[nodiscard]] auto remove_pid_file(std::string_view path) -> Result<void>;
 [[nodiscard]] auto is_process_alive(std::int64_t pid) -> bool;

@@ -1,10 +1,9 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include "dagforge/config/system_config.hpp"
 #include "dagforge/core/error.hpp"
 #include "dagforge/core/runtime.hpp"
-#include "dagforge/executor/command_spec.hpp"
+#include "dagforge/sandbox/command_spec.hpp"
 #include "dagforge/util/id.hpp"
 #endif
 
@@ -17,12 +16,12 @@
 
 #include <boost/asio/async_result.hpp>
 
-namespace dagforge {
+namespace dagforge::sandbox {
 
 using CommandHeartbeatCallback =
     std::move_only_function<void(const InstanceId &instance_id)>;
 
-struct CommandExecutionResult {
+struct CommandRunResult {
   int exit_code{0};
   pmr::string stdout_output{current_memory_resource_or_default()};
   pmr::string stderr_output{current_memory_resource_or_default()};
@@ -33,17 +32,17 @@ struct CommandExecutionResult {
   bool stderr_streamed{false};
 };
 
-[[nodiscard]] inline auto make_command_execution_result(
+[[nodiscard]] inline auto make_command_run_result(
     pmr::memory_resource *resource = current_memory_resource_or_default())
-    -> CommandExecutionResult {
-  CommandExecutionResult result;
+    -> CommandRunResult {
+  CommandRunResult result;
   result.stdout_output = pmr::string(resource);
   result.stderr_output = pmr::string(resource);
   result.error = pmr::string(resource);
   return result;
 }
 
-struct CommandExecutionRequest {
+struct CommandRunRequest {
   InstanceId instance_id;
   std::chrono::seconds execution_timeout{std::chrono::seconds(3600)};
   CommandSpec command;
@@ -55,7 +54,7 @@ struct CommandExecutionRequest {
   }
 };
 
-struct CommandExecutionSink {
+struct CommandRunSink {
   CommandHeartbeatCallback on_heartbeat;
   std::move_only_function<void(const InstanceId &instance_id,
                                std::string_view message)>
@@ -67,46 +66,39 @@ struct CommandExecutionSink {
                                std::string_view data)>
       on_stderr;
   std::move_only_function<void(const InstanceId &instance_id,
-                               CommandExecutionResult result)>
+                               CommandRunResult result)>
       on_complete;
 };
 
-class ICommandExecutor;
-
-[[nodiscard]] auto create_command_executor(Runtime &runtime,
-                                           SandboxConfig sandbox)
-    -> Result<std::unique_ptr<ICommandExecutor>>;
-
-class ICommandExecutor {
+class ICommandRunner {
 public:
-  virtual ~ICommandExecutor() = default;
+  virtual ~ICommandRunner() = default;
 
-  virtual auto start(CommandExecutionRequest request,
-                     CommandExecutionSink sink)
+  virtual auto start(CommandRunRequest request, CommandRunSink sink)
       -> Result<void> = 0;
 
   virtual auto cancel(const InstanceId &instance_id) -> void = 0;
-  virtual auto shutdown() noexcept -> void = 0;
+  virtual auto quiesce(std::chrono::milliseconds timeout) -> Result<void> = 0;
 };
 
-inline auto execute_command_async(
-    ICommandExecutor &executor, CommandExecutionRequest request,
+inline auto run_command_async(
+    ICommandRunner &runner, CommandRunRequest request,
     std::shared_ptr<pmr::memory_resource> memory_resource = {},
     std::move_only_function<void(std::string_view)> on_stdout = {},
     std::move_only_function<void(std::string_view)> on_stderr = {},
     CommandHeartbeatCallback on_heartbeat = {},
     std::move_only_function<void(std::string_view)> on_state = {})
-    -> task<Result<CommandExecutionResult>> {
+    -> task<Result<CommandRunResult>> {
   request.memory_resource = std::move(memory_resource);
 
   return boost::asio::async_initiate<const boost::asio::use_awaitable_t<>,
-                                     void(Result<CommandExecutionResult>)>(
-      [&executor, request = std::move(request),
+                                     void(Result<CommandRunResult>)>(
+      [&runner, request = std::move(request),
        on_stdout = std::move(on_stdout),
        on_stderr = std::move(on_stderr),
        on_heartbeat = std::move(on_heartbeat),
        on_state = std::move(on_state)](auto handler) mutable {
-        CommandExecutionSink sink;
+        CommandRunSink sink;
         // Capture handler by shared_ptr so we can call it on start failure too.
         auto shared_h = std::make_shared<decltype(handler)>(std::move(handler));
         if (on_stdout) {
@@ -137,12 +129,11 @@ inline auto execute_command_async(
               };
         }
         sink.on_complete = [shared_h](const InstanceId &,
-                                      CommandExecutionResult result) mutable {
+                                      CommandRunResult result) mutable {
           std::move(*shared_h)(ok(std::move(result)));
         };
 
-        auto start_res =
-            executor.start(std::move(request), std::move(sink));
+        auto start_res = runner.start(std::move(request), std::move(sink));
         if (!start_res) {
           std::move(*shared_h)(fail(start_res.error()));
         }
@@ -150,8 +141,8 @@ inline auto execute_command_async(
       boost::asio::use_awaitable);
 }
 
-inline auto execute_command_async(
-    ICommandExecutor &executor, InstanceId instance_id,
+inline auto run_command_async(
+    ICommandRunner &runner, InstanceId instance_id,
     CommandSpec command,
     std::shared_ptr<pmr::memory_resource> memory_resource = {},
     std::move_only_function<void(std::string_view)> on_stdout = {},
@@ -159,15 +150,15 @@ inline auto execute_command_async(
     CommandHeartbeatCallback on_heartbeat = {},
     std::chrono::seconds execution_timeout = std::chrono::seconds(3600),
     std::move_only_function<void(std::string_view)> on_state = {})
-    -> task<Result<CommandExecutionResult>> {
-  return execute_command_async(
-      executor,
-      CommandExecutionRequest{.instance_id = std::move(instance_id),
-                              .execution_timeout = execution_timeout,
-                              .command = std::move(command),
-                              .memory_resource = {}},
+    -> task<Result<CommandRunResult>> {
+  return run_command_async(
+      runner,
+      CommandRunRequest{.instance_id = std::move(instance_id),
+                        .execution_timeout = execution_timeout,
+                        .command = std::move(command),
+                        .memory_resource = {}},
       std::move(memory_resource), std::move(on_stdout), std::move(on_stderr),
       std::move(on_heartbeat), std::move(on_state));
 }
 
-} // namespace dagforge
+} // namespace dagforge::sandbox

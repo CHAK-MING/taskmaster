@@ -6,7 +6,8 @@ intf_libs = -lboost_url
 
 ./: lib{dagforge-foundation}: libul{dagforge-foundation}: \
   mxx{modules/base modules/core modules/util modules/domain modules/io \
-      modules/config modules/http modules/executor modules/workflow \
+      modules/config modules/http modules/sandbox modules/workflow \
+      modules/executors                                            \
       modules/dagforge}
 
 lib{dagforge-foundation}:
@@ -40,9 +41,11 @@ lib{dagforge}:                                                   \
       dagforge/io/context                                         \
       dagforge/io/timing_wheel                                    \
       dagforge/app/metrics_exporter                               \
-      dagforge/executor/command_executor                          \
-      dagforge/workflow/executors/command_adapter                 \
-      dagforge/workflow/executors/http_adapter                    \
+      dagforge/sandbox/detail/command_policy                      \
+      dagforge/sandbox/minijail_command_runner                    \
+      dagforge/executors/command/executor                         \
+      dagforge/executors/http/egress_policy                       \
+      dagforge/executors/http/executor                            \
       dagforge/app/application                                    \
       dagforge/app/api/api_server                                 \
       dagforge/app/api/detail/http_metrics_registry               \
@@ -86,5 +89,6 @@ mxx{modules/domain}@modules/: cxx.module_name = dagforge.domain
 mxx{modules/io}@modules/: cxx.module_name = dagforge.io
 mxx{modules/config}@modules/: cxx.module_name = dagforge.config
 mxx{modules/http}@modules/: cxx.module_name = dagforge.http
-mxx{modules/executor}@modules/: cxx.module_name = dagforge.executor
+mxx{modules/sandbox}@modules/: cxx.module_name = dagforge.sandbox
+mxx{modules/executors}@modules/: cxx.module_name = dagforge.executors
 mxx{modules/workflow}@modules/: cxx.module_name = dagforge.workflow

@@ -5,34 +5,94 @@
 
 #include <boost/lexical_cast.hpp>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 
 
-namespace dagforge {
+namespace dagforge::config {
 namespace detail {
+
+struct HttpExecutorToml {
+  bool enabled{false};
+  bool allow_plaintext{false};
+  bool deny_private_networks{true};
+  std::vector<std::string> allowed_origins;
+  std::vector<std::string> allowed_ip_cidrs;
+  std::size_t max_request_headers{64};
+  std::uint64_t max_request_header_bytes{64ULL * 1024ULL};
+  std::uint64_t max_request_body_bytes{1024ULL * 1024ULL};
+  std::size_t max_response_headers{128};
+  std::uint64_t max_response_header_bytes{64ULL * 1024ULL};
+  std::uint64_t max_response_body_bytes{10ULL * 1024ULL * 1024ULL};
+  std::size_t max_concurrent_requests_per_shard{32};
+  std::size_t max_concurrent_requests{256};
+  std::uint64_t dns_timeout_ms{5000};
+  std::uint64_t connect_timeout_ms{10000};
+  std::uint64_t tls_handshake_timeout_ms{10000};
+  std::uint64_t write_timeout_ms{30000};
+  std::uint64_t first_byte_timeout_ms{30000};
+  std::uint64_t read_timeout_ms{30000};
+  std::uint64_t idle_connection_timeout_ms{30000};
+  std::size_t max_idle_connections_per_origin{4};
+  std::size_t max_idle_connections_per_shard{32};
+  std::string tls_min_version{"1.2"};
+  std::string tls_ca_file;
+  std::string tls_client_cert_file;
+  std::string tls_client_key_file;
+};
+
+struct SandboxToml {
+  std::string minijail_path{"~/.local/libexec/dagforge/minijail/minijail0"};
+  std::string seccomp_bpf_path{
+      "~/.local/libexec/dagforge/minijail/dagforge_command.bpf"};
+  std::optional<std::string> execution_root;
+  std::optional<std::string> workspace_root;
+  std::uint64_t max_memory_bytes{1024ULL * 1024ULL * 1024ULL};
+  std::uint64_t max_file_bytes{64ULL * 1024ULL * 1024ULL};
+  std::uint64_t tmp_bytes{64ULL * 1024ULL * 1024ULL};
+  std::uint64_t max_stdout_bytes{10ULL * 1024ULL * 1024ULL};
+  std::uint64_t max_stderr_bytes{10ULL * 1024ULL * 1024ULL};
+  std::uint64_t max_stream_line_bytes{64ULL * 1024ULL};
+  std::uint32_t max_processes{128};
+  std::uint32_t max_open_files{256};
+  bool allow_unlisted_programs{false};
+  bool allow_unlisted_environment{false};
+  bool require_trusted_files{true};
+  std::optional<bool> retain_workdirs;
+  std::optional<bool> retain_workspaces;
+  std::vector<CommandProgramConfig> programs;
+  std::vector<std::string> allowed_programs;
+  std::vector<std::string> allowed_environment;
+  std::optional<std::vector<std::string>> inherited_environment;
+};
 
 struct SystemToml {
   WorkflowConfig workflow{};
-  HttpExecutorConfig http_executor{};
+  HttpExecutorToml http_executor{};
   AdmissionConfig admission{};
   StorageConfig storage{};
   RuntimeConfig runtime{};
-  SandboxConfig sandbox{};
+  SandboxToml sandbox{};
   ApiConfig api{};
 };
 
 } // namespace detail
-} // namespace dagforge
+} // namespace dagforge::config
 
 namespace glz {
-template <> struct meta<dagforge::WorkflowConfig> {
-  using T = dagforge::WorkflowConfig;
+template <> struct meta<dagforge::config::CommandProgramConfig> {
+  using T = dagforge::config::CommandProgramConfig;
+  static constexpr auto value = object("name", &T::name, "path", &T::path);
+};
+
+template <> struct meta<dagforge::config::WorkflowConfig> {
+  using T = dagforge::config::WorkflowConfig;
   static constexpr auto value = object("enabled", &T::enabled);
 };
 
-template <> struct meta<dagforge::HttpExecutorConfig> {
-  using T = dagforge::HttpExecutorConfig;
+template <> struct meta<dagforge::config::detail::HttpExecutorToml> {
+  using T = dagforge::config::detail::HttpExecutorToml;
   static constexpr auto value = object(
       "enabled", &T::enabled, "allow_plaintext", &T::allow_plaintext,
       "deny_private_networks", &T::deny_private_networks, "allowed_origins",
@@ -45,14 +105,23 @@ template <> struct meta<dagforge::HttpExecutorConfig> {
       &T::max_response_header_bytes, "max_response_body_bytes",
       &T::max_response_body_bytes, "max_concurrent_requests_per_shard",
       &T::max_concurrent_requests_per_shard, "max_concurrent_requests",
-      &T::max_concurrent_requests, "tls_min_version", &T::tls_min_version,
+      &T::max_concurrent_requests, "dns_timeout_ms", &T::dns_timeout_ms,
+      "connect_timeout_ms", &T::connect_timeout_ms,
+      "tls_handshake_timeout_ms", &T::tls_handshake_timeout_ms,
+      "write_timeout_ms", &T::write_timeout_ms, "first_byte_timeout_ms",
+      &T::first_byte_timeout_ms, "read_timeout_ms", &T::read_timeout_ms,
+      "idle_connection_timeout_ms", &T::idle_connection_timeout_ms,
+      "max_idle_connections_per_origin",
+      &T::max_idle_connections_per_origin, "max_idle_connections_per_shard",
+      &T::max_idle_connections_per_shard, "tls_min_version",
+      &T::tls_min_version,
       "tls_ca_file", &T::tls_ca_file, "tls_client_cert_file",
       &T::tls_client_cert_file, "tls_client_key_file",
       &T::tls_client_key_file);
 };
 
-template <> struct meta<dagforge::AdmissionConfig> {
-  using T = dagforge::AdmissionConfig;
+template <> struct meta<dagforge::config::AdmissionConfig> {
+  using T = dagforge::config::AdmissionConfig;
   static constexpr auto value = object(
       "allow_unlisted_executors", &T::allow_unlisted_executors,
       "allowed_executors", &T::allowed_executors, "max_nodes", &T::max_nodes,
@@ -61,26 +130,27 @@ template <> struct meta<dagforge::AdmissionConfig> {
       "max_run_duration_sec", &T::max_run_duration_sec);
 };
 
-template <> struct meta<dagforge::StorageConfig> {
-  using T = dagforge::StorageConfig;
+template <> struct meta<dagforge::config::StorageConfig> {
+  using T = dagforge::config::StorageConfig;
   static constexpr auto value = object(
       "enabled", &T::enabled, "directory", &T::directory,
       "max_completed_runs", &T::max_completed_runs,
       "max_evidence_records", &T::max_evidence_records);
 };
 
-template <> struct meta<dagforge::RuntimeConfig> {
-  using T = dagforge::RuntimeConfig;
+template <> struct meta<dagforge::config::RuntimeConfig> {
+  using T = dagforge::config::RuntimeConfig;
   static constexpr auto value = object(
       "shards", &T::shards, "pin_shards_to_cores", &T::pin_shards_to_cores,
       "cpu_affinity_offset", &T::cpu_affinity_offset);
 };
 
-template <> struct meta<dagforge::SandboxConfig> {
-  using T = dagforge::SandboxConfig;
+template <> struct meta<dagforge::config::detail::SandboxToml> {
+  using T = dagforge::config::detail::SandboxToml;
   static constexpr auto value = object(
       "minijail_path", &T::minijail_path, "seccomp_bpf_path",
-      &T::seccomp_bpf_path, "workspace_root", &T::workspace_root,
+      &T::seccomp_bpf_path, "execution_root", &T::execution_root,
+      "workspace_root", &T::workspace_root,
       "max_memory_bytes", &T::max_memory_bytes,
       "max_file_bytes", &T::max_file_bytes, "tmp_bytes", &T::tmp_bytes,
       "max_stdout_bytes", &T::max_stdout_bytes, "max_stderr_bytes",
@@ -90,13 +160,15 @@ template <> struct meta<dagforge::SandboxConfig> {
       &T::max_open_files, "allow_unlisted_programs",
       &T::allow_unlisted_programs, "allow_unlisted_environment",
       &T::allow_unlisted_environment, "require_trusted_files",
-      &T::require_trusted_files, "retain_workspaces", &T::retain_workspaces,
-      "allowed_programs",
-      &T::allowed_programs, "allowed_environment", &T::allowed_environment);
+      &T::require_trusted_files, "retain_workdirs", &T::retain_workdirs,
+      "retain_workspaces", &T::retain_workspaces, "programs", &T::programs,
+      "allowed_programs", &T::allowed_programs, "allowed_environment",
+      &T::allowed_environment, "inherited_environment",
+      &T::inherited_environment);
 };
 
-template <> struct meta<dagforge::ApiConfig> {
-  using T = dagforge::ApiConfig;
+template <> struct meta<dagforge::config::ApiConfig> {
+  using T = dagforge::config::ApiConfig;
   static constexpr auto value = object(
       "enabled", &T::enabled, "port", &T::port, "host", &T::host, "reuse_port",
       &T::reuse_port, "tls_enabled", &T::tls_enabled, "tls_cert_file",
@@ -110,8 +182,8 @@ template <> struct meta<dagforge::ApiConfig> {
       "max_requests_per_connection", &T::max_requests_per_connection);
 };
 
-template <> struct meta<dagforge::detail::SystemToml> {
-  using T = dagforge::detail::SystemToml;
+template <> struct meta<dagforge::config::detail::SystemToml> {
+  using T = dagforge::config::detail::SystemToml;
   static constexpr auto value = object(
       "workflow", &T::workflow, "http_executor", &T::http_executor,
       "admission", &T::admission, "storage", &T::storage, "runtime",
@@ -119,7 +191,7 @@ template <> struct meta<dagforge::detail::SystemToml> {
 };
 } // namespace glz
 
-namespace dagforge {
+namespace dagforge::config {
 namespace {
 
 template <typename T>
@@ -151,12 +223,79 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
 
   SystemConfig cfg{};
   cfg.workflow = std::move(raw.workflow);
-  cfg.http_executor = std::move(raw.http_executor);
   cfg.admission = std::move(raw.admission);
   cfg.storage = std::move(raw.storage);
   cfg.runtime = std::move(raw.runtime);
-  cfg.sandbox = std::move(raw.sandbox);
   cfg.api = std::move(raw.api);
+
+  cfg.executors.http.enabled = raw.http_executor.enabled;
+  cfg.executors.http.egress = HttpEgressConfig{
+      .allow_plaintext = raw.http_executor.allow_plaintext,
+      .deny_private_networks = raw.http_executor.deny_private_networks,
+      .allowed_origins = std::move(raw.http_executor.allowed_origins),
+      .allowed_ip_cidrs = std::move(raw.http_executor.allowed_ip_cidrs),
+      .max_request_headers = raw.http_executor.max_request_headers,
+      .max_request_header_bytes = raw.http_executor.max_request_header_bytes,
+      .max_request_body_bytes = raw.http_executor.max_request_body_bytes,
+      .max_response_headers = raw.http_executor.max_response_headers,
+      .max_response_header_bytes = raw.http_executor.max_response_header_bytes,
+      .max_response_body_bytes = raw.http_executor.max_response_body_bytes,
+      .max_concurrent_requests_per_shard =
+          raw.http_executor.max_concurrent_requests_per_shard,
+      .max_concurrent_requests = raw.http_executor.max_concurrent_requests,
+      .dns_timeout_ms = raw.http_executor.dns_timeout_ms,
+      .connect_timeout_ms = raw.http_executor.connect_timeout_ms,
+      .tls_handshake_timeout_ms =
+          raw.http_executor.tls_handshake_timeout_ms,
+      .write_timeout_ms = raw.http_executor.write_timeout_ms,
+      .first_byte_timeout_ms = raw.http_executor.first_byte_timeout_ms,
+      .read_timeout_ms = raw.http_executor.read_timeout_ms,
+      .idle_connection_timeout_ms =
+          raw.http_executor.idle_connection_timeout_ms,
+      .max_idle_connections_per_origin =
+          raw.http_executor.max_idle_connections_per_origin,
+      .max_idle_connections_per_shard =
+          raw.http_executor.max_idle_connections_per_shard,
+      .tls_min_version = std::move(raw.http_executor.tls_min_version),
+      .tls_ca_file = std::move(raw.http_executor.tls_ca_file),
+      .tls_client_cert_file =
+          std::move(raw.http_executor.tls_client_cert_file),
+      .tls_client_key_file =
+          std::move(raw.http_executor.tls_client_key_file),
+  };
+  cfg.executors.command.policy = CommandPolicyConfig{
+      .allow_unlisted_programs = raw.sandbox.allow_unlisted_programs,
+      .allow_unlisted_environment = raw.sandbox.allow_unlisted_environment,
+      .require_trusted_programs = raw.sandbox.require_trusted_files,
+      .programs = std::move(raw.sandbox.programs),
+      .allowed_programs = std::move(raw.sandbox.allowed_programs),
+      .allowed_environment = std::move(raw.sandbox.allowed_environment),
+      .inherited_environment = raw.sandbox.inherited_environment.value_or(
+          std::vector<std::string>{"LANG", "LC_ALL", "LC_CTYPE", "TERM"}),
+  };
+  cfg.executors.command.minijail = MinijailConfig{
+      .executable = std::move(raw.sandbox.minijail_path),
+      .seccomp_bpf_path = std::move(raw.sandbox.seccomp_bpf_path),
+      .execution_root = raw.sandbox.execution_root
+                            .value_or(raw.sandbox.workspace_root
+                                          .value_or("./executions")),
+      .max_memory_bytes = raw.sandbox.max_memory_bytes,
+      .max_file_bytes = raw.sandbox.max_file_bytes,
+      .tmp_bytes = raw.sandbox.tmp_bytes,
+      .max_stdout_bytes = raw.sandbox.max_stdout_bytes,
+      .max_stderr_bytes = raw.sandbox.max_stderr_bytes,
+      .max_stream_line_bytes = raw.sandbox.max_stream_line_bytes,
+      .max_processes = raw.sandbox.max_processes,
+      .max_open_files = raw.sandbox.max_open_files,
+      .require_trusted_files = raw.sandbox.require_trusted_files,
+      .retain_workdirs = raw.sandbox.retain_workdirs.value_or(
+          raw.sandbox.retain_workspaces.value_or(false)),
+  };
+
+  auto &http = cfg.executors.http;
+  auto &egress = http.egress;
+  auto &command = cfg.executors.command;
+  auto &minijail = command.minijail;
 
   apply_env_override("DAGFORGE_API_PORT", cfg.api.port);
   apply_env_override("DAGFORGE_API_HOST", cfg.api.host);
@@ -185,36 +324,56 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
   apply_env_override_bool("DAGFORGE_WORKFLOW_ENABLED", cfg.workflow.enabled);
 
   apply_env_override_bool("DAGFORGE_HTTP_EXECUTOR_ENABLED",
-                          cfg.http_executor.enabled);
+                          http.enabled);
   apply_env_override_bool("DAGFORGE_HTTP_EXECUTOR_ALLOW_PLAINTEXT",
-                          cfg.http_executor.allow_plaintext);
+                          egress.allow_plaintext);
   apply_env_override_bool("DAGFORGE_HTTP_EXECUTOR_DENY_PRIVATE_NETWORKS",
-                          cfg.http_executor.deny_private_networks);
+                          egress.deny_private_networks);
   apply_env_override("DAGFORGE_HTTP_EXECUTOR_MAX_REQUEST_HEADERS",
-                     cfg.http_executor.max_request_headers);
+                     egress.max_request_headers);
   apply_env_override("DAGFORGE_HTTP_EXECUTOR_MAX_REQUEST_HEADER_BYTES",
-                     cfg.http_executor.max_request_header_bytes);
+                     egress.max_request_header_bytes);
   apply_env_override("DAGFORGE_HTTP_EXECUTOR_MAX_REQUEST_BODY_BYTES",
-                     cfg.http_executor.max_request_body_bytes);
+                     egress.max_request_body_bytes);
   apply_env_override("DAGFORGE_HTTP_EXECUTOR_MAX_RESPONSE_HEADER_BYTES",
-                     cfg.http_executor.max_response_header_bytes);
+                     egress.max_response_header_bytes);
   apply_env_override("DAGFORGE_HTTP_EXECUTOR_MAX_RESPONSE_HEADERS",
-                     cfg.http_executor.max_response_headers);
+                     egress.max_response_headers);
   apply_env_override("DAGFORGE_HTTP_EXECUTOR_MAX_RESPONSE_BODY_BYTES",
-                     cfg.http_executor.max_response_body_bytes);
+                     egress.max_response_body_bytes);
   apply_env_override(
       "DAGFORGE_HTTP_EXECUTOR_MAX_CONCURRENT_REQUESTS_PER_SHARD",
-      cfg.http_executor.max_concurrent_requests_per_shard);
+      egress.max_concurrent_requests_per_shard);
   apply_env_override("DAGFORGE_HTTP_EXECUTOR_MAX_CONCURRENT_REQUESTS",
-                     cfg.http_executor.max_concurrent_requests);
+                     egress.max_concurrent_requests);
+  apply_env_override("DAGFORGE_HTTP_EXECUTOR_DNS_TIMEOUT_MS",
+                     egress.dns_timeout_ms);
+  apply_env_override("DAGFORGE_HTTP_EXECUTOR_CONNECT_TIMEOUT_MS",
+                     egress.connect_timeout_ms);
+  apply_env_override("DAGFORGE_HTTP_EXECUTOR_TLS_HANDSHAKE_TIMEOUT_MS",
+                     egress.tls_handshake_timeout_ms);
+  apply_env_override("DAGFORGE_HTTP_EXECUTOR_WRITE_TIMEOUT_MS",
+                     egress.write_timeout_ms);
+  apply_env_override("DAGFORGE_HTTP_EXECUTOR_FIRST_BYTE_TIMEOUT_MS",
+                     egress.first_byte_timeout_ms);
+  apply_env_override("DAGFORGE_HTTP_EXECUTOR_READ_TIMEOUT_MS",
+                     egress.read_timeout_ms);
+  apply_env_override("DAGFORGE_HTTP_EXECUTOR_IDLE_CONNECTION_TIMEOUT_MS",
+                     egress.idle_connection_timeout_ms);
+  apply_env_override(
+      "DAGFORGE_HTTP_EXECUTOR_MAX_IDLE_CONNECTIONS_PER_ORIGIN",
+      egress.max_idle_connections_per_origin);
+  apply_env_override(
+      "DAGFORGE_HTTP_EXECUTOR_MAX_IDLE_CONNECTIONS_PER_SHARD",
+      egress.max_idle_connections_per_shard);
   apply_env_override("DAGFORGE_HTTP_EXECUTOR_TLS_MIN_VERSION",
-                     cfg.http_executor.tls_min_version);
+                     egress.tls_min_version);
   apply_env_override("DAGFORGE_HTTP_EXECUTOR_TLS_CA_FILE",
-                     cfg.http_executor.tls_ca_file);
+                     egress.tls_ca_file);
   apply_env_override("DAGFORGE_HTTP_EXECUTOR_TLS_CLIENT_CERT_FILE",
-                     cfg.http_executor.tls_client_cert_file);
+                     egress.tls_client_cert_file);
   apply_env_override("DAGFORGE_HTTP_EXECUTOR_TLS_CLIENT_KEY_FILE",
-                     cfg.http_executor.tls_client_key_file);
+                     egress.tls_client_key_file);
 
   apply_env_override("DAGFORGE_RUNTIME_SHARDS", cfg.runtime.shards);
   apply_env_override_bool("DAGFORGE_RUNTIME_PIN_SHARDS",
@@ -223,49 +382,57 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
                      cfg.runtime.cpu_affinity_offset);
 
   apply_env_override("DAGFORGE_SANDBOX_MINIJAIL",
-                     cfg.sandbox.minijail_path);
+                     minijail.executable);
   apply_env_override("DAGFORGE_SANDBOX_SECCOMP_BPF",
-                     cfg.sandbox.seccomp_bpf_path);
+                     minijail.seccomp_bpf_path);
   apply_env_override("DAGFORGE_SANDBOX_WORKSPACE_ROOT",
-                     cfg.sandbox.workspace_root);
+                     minijail.execution_root);
+  apply_env_override("DAGFORGE_SANDBOX_EXECUTION_ROOT",
+                     minijail.execution_root);
   apply_env_override("DAGFORGE_SANDBOX_MAX_MEMORY_BYTES",
-                     cfg.sandbox.max_memory_bytes);
+                     minijail.max_memory_bytes);
   apply_env_override("DAGFORGE_SANDBOX_MAX_FILE_BYTES",
-                     cfg.sandbox.max_file_bytes);
-  apply_env_override("DAGFORGE_SANDBOX_TMP_BYTES", cfg.sandbox.tmp_bytes);
+                     minijail.max_file_bytes);
+  apply_env_override("DAGFORGE_SANDBOX_TMP_BYTES", minijail.tmp_bytes);
   apply_env_override("DAGFORGE_SANDBOX_MAX_STDOUT_BYTES",
-                     cfg.sandbox.max_stdout_bytes);
+                     minijail.max_stdout_bytes);
   apply_env_override("DAGFORGE_SANDBOX_MAX_STDERR_BYTES",
-                     cfg.sandbox.max_stderr_bytes);
+                     minijail.max_stderr_bytes);
   apply_env_override("DAGFORGE_SANDBOX_MAX_STREAM_LINE_BYTES",
-                     cfg.sandbox.max_stream_line_bytes);
+                     minijail.max_stream_line_bytes);
   apply_env_override("DAGFORGE_SANDBOX_MAX_PROCESSES",
-                     cfg.sandbox.max_processes);
+                     minijail.max_processes);
   apply_env_override("DAGFORGE_SANDBOX_MAX_OPEN_FILES",
-                     cfg.sandbox.max_open_files);
+                     minijail.max_open_files);
 
   if (cfg.runtime.shards < 0 || cfg.runtime.cpu_affinity_offset < 0 ||
-      cfg.sandbox.minijail_path.empty() ||
-      cfg.sandbox.seccomp_bpf_path.empty() ||
-      cfg.sandbox.workspace_root.empty() ||
-      cfg.sandbox.max_memory_bytes == 0 || cfg.sandbox.max_file_bytes == 0 ||
-      cfg.sandbox.tmp_bytes == 0 || cfg.sandbox.max_stdout_bytes == 0 ||
-      cfg.sandbox.max_stderr_bytes == 0 ||
-      cfg.sandbox.max_stream_line_bytes == 0 ||
-      cfg.sandbox.max_processes == 0 ||
-      cfg.sandbox.max_open_files == 0 || cfg.admission.max_nodes == 0 ||
-      cfg.http_executor.max_request_headers == 0 ||
-      cfg.http_executor.max_request_header_bytes == 0 ||
-      cfg.http_executor.max_request_body_bytes == 0 ||
-      cfg.http_executor.max_response_headers == 0 ||
-      cfg.http_executor.max_response_header_bytes == 0 ||
-      cfg.http_executor.max_response_body_bytes == 0 ||
-      cfg.http_executor.max_concurrent_requests_per_shard == 0 ||
-      cfg.http_executor.max_concurrent_requests == 0 ||
-      (cfg.http_executor.tls_min_version != "1.2" &&
-       cfg.http_executor.tls_min_version != "1.3") ||
-      (cfg.http_executor.tls_client_cert_file.empty() !=
-       cfg.http_executor.tls_client_key_file.empty()) ||
+      minijail.executable.empty() || minijail.seccomp_bpf_path.empty() ||
+      minijail.execution_root.empty() || minijail.max_memory_bytes == 0 ||
+      minijail.max_file_bytes == 0 || minijail.tmp_bytes == 0 ||
+      minijail.max_stdout_bytes == 0 || minijail.max_stderr_bytes == 0 ||
+      minijail.max_stream_line_bytes == 0 || minijail.max_processes == 0 ||
+      minijail.max_open_files == 0 || cfg.admission.max_nodes == 0 ||
+      egress.max_request_headers == 0 ||
+      egress.max_request_header_bytes == 0 ||
+      egress.max_request_body_bytes == 0 ||
+      egress.max_response_headers == 0 ||
+      egress.max_response_header_bytes == 0 ||
+      egress.max_response_body_bytes == 0 ||
+      egress.max_concurrent_requests_per_shard == 0 ||
+      egress.max_concurrent_requests == 0 ||
+      egress.dns_timeout_ms == 0 || egress.connect_timeout_ms == 0 ||
+      egress.tls_handshake_timeout_ms == 0 ||
+      egress.write_timeout_ms == 0 || egress.first_byte_timeout_ms == 0 ||
+      egress.read_timeout_ms == 0 ||
+      egress.idle_connection_timeout_ms == 0 ||
+      egress.max_idle_connections_per_origin == 0 ||
+      egress.max_idle_connections_per_shard == 0 ||
+      egress.max_idle_connections_per_origin >
+          egress.max_idle_connections_per_shard ||
+      (egress.tls_min_version != "1.2" &&
+       egress.tls_min_version != "1.3") ||
+      (egress.tls_client_cert_file.empty() !=
+       egress.tls_client_key_file.empty()) ||
       cfg.admission.max_parallel_nodes == 0 ||
       cfg.admission.max_parallel_nodes > cfg.admission.max_nodes ||
       cfg.admission.max_total_output_bytes == 0 ||
@@ -312,4 +479,4 @@ auto SystemConfigLoader::load_from_string(std::string_view toml_str)
   }
 }
 
-} // namespace dagforge
+} // namespace dagforge::config

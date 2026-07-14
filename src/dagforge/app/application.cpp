@@ -2,10 +2,9 @@
 
 #include "dagforge/app/api/api_server.hpp"
 #include "dagforge/config/system_config_loader.hpp"
-#include "dagforge/executor/command_executor.hpp"
+#include "dagforge/executors/command/executor.hpp"
+#include "dagforge/executors/http/executor.hpp"
 #include "dagforge/workflow/executor_registry.hpp"
-#include "dagforge/workflow/executors/command_adapter.hpp"
-#include "dagforge/workflow/executors/http_adapter.hpp"
 #include "dagforge/workflow/workflow_control_plane.hpp"
 #include "dagforge/workflow/workflow_runtime.hpp"
 #include "dagforge/util/log.hpp"
@@ -19,10 +18,14 @@
 
 namespace dagforge {
 
-Application::Application() : Application(SystemConfig{}) {}
+Application::Application() : Application(config::SystemConfig{}) {}
 
-Application::Application(SystemConfig config) : config_(std::move(config)) {
-  (void)rebuild_components();
+Application::Application(config::SystemConfig config)
+    : config_(std::move(config)) {
+  auto rebuilt = rebuild_components();
+  if (!rebuilt) {
+    initialization_error_ = rebuilt.error();
+  }
 }
 
 Application::~Application() { stop(); }
@@ -31,26 +34,31 @@ auto Application::load_config(std::string_view path) -> Result<void> {
   if (is_running()) {
     return fail(Error::InvalidState);
   }
-  auto loaded = SystemConfigLoader::load_from_file(path);
+  auto loaded = config::SystemConfigLoader::load_from_file(path);
   if (!loaded) {
     return fail(loaded.error());
   }
   config_ = std::move(*loaded);
-  return rebuild_components();
+  auto rebuilt = rebuild_components();
+  if (!rebuilt) {
+    initialization_error_ = rebuilt.error();
+    return fail(rebuilt.error());
+  }
+  initialization_error_.reset();
+  return ok();
 }
 
-auto Application::config() const noexcept -> const SystemConfig & {
+auto Application::config() const noexcept -> const config::SystemConfig & {
   return config_;
 }
 
-auto Application::config() noexcept -> SystemConfig & { return config_; }
+auto Application::config() noexcept -> config::SystemConfig & { return config_; }
 
 auto Application::rebuild_components() -> Result<void> {
   api_.reset();
   workflow_runtime_.reset();
   workflow_control_plane_.reset();
   executor_registry_.reset();
-  command_executor_.reset();
   runtime_.reset();
 
   const auto shard_count =
@@ -60,25 +68,21 @@ auto Application::rebuild_components() -> Result<void> {
   runtime_ = std::make_unique<Runtime>(
       shard_count, config_.runtime.pin_shards_to_cores,
       static_cast<unsigned>(config_.runtime.cpu_affinity_offset));
-  auto command_executor = create_command_executor(*runtime_, config_.sandbox);
+  executor_registry_ = std::make_unique<workflow::ExecutorRegistry>();
+  auto command_executor =
+      executors::command::create_task_executor(
+          *runtime_, config_.executors.command);
   if (!command_executor) {
     return fail(command_executor.error());
   }
-  command_executor_ = std::move(*command_executor);
-  executor_registry_ = std::make_unique<workflow::ExecutorRegistry>();
-  auto command_adapter = workflow::create_command_executor_adapter(
-      *command_executor_, config_.sandbox);
-  if (!command_adapter) {
-    return fail(command_adapter.error());
-  }
   auto command_registered =
-      executor_registry_->register_executor(std::move(*command_adapter));
+      executor_registry_->register_executor(std::move(*command_executor));
   if (!command_registered) {
     return fail(command_registered.error());
   }
-  if (config_.http_executor.enabled) {
-    auto http_executor = workflow::create_http_executor_adapter(
-        *runtime_, config_.http_executor);
+  if (config_.executors.http.enabled) {
+    auto http_executor = executors::http::create_task_executor(
+        *runtime_, config_.executors.http.egress);
     if (!http_executor) {
       return fail(http_executor.error());
     }
@@ -147,11 +151,16 @@ auto Application::init() -> Result<void> {
       config_.workflow.enabled != static_cast<bool>(workflow_control_plane_);
   const auto http_executor_configuration_changed =
       executor_registry_ != nullptr &&
-      config_.http_executor.enabled != executor_registry_->contains("http");
-  if (!runtime_ || !command_executor_ || !executor_registry_ ||
+      config_.executors.http.enabled != executor_registry_->contains("http");
+  if (initialization_error_ || !runtime_ || !executor_registry_ ||
       api_configuration_changed || workflow_configuration_changed ||
       http_executor_configuration_changed) {
-    return rebuild_components();
+    auto rebuilt = rebuild_components();
+    if (!rebuilt) {
+      initialization_error_ = rebuilt.error();
+      return fail(rebuilt.error());
+    }
+    initialization_error_.reset();
   }
   return ok();
 }
@@ -167,8 +176,8 @@ auto Application::start() -> Result<void> {
       config_.workflow.enabled != static_cast<bool>(workflow_control_plane_);
   const auto http_executor_configuration_changed =
       executor_registry_ != nullptr &&
-      config_.http_executor.enabled != executor_registry_->contains("http");
-  if (!runtime_ || !command_executor_ || !executor_registry_ ||
+      config_.executors.http.enabled != executor_registry_->contains("http");
+  if (initialization_error_ || !runtime_ || !executor_registry_ ||
       api_configuration_changed || workflow_configuration_changed ||
       http_executor_configuration_changed) {
     auto initialized = init();
@@ -209,14 +218,19 @@ auto Application::stop() noexcept -> void {
                  quiesced.error().message());
     }
   }
-  if (command_executor_) {
-    command_executor_->shutdown();
-  }
-  if (runtime_) {
-    runtime_->stop();
+  if (executor_registry_) {
+    auto quiesced = executor_registry_->quiesce(std::chrono::seconds(10));
+    if (!quiesced) {
+      log::error("Task executors did not quiesce: {}",
+                 quiesced.error().message());
+    }
   }
   workflow_runtime_.reset();
   workflow_control_plane_.reset();
+  executor_registry_.reset();
+  if (runtime_) {
+    runtime_->stop();
+  }
 }
 
 auto Application::is_running() const noexcept -> bool {

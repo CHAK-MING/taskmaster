@@ -1,10 +1,11 @@
-#include "dagforge/workflow/executors/command_adapter.hpp"
+#include "dagforge/executors/command/executor.hpp"
 
-#include "dagforge/executor/command_executor.hpp"
-#include "../../executor/detail/command_validation.hpp"
 #include "dagforge/util/json.hpp"
 
-#include "detail/adapter_utils.hpp"
+#include "../../sandbox/detail/command_policy.hpp"
+#include "../../sandbox/detail/minijail_command_runner.hpp"
+#include "../detail/task_executor_utils.hpp"
+#include "detail/testing.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -18,54 +19,70 @@
 #include <utility>
 #include <vector>
 
-namespace dagforge::detail {
+namespace dagforge::executors::command::detail {
 
-struct CommandEnvironmentEntry {
+struct EnvironmentEntry {
   std::string key;
   std::string value;
 };
 
-struct CommandInputEnvironmentBinding {
+struct InputEnvironmentBinding {
   std::string input;
   std::string environment;
 };
 
-struct CommandNodeConfig {
+struct NodeConfig {
   std::string program;
   std::vector<std::string> arguments;
-  std::vector<CommandEnvironmentEntry> env;
-  std::vector<CommandInputEnvironmentBinding> input_env;
+  std::vector<EnvironmentEntry> env;
+  std::vector<InputEnvironmentBinding> input_env;
 };
 
-} // namespace dagforge::detail
+} // namespace dagforge::executors::command::detail
 
 namespace glz {
 
-template <> struct meta<dagforge::detail::CommandEnvironmentEntry> {
-  using T = dagforge::detail::CommandEnvironmentEntry;
+template <>
+struct meta<dagforge::executors::command::detail::EnvironmentEntry> {
+  using T = dagforge::executors::command::detail::EnvironmentEntry;
   static constexpr auto value = object("key", &T::key, "value", &T::value);
 };
 
-template <> struct meta<dagforge::detail::CommandInputEnvironmentBinding> {
-  using T = dagforge::detail::CommandInputEnvironmentBinding;
-  static constexpr auto value = object(
-      "input", &T::input, "environment", &T::environment);
+template <>
+struct meta<dagforge::executors::command::detail::InputEnvironmentBinding> {
+  using T = dagforge::executors::command::detail::InputEnvironmentBinding;
+  static constexpr auto value =
+      object("input", &T::input, "environment", &T::environment);
 };
 
-template <> struct meta<dagforge::detail::CommandNodeConfig> {
-  using T = dagforge::detail::CommandNodeConfig;
-  static constexpr auto value = object(
-      "program", &T::program, "arguments", &T::arguments, "env", &T::env,
-      "input_env", &T::input_env);
+template <> struct meta<dagforge::executors::command::detail::NodeConfig> {
+  using T = dagforge::executors::command::detail::NodeConfig;
+  static constexpr auto value =
+      object("program", &T::program, "arguments", &T::arguments, "env", &T::env,
+             "input_env", &T::input_env);
 };
 
 } // namespace glz
 
-namespace dagforge {
+namespace dagforge::executors::command {
 namespace {
 
-using workflow::executor_detail::add_output;
-using workflow::executor_detail::input_exists;
+using executors::detail::add_output;
+using executors::detail::input_exists;
+
+[[nodiscard]] auto parse_node_config(const JsonValue &config)
+    -> Result<detail::NodeConfig> {
+  return parse_json_as<detail::NodeConfig>(dump_json(config));
+}
+
+[[nodiscard]] auto encode_node_config(const detail::NodeConfig &config)
+    -> Result<JsonValue> {
+  auto encoded = serialize_json(config);
+  if (!encoded) {
+    return fail(encoded.error());
+  }
+  return parse_json(*encoded);
+}
 
 [[nodiscard]] auto value_to_string(const workflow::WorkflowValue &value)
     -> std::string {
@@ -91,15 +108,11 @@ using workflow::executor_detail::input_exists;
       value);
 }
 
-class CommandWorkflowAdapter final : public workflow::ITaskExecutor {
+class CommandTaskExecutor final : public workflow::ITaskExecutor {
 public:
-  CommandWorkflowAdapter(ICommandExecutor &command_executor,
-                         SandboxConfig sandbox,
-                         std::unordered_set<std::string> allowed_programs,
-                         std::unordered_set<std::string> allowed_environment)
-      : command_executor_(command_executor), sandbox_(std::move(sandbox)),
-        allowed_programs_(std::move(allowed_programs)),
-        allowed_environment_(std::move(allowed_environment)) {}
+  CommandTaskExecutor(std::unique_ptr<sandbox::ICommandRunner> runner,
+                      std::shared_ptr<const sandbox::detail::CommandPolicy> policy)
+      : runner_(std::move(runner)), policy_(std::move(policy)) {}
 
   [[nodiscard]] auto type() const noexcept -> std::string_view override {
     return "command";
@@ -108,60 +121,44 @@ public:
   [[nodiscard]] auto compile(
       JsonValue config, workflow::ExecutorCompileContext context) const
       -> Result<JsonValue> override {
-    auto parsed = parse_json_as<detail::CommandNodeConfig>(dump_json(config));
+    auto parsed = parse_node_config(config);
     if (!parsed) {
       return fail(parsed.error());
     }
-    auto canonical = dagforge::executor_detail::canonical_program(
-        parsed->program, sandbox_.require_trusted_files);
+    auto canonical = policy_->canonical_program(parsed->program);
     if (!canonical) {
       return fail(canonical.error());
     }
     parsed->program = std::move(*canonical);
-    if (!sandbox_.allow_unlisted_programs &&
-        !allowed_programs_.contains(parsed->program)) {
-      return fail(Error::Unauthorized);
-    }
-
     std::unordered_set<std::string> environment;
     for (const auto &entry : parsed->env) {
-      if (!executor_detail::is_valid_environment_key(entry.key) ||
-          !environment.emplace(entry.key).second) {
-        return fail(Error::InvalidArgument);
-      }
-      if (!sandbox_.allow_unlisted_environment &&
-          !allowed_environment_.contains(entry.key)) {
-        return fail(Error::Unauthorized);
+      auto valid = policy_->validate_environment(entry.key, entry.value);
+      if (!valid || !environment.emplace(entry.key).second) {
+        return fail(valid ? Error::InvalidArgument : valid.error());
       }
     }
     for (const auto &binding : parsed->input_env) {
+      auto valid = policy_->validate_environment_key(binding.environment);
+      if (!valid) {
+        return fail(valid.error());
+      }
       if (binding.input.empty() || !input_exists(context, binding.input) ||
-          !executor_detail::is_valid_environment_key(binding.environment) ||
           !environment.emplace(binding.environment).second) {
         return fail(Error::InvalidArgument);
       }
-      if (!sandbox_.allow_unlisted_environment &&
-          !allowed_environment_.contains(binding.environment)) {
-        return fail(Error::Unauthorized);
-      }
     }
 
-    auto encoded = serialize_json(*parsed);
-    if (!encoded) {
-      return fail(encoded.error());
-    }
-    return parse_json(*encoded);
+    return encode_node_config(*parsed);
   }
 
   auto start(workflow::TaskExecutionRequest request,
              workflow::TaskExecutionSink sink) -> Result<void> override {
-    auto parsed =
-        parse_json_as<detail::CommandNodeConfig>(dump_json(request.config));
+    auto parsed = parse_node_config(request.config);
     if (!parsed) {
       return fail(parsed.error());
     }
 
-    CommandSpec command{
+    sandbox::CommandSpec command{
         .program = std::move(parsed->program),
         .arguments = std::move(parsed->arguments),
     };
@@ -184,13 +181,13 @@ public:
 
     auto on_complete = std::move(sink.on_complete);
     auto outputs = std::move(request.outputs);
-    CommandExecutionSink command_sink;
+    sandbox::CommandRunSink command_sink;
     command_sink.on_state = std::move(sink.on_state);
     command_sink.on_complete =
         [outputs = std::move(outputs),
          on_complete = std::move(on_complete)](
             const InstanceId &instance_id,
-            CommandExecutionResult result) mutable {
+            sandbox::CommandRunResult result) mutable {
           if (!on_complete) {
             return;
           }
@@ -219,8 +216,8 @@ public:
           on_complete(instance_id, ok(std::move(task_outputs)));
         };
 
-    return command_executor_.start(
-        CommandExecutionRequest{
+    return runner_->start(
+        sandbox::CommandRunRequest{
             .instance_id = std::move(request.instance_id),
             .execution_timeout = request.timeout,
             .command = std::move(command),
@@ -229,44 +226,54 @@ public:
   }
 
   auto cancel(const InstanceId &instance_id) -> void override {
-    command_executor_.cancel(instance_id);
+    runner_->cancel(instance_id);
+  }
+
+  auto quiesce(std::chrono::milliseconds timeout) -> Result<void> override {
+    return runner_->quiesce(timeout);
   }
 
 private:
-  ICommandExecutor &command_executor_;
-  SandboxConfig sandbox_;
-  std::unordered_set<std::string> allowed_programs_;
-  std::unordered_set<std::string> allowed_environment_;
+  std::unique_ptr<sandbox::ICommandRunner> runner_;
+  std::shared_ptr<const sandbox::detail::CommandPolicy> policy_;
 };
 
 } // namespace
 
-namespace workflow {
+namespace detail {
 
-auto create_command_executor_adapter(ICommandExecutor &command_executor,
-                                     SandboxConfig sandbox)
-    -> Result<std::shared_ptr<ITaskExecutor>> {
-  std::unordered_set<std::string> allowed_programs;
-  for (const auto &configured : sandbox.allowed_programs) {
-    auto canonical = dagforge::executor_detail::canonical_program(
-        configured, sandbox.require_trusted_files);
-    if (!canonical || !allowed_programs.emplace(std::move(*canonical)).second) {
-      return fail(canonical ? Error::InvalidArgument : canonical.error());
-    }
+auto create_task_executor(std::unique_ptr<sandbox::ICommandRunner> runner,
+                          const config::CommandPolicyConfig &policy_config)
+    -> Result<std::shared_ptr<workflow::ITaskExecutor>> {
+  if (!runner) {
+    return fail(Error::InvalidArgument);
   }
-  std::unordered_set<std::string> allowed_environment;
-  for (const auto &configured : sandbox.allowed_environment) {
-    if (!dagforge::executor_detail::is_valid_environment_key(configured) ||
-        !allowed_environment.emplace(configured).second) {
-      return fail(Error::InvalidArgument);
-    }
+  auto policy = sandbox::detail::CommandPolicy::create(policy_config);
+  if (!policy) {
+    return fail(policy.error());
   }
-  return ok(std::shared_ptr<ITaskExecutor>{
-      std::make_shared<CommandWorkflowAdapter>(
-          command_executor, std::move(sandbox), std::move(allowed_programs),
-          std::move(allowed_environment))});
+  return ok(std::shared_ptr<workflow::ITaskExecutor>{
+      std::make_shared<CommandTaskExecutor>(
+          std::move(runner), std::move(*policy))});
 }
 
-} // namespace workflow
+} // namespace detail
 
-} // namespace dagforge
+auto create_task_executor(Runtime &runtime,
+                          const config::CommandExecutorConfig &config)
+    -> Result<std::shared_ptr<workflow::ITaskExecutor>> {
+  auto policy = sandbox::detail::CommandPolicy::create(config.policy);
+  if (!policy) {
+    return fail(policy.error());
+  }
+  auto runner = sandbox::detail::create_minijail_command_runner(
+      runtime, config.minijail, *policy);
+  if (!runner) {
+    return fail(runner.error());
+  }
+  return ok(std::shared_ptr<workflow::ITaskExecutor>{
+      std::make_shared<CommandTaskExecutor>(
+          std::move(*runner), std::move(*policy))});
+}
+
+} // namespace dagforge::executors::command

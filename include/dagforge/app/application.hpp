@@ -8,13 +8,13 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <string_view>
+#include <system_error>
 
 namespace dagforge {
 
 class ApiServer;
-class ICommandExecutor;
-
 namespace workflow {
 class ExecutorRegistry;
 class WorkflowControlPlane;
@@ -24,15 +24,15 @@ class WorkflowRuntime;
 class Application {
 public:
   Application();
-  explicit Application(SystemConfig config);
+  explicit Application(config::SystemConfig config);
   ~Application();
 
   Application(const Application &) = delete;
   auto operator=(const Application &) -> Application & = delete;
 
   [[nodiscard]] auto load_config(std::string_view path) -> Result<void>;
-  [[nodiscard]] auto config() const noexcept -> const SystemConfig &;
-  [[nodiscard]] auto config() noexcept -> SystemConfig &;
+  [[nodiscard]] auto config() const noexcept -> const config::SystemConfig &;
+  [[nodiscard]] auto config() noexcept -> config::SystemConfig &;
 
   [[nodiscard]] auto init() -> Result<void>;
   [[nodiscard]] auto start() -> Result<void>;
@@ -55,9 +55,9 @@ private:
   auto rebuild_components() -> Result<void>;
 
   std::atomic<bool> running_{false};
-  SystemConfig config_;
+  config::SystemConfig config_;
+  std::optional<std::error_code> initialization_error_;
   std::unique_ptr<Runtime> runtime_;
-  std::unique_ptr<ICommandExecutor> command_executor_;
   std::unique_ptr<workflow::ExecutorRegistry> executor_registry_;
   std::unique_ptr<workflow::WorkflowControlPlane> workflow_control_plane_;
   std::unique_ptr<workflow::WorkflowRuntime> workflow_runtime_;

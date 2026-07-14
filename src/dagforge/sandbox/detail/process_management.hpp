@@ -14,7 +14,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-namespace dagforge {
+namespace dagforge::sandbox {
 
 namespace bp = boost::process::v2;
 
@@ -67,4 +67,4 @@ inline auto terminate_process_group_or_process(bp::process &proc) noexcept
   co_return ok(std::move(result));
 }
 
-} // namespace dagforge
+} // namespace dagforge::sandbox

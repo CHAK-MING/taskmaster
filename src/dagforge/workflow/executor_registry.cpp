@@ -1,5 +1,6 @@
 #include "dagforge/workflow/executor_registry.hpp"
 
+#include <chrono>
 #include <string>
 #include <utility>
 
@@ -9,6 +10,9 @@ auto ExecutorRegistry::register_executor(
     std::shared_ptr<ITaskExecutor> executor) -> Result<void> {
   if (!executor) {
     return fail(Error::InvalidArgument);
+  }
+  if (quiescing_.load(std::memory_order_acquire)) {
+    return fail(Error::InvalidState);
   }
   const auto type = executor->type();
   if (type.empty()) {
@@ -33,6 +37,9 @@ auto ExecutorRegistry::compile(std::string_view type, JsonValue config,
 auto ExecutorRegistry::start(std::string_view type,
                              TaskExecutionRequest request,
                              TaskExecutionSink sink) -> Result<void> {
+  if (quiescing_.load(std::memory_order_acquire)) {
+    return fail(Error::InvalidState);
+  }
   const auto executor = executors_.find(std::string{type});
   if (executor == executors_.end()) {
     return fail(Error::Unsupported);
@@ -46,6 +53,26 @@ auto ExecutorRegistry::cancel(std::string_view type,
   if (executor != executors_.end()) {
     executor->second->cancel(instance_id);
   }
+}
+
+auto ExecutorRegistry::quiesce(std::chrono::milliseconds timeout)
+    -> Result<void> {
+  quiescing_.store(true, std::memory_order_release);
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  std::error_code first_error;
+  for (const auto &[_, executor] : executors_) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto remaining =
+        now < deadline
+            ? std::chrono::duration_cast<std::chrono::milliseconds>(deadline -
+                                                                     now)
+            : std::chrono::milliseconds::zero();
+    auto result = executor->quiesce(remaining);
+    if (!result && !first_error) {
+      first_error = result.error();
+    }
+  }
+  return first_error ? fail(first_error) : ok();
 }
 
 auto ExecutorRegistry::contains(std::string_view type) const -> bool {

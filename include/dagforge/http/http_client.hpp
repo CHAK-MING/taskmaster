@@ -1,9 +1,9 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include "dagforge/http/http_types.hpp"
 #include "dagforge/core/coroutine.hpp"
 #include "dagforge/core/error.hpp"
+#include "dagforge/http/http_types.hpp"
 #include "dagforge/io/context.hpp"
 
 #include <boost/asio/cancellation_signal.hpp>
@@ -13,6 +13,7 @@
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/stream.hpp>
 
+#include <array>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
@@ -21,16 +22,97 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
 #endif
 
-
 namespace dagforge::http {
 
+enum class HttpClientError : std::uint8_t {
+  Success,
+  DnsFailure,
+  DnsTimeout,
+  ConnectFailure,
+  ConnectTimeout,
+  TlsHandshakeFailure,
+  TlsHandshakeTimeout,
+  WriteFailure,
+  WriteTimeout,
+  FirstByteFailure,
+  FirstByteTimeout,
+  ReadFailure,
+  ReadTimeout,
+};
+
+class HttpClientErrorCategory final : public std::error_category {
+public:
+  [[nodiscard]] auto name() const noexcept -> const char * override {
+    return "dagforge.http.client";
+  }
+
+  [[nodiscard]] auto message(int value) const -> std::string override {
+    static constexpr std::array<std::string_view, 13> messages{
+        "success",
+        "HTTP DNS resolution failed",
+        "HTTP DNS resolution timed out",
+        "HTTP connection failed",
+        "HTTP connection timed out",
+        "HTTP TLS handshake failed",
+        "HTTP TLS handshake timed out",
+        "HTTP request write failed",
+        "HTTP request write timed out",
+        "HTTP response first byte failed",
+        "HTTP response first byte timed out",
+        "HTTP response read failed",
+        "HTTP response read timed out",
+    };
+    const auto index = static_cast<std::size_t>(value);
+    return index < messages.size() ? std::string{messages[index]}
+                                   : std::string{"unknown HTTP client error"};
+  }
+
+  using std::error_category::equivalent;
+
+  [[nodiscard]] auto
+  equivalent(int code, const std::error_condition &condition) const noexcept
+      -> bool override {
+    if (condition.category() != std::generic_category() ||
+        condition.value() != static_cast<int>(std::errc::timed_out)) {
+      return false;
+    }
+    switch (static_cast<HttpClientError>(code)) {
+    case HttpClientError::DnsTimeout:
+    case HttpClientError::ConnectTimeout:
+    case HttpClientError::TlsHandshakeTimeout:
+    case HttpClientError::WriteTimeout:
+    case HttpClientError::FirstByteTimeout:
+    case HttpClientError::ReadTimeout:
+      return true;
+    default:
+      return false;
+    }
+  }
+};
+
+[[nodiscard]] inline auto http_client_error_category() noexcept
+    -> const HttpClientErrorCategory & {
+  static const HttpClientErrorCategory category;
+  return category;
+}
+
+[[nodiscard]] inline auto make_error_code(HttpClientError error) noexcept
+    -> std::error_code {
+  return {std::to_underlying(error), http_client_error_category()};
+}
+
 struct HttpClientConfig {
+  std::chrono::milliseconds dns_timeout{5000};
   std::chrono::milliseconds connect_timeout{30000};
+  std::chrono::milliseconds tls_handshake_timeout{30000};
+  std::chrono::milliseconds write_timeout{30000};
+  std::chrono::milliseconds first_byte_timeout{30000};
   std::chrono::milliseconds read_timeout{30000};
   std::size_t max_response_headers{128};
   std::size_t max_response_header_size{64UL * 1024UL};
@@ -51,8 +133,7 @@ concept HttpConnector = requires(T t, HttpRequest req) {
 
 class HttpClient {
 public:
-  using TlsStream =
-      boost::asio::ssl::stream<boost::asio::ip::tcp::socket>;
+  using TlsStream = boost::asio::ssl::stream<boost::asio::ip::tcp::socket>;
   using SocketVariant =
       std::variant<boost::asio::ip::tcp::socket,
                    boost::asio::local::stream_protocol::socket, TlsStream>;
@@ -100,6 +181,7 @@ public:
            const HttpHeaders &headers = {}) -> task<Result<HttpResponse>>;
 
   [[nodiscard]] auto is_connected() const noexcept -> bool;
+  [[nodiscard]] auto is_reusable() const noexcept -> bool;
   auto close() -> void;
 
 private:
@@ -111,3 +193,7 @@ private:
 };
 
 } // namespace dagforge::http
+
+template <>
+struct std::is_error_code_enum<dagforge::http::HttpClientError>
+    : std::true_type {};
