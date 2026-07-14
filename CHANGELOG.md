@@ -28,6 +28,16 @@ All notable changes to DAGForge will be documented in this file.
 - Unknown TOML fields are rejected instead of being silently ignored.
 
 ### Added
+- Added a reproducible Clang source-coverage workflow with a 90% production
+  source-line gate, scenario-driven coverage expansion, repository convention
+  checks, and normal/module/sanitizer validation.
+- Added controlled Runtime, Plan, Workflow, HTTP keep-alive/reconnect, and
+  checkpoint benchmarks with repeated samples, environment metadata, median,
+  p95, p99, standard deviation, coefficient of variation, and throughput.
+- Added bounded owner-shard HTTP/1.1 keep-alive pools, independent DNS,
+  connect, TLS-handshake, write, first-byte, and response-read timeouts, and
+  stage-specific transport errors that remain generically classifiable by the
+  Workflow Runtime.
 - Added an optional executor-neutral HTTP task adapter with strict JSON config,
   exact server-owned origin allowlists, HTTPS verification, input-derived
   headers and bodies, accepted-status policy, bounded responses, per-shard
@@ -38,8 +48,11 @@ All notable changes to DAGForge will be documented in this file.
 - Added active HTTP connection, idle-time, parser, and requests-per-connection
   limits. Server shutdown closes and drains active connections.
 - Added fail-closed known-binary Command policy, trusted Minijail/BPF preflight,
-  private workspaces, stdout/stderr/line limits, and executor shutdown that
+  private workdirs, stdout/stderr/line limits, and executor shutdown that
   kills and reaps active process groups.
+- Added a server-owned Command program registry, exact name-to-path resolution
+  without PATH lookup, and a minimal inherited-environment allowlist that
+  rejects credential-like host variables.
 - Added OpenSpec coverage and real Command → HTTP → Command Workflow JSON tests
   for TLS, retry, cancellation, timeout, response limits, UTF-8 validation,
   status handling, and outbound-policy rejection.
@@ -52,7 +65,7 @@ All notable changes to DAGForge will be documented in this file.
   non-terminal Attempts found after restart.
 - Added server-owned `AdmissionPolicy` checks for executor allowlists and plan
   budget ceilings. Command program and environment allowlists are enforced by
-  the Command adapter rather than the generic Workflow layer.
+  `CommandTaskExecutor` rather than the generic Workflow layer.
 - Added the generic `ITaskExecutor` and `ExecutorRegistry` boundary. The
   compiler delegates executor config validation, while the runtime routes
   start/cancel and enforces declared output ports.
@@ -63,10 +76,21 @@ All notable changes to DAGForge will be documented in this file.
 - Added a pinned Google Minijail helper with user/PID/mount/network/IPC/UTS/cgroup namespaces, Landlock, seccomp, private tmpfs, resource limits, integration tests, and release packaging.
 
 ### Changed
-- Separated low-level Command execution from Workflow executor adapters.
-  Minijail now implements `ICommandExecutor` directly, Workflow-specific
-  Command and HTTP adapters live under `workflow/executors`, and normalized
-  commands use the explicit `CommandSpec` contract.
+- Moved all TOML/environment-backed configuration DTOs into
+  `dagforge::config`, grouped concrete executors under
+  `executors/command` and `executors/http`, and kept existing `[sandbox]` and
+  `[http_executor]` TOML sections compatible through the loader.
+- Reduced the installed sandbox surface to `CommandSpec` and
+  `ICommandRunner`; Minijail policy, launch, and process-management declarations
+  are now private implementation headers, while single-use node schemas and
+  shard state live directly in their executor `.cpp` files.
+- Replaced the ambiguous executor/adapter layering with explicit ownership:
+  Workflow defines `ITaskExecutor`, concrete Command and HTTP Task executors
+  live under `executors`, and Minijail implements the lower
+  `sandbox::ICommandRunner` contract.
+- Task executors now own their lower execution resources and are quiesced
+  uniformly through `ExecutorRegistry`; Application no longer has
+  Command-specific ownership or shutdown branches.
 - Reorganized subsystem boundaries: common HTTP client/parser/router/server
   code now lives under `dagforge/http`, while `app/api` contains only control
   plane assembly and routes.
@@ -90,11 +114,18 @@ All notable changes to DAGForge will be documented in this file.
   wire construction; unsupported inbound methods now return `405`.
 - Program, environment, executor, and private-network policy defaults are now
   deny-by-default. Permissive settings are explicit development overrides.
+- Renamed the Command sandbox directory model from workspace to execution root
+  and per-Attempt workdir. Legacy TOML keys and the legacy environment override
+  remain accepted by the loader.
 - Shard hashes use `ankerl::unordered_dense` hashing.
 - Removed the direct Boost.Filesystem dependency; Boost.Charconv remains linked because Boost.URL uses it in the current system build.
 - Runtime benchmarks now target the shipped 0.4 runtime primitives instead of the retired Airflow-style scheduler stack.
 
 ### Fixed
+- Workflow state notifications no longer save full checkpoints implicitly.
+  Checkpoints are persisted after explicitly marked nodes and at Run terminal
+  state, restoring the documented contract and removing quadratic state-copy
+  behavior from ordinary Task transitions.
 - Application shutdown now quiesces Workflow Runtime, drains active HTTP and
   Task coroutines through owner-shard barriers, and only then stops Runtime
   threads. HTTP server socket closure is executor-affine, eliminating the

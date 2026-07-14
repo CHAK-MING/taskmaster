@@ -1,21 +1,39 @@
 # http-task-execution Specification
 
 ## Purpose
-TBD - created by archiving change add-http-executor. Update Purpose after archive.
+Define the executor-owned contract for compiling and executing HTTP Workflow
+Tasks through bounded asynchronous transport, server-owned authorization and
+TLS policy, deterministic outputs, cancellation, retries, and connection reuse.
 ## Requirements
 ### Requirement: HTTP executor registration and isolation
-DAGForge SHALL register an `http` task executor when the server-owned HTTP
-executor configuration is enabled, and `WorkflowRuntime` SHALL remain unaware
-of HTTP methods, URLs, headers, and response semantics.
+
+DAGForge SHALL register a concrete `HttpTaskExecutor` from the executors
+module when server-owned HTTP executor configuration is enabled.
+`WorkflowRuntime` and the Workflow module SHALL remain unaware of HTTP methods,
+URLs, headers, transport state, and response semantics. Reusable DNS/TCP/TLS/
+HTTP transport SHALL remain in the HTTP module, while node schema, egress
+policy, Attempt lifecycle, and Workflow output mapping SHALL be owned by the
+HTTP Task executor.
 
 #### Scenario: HTTP plan compiles through the executor registry
+
 - **WHEN** a Workflow node selects executor `http` with valid configuration
-- **THEN** the Plan Compiler delegates validation to the HTTP executor and
-  produces an immutable executor-owned configuration
+- **THEN** the Plan Compiler delegates validation through the Task executor
+  registry to `HttpTaskExecutor`
+- **AND** produces an immutable executor-owned configuration without adding
+  HTTP logic to Workflow.
 
 #### Scenario: HTTP executor is disabled
+
 - **WHEN** server configuration disables the HTTP executor
-- **THEN** an HTTP Workflow plan is rejected as an unsupported executor
+- **THEN** an HTTP Workflow plan is rejected as an unsupported executor.
+
+#### Scenario: HTTP implementation placement
+
+- **WHEN** HTTP Task execution is built
+- **THEN** the concrete executor SHALL live under `dagforge/executors`
+- **AND** the common HTTP client SHALL remain independent of Workflow values,
+  Task state, and node configuration.
 
 ### Requirement: Strict HTTP task configuration
 The HTTP executor SHALL accept only a strict JSON object containing a supported
@@ -143,3 +161,47 @@ Command → HTTP → Command data flow through the public control plane.
   cancellation Workflows
 - **THEN** snapshots and Attempt histories expose the required terminal states
   without fake or recording executors
+
+### Requirement: HTTP connections are reused within bounded shard pools
+
+The HTTP executor SHALL retain reusable HTTP/1.1 connections in a shard-owned
+pool keyed by exact authorized Origin. The pool SHALL enforce administrator
+configured per-Origin and per-shard idle limits.
+
+#### Scenario: Retry to the same Origin
+
+- **WHEN** sequential Attempts on one owner shard target the same Origin and
+  the server keeps the connection alive
+- **THEN** the executor reuses the established connection rather than repeating
+  DNS, TCP connect, and TLS handshake
+
+#### Scenario: Executor quiesce
+
+- **WHEN** executor shutdown begins with idle pooled connections
+- **THEN** all idle clients are closed and no new client is returned to the
+  pool
+
+### Requirement: HTTP transport stages have independent timeouts
+
+The HTTP executor SHALL apply independent server-owned timeout values to DNS,
+connect, TLS handshake, write, first-byte/header, and response-read stages while
+remaining bounded by the Workflow Task timeout.
+
+#### Scenario: Server accepts but does not respond
+
+- **WHEN** the request write completes but no response header arrives before
+  `first_byte_timeout_ms`
+- **THEN** the Attempt fails with a first-byte timeout error
+
+### Requirement: HTTP transport failures identify their stage
+
+HTTP client errors SHALL identify DNS, connect, TLS handshake, write,
+first-byte, or read failure. Timeout variants SHALL compare equivalent to the
+generic timed-out condition so Workflow Runtime can classify them without an
+HTTP dependency.
+
+#### Scenario: TCP connection is refused
+
+- **WHEN** DNS succeeds but no service accepts the target endpoint
+- **THEN** the client reports a connect-stage failure rather than an unknown
+  system error.

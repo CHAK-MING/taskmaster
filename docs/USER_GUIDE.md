@@ -43,7 +43,7 @@ cpu_affinity_offset = 0
 [sandbox]
 minijail_path = "~/.local/libexec/dagforge/minijail/minijail0"
 seccomp_bpf_path = "~/.local/libexec/dagforge/minijail/dagforge_command.bpf"
-workspace_root = "./workspaces"
+execution_root = "./executions"
 max_memory_bytes = 1073741824
 max_file_bytes = 67108864
 tmp_bytes = 67108864
@@ -55,9 +55,15 @@ max_open_files = 256
 allow_unlisted_programs = false
 allow_unlisted_environment = false
 require_trusted_files = true
-retain_workspaces = false
-allowed_programs = ["/bin/sh", "/usr/bin/python3"]
+retain_workdirs = false
+programs = [
+  { name = "echo", path = "/bin/echo" },
+  { name = "sh", path = "/bin/sh" },
+  { name = "python3", path = "/usr/bin/python3" },
+]
+allowed_programs = []
 allowed_environment = ["DAGFORGE_INPUT"]
+inherited_environment = ["LANG", "LC_ALL", "LC_CTYPE", "TERM"]
 
 [workflow]
 enabled = true
@@ -76,6 +82,15 @@ max_response_header_bytes = 65536
 max_response_body_bytes = 10485760
 max_concurrent_requests_per_shard = 32
 max_concurrent_requests = 256
+dns_timeout_ms = 5000
+connect_timeout_ms = 10000
+tls_handshake_timeout_ms = 10000
+write_timeout_ms = 30000
+first_byte_timeout_ms = 30000
+read_timeout_ms = 30000
+idle_connection_timeout_ms = 30000
+max_idle_connections_per_origin = 4
+max_idle_connections_per_shard = 32
 tls_min_version = "1.2"
 tls_ca_file = ""
 tls_client_cert_file = ""
@@ -127,13 +142,13 @@ Environment overrides:
 ### 2.2 Command sandbox
 
 All Command nodes run through the pinned Google Minijail helper. DAGForge does
-not contain a direct subprocess fallback. The boundary is for exact-path,
+not contain a direct subprocess fallback. The boundary is for registered,
 administrator-installed **known binaries** processing untrusted inputs. It is
 not a safe execution environment for malicious native binaries, Workflow-
 uploaded executables, or attacker-writable shared libraries.
 
-Missing or untrusted Minijail/BPF files, unavailable Landlock, unsafe workspace
-roots, invalid allowlists, and invalid limits fail during application
+Missing or untrusted Minijail/BPF files, unavailable Landlock, unsafe execution
+roots, invalid registries or allowlists, and invalid limits fail during application
 initialization before the API accepts work.
 
 Each instance receives:
@@ -141,16 +156,16 @@ Each instance receives:
 - user, PID, mount, network, IPC, UTS, and cgroup namespaces;
 - `no_new_privs` and the DAGForge seccomp denylist;
 - Landlock read/execute access to system runtimes and read/write access only to
-  its instance workspace and private `/tmp`;
+  its per-Attempt workdir and private `/tmp`;
 - CPU, address-space, file-size, process-count, and open-file limits.
 - independent stdout, stderr, and unterminated streamed-line limits.
 
-The workspace root must not be inside the host temporary directory because the
+The execution root must not be inside the host temporary directory because the
 sandbox mounts a private tmpfs over `/tmp`. Environment overrides are:
 
 - `DAGFORGE_SANDBOX_MINIJAIL`
 - `DAGFORGE_SANDBOX_SECCOMP_BPF`
-- `DAGFORGE_SANDBOX_WORKSPACE_ROOT`
+- `DAGFORGE_SANDBOX_EXECUTION_ROOT`
 - `DAGFORGE_SANDBOX_MAX_MEMORY_BYTES`
 - `DAGFORGE_SANDBOX_MAX_FILE_BYTES`
 - `DAGFORGE_SANDBOX_TMP_BYTES`
@@ -160,12 +175,22 @@ sandbox mounts a private tmpfs over `/tmp`. Environment overrides are:
 - `DAGFORGE_SANDBOX_MAX_PROCESSES`
 - `DAGFORGE_SANDBOX_MAX_OPEN_FILES`
 
-Command-specific program and environment allowlists also live in `[sandbox]`.
-Programs are canonicalized and checked both while compiling the node config and
-immediately before process launch. `allow_unlisted_*` is a development override;
-production configuration should keep both switches false and
-`require_trusted_files` true. Per-Attempt workspaces are owner-only and removed
-after completion unless `retain_workspaces` is explicitly enabled.
+Command-specific program registration and environment policy also live in
+`[sandbox]`. A slash-free name such as `python3` resolves only through
+`programs`; DAGForge never searches PATH. Registered and legacy absolute paths
+are canonicalized and checked both while compiling the node config and
+immediately before process launch.
+
+The runner always owns `PATH`, `HOME`, and `TMPDIR`. Only names listed in
+`inherited_environment` are copied from the DAGForge process, and
+credential-like names are rejected from inheritance. Workflow `env` and
+`input_env` values still require `allowed_environment`.
+
+`allow_unlisted_*` is a development override; production configuration should
+keep both switches false and `require_trusted_files` true. Per-Attempt workdirs
+are owner-only and removed after completion unless `retain_workdirs` is enabled.
+The legacy `workspace_root`, `retain_workspaces`, and
+`DAGFORGE_SANDBOX_WORKSPACE_ROOT` names remain accepted for compatibility.
 
 Output-limit overflow kills the whole process group and reports resource
 exhaustion. Application shutdown rejects new starts, kills active process
@@ -191,6 +216,15 @@ max_response_header_bytes = 65536
 max_response_body_bytes = 10485760
 max_concurrent_requests_per_shard = 32
 max_concurrent_requests = 256
+dns_timeout_ms = 5000
+connect_timeout_ms = 10000
+tls_handshake_timeout_ms = 10000
+write_timeout_ms = 30000
+first_byte_timeout_ms = 30000
+read_timeout_ms = 30000
+idle_connection_timeout_ms = 30000
+max_idle_connections_per_origin = 4
+max_idle_connections_per_shard = 32
 tls_min_version = "1.2"
 tls_ca_file = ""
 tls_client_cert_file = ""
@@ -215,6 +249,18 @@ per-shard and process-wide concurrency limits are enforced before a socket
 opens. Saturation fails the Attempt with resource exhaustion, allowing the node
 retry policy to decide whether to try again.
 
+Reusable HTTP/1.1 connections are retained in owner-shard pools keyed by the
+exact authorized Origin. Pools are bounded by
+`max_idle_connections_per_origin` and `max_idle_connections_per_shard`; idle
+clients expire after `idle_connection_timeout_ms`. Pooling never bypasses
+Origin or resolved-address policy because only clients created after those
+checks enter the pool.
+
+DNS, TCP connect, TLS handshake, request write, first response byte/header, and
+subsequent response reads have independent timeouts. The node `timeout_sec`
+remains the total upper bound and can cancel any stage. Attempt errors identify
+the failed stage; timeout errors still classify as Workflow timeouts.
+
 Environment overrides:
 
 - `DAGFORGE_HTTP_EXECUTOR_ENABLED`
@@ -228,6 +274,15 @@ Environment overrides:
 - `DAGFORGE_HTTP_EXECUTOR_MAX_RESPONSE_BODY_BYTES`
 - `DAGFORGE_HTTP_EXECUTOR_MAX_CONCURRENT_REQUESTS_PER_SHARD`
 - `DAGFORGE_HTTP_EXECUTOR_MAX_CONCURRENT_REQUESTS`
+- `DAGFORGE_HTTP_EXECUTOR_DNS_TIMEOUT_MS`
+- `DAGFORGE_HTTP_EXECUTOR_CONNECT_TIMEOUT_MS`
+- `DAGFORGE_HTTP_EXECUTOR_TLS_HANDSHAKE_TIMEOUT_MS`
+- `DAGFORGE_HTTP_EXECUTOR_WRITE_TIMEOUT_MS`
+- `DAGFORGE_HTTP_EXECUTOR_FIRST_BYTE_TIMEOUT_MS`
+- `DAGFORGE_HTTP_EXECUTOR_READ_TIMEOUT_MS`
+- `DAGFORGE_HTTP_EXECUTOR_IDLE_CONNECTION_TIMEOUT_MS`
+- `DAGFORGE_HTTP_EXECUTOR_MAX_IDLE_CONNECTIONS_PER_ORIGIN`
+- `DAGFORGE_HTTP_EXECUTOR_MAX_IDLE_CONNECTIONS_PER_SHARD`
 - `DAGFORGE_HTTP_EXECUTOR_TLS_MIN_VERSION`
 - `DAGFORGE_HTTP_EXECUTOR_TLS_CA_FILE`
 - `DAGFORGE_HTTP_EXECUTOR_TLS_CLIENT_CERT_FILE`
@@ -350,7 +405,7 @@ Plans are accepted as strict JSON. `schema_version` must be `1`.
       "timeout_sec": 30,
       "checkpoint": false,
       "config": {
-        "program": "/bin/echo",
+        "program": "echo",
         "arguments": ["hello from DAGForge"],
         "env": [],
         "input_env": []
@@ -385,17 +440,24 @@ An input binding is:
 
 ```json
 {
-  "program": "/usr/bin/python3",
+  "program": "python3",
   "arguments": ["-c", "print('hello')"],
   "env": [{"key":"MODE","value":"test"}],
   "input_env": []
 }
 ```
 
-`program` must be an absolute executable path. Arguments are passed directly;
-there is no implicit shell. Use `/bin/sh` explicitly when shell syntax is
-required. `PATH`, `HOME`, and `TMPDIR` are runtime-owned and cannot be
-overridden by the node.
+`program` should be an administrator-registered name. Absolute paths remain
+supported when explicitly authorized, but relative paths and implicit PATH
+lookup are never used. Arguments are passed directly; there is no implicit
+shell. Use the registered `sh` program when shell syntax is required. `PATH`,
+`HOME`, and `TMPDIR` are runtime-owned and cannot be overridden by the node.
+
+The registry authorizes the initial executable, not every descendant process.
+A registered shell can launch other binaries that remain readable/executable
+inside the sandbox. Register a shell only when that broader command surface is
+intended; filesystem restrictions, the private network namespace, seccomp, and
+resource limits remain the containment boundary.
 
 Inputs are not injected automatically. Map selected inputs to environment
 variables explicitly:
@@ -406,8 +468,8 @@ variables explicitly:
     {"input":"payload","node":"prepare","port":"result"}
   ],
   "config": {
-    "program": "/usr/bin/python3",
-    "arguments": ["/workspace/consume.py"],
+    "program": "python3",
+    "arguments": ["consume.py"],
     "env": [],
     "input_env": [
       {"input":"payload","environment":"DAGFORGE_INPUT"}
@@ -621,4 +683,7 @@ python3 scripts/test-real-workflows.py \
   --binary ~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/dagforge
 ```
 
-Run `bench-core` for Runtime and memory-arena microbenchmarks.
+Run `bench-core` for Runtime dispatch, Plan processing, Workflow execution,
+local HTTP transport, and checkpoint persistence benchmarks. See
+[`BENCH_REPORT.md`](BENCH_REPORT.md) for the controlled runner and reporting
+rules.
