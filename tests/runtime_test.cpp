@@ -251,3 +251,81 @@ TEST(RuntimeTest, CrossShardQueueOverflowPreservesTargetOwnership) {
   release_target.store(true, std::memory_order_release);
   rt.stop();
 }
+
+TEST(RuntimeTest, MetricsTimersAndBroadcastReflectARealDispatchScenario) {
+  Runtime rt(2);
+
+  EXPECT_EQ(rt.pending_cross_shard_queue_length(), 0U);
+  EXPECT_EQ(rt.pending_cross_shard_queue_length(99), 0U);
+  EXPECT_EQ(rt.cross_shard_messages_total(99, 0), 0U);
+  EXPECT_EQ(rt.cross_shard_queue_overflow_total(0, 99), 0U);
+  EXPECT_EQ(rt.cross_shard_latency_snapshot(0, 0).count, 0U);
+  EXPECT_EQ(rt.io_context_poll_duration_snapshot(99).count, 0U);
+  EXPECT_EQ(rt.io_context_timer_depth(99), 0U);
+  EXPECT_EQ(rt.timing_wheel_pending_count(99), 0U);
+  EXPECT_EQ(rt.stall_age_ms(99), 0U);
+  EXPECT_EQ(rt.pinned_cpu_for_shard(99), -1);
+  EXPECT_FALSE(rt.schedule_after_on(99, std::chrono::milliseconds(1), [] {})
+                   .valid());
+  rt.cancel_after_on(99, {});
+  rt.note_timer_started(99);
+  rt.note_timer_finished(99);
+
+  ASSERT_TRUE(rt.start().has_value());
+  ASSERT_TRUE(rt.start().has_value());
+
+  rt.note_timer_started(0);
+  EXPECT_EQ(rt.io_context_timer_depth(0), 1U);
+  rt.note_timer_finished(0);
+  EXPECT_EQ(rt.io_context_timer_depth(0), 0U);
+
+  std::atomic<unsigned> broadcasts{0};
+  rt.broadcast_to_all_shards(
+      [&broadcasts] { broadcasts.fetch_add(1, std::memory_order_release); });
+
+  std::atomic<bool> cross_shard_done{false};
+  rt.post_to(0, [&] {
+    rt.post_to(1, [&] { cross_shard_done.store(true, std::memory_order_release); });
+  });
+
+  std::atomic<bool> delayed_fired{false};
+  EXPECT_FALSE(
+      rt.schedule_after_on(1, std::chrono::milliseconds(5), [&] {
+          delayed_fired.store(true, std::memory_order_release);
+        }).valid());
+
+  std::atomic<bool> cancellation_armed{false};
+  std::atomic<bool> cancelled_callback_fired{false};
+  rt.post_to(0, [&] {
+    const auto handle = rt.schedule_after_on(
+        0, std::chrono::seconds(1),
+        [&] { cancelled_callback_fired.store(true, std::memory_order_release); });
+    rt.cancel_after_on(0, handle);
+    cancellation_armed.store(true, std::memory_order_release);
+  });
+
+  const auto deadline = std::chrono::steady_clock::now() + kTaskTimeout;
+  while ((broadcasts.load(std::memory_order_acquire) != 2 ||
+          !cross_shard_done.load(std::memory_order_acquire) ||
+          !delayed_fired.load(std::memory_order_acquire) ||
+          !cancellation_armed.load(std::memory_order_acquire)) &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(kPollInterval);
+  }
+
+  EXPECT_EQ(broadcasts.load(std::memory_order_acquire), 2U);
+  EXPECT_TRUE(cross_shard_done.load(std::memory_order_acquire));
+  EXPECT_TRUE(delayed_fired.load(std::memory_order_acquire));
+  EXPECT_TRUE(cancellation_armed.load(std::memory_order_acquire));
+  EXPECT_FALSE(cancelled_callback_fired.load(std::memory_order_acquire));
+  EXPECT_GT(rt.cross_shard_messages_total(0, 1), 0U);
+  EXPECT_GT(rt.cross_shard_latency_snapshot(0, 1).count, 0U);
+  EXPECT_EQ(rt.pending_cross_shard_queue_length(), 0U);
+  EXPECT_EQ(rt.pending_cross_shard_queue_length(1), 0U);
+  EXPECT_GE(rt.io_context_poll_duration_snapshot(0).count, 1U);
+  EXPECT_GE(rt.stall_age_ms(0), 0U);
+  EXPECT_EQ(rt.pinned_cpu_for_shard(0), -1);
+
+  rt.stop();
+  rt.cancel_after_on(0, {});
+}

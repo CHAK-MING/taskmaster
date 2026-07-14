@@ -24,14 +24,14 @@ auto main() -> int {
   if (io_name == nullptr || io_name[0] != 'd' || io_name[1] != 'a') {
     return 6;
   }
-  dagforge::SystemConfig config;
+  dagforge::config::SystemConfig config;
   if (config.api.port != 8888 || !config.workflow.enabled) {
     return 7;
   }
-  dagforge::CommandSpec command;
+  dagforge::sandbox::CommandSpec command;
   command.program = "/bin/true";
   if (command.program.size() != 9 || command.program.front() != '/' ||
-      config.sandbox.tmp_bytes == 0) {
+      config.executors.command.minijail.tmp_bytes == 0) {
     return 19;
   }
   if (dagforge::workflow::kWorkflowSchemaVersion != 1U) {

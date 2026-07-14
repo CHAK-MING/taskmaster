@@ -140,6 +140,15 @@ max_response_header_bytes = 4096
 max_response_body_bytes = 4096
 max_concurrent_requests_per_shard = 1
 max_concurrent_requests = 2
+dns_timeout_ms = 1000
+connect_timeout_ms = 1000
+tls_handshake_timeout_ms = 1000
+write_timeout_ms = 1000
+first_byte_timeout_ms = 500
+read_timeout_ms = 1000
+idle_connection_timeout_ms = 30000
+max_idle_connections_per_origin = 2
+max_idle_connections_per_shard = 4
 tls_min_version = "1.2"
 tls_ca_file = ""
 tls_client_cert_file = ""
@@ -271,6 +280,7 @@ class DagforgeService:
 class HttpTargetState:
     def __init__(self) -> None:
         self.retry_count = 0
+        self.retry_connection_ports: set[int] = set()
         self.lock = threading.Lock()
         self.cancel_started = threading.Event()
 
@@ -342,6 +352,7 @@ class HttpTargetHandler(BaseHTTPRequestHandler):
         if self.path == "/retry":
             with self.target_state.lock:
                 self.target_state.retry_count += 1
+                self.target_state.retry_connection_ports.add(self.client_address[1])
                 attempt = self.target_state.retry_count
             if attempt < 3:
                 self.send_payload(503, b"retry")
@@ -734,7 +745,9 @@ def verify_http_accepted_status(service: DagforgeService, target_port: int) -> N
     )
 
 
-def verify_http_retry(service: DagforgeService, target_port: int) -> None:
+def verify_http_retry(
+    service: DagforgeService, target_port: int, target_state: HttpTargetState
+) -> None:
     started, snapshot = run_plan(
         service,
         "http_retry.json",
@@ -747,6 +760,12 @@ def verify_http_retry(service: DagforgeService, target_port: int) -> None:
     require(
         output_value(service, started["run_id"], "request") == "recovered",
         "HTTP retry output mismatch",
+    )
+    with target_state.lock:
+        connection_count = len(target_state.retry_connection_ports)
+    require(
+        connection_count == 1,
+        f"HTTP retries used {connection_count} TCP connections instead of one",
     )
 
 
@@ -1107,7 +1126,9 @@ def main() -> int:
             ),
             (
                 "HTTP retry",
-                lambda current: verify_http_retry(current, target_port),
+                lambda current: verify_http_retry(
+                    current, target_port, target_state
+                ),
             ),
             (
                 "HTTP response limit",
@@ -1196,6 +1217,12 @@ def main() -> int:
             binary, tls_api_config, tls_api_port, environment, certificate
         )
         print("PASS API TLS-only listener")
+    except BaseException:
+        if service._process.poll() is not None:
+            output = service._read_output()
+            if output:
+                print("dagforge process output:\n" + output, file=sys.stderr)
+        raise
     finally:
         service.stop()
         target.stop()

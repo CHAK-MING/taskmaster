@@ -13,7 +13,8 @@ declare -A expected_module=(
   [core.cppm]=dagforge.core
   [dagforge.cppm]=dagforge.foundation
   [domain.cppm]=dagforge.domain
-  [executor.cppm]=dagforge.executor
+  [executors.cppm]=dagforge.executors
+  [sandbox.cppm]=dagforge.sandbox
   [io.cppm]=dagforge.io
   [util.cppm]=dagforge.util
   [workflow.cppm]=dagforge.workflow
@@ -25,11 +26,12 @@ declare -A module_rank=(
   [dagforge.io]=0
   [dagforge.core]=1
   [dagforge.util]=1
-  [dagforge.executor]=2
+  [dagforge.config]=1
+  [dagforge.sandbox]=2
   [dagforge.http]=2
-  [dagforge.config]=3
   [dagforge.workflow]=3
-  [dagforge.foundation]=5
+  [dagforge.executors]=4
+  [dagforge.foundation]=6
 )
 
 declare -A seen_file=()

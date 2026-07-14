@@ -1,4 +1,4 @@
-#include "dagforge/executor/process_management.hpp"
+#include "../src/dagforge/sandbox/detail/process_management.hpp"
 #include "test_utils.hpp"
 
 #include <gtest/gtest.h>
@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 using namespace dagforge;
+using namespace dagforge::sandbox;
 using namespace std::chrono_literals;
 
 TEST(ProcessManagementTest, KillProcessGroupOrProcessKillsEntireProcessGroup) {

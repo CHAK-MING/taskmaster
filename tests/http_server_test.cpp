@@ -192,4 +192,124 @@ TEST(HttpServerTest, StopClosesIdleConnections) {
   runtime.stop();
 }
 
+TEST(HttpServerTest, ValidatesConfigurationTlsAndRunningMutations) {
+  Runtime runtime(2);
+  ASSERT_TRUE(runtime.start().has_value());
+  HttpServer server(runtime);
+
+  HttpServerConfig invalid;
+  invalid.max_request_header_bytes = 0;
+  EXPECT_EQ(server.configure(invalid).error(),
+            make_error_code(Error::InvalidArgument));
+  invalid = HttpServerConfig{};
+  invalid.max_request_body_bytes = 0;
+  EXPECT_EQ(server.configure(invalid).error(),
+            make_error_code(Error::InvalidArgument));
+  invalid = HttpServerConfig{};
+  invalid.connection_idle_timeout = std::chrono::milliseconds::zero();
+  EXPECT_EQ(server.configure(invalid).error(),
+            make_error_code(Error::InvalidArgument));
+  invalid = HttpServerConfig{};
+  invalid.max_connections = 0;
+  EXPECT_EQ(server.configure(invalid).error(),
+            make_error_code(Error::InvalidArgument));
+  invalid = HttpServerConfig{};
+  invalid.max_requests_per_connection = 0;
+  EXPECT_EQ(server.configure(invalid).error(),
+            make_error_code(Error::InvalidArgument));
+
+  EXPECT_EQ(server.set_request_body_limit(0).error(),
+            make_error_code(Error::InvalidState));
+  EXPECT_TRUE(server.set_request_body_limit(1024).has_value());
+  EXPECT_EQ(server.set_tls_credentials({}, "key.pem", "1.2").error(),
+            make_error_code(Error::InvalidArgument));
+  EXPECT_EQ(server.set_tls_credentials("cert.pem", {}, "1.2").error(),
+            make_error_code(Error::InvalidArgument));
+  EXPECT_EQ(server.set_tls_credentials("cert.pem", "key.pem", "1.1").error(),
+            make_error_code(Error::InvalidArgument));
+  EXPECT_EQ(server.set_tls_credentials("missing-cert.pem", "missing-key.pem",
+                                       "1.3")
+                .error(),
+            make_error_code(Error::InvalidArgument));
+  EXPECT_EQ(server.start("not-an-ip", 12345, false).error(),
+            make_error_code(Error::InvalidArgument));
+
+  const auto port = dagforge::test::pick_unused_tcp_port_or_zero();
+  ASSERT_NE(port, 0);
+  server.router().get("/ping", [](HttpRequest) -> task<HttpResponse> {
+    co_return HttpResponse::ok().set_body("pong");
+  });
+  ASSERT_TRUE(server.start("0.0.0.0", port, true).has_value());
+  EXPECT_TRUE(server.is_running());
+  EXPECT_EQ(server.configure(HttpServerConfig{}).error(),
+            make_error_code(Error::InvalidArgument));
+  EXPECT_EQ(server.set_request_body_limit(2048).error(),
+            make_error_code(Error::InvalidState));
+  EXPECT_EQ(server.set_tls_credentials("cert.pem", "key.pem", "1.2").error(),
+            make_error_code(Error::InvalidArgument));
+
+  const auto response = send_raw_request(
+      port,
+      "GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+  EXPECT_NE(response.find(" 200 "), std::string::npos) << response;
+  EXPECT_NE(response.find("pong"), std::string::npos) << response;
+  server.stop();
+  server.stop();
+  EXPECT_FALSE(server.is_running());
+  runtime.stop();
+}
+
+TEST(HttpServerTest, EnforcesConnectionBodyAndKeepAliveLimits) {
+  const auto port = dagforge::test::pick_unused_tcp_port_or_zero();
+  ASSERT_NE(port, 0);
+  Runtime runtime(1);
+  ASSERT_TRUE(runtime.start().has_value());
+  HttpServer server(runtime);
+  HttpServerConfig config;
+  config.max_request_body_bytes = 4;
+  config.max_connections = 1;
+  config.max_requests_per_connection = 1;
+  config.connection_idle_timeout = std::chrono::milliseconds(100);
+  ASSERT_TRUE(server.configure(config).has_value());
+  server.router().post("/echo", [](HttpRequest request) -> task<HttpResponse> {
+    co_return HttpResponse::ok().set_body(
+        std::string{request.body_as_string()});
+  });
+  ASSERT_TRUE(server.start("127.0.0.1", port).has_value());
+
+  const int idle_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  ASSERT_GE(idle_fd, 0);
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_port = htons(port);
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  ASSERT_EQ(::connect(idle_fd, reinterpret_cast<sockaddr *>(&address),
+                      sizeof(address)),
+            0);
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+  const auto rejected = send_raw_request(
+      port,
+      "GET /missing HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+  EXPECT_TRUE(rejected.empty()) << rejected;
+  ::close(idle_fd);
+  std::this_thread::sleep_for(std::chrono::milliseconds(30));
+
+  const auto oversized = send_raw_request(
+      port,
+      "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 8\r\n"
+      "Connection: close\r\n\r\n12345678");
+  EXPECT_TRUE(oversized.empty()) << oversized;
+
+  const auto absolute_target = send_raw_request(
+      port,
+      "GET http://localhost/missing HTTP/1.1\r\nHost: localhost\r\n"
+      "Connection: keep-alive\r\n\r\n");
+  EXPECT_NE(absolute_target.find(" 404 "), std::string::npos)
+      << absolute_target;
+
+  server.stop();
+  runtime.stop();
+}
+
 } // namespace dagforge::http::test

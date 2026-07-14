@@ -170,7 +170,7 @@ TEST(GlazeSecurityTest, RejectsMaliciousTomlWithoutReadingPastInput) {
   for (std::size_t index = 0; index < corpus.size(); ++index) {
     const auto &sample = corpus[index];
     ExactBuffer input{sample};
-    Result<SystemConfig> parsed;
+    Result<config::SystemConfig> parsed;
     EXPECT_NO_THROW(parsed = SystemConfigLoader::load_from_string(input.view()));
     EXPECT_FALSE(parsed.has_value()) << "sample " << index << " unexpectedly accepted "
                                      << sample.size() << " bytes";

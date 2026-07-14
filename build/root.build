@@ -5,6 +5,15 @@
 cxx.std = 23
 cxx.features.modules = true
 
+config [bool] config.dagforge.coverage ?= false
+
+# build2 normally compiles the partially preprocessed translation unit when
+# modules are enabled. Clang then attributes source-based coverage to the
+# temporary .ii file. Reprocess the original source in coverage builds so the
+# report maps to repository files.
+if $config.dagforge.coverage
+  cc.reprocess = true
+
 using c
 using cxx
 

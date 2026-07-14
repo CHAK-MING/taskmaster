@@ -4,6 +4,7 @@
 #include "gtest/gtest.h"
 
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <sys/wait.h>
@@ -42,6 +43,54 @@ TEST(DaemonTest, PidFileGuardAcquireWritesPidAndRemovesOnRelease) {
   EXPECT_EQ(pid.error(), make_error_code(Error::FileNotFound));
 }
 
+TEST(DaemonTest, PidFileGuardCreatesParentAndExcludesSecondOwner) {
+  const auto root = std::filesystem::path(
+      dagforge::test::make_temp_path("dagforge_pid_parent_"));
+  ASSERT_FALSE(root.empty());
+  ::unlink(root.c_str());
+  const auto path = root / "nested" / "service.pid";
+
+  {
+    auto first = PidFileGuard::acquire(path.string());
+    ASSERT_TRUE(first.has_value()) << first.error().message();
+    EXPECT_TRUE(std::filesystem::exists(path));
+
+    auto second = PidFileGuard::acquire(path.string());
+    ASSERT_FALSE(second.has_value());
+    EXPECT_EQ(second.error(), make_error_code(Error::AlreadyExists));
+
+    auto moved = std::move(*first);
+    PidFileGuard assigned;
+    assigned = std::move(moved);
+    EXPECT_TRUE(std::filesystem::exists(path));
+
+    assigned = std::move(assigned);
+  }
+  EXPECT_FALSE(std::filesystem::exists(path));
+  std::filesystem::remove_all(root);
+}
+
+TEST(DaemonTest, PidFileGuardRejectsEmptyPath) {
+  auto guard = PidFileGuard::acquire("");
+  ASSERT_FALSE(guard.has_value());
+  EXPECT_EQ(guard.error(), make_error_code(Error::InvalidArgument));
+}
+
+TEST(DaemonTest, PidFileGuardRejectsParentBelowRegularFile) {
+  const auto root = std::filesystem::path(
+      dagforge::test::make_temp_path("dagforge_pid_parent_file_"));
+  ASSERT_FALSE(root.empty());
+  {
+    std::ofstream output(root, std::ios::trunc);
+    ASSERT_TRUE(output.is_open());
+    output << "not a directory";
+  }
+
+  auto guard = PidFileGuard::acquire((root / "service.pid").string());
+  EXPECT_FALSE(guard.has_value());
+  std::filesystem::remove(root);
+}
+
 TEST(DaemonTest, ReadPidFileRejectsInvalidContent) {
   const auto path = make_pid_file_path();
   ASSERT_FALSE(path.empty());
@@ -59,6 +108,52 @@ TEST(DaemonTest, ReadPidFileRejectsInvalidContent) {
   ::unlink(path.c_str());
 }
 
+TEST(DaemonTest, ReadPidFileRejectsEmptyNonPositiveAndTrailingContent) {
+  const auto path = make_pid_file_path();
+  ASSERT_FALSE(path.empty());
+
+  for (std::string_view content : {"", "0\n", "-1\n", "12 trailing\n"}) {
+    std::ofstream out(path, std::ios::trunc);
+    ASSERT_TRUE(out.is_open());
+    out << content;
+    out.close();
+    auto pid = read_pid_file(path);
+    ASSERT_FALSE(pid.has_value()) << content;
+    EXPECT_EQ(pid.error(), make_error_code(Error::ParseError)) << content;
+  }
+
+  EXPECT_TRUE(remove_pid_file(path).has_value());
+  EXPECT_TRUE(remove_pid_file(path).has_value());
+}
+
+TEST(DaemonTest, ProcessHelpersRejectInvalidOrMissingProcesses) {
+  EXPECT_FALSE(is_process_alive(0));
+  EXPECT_FALSE(is_process_alive(-1));
+  EXPECT_TRUE(is_process_alive(::getpid()));
+
+  auto invalid = send_signal(0, SIGTERM);
+  ASSERT_FALSE(invalid.has_value());
+  EXPECT_EQ(invalid.error(), make_error_code(Error::InvalidArgument));
+
+  const auto missing = static_cast<std::int64_t>(1'000'000'000);
+  auto sent = send_signal(missing, SIGTERM);
+  EXPECT_FALSE(sent.has_value());
+  EXPECT_TRUE(wait_for_process_exit(missing, std::chrono::milliseconds(1)));
+}
+
+TEST(DaemonTest, ZombieChildIsNotReportedAlive) {
+  const pid_t child = ::fork();
+  ASSERT_NE(child, -1);
+  if (child == 0) {
+    _Exit(0);
+  }
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  EXPECT_FALSE(is_process_alive(child));
+  int status = 0;
+  EXPECT_EQ(::waitpid(child, &status, 0), child);
+}
+
 TEST(DaemonTest, SendSignalAndWaitForProcessExit) {
   const pid_t child = ::fork();
   ASSERT_NE(child, -1);
@@ -73,6 +168,21 @@ TEST(DaemonTest, SendSignalAndWaitForProcessExit) {
   auto sent = send_signal(child, SIGTERM);
   ASSERT_TRUE(sent.has_value()) << sent.error().message();
   EXPECT_TRUE(wait_for_process_exit(child, std::chrono::seconds(2)));
+}
+
+TEST(DaemonTest, WaitForProcessExitReportsLiveProcessAtDeadline) {
+  const pid_t child = ::fork();
+  ASSERT_NE(child, -1);
+  if (child == 0) {
+    for (;;) {
+      ::pause();
+    }
+  }
+
+  EXPECT_FALSE(wait_for_process_exit(child, std::chrono::milliseconds(20)));
+  ASSERT_TRUE(send_signal(child, SIGTERM).has_value());
+  int status = 0;
+  EXPECT_EQ(::waitpid(child, &status, 0), child);
 }
 
 TEST(DaemonTest, WaitForShutdownReturnsAfterSignalHandlerRuns) {

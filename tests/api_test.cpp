@@ -3,18 +3,26 @@
 #include "dagforge/http/http_server.hpp"
 #include "dagforge/core/sync_wait.hpp"
 #include "dagforge/util/json.hpp"
+#include "dagforge/workflow/checkpoint_store.hpp"
 #include "dagforge/workflow/plan_compiler.hpp"
 #include "dagforge/workflow/workflow_control_plane.hpp"
 #include "dagforge/workflow/workflow_plan_loader.hpp"
+#include "dagforge/workflow/workflow_runtime.hpp"
 
 #include "../src/dagforge/app/api/detail/api_context.hpp"
+#include "../src/dagforge/app/api/detail/routes/system.hpp"
 #include "../src/dagforge/app/api/detail/routes/workflows.hpp"
 
 #include "gtest/gtest.h"
 
 #include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <thread>
 
 using namespace dagforge;
+using namespace dagforge::config;
 
 namespace {
 
@@ -36,6 +44,90 @@ TEST(ApiTest, ApiServerConstructs) {
 TEST(ApiTest, ApplicationConfigAccessible) {
   Application app;
   EXPECT_EQ(app.config().api.host, "127.0.0.1");
+}
+
+TEST(ApiTest, ApplicationRestoresPersistentCheckpointOnStart) {
+  const auto root = std::filesystem::temp_directory_path() /
+                    std::format("dagforge-app-restore-{}", ::getpid());
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+
+  auto plan = workflow::WorkflowPlanLoader::from_json(R"({
+    "workflow_id":"persisted-flow","schema_version":1,
+    "nodes":[{"id":"command","executor":"command",
+      "config":{"program":"/bin/true","arguments":[],"env":[],"input_env":[]},
+      "outputs":["result"]}]
+  })");
+  ASSERT_TRUE(plan.has_value()) << plan.error().message();
+  workflow::WorkflowCheckpoint checkpoint;
+  checkpoint.plan = std::move(*plan);
+  checkpoint.trigger.workflow_id = WorkflowId{"persisted-flow"};
+  checkpoint.trigger.idempotency_key = "persisted-key";
+  checkpoint.snapshot.run_id = WorkflowRunId{"persisted-run"};
+  checkpoint.snapshot.workflow_id = WorkflowId{"persisted-flow"};
+  checkpoint.snapshot.plan_id = WorkflowPlanId{"persisted-plan"};
+  checkpoint.snapshot.state = workflow::RunState::Succeeded;
+  checkpoint.values.emplace_back(
+      workflow::OutputRef{.node_id = WorkflowNodeId{"command"},
+                          .port = WorkflowPortId{"result"}},
+      std::string{"restored-value"});
+  workflow::CheckpointStore store(root / "runs");
+  ASSERT_TRUE(store.save(std::move(checkpoint)).has_value());
+
+  SystemConfig config;
+  config.api.enabled = false;
+  config.storage.enabled = true;
+  config.storage.directory = root.string();
+  config.storage.max_completed_runs = 4;
+  config.admission.allowed_executors = {"command"};
+  config.executors.command.policy.allowed_programs = {"/bin/true"};
+  Application app(std::move(config));
+  ASSERT_TRUE(app.start().has_value());
+
+  const Application &const_app = app;
+  EXPECT_EQ(const_app.config().storage.directory, root.string());
+  ASSERT_NE(const_app.workflow_runtime(), nullptr);
+  ASSERT_NE(const_app.workflow_control_plane(), nullptr);
+  auto restored = sync_wait_on_runtime(
+      app.runtime(),
+      app.workflow_runtime()->snapshot(WorkflowRunId{"persisted-run"}));
+  ASSERT_TRUE(restored.has_value()) << restored.error().message();
+  EXPECT_EQ((*restored)->state, workflow::RunState::Succeeded);
+  auto value = sync_wait_on_runtime(
+      app.runtime(), app.workflow_runtime()->output(
+                         WorkflowRunId{"persisted-run"},
+                         workflow::OutputRef{
+                             .node_id = WorkflowNodeId{"command"},
+                             .port = WorkflowPortId{"result"}}));
+  ASSERT_TRUE(value.has_value()) << value.error().message();
+  EXPECT_EQ(std::get<std::string>(**value), "restored-value");
+  app.stop();
+  std::filesystem::remove_all(root, error);
+}
+
+TEST(ApiTest, ApplicationRejectsCorruptPersistentCheckpoint) {
+  const auto root = std::filesystem::temp_directory_path() /
+                    std::format("dagforge-app-corrupt-{}", ::getpid());
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+  std::filesystem::create_directories(root / "runs", error);
+  ASSERT_FALSE(error);
+  {
+    std::ofstream output(root / "runs" / "broken.json",
+                         std::ios::binary | std::ios::trunc);
+    output << "not-json";
+  }
+
+  SystemConfig config;
+  config.api.enabled = false;
+  config.storage.enabled = true;
+  config.storage.directory = root.string();
+  Application app(std::move(config));
+  auto started = app.start();
+  ASSERT_FALSE(started.has_value());
+  EXPECT_EQ(started.error(), make_error_code(Error::ParseError));
+  EXPECT_FALSE(app.is_running());
+  std::filesystem::remove_all(root, error);
 }
 
 TEST(ApiTest, InitCreatesApiServerInstance) {
@@ -113,8 +205,9 @@ TEST(ApiTest, InitReconcilesHttpExecutorEnablement) {
   ASSERT_FALSE(disabled.has_value());
   EXPECT_EQ(disabled.error(), make_error_code(Error::Unsupported));
 
-  app.config().http_executor.enabled = true;
-  app.config().http_executor.allowed_origins = {"https://example.com"};
+  app.config().executors.http.enabled = true;
+  app.config().executors.http.egress.allowed_origins = {
+      "https://example.com"};
   ASSERT_TRUE(app.init().has_value());
   auto enabled_plan = make_plan();
   ASSERT_TRUE(enabled_plan.has_value());
@@ -122,7 +215,7 @@ TEST(ApiTest, InitReconcilesHttpExecutorEnablement) {
       app.workflow_control_plane()->register_plan(std::move(*enabled_plan));
   ASSERT_TRUE(enabled.has_value()) << enabled.error().message();
 
-  app.config().http_executor.enabled = false;
+  app.config().executors.http.enabled = false;
   ASSERT_TRUE(app.init().has_value());
   auto disabled_again_plan = make_plan();
   ASSERT_TRUE(disabled_again_plan.has_value());
@@ -149,7 +242,8 @@ TEST(ApiTest, AccessPolicyAuthenticatesAndLimitsRequests) {
   SystemConfig config;
   config.api.enabled = false;
   config.admission.allowed_executors = {"command"};
-  config.sandbox.allowed_programs = {"/bin/true", "/bin/echo"};
+  config.executors.command.policy.allowed_programs = {"/bin/true",
+                                                       "/bin/echo"};
   Application app(std::move(config));
   ASSERT_TRUE(app.start().has_value());
 
@@ -225,11 +319,70 @@ TEST(ApiTest, MissingConfiguredBearerTokenPreventsStart) {
   app.runtime().stop();
 }
 
+TEST(ApiTest, SystemRoutesReportHealthStatusAndMetrics) {
+  SystemConfig config;
+  config.api.enabled = false;
+  Application app(std::move(config));
+  ASSERT_TRUE(app.start().has_value());
+
+  http::HttpServer server(app.runtime());
+  std::atomic<std::uint64_t> active{0};
+  api_detail::HttpMetricsRegistry metrics;
+  api_detail::ApiContext context{
+      .app = app,
+      .server = server,
+      .http_active_requests = active,
+      .http_metrics = metrics,
+  };
+  api_detail::register_system_routes(context);
+  const auto invoke = [&](std::string path) {
+    http::HttpRequest request;
+    request.method = http::HttpMethod::GET;
+    request.path = std::move(path);
+    return sync_wait_on_runtime(
+        app.runtime(), [&]() -> task<Result<http::HttpResponse>> {
+          co_return ok(co_await server.router().route(std::move(request)));
+        }());
+  };
+
+  auto health = invoke("/api/health");
+  ASSERT_TRUE(health.has_value());
+  EXPECT_EQ(health->status, http::HttpStatus::Ok);
+  auto health_body = parse_json(response_text(*health));
+  ASSERT_TRUE(health_body.has_value());
+  EXPECT_EQ(health_body->get_object().at("status").as<std::string>(),
+            "healthy");
+
+  auto status = invoke("/api/status");
+  ASSERT_TRUE(status.has_value());
+  EXPECT_EQ(status->status, http::HttpStatus::Ok);
+  auto status_body = parse_json(response_text(*status));
+  ASSERT_TRUE(status_body.has_value());
+  EXPECT_EQ(status_body->get_object().at("runtime").as<std::string>(),
+            "running");
+  EXPECT_TRUE(status_body->get_object().at("workflow_enabled").get<bool>());
+  EXPECT_EQ(status_body->get_object()
+                .at("active_workflow_runs")
+                .as<std::int64_t>(),
+            0);
+  EXPECT_GT(status_body->get_object().at("shards").as<std::int64_t>(), 0);
+  EXPECT_FALSE(status_body->get_object().at("timestamp").as<std::string>().empty());
+
+  auto prometheus = invoke("/metrics");
+  ASSERT_TRUE(prometheus.has_value());
+  EXPECT_EQ(prometheus->status, http::HttpStatus::Ok);
+  EXPECT_EQ(prometheus->headers.get("Content-Type"),
+            "text/plain; version=0.0.4; charset=utf-8");
+  EXPECT_FALSE(response_text(*prometheus).empty());
+  app.stop();
+}
+
 TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
   SystemConfig config;
   config.api.enabled = false;
   config.admission.allowed_executors = {"command"};
-  config.sandbox.allowed_programs = {"/bin/true", "/bin/echo"};
+  config.executors.command.policy.allowed_programs = {"/bin/true",
+                                                       "/bin/echo"};
   Application app(std::move(config));
   ASSERT_TRUE(app.start().has_value());
 
@@ -332,5 +485,355 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
   auto erased = sync_wait_on_runtime(app.runtime(), invoke(std::move(erase)));
   ASSERT_TRUE(erased.has_value());
   EXPECT_EQ(erased->status, http::HttpStatus::Ok);
+  app.stop();
+}
+
+TEST(ApiTest, WorkflowRoutesReturnUnavailableWhenWorkflowSubsystemIsDisabled) {
+  SystemConfig config;
+  config.api.enabled = false;
+  config.workflow.enabled = false;
+  Application app(std::move(config));
+  ASSERT_TRUE(app.start().has_value());
+  ASSERT_EQ(app.workflow_runtime(), nullptr);
+  ASSERT_EQ(app.workflow_control_plane(), nullptr);
+
+  http::HttpServer server(app.runtime());
+  std::atomic<std::uint64_t> active{0};
+  api_detail::HttpMetricsRegistry metrics;
+  api_detail::ApiContext context{
+      .app = app,
+      .server = server,
+      .http_active_requests = active,
+      .http_metrics = metrics,
+  };
+  api_detail::register_workflow_routes(context);
+  const auto invoke = [&](http::HttpMethod method, std::string path)
+      -> http::HttpResponse {
+    http::HttpRequest request;
+    request.method = method;
+    request.path = std::move(path);
+    auto response = sync_wait_on_runtime(
+        app.runtime(), [&]() -> task<Result<http::HttpResponse>> {
+          co_return ok(co_await server.router().route(std::move(request)));
+        }());
+    EXPECT_TRUE(response.has_value());
+    return response ? std::move(*response) : http::HttpResponse::internal_error();
+  };
+
+  for (const auto &[method, path] :
+       std::vector<std::pair<http::HttpMethod, std::string>>{
+           {http::HttpMethod::POST, "/api/v1/workflows/plans"},
+           {http::HttpMethod::GET, "/api/v1/workflows/plans"},
+           {http::HttpMethod::POST, "/api/v1/workflows/flow/runs"},
+           {http::HttpMethod::GET, "/api/v1/workflow-runs/run"},
+           {http::HttpMethod::GET,
+            "/api/v1/workflow-runs/run/outputs/node/port"},
+           {http::HttpMethod::GET,
+            "/api/v1/workflow-runs/run/evidence"},
+           {http::HttpMethod::POST, "/api/v1/artifacts"},
+           {http::HttpMethod::GET, "/api/v1/artifacts/artifact"},
+           {http::HttpMethod::DELETE, "/api/v1/artifacts/artifact"},
+           {http::HttpMethod::POST,
+            "/api/v1/workflow-runs/run/pause"},
+           {http::HttpMethod::POST,
+            "/api/v1/workflow-runs/run/resume"},
+           {http::HttpMethod::POST,
+            "/api/v1/workflow-runs/run/cancel"},
+       }) {
+    EXPECT_EQ(invoke(method, path).status,
+              http::HttpStatus::ServiceUnavailable)
+        << path;
+  }
+  app.stop();
+}
+
+TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
+  SystemConfig config;
+  config.api.enabled = false;
+  config.admission.allowed_executors = {"command"};
+  config.executors.command.policy.allowed_programs = {
+      "/bin/true", "/bin/echo", "/bin/sh"};
+  Application app(std::move(config));
+  ASSERT_TRUE(app.start().has_value());
+
+  http::HttpServer server(app.runtime());
+  std::atomic<std::uint64_t> active{0};
+  api_detail::HttpMetricsRegistry metrics;
+  api_detail::ApiContext context{
+      .app = app,
+      .server = server,
+      .http_active_requests = active,
+      .http_metrics = metrics,
+  };
+  api_detail::register_workflow_routes(context);
+
+  const auto invoke = [&](http::HttpRequest request) -> http::HttpResponse {
+    auto response = sync_wait_on_runtime(
+        app.runtime(), [&]() -> task<Result<http::HttpResponse>> {
+          co_return ok(co_await server.router().route(std::move(request)));
+        }());
+    EXPECT_TRUE(response.has_value());
+    return response ? std::move(*response) : http::HttpResponse::internal_error();
+  };
+  const auto request = [](http::HttpMethod method, std::string path,
+                          std::string body = {}, std::string query = {}) {
+    http::HttpRequest value;
+    value.method = method;
+    value.path = std::move(path);
+    value.query_string = std::move(query);
+    value.body.assign(body.begin(), body.end());
+    return value;
+  };
+  const auto register_plan = [&](std::string body) -> JsonValue {
+    auto response = invoke(request(http::HttpMethod::POST,
+                                   "/api/v1/workflows/plans",
+                                   std::move(body)));
+    EXPECT_EQ(response.status, http::HttpStatus::Created)
+        << response_text(response);
+    auto parsed = parse_json(response_text(response));
+    EXPECT_TRUE(parsed.has_value());
+    return parsed ? std::move(*parsed) : JsonValue::object_t{};
+  };
+  const auto start_run = [&](std::string workflow, std::string body = {}) {
+    auto response = invoke(request(
+        http::HttpMethod::POST,
+        std::format("/api/v1/workflows/{}/runs", workflow), std::move(body)));
+    EXPECT_EQ(response.status, http::HttpStatus::Accepted)
+        << response_text(response);
+    auto parsed = parse_json(response_text(response));
+    EXPECT_TRUE(parsed.has_value());
+    if (!parsed || !parsed->is_object()) {
+      return std::string{};
+    }
+    const auto found = parsed->get_object().find("run_id");
+    return found != parsed->get_object().end() && found->second.is_string()
+               ? found->second.as<std::string>()
+               : std::string{};
+  };
+  const auto snapshot = [&](std::string_view run_id) {
+    return invoke(request(
+        http::HttpMethod::GET,
+        std::format("/api/v1/workflow-runs/{}", run_id)));
+  };
+  const auto wait_for_state = [&](std::string_view run_id,
+                                  std::string_view expected,
+                                  std::chrono::seconds timeout =
+                                      std::chrono::seconds(3)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    http::HttpResponse latest;
+    while (std::chrono::steady_clock::now() < deadline) {
+      latest = snapshot(run_id);
+      if (latest.status == http::HttpStatus::Ok) {
+        auto body = parse_json(response_text(latest));
+        if (body && body->get_object().at("state").as<std::string>() ==
+                        expected) {
+          return latest;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return latest;
+  };
+
+  auto malformed = invoke(request(http::HttpMethod::POST,
+                                  "/api/v1/workflows/plans", "not-json"));
+  EXPECT_EQ(malformed.status, http::HttpStatus::BadRequest);
+  auto invalid_plan = invoke(request(
+      http::HttpMethod::POST, "/api/v1/workflows/plans",
+      R"({"workflow_id":"invalid","schema_version":1,"nodes":[{"id":"task","executor":"unknown","outputs":["result"]}]})"));
+  EXPECT_NE(invalid_plan.status, http::HttpStatus::Created);
+
+  const auto echo_plan = register_plan(R"({
+    "workflow_id":"route-echo","schema_version":1,
+    "nodes":[{"id":"command","executor":"command",
+      "config":{"program":"/bin/echo","arguments":["api-output"],"env":[],"input_env":[]},
+      "outputs":["stdout","stderr","exit_code","result"],"checkpoint":true}],
+    "outputs":[{"node":"command","port":"result"}]
+  })");
+  const auto true_plan = register_plan(R"({
+    "workflow_id":"route-true","schema_version":1,
+    "nodes":[{"id":"command","executor":"command",
+      "config":{"program":"/bin/true","arguments":[],"env":[],"input_env":[]},
+      "outputs":["result"]}]
+  })");
+  const auto echo_plan_id =
+      echo_plan.get_object().at("plan_id").as<std::string>();
+  const auto true_plan_id =
+      true_plan.get_object().at("plan_id").as<std::string>();
+
+  auto invalid_page = invoke(request(http::HttpMethod::GET,
+                                     "/api/v1/workflows/plans", {},
+                                     "offset=bad&limit=0"));
+  ASSERT_EQ(invalid_page.status, http::HttpStatus::Ok);
+  auto invalid_page_body = parse_json(response_text(invalid_page));
+  ASSERT_TRUE(invalid_page_body.has_value());
+  EXPECT_EQ(invalid_page_body->get_object().at("offset").as<std::int64_t>(),
+            0);
+  EXPECT_EQ(invalid_page_body->get_object().at("limit").as<std::int64_t>(),
+            1);
+  auto beyond_page = invoke(request(http::HttpMethod::GET,
+                                    "/api/v1/workflows/plans", {},
+                                    "offset=9999&limit=5000"));
+  ASSERT_EQ(beyond_page.status, http::HttpStatus::Ok);
+  auto beyond_body = parse_json(response_text(beyond_page));
+  ASSERT_TRUE(beyond_body.has_value());
+  EXPECT_TRUE(beyond_body->get_object().at("plans").get_array().empty());
+  EXPECT_EQ(beyond_body->get_object().at("limit").as<std::int64_t>(), 1000);
+
+  EXPECT_EQ(invoke(request(http::HttpMethod::POST,
+                           "/api/v1/workflows/route-echo/runs", "not-json"))
+                .status,
+            http::HttpStatus::BadRequest);
+  EXPECT_EQ(invoke(request(http::HttpMethod::POST,
+                           "/api/v1/workflows/route-echo/runs", "[]"))
+                .status,
+            http::HttpStatus::BadRequest);
+  EXPECT_EQ(invoke(request(http::HttpMethod::POST,
+                           "/api/v1/workflows/missing/runs"))
+                .status,
+            http::HttpStatus::NotFound);
+  EXPECT_EQ(
+      invoke(request(
+                 http::HttpMethod::POST,
+                 "/api/v1/workflows/route-echo/runs",
+                 std::format(R"({{"plan_id":"{}"}})", true_plan_id)))
+          .status,
+      http::HttpStatus::BadRequest);
+
+  auto start_request = request(
+      http::HttpMethod::POST, "/api/v1/workflows/route-echo/runs",
+      R"({"source":"api-test","event_type":"manual","payload":{"key":"value"},"principal":{"subject":"tester","roles":["admin",7]},"idempotency_key":"route-key"})");
+  start_request.headers.set("Idempotency-Key", "header-fallback");
+  auto started = invoke(std::move(start_request));
+  ASSERT_EQ(started.status, http::HttpStatus::Accepted)
+      << response_text(started);
+  auto started_body = parse_json(response_text(started));
+  ASSERT_TRUE(started_body.has_value());
+  const auto run_id =
+      started_body->get_object().at("run_id").as<std::string>();
+  EXPECT_EQ(started_body->get_object().at("plan_id").as<std::string>(),
+            echo_plan_id);
+
+  auto duplicate = invoke(request(
+      http::HttpMethod::POST, "/api/v1/workflows/route-echo/runs",
+      R"({"idempotency_key":"route-key"})"));
+  ASSERT_EQ(duplicate.status, http::HttpStatus::Accepted);
+  auto duplicate_body = parse_json(response_text(duplicate));
+  ASSERT_TRUE(duplicate_body.has_value());
+  EXPECT_EQ(duplicate_body->get_object().at("run_id").as<std::string>(),
+            run_id);
+
+  auto completed = wait_for_state(run_id, "succeeded");
+  ASSERT_EQ(completed.status, http::HttpStatus::Ok)
+      << response_text(completed);
+  auto completed_body = parse_json(response_text(completed));
+  ASSERT_TRUE(completed_body.has_value());
+  ASSERT_EQ(completed_body->get_object().at("tasks").get_array().size(), 1U);
+  EXPECT_FALSE(completed_body->get_object()
+                   .at("tasks")
+                   .get_array()
+                   .front()
+                   .get_object()
+                   .at("attempts")
+                   .get_array()
+                   .empty());
+
+  for (const auto &[port, expected] :
+       std::vector<std::pair<std::string, std::string>>{
+           {"result", "api-output\n"}, {"stdout", "api-output\n"}}) {
+    auto output = invoke(request(
+        http::HttpMethod::GET,
+        std::format("/api/v1/workflow-runs/{}/outputs/command/{}", run_id,
+                    port)));
+    ASSERT_EQ(output.status, http::HttpStatus::Ok) << response_text(output);
+    auto body = parse_json(response_text(output));
+    ASSERT_TRUE(body.has_value());
+    EXPECT_EQ(body->get_object().at("value").as<std::string>(), expected);
+  }
+  auto exit_code = invoke(request(
+      http::HttpMethod::GET,
+      std::format("/api/v1/workflow-runs/{}/outputs/command/exit_code",
+                  run_id)));
+  ASSERT_EQ(exit_code.status, http::HttpStatus::Ok);
+  auto exit_body = parse_json(response_text(exit_code));
+  ASSERT_TRUE(exit_body.has_value());
+  EXPECT_EQ(exit_body->get_object().at("value").as<std::int64_t>(), 0);
+  EXPECT_EQ(invoke(request(
+                           http::HttpMethod::GET,
+                           std::format("/api/v1/workflow-runs/{}/outputs/command/missing",
+                                       run_id)))
+                .status,
+            http::HttpStatus::NotFound);
+
+  auto evidence = invoke(request(
+      http::HttpMethod::GET,
+      std::format("/api/v1/workflow-runs/{}/evidence", run_id), {},
+      "offset=0&limit=2"));
+  ASSERT_EQ(evidence.status, http::HttpStatus::Ok);
+  auto evidence_body = parse_json(response_text(evidence));
+  ASSERT_TRUE(evidence_body.has_value());
+  EXPECT_GT(evidence_body->get_object().at("total").as<std::int64_t>(), 0);
+  EXPECT_LE(evidence_body->get_object().at("evidence").get_array().size(), 2U);
+
+  EXPECT_EQ(snapshot("missing-run").status, http::HttpStatus::NotFound);
+  for (std::string_view operation : {"pause", "resume", "cancel"}) {
+    EXPECT_EQ(invoke(request(
+                             http::HttpMethod::POST,
+                             std::format("/api/v1/workflow-runs/missing-run/{}",
+                                         operation)))
+                  .status,
+              http::HttpStatus::NotFound);
+  }
+  EXPECT_EQ(invoke(request(http::HttpMethod::GET,
+                           "/api/v1/artifacts/missing-artifact"))
+                .status,
+            http::HttpStatus::NotFound);
+  EXPECT_EQ(invoke(request(http::HttpMethod::DELETE,
+                           "/api/v1/artifacts/missing-artifact"))
+                .status,
+            http::HttpStatus::NotFound);
+
+  register_plan(R"({
+    "workflow_id":"route-pause","schema_version":1,
+    "nodes":[
+      {"id":"first","executor":"command",
+       "config":{"program":"/bin/sh","arguments":["-c","sleep 1; printf first"],"env":[],"input_env":[]},
+       "outputs":["result"]},
+      {"id":"second","executor":"command",
+       "config":{"program":"/bin/echo","arguments":["second"],"env":[],"input_env":[]},
+       "outputs":["result"]}
+    ],
+    "edges":[{"source_node":"first","source_port":"result","target":"second","condition":{"kind":"always"}}]
+  })");
+  const auto paused_run = start_run("route-pause");
+  auto pause = invoke(request(
+      http::HttpMethod::POST,
+      std::format("/api/v1/workflow-runs/{}/pause", paused_run)));
+  ASSERT_EQ(pause.status, http::HttpStatus::Accepted) << response_text(pause);
+  auto paused = wait_for_state(paused_run, "paused", std::chrono::seconds(4));
+  ASSERT_EQ(paused.status, http::HttpStatus::Ok) << response_text(paused);
+  auto resume = invoke(request(
+      http::HttpMethod::POST,
+      std::format("/api/v1/workflow-runs/{}/resume", paused_run)));
+  ASSERT_EQ(resume.status, http::HttpStatus::Accepted) << response_text(resume);
+  auto resumed =
+      wait_for_state(paused_run, "succeeded", std::chrono::seconds(4));
+  ASSERT_EQ(resumed.status, http::HttpStatus::Ok) << response_text(resumed);
+
+  register_plan(R"({
+    "workflow_id":"route-cancel","schema_version":1,
+    "nodes":[{"id":"slow","executor":"command",
+      "config":{"program":"/bin/sh","arguments":["-c","sleep 5"],"env":[],"input_env":[]},
+      "outputs":["result"]}]
+  })");
+  const auto cancelled_run = start_run("route-cancel");
+  auto cancel = invoke(request(
+      http::HttpMethod::POST,
+      std::format("/api/v1/workflow-runs/{}/cancel", cancelled_run)));
+  ASSERT_EQ(cancel.status, http::HttpStatus::Accepted) << response_text(cancel);
+  auto cancelled =
+      wait_for_state(cancelled_run, "cancelled", std::chrono::seconds(3));
+  ASSERT_EQ(cancelled.status, http::HttpStatus::Ok) << response_text(cancelled);
+
   app.stop();
 }

@@ -46,6 +46,31 @@ TEST(ShardTest, MemoryResourceAllocFreeWorks) {
   mr->deallocate(p, 64, alignof(std::max_align_t));
 }
 
+TEST(ShardTest, TracksArenaUsageAndUpstreamFallbacks) {
+  Shard shard(0);
+  auto *resource = shard.memory_resource();
+  ASSERT_NE(resource, nullptr);
+
+  EXPECT_EQ(shard.memory_capacity_bytes(), Shard::kArenaSize);
+  const auto initial_used = shard.memory_used_bytes();
+  const auto initial_allocations = shard.memory_allocations_total();
+  const auto initial_fallbacks = shard.memory_oom_fallbacks_total();
+
+  void *small = resource->allocate(64, alignof(std::max_align_t));
+  ASSERT_NE(small, nullptr);
+  EXPECT_GT(shard.memory_used_bytes(), initial_used);
+  EXPECT_GT(shard.memory_allocations_total(), initial_allocations);
+  resource->deallocate(small, 64, alignof(std::max_align_t));
+
+  constexpr std::size_t kOversizedAllocation = Shard::kArenaSize * 2;
+  void *oversized =
+      resource->allocate(kOversizedAllocation, alignof(std::max_align_t));
+  ASSERT_NE(oversized, nullptr);
+  EXPECT_GT(shard.memory_oom_fallbacks_total(), initial_fallbacks);
+  resource->deallocate(oversized, kOversizedAllocation,
+                       alignof(std::max_align_t));
+}
+
 TEST(ShardTest, ContextExecutesPostedWork) {
   Shard shard(0);
   std::atomic<int> counter{0};

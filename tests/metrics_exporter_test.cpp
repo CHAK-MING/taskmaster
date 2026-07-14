@@ -4,6 +4,7 @@
 #include "gtest/gtest.h"
 
 using namespace dagforge;
+using namespace dagforge::config;
 
 TEST(MetricsExporterTest, RendersCoreMetricFamiliesWithoutStartingApp) {
   Application app;

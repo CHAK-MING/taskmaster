@@ -151,6 +151,45 @@ report_matches \
   "first-party C++ must use DAGForge logging instead of raw console output:" \
   'std::cout|std::cerr|\bprintf[[:space:]]*\('
 
+if header_namespace_matches=$(rg -n '^\s*using namespace ' include src \
+    --glob '*.hpp' --glob '*.inc' 2>/dev/null); then
+  echo "headers must not import namespaces into their includers:" >&2
+  printf '%s\n' "$header_namespace_matches" >&2
+  failures=1
+fi
+
+if workflow_dependency_matches=$(rg -n \
+    '#include[[:space:]]+"dagforge/(executors|sandbox)/' \
+    include/dagforge/workflow src/dagforge/workflow 2>/dev/null); then
+  echo "workflow must depend only on executor seams, not concrete executors or sandbox:" >&2
+  printf '%s\n' "$workflow_dependency_matches" >&2
+  failures=1
+fi
+
+if sandbox_dependency_matches=$(rg -n \
+    '#include[[:space:]]+"dagforge/workflow/' \
+    include/dagforge/sandbox src/dagforge/sandbox 2>/dev/null); then
+  echo "sandbox must not depend on workflow types:" >&2
+  printf '%s\n' "$sandbox_dependency_matches" >&2
+  failures=1
+fi
+
+if config_dependency_matches=$(rg -n \
+    '#include[[:space:]]+"dagforge/(executors|sandbox|workflow)/' \
+    include/dagforge/config src/dagforge/config 2>/dev/null); then
+  echo "external config DTOs must not depend on executor, sandbox, or workflow implementation types:" >&2
+  printf '%s\n' "$config_dependency_matches" >&2
+  failures=1
+fi
+
+if raw_async_initiate_matches=$(rg -n \
+    'co_await[[:space:]]+boost::asio::async_initiate' \
+    include src --glob '*.hpp' --glob '*.cpp' --glob '*.inc' 2>/dev/null); then
+  echo "Asio async_initiate results must pass through co_as_result(...):" >&2
+  printf '%s\n' "$raw_async_initiate_matches" >&2
+  failures=1
+fi
+
 report_matches \
   "forbidden duplicate dependency detected:" \
   'nlohmann|toml\+\+|<fmt/|boost/container/pmr'

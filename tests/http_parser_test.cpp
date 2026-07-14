@@ -68,6 +68,61 @@ TEST(HttpParserTest, RequestParserFallsBackToGetForUnknownVerb) {
   EXPECT_EQ(parsed->path, "/tea");
 }
 
+TEST(HttpParserTest, RequestParserCoversSupportedMethodMatrix) {
+  for (const auto &[verb, expected] :
+       std::vector<std::pair<std::string_view, http::HttpMethod>>{
+           {"GET", http::HttpMethod::GET},
+           {"PUT", http::HttpMethod::PUT},
+           {"DELETE", http::HttpMethod::DELETE},
+           {"PATCH", http::HttpMethod::PATCH},
+           {"OPTIONS", http::HttpMethod::OPTIONS},
+           {"HEAD", http::HttpMethod::HEAD},
+       }) {
+    http::HttpRequestParser parser;
+    const auto raw = to_bytes(
+        std::string{verb} + " /method HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    auto parsed = parser.parse(raw);
+    ASSERT_TRUE(parsed.has_value()) << verb << ": " << parsed.error().message();
+    EXPECT_EQ(parsed->method, expected) << verb;
+  }
+}
+
+TEST(HttpParserTest, EmptyInputIsIncompleteAndParserRemainsReusable) {
+  http::HttpRequestParser request_parser;
+  auto empty_request = request_parser.parse({});
+  ASSERT_FALSE(empty_request.has_value());
+  EXPECT_EQ(empty_request.error(), make_error_code(Error::Incomplete));
+
+  auto request = request_parser.parse(
+      to_bytes("GET /ok HTTP/1.1\r\nHost: localhost\r\n\r\n"));
+  ASSERT_TRUE(request.has_value()) << request.error().message();
+  EXPECT_EQ(request->path, "/ok");
+
+  http::HttpResponseParser response_parser;
+  auto empty_response = response_parser.parse({});
+  ASSERT_FALSE(empty_response.has_value());
+  EXPECT_EQ(empty_response.error(), make_error_code(Error::Incomplete));
+
+  auto response = response_parser.parse(
+      to_bytes("HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n"));
+  ASSERT_TRUE(response.has_value()) << response.error().message();
+  EXPECT_EQ(response->status, http::HttpStatus::NoContent);
+}
+
+TEST(HttpParserTest, CompleteHeadersWithoutDeclaredBodyAreIncomplete) {
+  http::HttpRequestParser request_parser;
+  auto request = request_parser.parse(to_bytes(
+      "POST /body HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\n\r\n"));
+  ASSERT_FALSE(request.has_value());
+  EXPECT_EQ(request.error(), make_error_code(Error::Incomplete));
+
+  http::HttpResponseParser response_parser;
+  auto response = response_parser.parse(
+      to_bytes("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n"));
+  ASSERT_FALSE(response.has_value());
+  EXPECT_EQ(response.error(), make_error_code(Error::Incomplete));
+}
+
 TEST(HttpParserTest, ResponseParserExtractsStatusHeadersAndBody) {
   http::HttpResponseParser parser;
   const auto raw = to_bytes(
