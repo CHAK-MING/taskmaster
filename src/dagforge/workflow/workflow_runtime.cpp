@@ -9,6 +9,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdint>
+#include <experimental/scope>
 #include <format>
 #include <memory>
 #include <ranges>
@@ -196,6 +197,95 @@ WorkflowRuntime::WorkflowRuntime(
 
 WorkflowRuntime::~WorkflowRuntime() { lifetime_token_.reset(); }
 
+auto WorkflowRuntime::notify_lifecycle_changed() noexcept -> void {
+  {
+    std::lock_guard lock(lifecycle_mutex_);
+  }
+  lifecycle_changed_.notify_all();
+}
+
+auto WorkflowRuntime::lifecycle_quiesced() const noexcept -> bool {
+  return pending_initializations_.load(std::memory_order_acquire) == 0 &&
+         active_run_count_.load(std::memory_order_acquire) == 0 &&
+         active_task_coroutines_.load(std::memory_order_acquire) == 0;
+}
+
+auto WorkflowRuntime::quiesce(std::chrono::milliseconds timeout)
+    -> Result<void> {
+  if (timeout <= std::chrono::milliseconds::zero()) {
+    return fail(Error::InvalidArgument);
+  }
+  if (runtime_.is_current_shard()) {
+    return fail(Error::InvalidState);
+  }
+
+  {
+    std::lock_guard lock(lifecycle_mutex_);
+    quiescing_.store(true, std::memory_order_release);
+  }
+  if (!runtime_.is_running()) {
+    return lifecycle_quiesced() ? ok() : fail(Error::SystemNotRunning);
+  }
+
+  constexpr std::string_view kShutdownReason =
+      "workflow runtime is shutting down";
+  for (shard_id shard = 0; shard < shard_states_.size(); ++shard) {
+    runtime_.post_to(
+        shard, [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
+                shard, shutdown_reason = std::string{kShutdownReason}] {
+          if (weak_lifetime.expired()) {
+            return;
+          }
+          std::vector<WorkflowRunId> run_ids;
+          run_ids.reserve(shard_states_[shard].active_runs.size());
+          for (const auto &[_, run] : shard_states_[shard].active_runs) {
+            run_ids.push_back(run.snapshot.run_id.clone());
+          }
+          for (const auto &run_id : run_ids) {
+            const auto stopped = request_stop(
+                run_id, StopIntent::Cancel, shutdown_reason);
+            if (!stopped &&
+                stopped.error() != make_error_code(Error::NotFound) &&
+                stopped.error() != make_error_code(Error::InvalidState)) {
+              log::error("Failed to stop workflow {} during shutdown: {}",
+                         run_id, stopped.error().message());
+            }
+          }
+        });
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  {
+    std::unique_lock lock(lifecycle_mutex_);
+    if (!lifecycle_changed_.wait_until(
+            lock, deadline, [this] { return lifecycle_quiesced(); })) {
+      return fail(Error::Timeout);
+    }
+  }
+
+  struct BarrierState {
+    explicit BarrierState(std::uint32_t count) : remaining(count) {}
+    std::atomic<std::uint32_t> remaining;
+    std::mutex mutex;
+    std::condition_variable changed;
+  };
+  auto barrier = std::make_shared<BarrierState>(runtime_.shard_count());
+  for (shard_id shard = 0; shard < runtime_.shard_count(); ++shard) {
+    runtime_.post_to(shard, [barrier] {
+      if (barrier->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        barrier->changed.notify_all();
+      }
+    });
+  }
+  std::unique_lock barrier_lock(barrier->mutex);
+  if (!barrier->changed.wait_until(barrier_lock, deadline, [barrier] {
+        return barrier->remaining.load(std::memory_order_acquire) == 0;
+      })) {
+    return fail(Error::Timeout);
+  }
+  return ok();
+}
+
 auto WorkflowRuntime::owner_shard(const WorkflowRunId &run_id) const noexcept
     -> shard_id {
   return static_cast<shard_id>(
@@ -206,9 +296,6 @@ auto WorkflowRuntime::start(std::shared_ptr<const ExecutionPlan> plan,
                             TriggerEnvelope trigger,
                             WorkflowCallbacks callbacks)
     -> Result<WorkflowRunId> {
-  if (!runtime_.is_running()) {
-    return fail(Error::SystemNotRunning);
-  }
   if (!plan || plan->workflow_id.empty() || trigger.workflow_id.empty() ||
       plan->workflow_id != trigger.workflow_id) {
     return fail(Error::InvalidArgument);
@@ -217,18 +304,26 @@ auto WorkflowRuntime::start(std::shared_ptr<const ExecutionPlan> plan,
     trigger.trigger_id = generate_workflow_trigger_id();
   }
 
-  if (!trigger.idempotency_key.empty()) {
-    std::lock_guard lock(idempotency_mutex_);
-    if (const auto it = idempotency_runs_.find(trigger.idempotency_key);
-        it != idempotency_runs_.end()) {
-      return ok(it->second.clone());
+  WorkflowRunId run_id;
+  {
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    if (!runtime_.is_running() ||
+        quiescing_.load(std::memory_order_acquire)) {
+      return fail(Error::SystemNotRunning);
     }
-  }
-
-  auto run_id = generate_workflow_run_id(plan->workflow_id);
-  if (!trigger.idempotency_key.empty()) {
-    std::lock_guard lock(idempotency_mutex_);
-    idempotency_runs_.emplace(trigger.idempotency_key, run_id.clone());
+    if (!trigger.idempotency_key.empty()) {
+      std::lock_guard idempotency_lock(idempotency_mutex_);
+      if (const auto it = idempotency_runs_.find(trigger.idempotency_key);
+          it != idempotency_runs_.end()) {
+        return ok(it->second.clone());
+      }
+    }
+    run_id = generate_workflow_run_id(plan->workflow_id);
+    if (!trigger.idempotency_key.empty()) {
+      std::lock_guard idempotency_lock(idempotency_mutex_);
+      idempotency_runs_.emplace(trigger.idempotency_key, run_id.clone());
+    }
+    pending_initializations_.fetch_add(1, std::memory_order_release);
   }
 
   const auto target = owner_shard(run_id);
@@ -240,6 +335,12 @@ auto WorkflowRuntime::start(std::shared_ptr<const ExecutionPlan> plan,
         if (weak_lifetime.expired()) {
           return;
         }
+        const auto initialization_finished = std::experimental::scope_exit(
+            [this] {
+              pending_initializations_.fetch_sub(1,
+                                                 std::memory_order_acq_rel);
+              notify_lifecycle_changed();
+            });
         initialize_run(std::move(run_id), std::move(plan), std::move(trigger),
                        std::move(callbacks));
       });
@@ -379,7 +480,12 @@ auto WorkflowRuntime::initialize_run(
                   make_metadata({{"plan_id", it->second.plan->plan_id.str()},
                                  {"digest", it->second.plan->digest}}));
   emit_run_state(it->second);
-  dispatch(run_id);
+  if (quiescing_.load(std::memory_order_acquire)) {
+    (void)request_stop(run_id, StopIntent::Cancel,
+                       "workflow runtime is shutting down");
+  } else {
+    dispatch(run_id);
+  }
 }
 
 auto WorkflowRuntime::transition_run(ActiveRun &run, RunState state)
@@ -625,6 +731,7 @@ auto WorkflowRuntime::start_task(const WorkflowRunId &run_id,
                                  std::size_t task_index) -> void {
   auto &run = shard_states_[owner_shard(run_id)].active_runs.at(run_id.str());
   const auto attempt_id = begin_attempt(run, task_index);
+  active_task_coroutines_.fetch_add(1, std::memory_order_release);
   runtime_.spawn_on(owner_shard(run_id),
                     start_async_task(run_id.clone(), task_index,
                                      attempt_id.clone()));
@@ -633,6 +740,10 @@ auto WorkflowRuntime::start_task(const WorkflowRunId &run_id,
 auto WorkflowRuntime::start_async_task(WorkflowRunId run_id,
                                        std::size_t task_index,
                                        AttemptId attempt_id) -> spawn_task {
+  const auto task_finished = std::experimental::scope_exit([this] {
+    active_task_coroutines_.fetch_sub(1, std::memory_order_acq_rel);
+    notify_lifecycle_changed();
+  });
   const auto owner = owner_shard(run_id);
   auto &state = shard_states_[owner];
   const auto run_it = state.active_runs.find(run_id.str());
@@ -1172,6 +1283,7 @@ auto WorkflowRuntime::finalize_run_if_ready(const WorkflowRunId &run_id)
   }
   state.active_runs.erase(it);
   active_run_count_.fetch_sub(1, std::memory_order_release);
+  notify_lifecycle_changed();
   while (state.completed_order.size() > max_completed_runs_) {
     auto expired = std::move(state.completed_order.front());
     state.completed_order.pop_front();

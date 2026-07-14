@@ -15,6 +15,6 @@ namespace dagforge::workflow {
 
 [[nodiscard]] auto create_command_executor_adapter(
     ICommandExecutor &command_executor, SandboxConfig sandbox)
-    -> std::shared_ptr<ITaskExecutor>;
+    -> Result<std::shared_ptr<ITaskExecutor>>;
 
 } // namespace dagforge::workflow

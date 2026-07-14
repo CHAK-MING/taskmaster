@@ -326,6 +326,8 @@ public:
     cancelled_ = instance_id.clone();
   }
 
+  auto shutdown() noexcept -> void override {}
+
   [[nodiscard]] auto command() const -> std::optional<CommandSpec> {
     std::lock_guard lock(mutex_);
     return command_;
@@ -366,8 +368,18 @@ private:
 struct CommandExecutorEnvironment {
   explicit CommandExecutorEnvironment(SandboxConfig sandbox = {})
       : sandbox(std::move(sandbox)) {
-    auto registered = registry.register_executor(
-        create_command_executor_adapter(executor, this->sandbox));
+    if (this->sandbox.allowed_programs.empty()) {
+      this->sandbox.allow_unlisted_programs = true;
+    }
+    if (this->sandbox.allowed_environment.empty()) {
+      this->sandbox.allow_unlisted_environment = true;
+    }
+    auto adapter =
+        create_command_executor_adapter(executor, this->sandbox);
+    if (!adapter) {
+      throw std::runtime_error(adapter.error().message());
+    }
+    auto registered = registry.register_executor(std::move(*adapter));
     if (!registered) {
       throw std::runtime_error(registered.error().message());
     }
@@ -564,7 +576,9 @@ TEST(WorkflowStateModelTest, RejectsIllegalTerminalTransitions) {
 
 TEST(WorkflowControlPlaneTest, DeduplicatesPlansByDigest) {
   TestExecutorEnvironment environment;
-  WorkflowControlPlane control{environment.registry};
+  AdmissionConfig admission;
+  admission.allowed_executors = {"test"};
+  WorkflowControlPlane control{environment.registry, AdmissionPolicy{admission}};
   auto plan = base_plan("dedupe");
   plan.nodes.push_back(NodePlan{
       .node_id = WorkflowNodeId{"command"},
@@ -593,7 +607,9 @@ TEST(WorkflowControlPlaneTest, DeduplicatesPlansByDigest) {
 
 TEST(WorkflowControlPlaneTest, DigestIgnoresExecutorConfigObjectKeyOrder) {
   TestExecutorEnvironment environment;
-  WorkflowControlPlane control{environment.registry};
+  AdmissionConfig admission;
+  admission.allowed_executors = {"test"};
+  WorkflowControlPlane control{environment.registry, AdmissionPolicy{admission}};
 
   auto first_plan = base_plan("config-order");
   JsonValue first_config = JsonValue::object_t{};
@@ -630,7 +646,9 @@ TEST(WorkflowControlPlaneTest, DigestIgnoresExecutorConfigObjectKeyOrder) {
 
 TEST(WorkflowControlPlaneTest, DigestIncludesPublishedOutputs) {
   TestExecutorEnvironment environment;
-  WorkflowControlPlane control{environment.registry};
+  AdmissionConfig admission;
+  admission.allowed_executors = {"test"};
+  WorkflowControlPlane control{environment.registry, AdmissionPolicy{admission}};
 
   auto internal_only = base_plan("published-output-digest");
   internal_only.nodes.push_back(NodePlan{
@@ -812,6 +830,23 @@ TEST(CommandExecutorAdapterTest, OwnsCommandPolicyAndInputMapping) {
   environment.registry.cancel("command", instance_id);
   ASSERT_TRUE(environment.executor.cancelled().has_value());
   EXPECT_EQ(*environment.executor.cancelled(), instance_id);
+}
+
+TEST(CommandExecutorAdapterTest, DefaultPolicyRejectsUnlistedPrograms) {
+  RecordingCommandExecutor executor;
+  SandboxConfig sandbox;
+  auto adapter = create_command_executor_adapter(executor, sandbox);
+  ASSERT_TRUE(adapter.has_value()) << adapter.error().message();
+
+  ExecutorRegistry registry;
+  ASSERT_TRUE(registry.register_executor(std::move(*adapter)).has_value());
+  std::vector<InputBinding> inputs;
+  std::vector<WorkflowPortId> outputs{WorkflowPortId{"result"}};
+  auto compiled = registry.compile(
+      "command", command_config("/bin/true"),
+      ExecutorCompileContext{.inputs = inputs, .outputs = outputs});
+  ASSERT_FALSE(compiled.has_value());
+  EXPECT_EQ(compiled.error(), make_error_code(Error::Unauthorized));
 }
 
 TEST(ExecutorRegistryTest, MarshalsAndDeduplicatesCompletion) {
@@ -1089,6 +1124,47 @@ TEST(WorkflowRuntimeTest, CancelStaysStoppingUntilAttemptIsReaped) {
   core.stop();
 }
 
+TEST(WorkflowRuntimeTest, QuiesceCancelsActiveRunsAndRejectsNewStarts) {
+  Runtime core(1, false, 0);
+  ASSERT_TRUE(core.start().has_value());
+  TestExecutorEnvironment environment(core);
+  WorkflowRuntime runtime(core, environment.registry);
+
+  auto plan = base_plan("quiesce");
+  plan.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .executor = "test",
+      .outputs = {WorkflowPortId{"result"}},
+  });
+  auto compiled = PlanCompiler{environment.registry}.compile(std::move(plan));
+  ASSERT_TRUE(compiled.has_value());
+
+  auto started = runtime.start(
+      *compiled, TriggerEnvelope{.workflow_id = WorkflowId{"quiesce"},
+                                 .source = "test",
+                                 .event_type = "request"});
+  ASSERT_TRUE(started.has_value());
+  ASSERT_TRUE(environment.executor->wait_for_pending(1));
+
+  auto quiesced = runtime.quiesce(std::chrono::seconds(2));
+  ASSERT_TRUE(quiesced.has_value()) << quiesced.error().message();
+  EXPECT_EQ(runtime.active_run_count(), 0U);
+
+  auto completed = sync_wait_on_runtime(core, runtime.snapshot(*started));
+  ASSERT_TRUE(completed.has_value()) << completed.error().message();
+  EXPECT_EQ((*completed)->state, RunState::Cancelled);
+  ASSERT_EQ((*completed)->tasks.size(), 1U);
+  EXPECT_EQ((*completed)->tasks[0].state, TaskState::Cancelled);
+
+  auto rejected = runtime.start(
+      *compiled, TriggerEnvelope{.workflow_id = WorkflowId{"quiesce"},
+                                 .source = "test",
+                                 .event_type = "request"});
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(rejected.error(), make_error_code(Error::SystemNotRunning));
+  core.stop();
+}
+
 TEST(WorkflowRuntimeTest, SynchronousCancelCompletionIsReentrantSafe) {
   Runtime core(1, false, 0);
   ASSERT_TRUE(core.start().has_value());
@@ -1355,18 +1431,20 @@ TEST(WorkflowRuntimeTest, CommandNodeOwnsRunIdAcrossSuspension) {
       (fs::path(home) / ".cache" / "dagforge" / "tests" /
        std::format("workflow-command-{}", ::getpid()))
           .string();
+  sandbox.allowed_programs = {"/bin/sh"};
+  sandbox.retain_workspaces = true;
   std::error_code cleanup_error;
   fs::remove_all(sandbox.workspace_root, cleanup_error);
 
   Runtime core(2, false, 0);
   ASSERT_TRUE(core.start().has_value());
   auto executor = create_command_executor(core, sandbox);
-  ASSERT_NE(executor, nullptr);
+  ASSERT_TRUE(executor.has_value()) << executor.error().message();
   ExecutorRegistry executors;
-  ASSERT_TRUE(executors
-                  .register_executor(
-                      create_command_executor_adapter(*executor, sandbox))
-                  .has_value());
+  auto adapter = create_command_executor_adapter(**executor, sandbox);
+  ASSERT_TRUE(adapter.has_value()) << adapter.error().message();
+  ASSERT_TRUE(
+      executors.register_executor(std::move(*adapter)).has_value());
   WorkflowRuntime runtime(core, executors);
 
   auto plan = base_plan("command-suspension");
@@ -1400,6 +1478,7 @@ TEST(WorkflowRuntimeTest, CommandNodeOwnsRunIdAcrossSuspension) {
   ASSERT_NE(text, nullptr);
   EXPECT_EQ(*text, "workflow-ok");
 
+  (*executor)->shutdown();
   core.stop();
   fs::remove_all(sandbox.workspace_root, cleanup_error);
 }

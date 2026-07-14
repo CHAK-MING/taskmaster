@@ -8,6 +8,7 @@
 #include <boost/asio/cancel_after.hpp>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/post.hpp>
 #include <boost/asio/socket_base.hpp>
 #include <boost/asio/ssl.hpp>
 #include <boost/asio/use_awaitable.hpp>
@@ -17,47 +18,58 @@
 #include <boost/system/error_code.hpp>
 #include <boost/url/parse.hpp>
 
+#include <openssl/ssl.h>
+
+#include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <cstdint>
+#include <condition_variable>
+#include <experimental/scope>
+#include <functional>
+#include <limits>
+#include <mutex>
+#include <optional>
 #include <sys/socket.h>
+#include <unordered_map>
 #include <vector>
 
 namespace dagforge::http {
 
 namespace {
-constexpr auto kHttpIoTimeout = std::chrono::seconds(30);
-constexpr std::uint32_t kParserHeaderLimit = 256 * 1024;
-constexpr std::uint64_t kDefaultParserBodyLimit = 10ULL * 1024ULL * 1024ULL;
-
 namespace beast = boost::beast;
 namespace beast_http = beast::http;
 
-auto to_method(beast_http::verb verb) noexcept -> HttpMethod {
+auto to_method(beast_http::verb verb) noexcept -> std::optional<HttpMethod> {
   switch (verb) {
   case beast_http::verb::get:
-    return HttpMethod::GET;
+    return std::optional{HttpMethod::GET};
   case beast_http::verb::post:
-    return HttpMethod::POST;
+    return std::optional{HttpMethod::POST};
   case beast_http::verb::put:
-    return HttpMethod::PUT;
+    return std::optional{HttpMethod::PUT};
   case beast_http::verb::delete_:
-    return HttpMethod::DELETE;
+    return std::optional{HttpMethod::DELETE};
   case beast_http::verb::patch:
-    return HttpMethod::PATCH;
+    return std::optional{HttpMethod::PATCH};
   case beast_http::verb::options:
-    return HttpMethod::OPTIONS;
+    return std::optional{HttpMethod::OPTIONS};
   case beast_http::verb::head:
-    return HttpMethod::HEAD;
+    return std::optional{HttpMethod::HEAD};
   default:
-    return HttpMethod::GET;
+    return std::nullopt;
   }
 }
 
 auto to_request(
     const beast_http::request<beast_http::vector_body<uint8_t>> &msg)
-    -> HttpRequest {
+    -> Result<HttpRequest> {
+  auto method = to_method(msg.method());
+  if (!method) {
+    return fail(Error::Unsupported);
+  }
   HttpRequest out;
-  out.method = to_method(msg.method());
+  out.method = *method;
   out.version_major = msg.version() / 10;
   out.version_minor = msg.version() % 10;
 
@@ -75,7 +87,7 @@ auto to_request(
     out.headers.add(std::string(field.name_string()), std::string(field.value()));
   }
   out.body = msg.body();
-  return out;
+  return ok(std::move(out));
 }
 
 auto to_beast_response(const HttpResponse &resp, unsigned version,
@@ -97,168 +109,212 @@ struct HttpServer::Impl {
   Runtime &runtime;
   Router router_;
   std::shared_ptr<boost::asio::ssl::context> tls_ctx;
+  HttpServerConfig config;
   struct ShardState {
     std::shared_ptr<boost::asio::ip::tcp::acceptor> acceptor;
   };
   std::vector<ShardState> shard_states;
   std::atomic<bool> running{false};
-  std::atomic<std::uint64_t> body_limit{kDefaultParserBodyLimit};
+  std::atomic<std::size_t> active_connections{0};
+  std::mutex connections_mutex;
+  std::condition_variable connections_changed;
+  std::uint64_t next_connection_id{1};
+  std::unordered_map<std::uint64_t, std::function<void()>> connections;
 
   explicit Impl(Runtime &rt) : runtime(rt), shard_states(rt.shard_count()) {}
 
-  static auto handle_connection(std::shared_ptr<Impl> self,
-                                boost::asio::ip::tcp::socket socket,
-                                beast::flat_buffer read_buffer = {})
-      -> spawn_task {
-    const int fd_num = socket.native_handle();
+  [[nodiscard]] auto try_acquire_connection() noexcept -> bool {
+    auto current = active_connections.load(std::memory_order_relaxed);
+    while (current < config.max_connections) {
+      if (active_connections.compare_exchange_weak(
+              current, current + 1, std::memory_order_acq_rel,
+              std::memory_order_relaxed)) {
+        return true;
+      }
+    }
+    return false;
+  }
 
-    log::debug("HTTP connection start: fd={}", fd_num);
+  auto release_connection() noexcept -> void {
+    active_connections.fetch_sub(1, std::memory_order_acq_rel);
+    connections_changed.notify_all();
+  }
 
+  [[nodiscard]] auto track_connection(std::function<void()> close) -> std::uint64_t {
+    std::lock_guard lock(connections_mutex);
+    const auto id = next_connection_id++;
+    connections.emplace(id, std::move(close));
+    return id;
+  }
+
+  auto untrack_connection(std::uint64_t id) -> void {
+    std::lock_guard lock(connections_mutex);
+    connections.erase(id);
+  }
+
+  auto close_connections() noexcept -> void {
+    std::vector<std::function<void()>> close_actions;
+    {
+      std::lock_guard lock(connections_mutex);
+      close_actions.reserve(connections.size());
+      for (auto &[_, close] : connections) {
+        close_actions.push_back(close);
+      }
+    }
+    for (auto &close : close_actions) {
+      close();
+    }
+  }
+
+  auto wait_for_connections() noexcept -> void {
+    std::unique_lock lock(connections_mutex);
+    if (!connections_changed.wait_for(
+            lock, std::chrono::seconds(5),
+            [this] {
+              return active_connections.load(std::memory_order_acquire) == 0;
+            })) {
+      log::error("Timed out while closing {} HTTP connections",
+                 active_connections.load(std::memory_order_relaxed));
+    }
+  }
+
+  template <typename Stream>
+  static auto serve_http(std::shared_ptr<Impl> self, Stream &stream,
+                         int fd_num) -> task<void> {
+    beast::flat_buffer read_buffer;
+    std::size_t request_count = 0;
     try {
       while (self->running.load(std::memory_order_acquire)) {
         beast_http::request_parser<beast_http::vector_body<uint8_t>> parser;
-        parser.header_limit(kParserHeaderLimit);
-        parser.body_limit(self->body_limit.load(std::memory_order_relaxed));
+        parser.header_limit(static_cast<std::uint32_t>(std::min<std::uint64_t>(
+            self->config.max_request_header_bytes,
+            std::numeric_limits<std::uint32_t>::max())));
+        parser.body_limit(self->config.max_request_body_bytes);
 
         auto read_res = co_await co_as_result(beast_http::async_read(
-            socket, read_buffer, parser,
-            boost::asio::cancel_after(kHttpIoTimeout, dagforge::use_nothrow)));
+            stream, read_buffer, parser,
+            boost::asio::cancel_after(self->config.connection_idle_timeout,
+                                      dagforge::use_nothrow)));
         if (!read_res) {
           const auto &read_ec = read_res.error();
           if (read_ec != std::error_code(boost::asio::error::make_error_code(
                              boost::asio::error::eof)) &&
-              read_ec !=
-                  std::error_code(beast::error_code(beast::error::timeout)) &&
               read_ec != std::error_code(
                              beast::error_code(
                                  beast_http::error::end_of_stream))) {
-            log::warn("HTTP read failed: fd={} err={}", fd_num,
-                      read_ec.message());
+            log::debug("HTTP read ended: fd={} err={}", fd_num,
+                       read_ec.message());
           }
           break;
         }
-        (void)*read_res;
 
         auto beast_req = parser.release();
-        auto req = to_request(beast_req);
-        log::debug("HTTP request: {} {} (fd={})", req.method, req.path, fd_num);
+        ++request_count;
+        const bool keep_alive =
+            beast_req.keep_alive() &&
+            request_count < self->config.max_requests_per_connection;
 
-        auto resp = co_await self->router_.route(req);
-        auto beast_resp = to_beast_response(resp, beast_req.version(),
-                                            beast_req.keep_alive());
+        HttpResponse response;
+        auto request = to_request(beast_req);
+        if (!request) {
+          response.status = HttpStatus::MethodNotAllowed;
+          response.headers.set("Allow",
+                               "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD");
+          response.set_body("Unsupported HTTP method");
+        } else {
+          log::debug("HTTP request: {} {} (fd={})", request->method,
+                     request->path, fd_num);
+          response = co_await self->router_.route(*request);
+        }
 
+        auto beast_resp =
+            to_beast_response(response, beast_req.version(), keep_alive);
         auto write_res = co_await co_as_result(beast_http::async_write(
-            socket, beast_resp,
-            boost::asio::cancel_after(kHttpIoTimeout, dagforge::use_nothrow)));
+            stream, beast_resp,
+            boost::asio::cancel_after(self->config.connection_idle_timeout,
+                                      dagforge::use_nothrow)));
         if (!write_res) {
-          log::warn("HTTP write failed: fd={} err={}", fd_num,
-                    write_res.error().message());
+          log::debug("HTTP write ended: fd={} err={}", fd_num,
+                     write_res.error().message());
           break;
         }
-        (void)*write_res;
-
-        if (!beast_req.keep_alive()) {
+        if (!keep_alive) {
           break;
         }
       }
-    } catch (const std::exception &e) {
-      log::error("Exception in connection handler: {}", e.what());
+    } catch (const std::exception &error) {
+      log::error("Exception in HTTP connection handler: {}", error.what());
     }
+  }
 
+  static auto handle_connection(
+      std::shared_ptr<Impl> self,
+      std::shared_ptr<boost::asio::ip::tcp::socket> socket)
+      -> spawn_task {
+    const int fd_num = socket->native_handle();
+    const auto executor = socket->get_executor();
+    const auto connection_id = self->track_connection([socket, executor] {
+      boost::asio::post(executor, [socket] {
+        boost::system::error_code ignored;
+        socket->cancel(ignored);
+        socket->close(ignored);
+      });
+    });
+    const auto release = std::experimental::scope_exit(
+        [self, connection_id] {
+          self->untrack_connection(connection_id);
+          self->release_connection();
+        });
+    log::debug("HTTP connection start: fd={}", fd_num);
+    co_await serve_http(self, *socket, fd_num);
+    boost::system::error_code close_error;
+    socket->shutdown(boost::asio::ip::tcp::socket::shutdown_both, close_error);
+    socket->close(close_error);
     log::debug("HTTP connection close: fd={}", fd_num);
   }
 
-  static auto handle_tls_connection(
-      std::shared_ptr<Impl> self, boost::asio::ip::tcp::socket socket,
-      boost::beast::flat_buffer detect_buffer) -> spawn_task {
-    namespace beast = boost::beast;
+  static auto handle_tls_connection(std::shared_ptr<Impl> self,
+                                    boost::asio::ip::tcp::socket socket)
+      -> spawn_task {
     namespace net = boost::asio;
     if (!self->tls_ctx) {
-      boost::system::error_code ec;
-      socket.close(ec);
+      boost::system::error_code close_error;
+      socket.close(close_error);
+      self->release_connection();
       co_return;
     }
 
-    net::ssl::stream<boost::asio::ip::tcp::socket> stream(
+    auto stream = std::make_shared<
+        net::ssl::stream<boost::asio::ip::tcp::socket>>(
         std::move(socket), *self->tls_ctx);
-
-    if (const auto buffered = boost::asio::buffer_size(detect_buffer.data());
-        buffered > 0) {
-      std::vector<uint8_t> preface(buffered);
-      boost::asio::buffer_copy(boost::asio::buffer(preface),
-                               detect_buffer.data());
-      auto handshake_res = co_await co_as_result(stream.async_handshake(
-          net::ssl::stream_base::server, boost::asio::buffer(preface),
-          boost::asio::cancel_after(kHttpIoTimeout, dagforge::use_nothrow)));
-      if (!handshake_res) {
-        log::warn("TLS handshake failed: {}", handshake_res.error().message());
-        co_return;
-      }
-      (void)*handshake_res;
-    } else {
-      auto handshake_res = co_await co_as_result(stream.async_handshake(
-          net::ssl::stream_base::server,
-          boost::asio::cancel_after(kHttpIoTimeout, dagforge::use_nothrow)));
-      if (!handshake_res) {
-        log::warn("TLS handshake failed: {}", handshake_res.error().message());
-        co_return;
-      }
+    const int fd_num = stream->next_layer().native_handle();
+    const auto executor = stream->get_executor();
+    const auto connection_id = self->track_connection([stream, executor] {
+      boost::asio::post(executor, [stream] {
+        boost::system::error_code ignored;
+        stream->next_layer().cancel(ignored);
+        stream->next_layer().close(ignored);
+      });
+    });
+    const auto release = std::experimental::scope_exit(
+        [self, connection_id] {
+          self->untrack_connection(connection_id);
+          self->release_connection();
+        });
+    auto handshake_res = co_await co_as_result(stream->async_handshake(
+        net::ssl::stream_base::server,
+        boost::asio::cancel_after(self->config.connection_idle_timeout,
+                                  dagforge::use_nothrow)));
+    if (!handshake_res) {
+      log::debug("TLS handshake failed: fd={} err={}", fd_num,
+                 handshake_res.error().message());
+      co_return;
     }
 
-    beast::flat_buffer read_buffer;
-    if (const auto buffered = boost::asio::buffer_size(detect_buffer.data());
-        buffered > 0) {
-      read_buffer.commit(boost::asio::buffer_copy(read_buffer.prepare(buffered),
-                                                  detect_buffer.data()));
-      detect_buffer.consume(buffered);
-    }
-
-    while (self->running.load(std::memory_order_acquire)) {
-      beast_http::request_parser<beast_http::vector_body<uint8_t>> parser;
-      parser.header_limit(kParserHeaderLimit);
-      parser.body_limit(self->body_limit.load(std::memory_order_relaxed));
-      auto read_res = co_await co_as_result(beast_http::async_read(
-          stream, read_buffer, parser,
-          boost::asio::cancel_after(kHttpIoTimeout, dagforge::use_nothrow)));
-      if (!read_res) {
-        const auto &read_ec = read_res.error();
-        if (read_ec != std::error_code(
-                           boost::asio::error::make_error_code(net::error::eof)) &&
-            read_ec !=
-                std::error_code(beast::error_code(beast::error::timeout)) &&
-            read_ec != std::error_code(boost::system::error_code(
-                           net::ssl::error::stream_truncated,
-                           net::error::get_ssl_category())) &&
-            read_ec != std::error_code(
-                           beast::error_code(
-                               beast_http::error::end_of_stream))) {
-          log::debug("HTTPS read failed: {}", read_ec.message());
-        }
-        break;
-      }
-      (void)*read_res;
-      auto beast_req = parser.release();
-      auto req = to_request(beast_req);
-
-      auto resp = co_await self->router_.route(req);
-      auto beast_resp =
-          to_beast_response(resp, beast_req.version(), beast_req.keep_alive());
-      auto write_res = co_await co_as_result(beast_http::async_write(
-          stream, beast_resp,
-          boost::asio::cancel_after(kHttpIoTimeout, dagforge::use_nothrow)));
-      if (!write_res) {
-        log::warn("HTTPS write failed: {}", write_res.error().message());
-        break;
-      }
-      (void)*write_res;
-
-      if (!beast_req.keep_alive()) {
-        break;
-      }
-    }
+    co_await serve_http(self, *stream, fd_num);
 
     boost::system::error_code shutdown_ec;
-    stream.shutdown(shutdown_ec);
+    stream->shutdown(shutdown_ec);
   }
 
   static auto accept_loop(
@@ -287,35 +343,21 @@ struct HttpServer::Impl {
         log::warn("Failed to set TCP_NODELAY: {}", nodelay_ec.message());
       }
 
-      boost::beast::flat_buffer detect_buffer;
-      auto detect_res = co_await co_as_result(
-          boost::beast::async_detect_ssl(socket, detect_buffer,
-                                         dagforge::use_nothrow));
-      if (!detect_res) {
-        log::warn("SSL detection failed on fd={} err={}",
-                  socket.native_handle(), detect_res.error().message());
-        boost::system::error_code close_ec;
-        socket.close(close_ec);
-        continue;
-      }
-      const auto is_ssl = *detect_res;
-
-      if (is_ssl) {
-        if (!self->tls_ctx) {
-          log::warn(
-              "TLS client detected but TLS context is not configured; closing");
-          boost::system::error_code close_ec;
-          socket.close(close_ec);
-          continue;
-        }
-        self->runtime.spawn_external(handle_tls_connection(
-            self, std::move(socket), std::move(detect_buffer)));
+      if (!self->try_acquire_connection()) {
+        log::warn("HTTP connection capacity exhausted");
+        boost::system::error_code close_error;
+        socket.close(close_error);
         continue;
       }
 
       log::debug("Accepted connection: fd={}", socket.native_handle());
-      self->runtime.spawn_external(
-          handle_connection(self, std::move(socket), std::move(detect_buffer)));
+      if (self->tls_ctx) {
+        self->runtime.spawn(handle_tls_connection(self, std::move(socket)));
+      } else {
+        self->runtime.spawn(handle_connection(
+            self, std::make_shared<boost::asio::ip::tcp::socket>(
+                      std::move(socket))));
+      }
     }
 
     if (self->shard_states[shard_index].acceptor == acceptor) {
@@ -332,8 +374,13 @@ HttpServer::~HttpServer() { stop(); }
 auto HttpServer::router() -> Router & { return impl_->router_; }
 
 auto HttpServer::set_tls_credentials(std::string cert_chain_file,
-                                     std::string private_key_file)
+                                     std::string private_key_file,
+                                     std::string minimum_version)
     -> Result<void> {
+  if (is_running() || cert_chain_file.empty() || private_key_file.empty() ||
+      (minimum_version != "1.2" && minimum_version != "1.3")) {
+    return fail(Error::InvalidArgument);
+  }
   namespace net = boost::asio;
   auto ctx = std::make_shared<net::ssl::context>(net::ssl::context::tls_server);
   boost::system::error_code ec;
@@ -343,6 +390,14 @@ auto HttpServer::set_tls_credentials(std::string cert_chain_file,
       ec);
   if (ec) {
     log::error("TLS context option setup failed: {}", ec.message());
+    return fail(Error::InvalidArgument);
+  }
+  ::SSL_CTX_set_options(ctx->native_handle(), SSL_OP_NO_COMPRESSION);
+  const auto minimum_protocol =
+      minimum_version == "1.3" ? TLS1_3_VERSION : TLS1_2_VERSION;
+  if (::SSL_CTX_set_min_proto_version(ctx->native_handle(), minimum_protocol) !=
+      1) {
+    log::error("Failed to configure minimum TLS version {}", minimum_version);
     return fail(Error::InvalidArgument);
   }
 
@@ -359,10 +414,28 @@ auto HttpServer::set_tls_credentials(std::string cert_chain_file,
                ec.message());
     return fail(Error::InvalidArgument);
   }
+  if (::SSL_CTX_check_private_key(ctx->native_handle()) != 1) {
+    log::error("TLS private key does not match certificate '{}', key='{}'",
+               cert_chain_file, private_key_file);
+    return fail(Error::InvalidArgument);
+  }
 
   impl_->tls_ctx = std::move(ctx);
-  log::debug("TLS enabled for HTTP server (cert='{}', key='{}')",
-             cert_chain_file, private_key_file);
+  log::debug(
+      "TLS-only mode enabled for HTTP server (cert='{}', key='{}', min={})",
+      cert_chain_file, private_key_file, minimum_version);
+  return ok();
+}
+
+auto HttpServer::configure(HttpServerConfig config) -> Result<void> {
+  if (is_running() || config.max_request_header_bytes == 0 ||
+      config.max_request_body_bytes == 0 ||
+      config.connection_idle_timeout <= std::chrono::milliseconds::zero() ||
+      config.max_connections == 0 ||
+      config.max_requests_per_connection == 0) {
+    return fail(Error::InvalidArgument);
+  }
+  impl_->config = std::move(config);
   return ok();
 }
 
@@ -370,7 +443,7 @@ auto HttpServer::set_request_body_limit(std::uint64_t bytes) -> Result<void> {
   if (bytes == 0 || is_running()) {
     return fail(Error::InvalidState);
   }
-  impl_->body_limit.store(bytes, std::memory_order_relaxed);
+  impl_->config.max_request_body_bytes = bytes;
   return ok();
 }
 
@@ -501,6 +574,9 @@ auto HttpServer::stop() -> void {
       }
     });
   }
+
+  impl_->close_connections();
+  impl_->wait_for_connections();
 
   log::debug("HTTP server stopped");
 }

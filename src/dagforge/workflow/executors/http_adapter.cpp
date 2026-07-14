@@ -8,13 +8,18 @@
 #include "detail/adapter_utils.hpp"
 
 #include <boost/asio/cancellation_signal.hpp>
+#include <boost/asio/ip/address.hpp>
 #include <boost/url/parse.hpp>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
+#include <charconv>
 #include <chrono>
+#include <compare>
 #include <cstdint>
+#include <experimental/scope>
 #include <format>
 #include <memory>
 #include <optional>
@@ -89,9 +94,15 @@ struct ParsedHttpTarget {
   std::string host_header;
 };
 
+struct IpCidr {
+  boost::asio::ip::address network;
+  unsigned prefix_length{0};
+};
+
 struct HttpExecutorPolicy {
   HttpExecutorConfig config;
   std::unordered_set<std::string> allowed_origins;
+  std::vector<IpCidr> allowed_cidrs;
 };
 
 struct HttpRequestState {
@@ -103,6 +114,7 @@ struct HttpRequestState {
   bool cancel_requested{false};
   bool timed_out{false};
   bool completed{false};
+  bool global_slot_acquired{false};
 };
 
 using HttpShardState =
@@ -112,7 +124,129 @@ struct HttpExecutorCore {
   Runtime *runtime{};
   HttpExecutorPolicy policy;
   std::vector<HttpShardState> shard_states;
+  std::atomic<std::size_t> active_requests{0};
+
+  HttpExecutorCore(Runtime &runtime_in, HttpExecutorPolicy policy_in)
+      : runtime(&runtime_in), policy(std::move(policy_in)),
+        shard_states(runtime_in.shard_count()) {}
 };
+
+[[nodiscard]] auto prefix_matches(std::span<const unsigned char> address,
+                                  std::span<const unsigned char> network,
+                                  unsigned prefix_length) -> bool {
+  const auto whole_bytes = prefix_length / 8;
+  const auto remaining_bits = prefix_length % 8;
+  if (!std::equal(address.begin(), address.begin() + whole_bytes,
+                  network.begin())) {
+    return false;
+  }
+  if (remaining_bits == 0) {
+    return true;
+  }
+  const auto mask = static_cast<unsigned char>(0xffU << (8U - remaining_bits));
+  return (address[whole_bytes] & mask) == (network[whole_bytes] & mask);
+}
+
+[[nodiscard]] auto cidr_contains(const IpCidr &cidr,
+                                 const boost::asio::ip::address &address)
+    -> bool {
+  if (cidr.network.is_v4() != address.is_v4()) {
+    return false;
+  }
+  if (address.is_v4()) {
+    const auto candidate = address.to_v4().to_bytes();
+    const auto network = cidr.network.to_v4().to_bytes();
+    return prefix_matches(candidate, network, cidr.prefix_length);
+  }
+  const auto candidate = address.to_v6().to_bytes();
+  const auto network = cidr.network.to_v6().to_bytes();
+  return prefix_matches(candidate, network, cidr.prefix_length);
+}
+
+[[nodiscard]] auto parse_cidr(std::string_view value) -> Result<IpCidr> {
+  const auto separator = value.rfind('/');
+  if (separator == std::string_view::npos || separator == 0 ||
+      separator + 1 >= value.size()) {
+    return fail(Error::InvalidArgument);
+  }
+  boost::system::error_code address_error;
+  auto address = boost::asio::ip::make_address(
+      std::string{value.substr(0, separator)}, address_error);
+  if (address_error) {
+    return fail(Error::InvalidArgument);
+  }
+  unsigned prefix = 0;
+  const auto token = value.substr(separator + 1);
+  const auto [end, error] =
+      std::from_chars(token.data(), token.data() + token.size(), prefix);
+  const auto maximum = address.is_v4() ? 32U : 128U;
+  if (error != std::errc{} || end != token.data() + token.size() ||
+      prefix > maximum) {
+    return fail(Error::InvalidArgument);
+  }
+  return ok(IpCidr{.network = std::move(address), .prefix_length = prefix});
+}
+
+[[nodiscard]] auto special_use_address(
+    const boost::asio::ip::address &address) -> bool {
+  if (address.is_unspecified() || address.is_loopback() ||
+      address.is_multicast()) {
+    return true;
+  }
+  if (address.is_v4()) {
+    const auto value = address.to_v4().to_uint();
+    const auto in_range = [value](std::uint32_t network, unsigned prefix) {
+      const auto mask = prefix == 0 ? 0U : 0xffffffffU << (32U - prefix);
+      return (value & mask) == (network & mask);
+    };
+    return in_range(0x00000000U, 8) || in_range(0x0a000000U, 8) ||
+           in_range(0x64400000U, 10) || in_range(0x7f000000U, 8) ||
+           in_range(0xa9fe0000U, 16) || in_range(0xac100000U, 12) ||
+           in_range(0xc0000000U, 24) || in_range(0xc0000200U, 24) ||
+           in_range(0xc0a80000U, 16) || in_range(0xc6120000U, 15) ||
+           in_range(0xc6336400U, 24) || in_range(0xcb007100U, 24) ||
+           in_range(0xe0000000U, 4) || in_range(0xf0000000U, 4);
+  }
+  const auto v6 = address.to_v6();
+  if (v6.is_link_local() || v6.is_site_local()) {
+    return true;
+  }
+  if (v6.is_v4_mapped()) {
+    return special_use_address(boost::asio::ip::address_v4{
+        {v6.to_bytes()[12], v6.to_bytes()[13], v6.to_bytes()[14],
+         v6.to_bytes()[15]}});
+  }
+  const auto bytes = v6.to_bytes();
+  const std::array<unsigned char, 16> ula{0xfc};
+  const std::array<unsigned char, 16> documentation{0x20, 0x01, 0x0d, 0xb8};
+  return prefix_matches(bytes, ula, 7) ||
+         prefix_matches(bytes, documentation, 32);
+}
+
+[[nodiscard]] auto address_allowed(
+    const HttpExecutorPolicy &policy,
+    const boost::asio::ip::address &address) -> bool {
+  if (std::ranges::any_of(policy.allowed_cidrs,
+                          [&](const IpCidr &cidr) {
+                            return cidr_contains(cidr, address);
+                          })) {
+    return true;
+  }
+  return !policy.config.deny_private_networks ||
+         !special_use_address(address);
+}
+
+[[nodiscard]] auto try_acquire_global_slot(HttpExecutorCore &core) -> bool {
+  auto current = core.active_requests.load(std::memory_order_relaxed);
+  while (current < core.policy.config.max_concurrent_requests) {
+    if (core.active_requests.compare_exchange_weak(
+            current, current + 1, std::memory_order_acq_rel,
+            std::memory_order_relaxed)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 [[nodiscard]] auto lowercase_ascii(std::string value) -> std::string {
   std::ranges::transform(value, value.begin(), [](unsigned char ch) {
@@ -403,6 +537,10 @@ auto complete_request(const std::shared_ptr<HttpExecutorCore> &core,
     core->runtime->cancel_after_on(shard, state->timeout_handle);
   }
   core->shard_states[shard].unregister_active(state->instance_id);
+  if (state->global_slot_acquired) {
+    state->global_slot_acquired = false;
+    core->active_requests.fetch_sub(1, std::memory_order_acq_rel);
+  }
   auto completion = std::move(state->sink.on_complete);
   if (completion) {
     completion(state->instance_id, std::move(result));
@@ -449,11 +587,19 @@ auto run_http_request(std::shared_ptr<HttpExecutorCore> core, shard_id shard,
   http::HttpClientConfig client_config{
       .connect_timeout = transport_timeout,
       .read_timeout = transport_timeout,
+      .max_response_headers = core->policy.config.max_response_headers,
       .max_response_header_size = static_cast<std::size_t>(
           core->policy.config.max_response_header_bytes),
       .max_response_size = static_cast<std::size_t>(
           core->policy.config.max_response_body_bytes),
       .keep_alive = false,
+      .tls_min_version = core->policy.config.tls_min_version,
+      .tls_ca_file = core->policy.config.tls_ca_file,
+      .tls_client_cert_file = core->policy.config.tls_client_cert_file,
+      .tls_client_key_file = core->policy.config.tls_client_key_file,
+      .endpoint_allowed = [core](const boost::asio::ip::address &address) {
+        return address_allowed(core->policy, address);
+      },
   };
 
   auto connected = target.tls
@@ -689,9 +835,20 @@ public:
     }
     http_request.body.assign(body.begin(), body.end());
 
+    if (!try_acquire_global_slot(*core_)) {
+      return fail(Error::ResourceExhausted);
+    }
+    bool release_global_slot = true;
+    const auto release_on_failure = std::experimental::scope_exit([&] {
+      if (release_global_slot) {
+        core_->active_requests.fetch_sub(1, std::memory_order_acq_rel);
+      }
+    });
+
     auto state = std::make_shared<HttpRequestState>();
     state->instance_id = request.instance_id.clone();
     state->sink = std::move(sink);
+    state->global_slot_acquired = true;
     shard_state.register_active(state->instance_id, state);
     state->timeout_handle = core_->runtime->schedule_after_on(
         shard, request.timeout, [weak = std::weak_ptr<HttpRequestState>{state}] {
@@ -706,6 +863,7 @@ public:
     core_->runtime->spawn(run_http_request(
         core_, shard, state, std::move(*target), std::move(http_request),
         std::move(*parsed), std::move(request.outputs), request.timeout));
+    release_global_slot = false;
     return ok();
   }
 
@@ -732,6 +890,20 @@ namespace workflow {
 
 auto create_http_executor_adapter(Runtime &runtime, HttpExecutorConfig config)
     -> Result<std::shared_ptr<ITaskExecutor>> {
+  if (config.max_request_headers == 0 ||
+      config.max_request_header_bytes == 0 ||
+      config.max_request_body_bytes == 0 ||
+      config.max_response_headers == 0 ||
+      config.max_response_header_bytes == 0 ||
+      config.max_response_body_bytes == 0 ||
+      config.max_concurrent_requests_per_shard == 0 ||
+      config.max_concurrent_requests == 0 ||
+      (config.tls_min_version != "1.2" &&
+       config.tls_min_version != "1.3") ||
+      (config.tls_client_cert_file.empty() !=
+       config.tls_client_key_file.empty())) {
+    return fail(Error::InvalidArgument);
+  }
   HttpExecutorPolicy policy{.config = std::move(config)};
   for (const auto &configured : policy.config.allowed_origins) {
     auto origin = valid_origin(configured, policy.config.allow_plaintext);
@@ -742,11 +914,16 @@ auto create_http_executor_adapter(Runtime &runtime, HttpExecutorConfig config)
       return fail(Error::InvalidArgument);
     }
   }
-  auto core = std::make_shared<HttpExecutorCore>(HttpExecutorCore{
-      .runtime = &runtime,
-      .policy = std::move(policy),
-      .shard_states = std::vector<HttpShardState>(runtime.shard_count()),
-  });
+  policy.allowed_cidrs.reserve(policy.config.allowed_ip_cidrs.size());
+  for (const auto &configured : policy.config.allowed_ip_cidrs) {
+    auto cidr = parse_cidr(configured);
+    if (!cidr) {
+      return fail(cidr.error());
+    }
+    policy.allowed_cidrs.push_back(std::move(*cidr));
+  }
+  auto core =
+      std::make_shared<HttpExecutorCore>(runtime, std::move(policy));
   return ok(std::shared_ptr<ITaskExecutor>{
       std::make_shared<HttpWorkflowAdapter>(std::move(core))});
 }

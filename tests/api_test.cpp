@@ -84,7 +84,9 @@ TEST(ApiTest, InitReconcilesWorkflowConfigurationChanges) {
 }
 
 TEST(ApiTest, InitReconcilesHttpExecutorEnablement) {
-  Application app;
+  SystemConfig config;
+  config.admission.allowed_executors = {"http"};
+  Application app(std::move(config));
   const auto make_plan = [] {
     return workflow::WorkflowPlanLoader::from_json(R"({
       "workflow_id":"http-toggle",
@@ -146,6 +148,8 @@ TEST(ApiTest, RestartRebuildsQuiescedWorkflowComponents) {
 TEST(ApiTest, AccessPolicyAuthenticatesAndLimitsRequests) {
   SystemConfig config;
   config.api.enabled = false;
+  config.admission.allowed_executors = {"command"};
+  config.sandbox.allowed_programs = {"/bin/true", "/bin/echo"};
   Application app(std::move(config));
   ASSERT_TRUE(app.start().has_value());
 
@@ -224,6 +228,8 @@ TEST(ApiTest, MissingConfiguredBearerTokenPreventsStart) {
 TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
   SystemConfig config;
   config.api.enabled = false;
+  config.admission.allowed_executors = {"command"};
+  config.sandbox.allowed_programs = {"/bin/true", "/bin/echo"};
   Application app(std::move(config));
   ASSERT_TRUE(app.start().has_value());
 

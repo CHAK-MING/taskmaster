@@ -87,8 +87,14 @@ def write_config(
     http_target_port: int,
     https_target_port: int,
     tls_silent_port: int,
+    api_tls_certificate: Path | None = None,
+    api_tls_key: Path | None = None,
 ) -> None:
     minijail_root = Path.home() / ".local/libexec/dagforge/minijail"
+    api_tls_enabled = api_tls_certificate is not None and api_tls_key is not None
+    api_tls_enabled_toml = "true" if api_tls_enabled else "false"
+    api_tls_certificate_toml = toml_string(api_tls_certificate or "")
+    api_tls_key_toml = toml_string(api_tls_key or "")
     config = f"""[runtime]
 shards = 2
 pin_shards_to_cores = false
@@ -101,12 +107,17 @@ workspace_root = {toml_string(state_root / "workspaces")}
 max_memory_bytes = 1073741824
 max_file_bytes = 67108864
 tmp_bytes = 67108864
+max_stdout_bytes = 10485760
+max_stderr_bytes = 10485760
+max_stream_line_bytes = 1048576
 max_processes = 128
 max_open_files = 256
-allow_unlisted_programs = true
-allow_unlisted_environment = true
-allowed_programs = []
-allowed_environment = []
+allow_unlisted_programs = false
+allow_unlisted_environment = false
+require_trusted_files = true
+retain_workspaces = false
+allowed_programs = ["/bin/echo", "/bin/printf", "/bin/sh", "/bin/cat", "/bin/true", "/usr/bin/python3"]
+allowed_environment = ["CUSTOM_VALUE", "DAGFORGE_INPUT", "FINAL_VALUE", "HTTP_RESPONSE", "LEFT_VALUE", "RIGHT_VALUE", "ROOT_VALUE"]
 
 [workflow]
 enabled = true
@@ -114,21 +125,29 @@ enabled = true
 [http_executor]
 enabled = true
 allow_plaintext = true
+deny_private_networks = true
 allowed_origins = [
   "http://127.0.0.1:{http_target_port}",
   "https://localhost:{https_target_port}",
   "https://localhost:{tls_silent_port}"
 ]
+allowed_ip_cidrs = ["127.0.0.0/8", "::1/128"]
 max_request_headers = 64
 max_request_header_bytes = 65536
 max_request_body_bytes = 1024
+max_response_headers = 64
 max_response_header_bytes = 4096
 max_response_body_bytes = 4096
 max_concurrent_requests_per_shard = 1
+max_concurrent_requests = 2
+tls_min_version = "1.2"
+tls_ca_file = ""
+tls_client_cert_file = ""
+tls_client_key_file = ""
 
 [admission]
-allow_unlisted_executors = true
-allowed_executors = []
+allow_unlisted_executors = false
+allowed_executors = ["command", "http"]
 max_nodes = 256
 max_parallel_nodes = 32
 max_total_output_bytes = 67108864
@@ -145,11 +164,16 @@ enabled = true
 host = "127.0.0.1"
 port = {port}
 reuse_port = false
-tls_enabled = false
-tls_cert_file = ""
-tls_key_file = ""
+tls_enabled = {api_tls_enabled_toml}
+tls_cert_file = {api_tls_certificate_toml}
+tls_key_file = {api_tls_key_toml}
+tls_min_version = "1.2"
 bearer_token_env = ""
+max_request_header_bytes = 65536
 max_request_body_bytes = 1048576
+connection_idle_timeout_ms = 30000
+max_connections = 128
+max_requests_per_connection = 100
 max_concurrent_requests = 128
 """
     path.write_text(config, encoding="utf-8")
@@ -157,9 +181,21 @@ max_concurrent_requests = 128
 
 class DagforgeService:
     def __init__(
-        self, binary: Path, config: Path, port: int, environment: dict[str, str]
+        self,
+        binary: Path,
+        config: Path,
+        port: int,
+        environment: dict[str, str],
+        tls_ca: Path | None = None,
     ) -> None:
-        self._base_url = f"http://127.0.0.1:{port}"
+        scheme = "https" if tls_ca is not None else "http"
+        host = "localhost" if tls_ca is not None else "127.0.0.1"
+        self._base_url = f"{scheme}://{host}:{port}"
+        self._ssl_context = (
+            ssl.create_default_context(cafile=str(tls_ca))
+            if tls_ca is not None
+            else None
+        )
         self._process = subprocess.Popen(
             [str(binary), "serve", "--config", str(config)],
             cwd=REPOSITORY_ROOT,
@@ -195,7 +231,9 @@ class DagforgeService:
         if payload is not None:
             request.add_header("Content-Type", "application/json")
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with urllib.request.urlopen(
+                request, timeout=5, context=self._ssl_context
+            ) as response:
                 data = response.read()
                 return response.status, json.loads(data) if data else None
         except urllib.error.HTTPError as error:
@@ -204,20 +242,25 @@ class DagforgeService:
 
     def request_bytes(self, path: str) -> tuple[int, bytes]:
         request = urllib.request.Request(self._base_url + path, method="GET")
-        with urllib.request.urlopen(request, timeout=5) as response:
+        with urllib.request.urlopen(
+            request, timeout=5, context=self._ssl_context
+        ) as response:
             return response.status, response.read()
 
     def stop(self, require_graceful: bool = False) -> None:
         if self._process.poll() is not None:
             return
         self._process.send_signal(signal.SIGTERM)
+        timeout = float(os.environ.get("DAGFORGE_E2E_STOP_TIMEOUT", "5"))
         try:
-            self._process.wait(timeout=5)
+            self._process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             self._process.kill()
             self._process.wait(timeout=5)
             if require_graceful:
-                raise AssertionError("dagforge did not stop gracefully")
+                raise AssertionError(
+                    "dagforge did not stop gracefully:\n" + self._read_output()
+                )
 
     def _read_output(self) -> str:
         if self._process.stdout is None:
@@ -933,6 +976,40 @@ def verify_http_plan_rejections(service: DagforgeService, target_port: int) -> N
         require(status == 400, f"invalid HTTP plan {name} was accepted: {response}")
 
 
+def verify_tls_only_api(
+    binary: Path,
+    config: Path,
+    port: int,
+    environment: dict[str, str],
+    certificate: Path,
+) -> None:
+    service = DagforgeService(
+        binary, config, port, environment, tls_ca=certificate
+    )
+    try:
+        service.wait_until_ready()
+        status, response = service.request_json("GET", "/api/health")
+        require(status == 200, f"TLS API health failed: {response}")
+
+        plaintext = b""
+        with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+            connection.settimeout(2)
+            connection.sendall(
+                b"GET /api/health HTTP/1.1\r\n"
+                b"Host: localhost\r\nConnection: close\r\n\r\n"
+            )
+            try:
+                plaintext = connection.recv(4096)
+            except (ConnectionResetError, TimeoutError, socket.timeout):
+                plaintext = b""
+        require(
+            not plaintext.startswith(b"HTTP/"),
+            f"TLS-only listener accepted plaintext: {plaintext!r}",
+        )
+    finally:
+        service.stop(require_graceful=True)
+
+
 def main() -> int:
     arguments = parse_arguments()
     binary = arguments.binary.resolve()
@@ -1102,6 +1179,23 @@ def main() -> int:
             print(f"PASS {label}")
         verify_http_service_shutdown(service, target_port, target_state)
         print("PASS HTTP service shutdown")
+
+        tls_api_port = reserve_port()
+        tls_api_config = state_root / "tls_api_config.toml"
+        write_config(
+            tls_api_config,
+            state_root,
+            tls_api_port,
+            target_port,
+            tls_target_port,
+            tls_silent_port,
+            certificate,
+            private_key,
+        )
+        verify_tls_only_api(
+            binary, tls_api_config, tls_api_port, environment, certificate
+        )
+        print("PASS API TLS-only listener")
     finally:
         service.stop()
         target.stop()

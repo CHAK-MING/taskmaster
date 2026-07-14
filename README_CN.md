@@ -34,8 +34,8 @@ DAGForge 负责校验、编译、调度、执行、暂停、恢复、取消和�
 - **✅ 编译期准入校验：** 执行前校验节点、依赖、环、端口、条件边、策略、重试设置和资源预算。
 - **🔗 显式强类型数据流：** 节点只通过声明的输入绑定和输出端口传递值，不依赖隐藏共享状态。
 - **🔌 执行器无关调度：** Workflow Runtime 只按执行器名称路由 Task，不解释执行器专属配置。
-- **🛡️ 强制命令沙箱：** 当前提供的 Command 执行器不允许降级为宿主机直接执行。
-- **🌐 受治理的 HTTP 执行：** 可选 HTTP 执行器使用异步 DNS/TCP/TLS/HTTP I/O，并受服务端精确 Origin 白名单约束。
+- **🛡️ 强制命令沙箱：** Command 执行器不允许降级为宿主机直接执行，生产默认只接受精确白名单中的已知二进制。
+- **🌐 受治理的 HTTP 执行：** 可选 HTTP 执行器使用异步 DNS/TCP/TLS/HTTP I/O，并同时受精确 Origin 与解析后地址策略约束。
 - **🔄 Run / Task / Attempt 状态机：** 暂停、恢复、延迟重试、超时、Fail-fast、取消和进程回收都有明确状态。
 - **📦 Artifact：** 大型值可外置为 Artifact 引用，避免在节点之间复制大对象。
 - **🧾 Evidence 与 Checkpoint：** 记录关键运行事件，并在指定任务边界生成检查点。
@@ -105,8 +105,13 @@ Command 通过固定版本的 Google Minijail Helper 启动。每个 Command 都
 - 内存、文件、进程、文件描述符、CPU 和运行时限；
 - 独立可写 Workspace。
 
-沙箱二进制、策略文件或必要内核能力缺失时，任务直接失败。DAGForge 不会退回
-宿主机直接执行。
+该边界用于约束由管理员安装并精确白名单化的已知程序处理不可信输入，不用于
+安全运行恶意原生二进制、Workflow 上传的可执行文件或攻击者可写的共享库。
+沙箱二进制/BPF 可被组或其他用户写入、Workspace 不安全、Landlock 不可用或
+资源限制非法时，应用在启动阶段直接失败。DAGForge 不会退回宿主机直接执行。
+
+stdout、stderr 和未终止的流式单行分别有硬上限；超限会杀死整个进程组，而不是
+静默截断。应用关闭时先拒绝新任务、杀死并等待活动沙箱进程回收，再停止 Runtime。
 
 `MinijailCommandExecutor` 直接实现 Command 执行接口。Workflow 调度只依赖
 `ICommandExecutor`；Minijail 参数、进程监管和沙箱状态都封装在底层执行器
@@ -123,19 +128,32 @@ Command 通过固定版本的 Google Minijail Helper 启动。每个 Command 都
 [http_executor]
 enabled = true
 allow_plaintext = false
+deny_private_networks = true
 allowed_origins = ["https://api.example.com"]
+allowed_ip_cidrs = []
 max_request_headers = 64
 max_request_header_bytes = 65536
 max_request_body_bytes = 1048576
+max_response_headers = 128
 max_response_header_bytes = 65536
 max_response_body_bytes = 10485760
 max_concurrent_requests_per_shard = 32
+max_concurrent_requests = 256
+tls_min_version = "1.2"
+tls_ca_file = ""
+tls_client_cert_file = ""
+tls_client_key_file = ""
 ```
 
-Origin 按 scheme、host 和有效端口精确匹配。HTTPS 使用 OpenSSL 信任库，并
-校验 SNI 与主机名。v1 不支持重定向、代理、Cookie、二进制 Body 和动态 URL。
-取消请求会中断 DNS、TCP 连接、TLS 握手、写入和读取。真实混合执行示例见
-[`dags/http_pipeline.json`](dags/http_pipeline.json)。
+Origin 按 scheme、host 和有效端口精确匹配。每个 DNS 结果都会在连接前检查；
+默认拒绝 loopback、link-local、私网、组播、文档网段和其他特殊用途地址，只有
+显式 CIDR 才能放行。HTTPS 校验 SNI 与主机名，可配置私有 CA 和 mTLS，并限制
+最低 TLS 1.2/1.3。分片级和进程级并发上限都在打开 socket 前生效。
+
+控制面配置证书后，监听端口是 TLS-only，不会在同一端口自动探测并降级到明文。
+Server 同时限制活动连接、空闲时间、解析大小和每连接请求数，并在关闭时主动关闭
+活动连接。v1 不支持重定向、代理、Cookie 和动态 URL。取消会中断 DNS、TCP、
+TLS、写入和读取。示例见 [`dags/http_pipeline.json`](dags/http_pipeline.json)。
 
 ---
 

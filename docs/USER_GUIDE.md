@@ -47,12 +47,17 @@ workspace_root = "./workspaces"
 max_memory_bytes = 1073741824
 max_file_bytes = 67108864
 tmp_bytes = 67108864
+max_stdout_bytes = 10485760
+max_stderr_bytes = 10485760
+max_stream_line_bytes = 65536
 max_processes = 128
 max_open_files = 256
-allow_unlisted_programs = true
-allow_unlisted_environment = true
-allowed_programs = []
-allowed_environment = []
+allow_unlisted_programs = false
+allow_unlisted_environment = false
+require_trusted_files = true
+retain_workspaces = false
+allowed_programs = ["/bin/sh", "/usr/bin/python3"]
+allowed_environment = ["DAGFORGE_INPUT"]
 
 [workflow]
 enabled = true
@@ -60,17 +65,25 @@ enabled = true
 [http_executor]
 enabled = false
 allow_plaintext = false
+deny_private_networks = true
 allowed_origins = []
+allowed_ip_cidrs = []
 max_request_headers = 64
 max_request_header_bytes = 65536
 max_request_body_bytes = 1048576
+max_response_headers = 128
 max_response_header_bytes = 65536
 max_response_body_bytes = 10485760
 max_concurrent_requests_per_shard = 32
+max_concurrent_requests = 256
+tls_min_version = "1.2"
+tls_ca_file = ""
+tls_client_cert_file = ""
+tls_client_key_file = ""
 
 [admission]
-allow_unlisted_executors = true
-allowed_executors = []
+allow_unlisted_executors = false
+allowed_executors = ["command"]
 max_nodes = 256
 max_parallel_nodes = 32
 max_total_output_bytes = 67108864
@@ -84,6 +97,13 @@ reuse_port = false
 tls_enabled = false
 tls_cert_file = ""
 tls_key_file = ""
+tls_min_version = "1.2"
+max_request_header_bytes = 65536
+max_request_body_bytes = 1048576
+connection_idle_timeout_ms = 30000
+max_connections = 1024
+max_requests_per_connection = 100
+max_concurrent_requests = 128
 ```
 
 ### 2.1 Runtime
@@ -107,9 +127,14 @@ Environment overrides:
 ### 2.2 Command sandbox
 
 All Command nodes run through the pinned Google Minijail helper. DAGForge does
-not contain a direct subprocess fallback. Missing Minijail, missing seccomp
-bytecode, unavailable Landlock, or unsupported namespace setup causes the node
-to fail closed.
+not contain a direct subprocess fallback. The boundary is for exact-path,
+administrator-installed **known binaries** processing untrusted inputs. It is
+not a safe execution environment for malicious native binaries, Workflow-
+uploaded executables, or attacker-writable shared libraries.
+
+Missing or untrusted Minijail/BPF files, unavailable Landlock, unsafe workspace
+roots, invalid allowlists, and invalid limits fail during application
+initialization before the API accepts work.
 
 Each instance receives:
 
@@ -118,6 +143,7 @@ Each instance receives:
 - Landlock read/execute access to system runtimes and read/write access only to
   its instance workspace and private `/tmp`;
 - CPU, address-space, file-size, process-count, and open-file limits.
+- independent stdout, stderr, and unterminated streamed-line limits.
 
 The workspace root must not be inside the host temporary directory because the
 sandbox mounts a private tmpfs over `/tmp`. Environment overrides are:
@@ -128,11 +154,22 @@ sandbox mounts a private tmpfs over `/tmp`. Environment overrides are:
 - `DAGFORGE_SANDBOX_MAX_MEMORY_BYTES`
 - `DAGFORGE_SANDBOX_MAX_FILE_BYTES`
 - `DAGFORGE_SANDBOX_TMP_BYTES`
+- `DAGFORGE_SANDBOX_MAX_STDOUT_BYTES`
+- `DAGFORGE_SANDBOX_MAX_STDERR_BYTES`
+- `DAGFORGE_SANDBOX_MAX_STREAM_LINE_BYTES`
 - `DAGFORGE_SANDBOX_MAX_PROCESSES`
 - `DAGFORGE_SANDBOX_MAX_OPEN_FILES`
 
 Command-specific program and environment allowlists also live in `[sandbox]`.
-They are enforced by the Command executor while compiling its JSON config.
+Programs are canonicalized and checked both while compiling the node config and
+immediately before process launch. `allow_unlisted_*` is a development override;
+production configuration should keep both switches false and
+`require_trusted_files` true. Per-Attempt workspaces are owner-only and removed
+after completion unless `retain_workspaces` is explicitly enabled.
+
+Output-limit overflow kills the whole process group and reports resource
+exhaustion. Application shutdown rejects new starts, kills active process
+groups, and waits for reaping before Runtime threads stop.
 
 ### 2.3 HTTP executor
 
@@ -143,40 +180,61 @@ trusted origins:
 [http_executor]
 enabled = true
 allow_plaintext = false
+deny_private_networks = true
 allowed_origins = ["https://api.example.com"]
+allowed_ip_cidrs = []
 max_request_headers = 64
 max_request_header_bytes = 65536
 max_request_body_bytes = 1048576
+max_response_headers = 128
 max_response_header_bytes = 65536
 max_response_body_bytes = 10485760
 max_concurrent_requests_per_shard = 32
+max_concurrent_requests = 256
+tls_min_version = "1.2"
+tls_ca_file = ""
+tls_client_cert_file = ""
+tls_client_key_file = ""
 ```
 
 An origin consists of scheme, host, and effective port. Matching is exact and
-case-normalized; paths do not belong in `allowed_origins`. HTTPS is verified
-with the OpenSSL trust store, including SNI and hostname verification. Plain
-HTTP requires both `allow_plaintext = true` and a matching `http://` origin.
-Redirects are not followed, so an allowed server cannot move a request to an
-unauthorized origin.
+case-normalized; paths do not belong in `allowed_origins`. After DNS resolution,
+every endpoint is checked before connect. By default loopback, link-local,
+RFC1918/ULA, multicast, documentation, benchmarking, and reserved ranges are
+denied. `allowed_ip_cidrs` provides explicit exceptions for required internal
+services. It does not expand the Origin list.
 
-The request, response, and header limits are hard parser/executor bounds. The
-concurrency limit applies independently to each Runtime shard. Saturation fails
-the Attempt with a retryable queue-full error, allowing the node retry policy
-to decide whether to try again.
+HTTPS verifies SNI and the hostname, enforces `tls_min_version`, and uses the
+system trust store plus `tls_ca_file` when one is supplied. Client certificate
+and key must be configured together for mTLS. Plain HTTP requires both
+`allow_plaintext = true` and a matching `http://` origin. Redirects are not
+followed, so an allowed server cannot move a request to an unauthorized origin.
+
+The request, response, and header limits are hard parser/executor bounds. Both
+per-shard and process-wide concurrency limits are enforced before a socket
+opens. Saturation fails the Attempt with resource exhaustion, allowing the node
+retry policy to decide whether to try again.
 
 Environment overrides:
 
 - `DAGFORGE_HTTP_EXECUTOR_ENABLED`
 - `DAGFORGE_HTTP_EXECUTOR_ALLOW_PLAINTEXT`
+- `DAGFORGE_HTTP_EXECUTOR_DENY_PRIVATE_NETWORKS`
 - `DAGFORGE_HTTP_EXECUTOR_MAX_REQUEST_HEADERS`
 - `DAGFORGE_HTTP_EXECUTOR_MAX_REQUEST_HEADER_BYTES`
 - `DAGFORGE_HTTP_EXECUTOR_MAX_REQUEST_BODY_BYTES`
+- `DAGFORGE_HTTP_EXECUTOR_MAX_RESPONSE_HEADERS`
 - `DAGFORGE_HTTP_EXECUTOR_MAX_RESPONSE_HEADER_BYTES`
 - `DAGFORGE_HTTP_EXECUTOR_MAX_RESPONSE_BODY_BYTES`
 - `DAGFORGE_HTTP_EXECUTOR_MAX_CONCURRENT_REQUESTS_PER_SHARD`
+- `DAGFORGE_HTTP_EXECUTOR_MAX_CONCURRENT_REQUESTS`
+- `DAGFORGE_HTTP_EXECUTOR_TLS_MIN_VERSION`
+- `DAGFORGE_HTTP_EXECUTOR_TLS_CA_FILE`
+- `DAGFORGE_HTTP_EXECUTOR_TLS_CLIENT_CERT_FILE`
+- `DAGFORGE_HTTP_EXECUTOR_TLS_CLIENT_KEY_FILE`
 
-Origins intentionally have no environment-list override; keep them in the
-auditable system configuration.
+Origins and CIDR exceptions intentionally have no environment-list override;
+keep them in the auditable system configuration.
 
 ### 2.4 Workflow runtime
 
@@ -225,22 +283,34 @@ record is removed. Evicted durable Run checkpoints are deleted as well.
 ### 2.7 API
 
 Set `api.enabled = true` to start the HTTP control plane. TLS requires both a
-certificate chain and private key path.
+certificate chain and private key path. When TLS is enabled the listener is
+TLS-only; plaintext is never detected and routed on the same port.
 
 ```toml
 [api]
 enabled = true
 host = "127.0.0.1"
 port = 8888
+tls_enabled = true
+tls_cert_file = "/etc/dagforge/api-chain.pem"
+tls_key_file = "/etc/dagforge/api-key.pem"
+tls_min_version = "1.2"
 bearer_token_env = "DAGFORGE_API_TOKEN"
+max_request_header_bytes = 65536
 max_request_body_bytes = 1048576
+connection_idle_timeout_ms = 30000
+max_connections = 1024
+max_requests_per_connection = 100
 max_concurrent_requests = 128
 ```
 
 When `bearer_token_env` is set, the named environment variable must contain a
 non-empty token before the server starts. Clients send it as
 `Authorization: Bearer <token>`. Oversized requests are rejected at both the
-HTTP parser and route boundary; saturated routes return `429`.
+HTTP parser and route boundary; saturated routes return `429`. The server also
+bounds active TCP connections, idle TLS/read time, and requests per keep-alive
+connection. Unsupported verbs return `405` rather than being interpreted as
+GET. `stop()` closes active connections and waits for handlers to exit.
 
 Environment overrides:
 
@@ -251,8 +321,13 @@ Environment overrides:
 - `DAGFORGE_API_TLS_ENABLED`
 - `DAGFORGE_API_TLS_CERT_FILE`
 - `DAGFORGE_API_TLS_KEY_FILE`
+- `DAGFORGE_API_TLS_MIN_VERSION`
 - `DAGFORGE_API_BEARER_TOKEN_ENV`
+- `DAGFORGE_API_MAX_REQUEST_HEADER_BYTES`
 - `DAGFORGE_API_MAX_REQUEST_BODY_BYTES`
+- `DAGFORGE_API_CONNECTION_IDLE_TIMEOUT_MS`
+- `DAGFORGE_API_MAX_CONNECTIONS`
+- `DAGFORGE_API_MAX_REQUESTS_PER_CONNECTION`
 - `DAGFORGE_API_MAX_CONCURRENT_REQUESTS`
 
 ## 3. Workflow Plan v1

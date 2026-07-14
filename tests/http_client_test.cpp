@@ -1,5 +1,6 @@
 #include "dagforge/http/http_client.hpp"
 #include "dagforge/core/runtime.hpp"
+#include "dagforge/core/sync_wait.hpp"
 #include "test_utils.hpp"
 
 #include <gtest/gtest.h>
@@ -105,6 +106,34 @@ TEST_F(HttpClientTest, HttpClientConfigCustomValues) {
   EXPECT_EQ(config.read_timeout, std::chrono::milliseconds(10000));
   EXPECT_EQ(config.max_response_size, 1024U);
   EXPECT_FALSE(config.keep_alive);
+}
+
+TEST_F(HttpClientTest, RejectsResolvedEndpointsBeforeConnect) {
+  HttpClientConfig config;
+  config.endpoint_allowed = [](const boost::asio::ip::address &) {
+    return false;
+  };
+  auto attempt = [config = std::move(config)]() mutable
+      -> task<Result<std::unique_ptr<HttpClient>>> {
+    co_return co_await HttpClient::connect_tcp(
+        current_io_context(), "localhost", 9, std::move(config));
+  };
+  auto connected = sync_wait_on_runtime(*runtime_, attempt());
+  ASSERT_FALSE(connected.has_value());
+  EXPECT_EQ(connected.error(), make_error_code(Error::Unauthorized));
+}
+
+TEST_F(HttpClientTest, RejectsIncompleteMutualTlsIdentity) {
+  HttpClientConfig config;
+  config.tls_client_cert_file = "/tmp/client.pem";
+  auto attempt = [config = std::move(config)]() mutable
+      -> task<Result<std::unique_ptr<HttpClient>>> {
+    co_return co_await HttpClient::connect_tls(
+        current_io_context(), "localhost", 443, std::move(config));
+  };
+  auto connected = sync_wait_on_runtime(*runtime_, attempt());
+  ASSERT_FALSE(connected.has_value());
+  EXPECT_EQ(connected.error(), make_error_code(Error::InvalidArgument));
 }
 
 } // namespace dagforge::http::test

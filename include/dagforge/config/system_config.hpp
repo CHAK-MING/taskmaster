@@ -26,10 +26,15 @@ struct SandboxConfig {
   std::uint64_t max_memory_bytes{1024ULL * 1024ULL * 1024ULL};
   std::uint64_t max_file_bytes{64ULL * 1024ULL * 1024ULL};
   std::uint64_t tmp_bytes{64ULL * 1024ULL * 1024ULL};
+  std::uint64_t max_stdout_bytes{10ULL * 1024ULL * 1024ULL};
+  std::uint64_t max_stderr_bytes{10ULL * 1024ULL * 1024ULL};
+  std::uint64_t max_stream_line_bytes{64ULL * 1024ULL};
   std::uint32_t max_processes{128};
   std::uint32_t max_open_files{256};
-  bool allow_unlisted_programs{true};
-  bool allow_unlisted_environment{true};
+  bool allow_unlisted_programs{false};
+  bool allow_unlisted_environment{false};
+  bool require_trusted_files{true};
+  bool retain_workspaces{false};
   std::vector<std::string> allowed_programs;
   std::vector<std::string> allowed_environment;
 
@@ -45,19 +50,27 @@ struct WorkflowConfig {
 struct HttpExecutorConfig {
   bool enabled{false};
   bool allow_plaintext{false};
+  bool deny_private_networks{true};
   std::vector<std::string> allowed_origins;
+  std::vector<std::string> allowed_ip_cidrs;
   std::size_t max_request_headers{64};
   std::uint64_t max_request_header_bytes{64ULL * 1024ULL};
   std::uint64_t max_request_body_bytes{1024ULL * 1024ULL};
+  std::size_t max_response_headers{128};
   std::uint64_t max_response_header_bytes{64ULL * 1024ULL};
   std::uint64_t max_response_body_bytes{10ULL * 1024ULL * 1024ULL};
   std::size_t max_concurrent_requests_per_shard{32};
+  std::size_t max_concurrent_requests{256};
+  std::string tls_min_version{"1.2"};
+  std::string tls_ca_file;
+  std::string tls_client_cert_file;
+  std::string tls_client_key_file;
 
   auto operator==(const HttpExecutorConfig &) const -> bool = default;
 };
 
 struct AdmissionConfig {
-  bool allow_unlisted_executors{true};
+  bool allow_unlisted_executors{false};
   std::vector<std::string> allowed_executors;
   std::size_t max_nodes{256};
   std::size_t max_parallel_nodes{32};
@@ -84,8 +97,13 @@ struct ApiConfig {
   bool tls_enabled{false};
   std::string tls_cert_file;
   std::string tls_key_file;
+  std::string tls_min_version{"1.2"};
   std::string bearer_token_env;
+  std::uint64_t max_request_header_bytes{64ULL * 1024ULL};
   std::uint64_t max_request_body_bytes{1024ULL * 1024ULL};
+  std::uint64_t connection_idle_timeout_ms{30'000};
+  std::size_t max_connections{1024};
+  std::size_t max_requests_per_connection{100};
   std::size_t max_concurrent_requests{128};
 
   auto operator==(const ApiConfig &) const -> bool = default;

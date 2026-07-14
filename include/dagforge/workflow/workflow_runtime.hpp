@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -73,6 +74,9 @@ public:
       -> task<Result<void>>;
   [[nodiscard]] auto cancel(const WorkflowRunId &run_id)
       -> task<Result<void>>;
+  [[nodiscard]] auto quiesce(
+      std::chrono::milliseconds timeout = std::chrono::seconds(10))
+      -> Result<void>;
 
   [[nodiscard]] auto evidence(const WorkflowRunId &run_id) const
       -> std::vector<EvidenceRecord>;
@@ -166,6 +170,8 @@ private:
   auto append_evidence(const ActiveRun &run, std::size_t node_index,
                        EvidenceType type, JsonValue metadata = {}) -> void;
   auto checkpoint(ActiveRun &run) -> void;
+  auto notify_lifecycle_changed() noexcept -> void;
+  [[nodiscard]] auto lifecycle_quiesced() const noexcept -> bool;
 
   [[nodiscard]] auto execute_task(WorkflowRunId run_id,
                                   std::size_t task_index,
@@ -184,6 +190,11 @@ private:
   mutable std::mutex idempotency_mutex_;
   std::unordered_map<std::string, WorkflowRunId> idempotency_runs_;
   std::atomic<std::uint64_t> active_run_count_{0};
+  std::atomic<std::uint64_t> pending_initializations_{0};
+  std::atomic<std::uint64_t> active_task_coroutines_{0};
+  std::atomic_bool quiescing_{false};
+  mutable std::mutex lifecycle_mutex_;
+  std::condition_variable lifecycle_changed_;
 };
 
 } // namespace dagforge::workflow

@@ -3,6 +3,7 @@
 #include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/util/log.hpp"
 
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/cancel_after.hpp>
 #include <boost/asio/connect.hpp>
@@ -14,9 +15,12 @@
 
 #include <openssl/ssl.h>
 
+#include <algorithm>
 #include <experimental/scope>
+#include <iterator>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace dagforge::http {
 
@@ -43,6 +47,84 @@ auto method_to_string(HttpMethod method) -> std::string_view {
     return "HEAD";
   }
   return "GET";
+}
+
+auto to_beast_method(HttpMethod method) noexcept -> beast_http::verb {
+  switch (method) {
+  case HttpMethod::GET:
+    return beast_http::verb::get;
+  case HttpMethod::POST:
+    return beast_http::verb::post;
+  case HttpMethod::PUT:
+    return beast_http::verb::put;
+  case HttpMethod::DELETE:
+    return beast_http::verb::delete_;
+  case HttpMethod::PATCH:
+    return beast_http::verb::patch;
+  case HttpMethod::OPTIONS:
+    return beast_http::verb::options;
+  case HttpMethod::HEAD:
+    return beast_http::verb::head;
+  }
+  return beast_http::verb::unknown;
+}
+
+[[nodiscard]] auto safe_http_token(std::string_view value) noexcept -> bool {
+  return !value.empty() && !value.contains('\r') && !value.contains('\n') &&
+         !value.contains('\0');
+}
+
+[[nodiscard]] auto make_beast_request(HttpRequest request,
+                                      const HttpClientConfig &config,
+                                      const std::string &host)
+    -> Result<beast_http::request<beast_http::vector_body<uint8_t>>> {
+  auto target = request.query_string.empty()
+                    ? request.path
+                    : std::format("{}?{}", request.path, request.query_string);
+  if (target.empty() || !target.starts_with('/') || !safe_http_token(target)) {
+    return fail(Error::InvalidArgument);
+  }
+
+  beast_http::request<beast_http::vector_body<uint8_t>> message{
+      to_beast_method(request.method), target, 11};
+  try {
+    for (const auto &field : request.headers) {
+      if (!safe_http_token(field.name) ||
+          (!field.value.empty() && !safe_http_token(field.value)) ||
+          boost::algorithm::iequals(field.name, "Content-Length") ||
+          boost::algorithm::iequals(field.name, "Transfer-Encoding")) {
+        return fail(Error::InvalidArgument);
+      }
+      message.insert(field.name, field.value);
+    }
+  } catch (const std::exception &) {
+    return fail(Error::InvalidArgument);
+  }
+  if (message.find(beast_http::field::host) == message.end()) {
+    message.set(beast_http::field::host, host);
+  }
+  message.keep_alive(config.keep_alive);
+  message.body() = std::move(request.body);
+  message.prepare_payload();
+  return ok(std::move(message));
+}
+
+[[nodiscard]] auto permitted_endpoints(
+    const boost::asio::ip::tcp::resolver::results_type &resolved,
+    const HttpClientConfig &config)
+    -> Result<std::vector<boost::asio::ip::tcp::endpoint>> {
+  std::vector<boost::asio::ip::tcp::endpoint> endpoints;
+  endpoints.reserve(resolved.size());
+  for (const auto &entry : resolved) {
+    const auto &endpoint = entry.endpoint();
+    if (!config.endpoint_allowed || config.endpoint_allowed(endpoint.address())) {
+      endpoints.push_back(endpoint);
+    }
+  }
+  if (endpoints.empty()) {
+    return fail(Error::Unauthorized);
+  }
+  return ok(std::move(endpoints));
 }
 
 auto to_response(
@@ -76,16 +158,12 @@ auto request_over_stream(Stream &stream, HttpRequest req,
   const auto target = req.query_string.empty()
                           ? req.path
                           : std::format("{}?{}", req.path, req.query_string);
-  if (!req.headers.contains("Host")) {
-    req.headers.set("Host", host);
+  auto request_message = make_beast_request(std::move(req), config, host);
+  if (!request_message) {
+    co_return fail(request_message.error());
   }
-  if (config.keep_alive && !req.headers.contains("Connection")) {
-    req.headers.set("Connection", "keep-alive");
-  }
-
-  auto request_data = req.serialize();
-  auto write_res = co_await co_as_result(boost::asio::async_write(
-      stream, boost::asio::buffer(request_data),
+  auto write_res = co_await co_as_result(beast_http::async_write(
+      stream, *request_message,
       boost::asio::bind_cancellation_slot(
           cancellation,
           boost::asio::cancel_after(config.read_timeout, use_nothrow))));
@@ -102,6 +180,7 @@ auto request_over_stream(Stream &stream, HttpRequest req,
   beast_http::response_parser<beast_http::vector_body<uint8_t>> parser;
   parser.header_limit(config.max_response_header_size);
   parser.body_limit(config.max_response_size);
+  parser.skip(method == HttpMethod::HEAD);
 
   auto read_res = co_await co_as_result(beast_http::async_read(
       stream, read_buffer, parser,
@@ -116,6 +195,13 @@ auto request_over_stream(Stream &stream, HttpRequest req,
     co_return fail(read_res.error());
   }
   (void)*read_res;
+
+  const auto header_count = static_cast<std::size_t>(
+      std::distance(parser.get().base().begin(), parser.get().base().end()));
+  if (header_count > config.max_response_headers) {
+    close_stream(stream);
+    co_return fail(Error::ResourceExhausted);
+  }
 
   co_return ok(to_response(parser.release()));
 }
@@ -173,6 +259,12 @@ auto HttpClient::connect_tcp(io::IoContext &ctx, std::string host,
                resolve_res.error().message());
     co_return fail(resolve_res.error());
   }
+  auto endpoints = permitted_endpoints(*resolve_res, config);
+  if (!endpoints) {
+    log::warn("Resolved endpoints for {}:{} were rejected by policy", host,
+              port);
+    co_return fail(endpoints.error());
+  }
 
   auto socket = std::make_shared<boost::asio::ip::tcp::socket>(ctx);
   if (cancellation.is_connected()) {
@@ -181,7 +273,7 @@ auto HttpClient::connect_tcp(io::IoContext &ctx, std::string host,
     });
   }
   auto connect_res = co_await co_as_result(boost::asio::async_connect(
-      *socket, *resolve_res,
+      *socket, *endpoints,
       boost::asio::cancel_after(config.connect_timeout, use_nothrow)));
   if (!connect_res) {
     log::debug("Failed to connect to {}:{} - {}", host, port,
@@ -202,6 +294,12 @@ auto HttpClient::connect_tls(io::IoContext &ctx, std::string host,
                              uint16_t port, HttpClientConfig config,
                              boost::asio::cancellation_slot cancellation)
     -> task<Result<std::unique_ptr<HttpClient>>> {
+  if ((config.tls_min_version != "1.2" &&
+       config.tls_min_version != "1.3") ||
+      (config.tls_client_cert_file.empty() !=
+       config.tls_client_key_file.empty())) {
+    co_return fail(Error::InvalidArgument);
+  }
   boost::system::error_code ec;
   auto resolver = std::make_shared<boost::asio::ip::tcp::resolver>(ctx);
   if (cancellation.is_connected()) {
@@ -223,6 +321,12 @@ auto HttpClient::connect_tls(io::IoContext &ctx, std::string host,
                resolve_res.error().message());
     co_return fail(resolve_res.error());
   }
+  auto endpoints = permitted_endpoints(*resolve_res, config);
+  if (!endpoints) {
+    log::warn("Resolved TLS endpoints for {}:{} were rejected by policy", host,
+              port);
+    co_return fail(endpoints.error());
+  }
 
   auto tls_context = std::make_shared<boost::asio::ssl::context>(
       boost::asio::ssl::context::tls_client);
@@ -230,6 +334,36 @@ auto HttpClient::connect_tls(io::IoContext &ctx, std::string host,
   if (ec) {
     log::debug("Failed to load default TLS trust store: {}", ec.message());
     co_return fail(ec);
+  }
+  if (!config.tls_ca_file.empty()) {
+    tls_context->load_verify_file(config.tls_ca_file, ec);
+    if (ec) {
+      log::debug("Failed to load TLS CA file '{}': {}", config.tls_ca_file,
+                 ec.message());
+      co_return fail(Error::InvalidArgument);
+    }
+  }
+  if (!config.tls_client_cert_file.empty()) {
+    tls_context->use_certificate_chain_file(config.tls_client_cert_file, ec);
+    if (ec) {
+      log::debug("Failed to load TLS client certificate '{}': {}",
+                 config.tls_client_cert_file, ec.message());
+      co_return fail(Error::InvalidArgument);
+    }
+    tls_context->use_private_key_file(config.tls_client_key_file,
+                                      boost::asio::ssl::context::pem, ec);
+    if (ec || ::SSL_CTX_check_private_key(tls_context->native_handle()) != 1) {
+      log::debug("Invalid TLS client private key '{}': {}",
+                 config.tls_client_key_file, ec.message());
+      co_return fail(Error::InvalidArgument);
+    }
+  }
+  ::SSL_CTX_set_options(tls_context->native_handle(), SSL_OP_NO_COMPRESSION);
+  const auto minimum_protocol =
+      config.tls_min_version == "1.3" ? TLS1_3_VERSION : TLS1_2_VERSION;
+  if (::SSL_CTX_set_min_proto_version(tls_context->native_handle(),
+                                      minimum_protocol) != 1) {
+    co_return fail(Error::InvalidArgument);
   }
   tls_context->set_verify_mode(boost::asio::ssl::verify_peer);
 
@@ -246,7 +380,7 @@ auto HttpClient::connect_tls(io::IoContext &ctx, std::string host,
   }
 
   auto connect_res = co_await co_as_result(boost::asio::async_connect(
-      stream->next_layer(), *resolve_res,
+      stream->next_layer(), *endpoints,
       boost::asio::cancel_after(config.connect_timeout, use_nothrow)));
   if (!connect_res) {
     log::debug("Failed to connect TLS endpoint {}:{} - {}", host, port,

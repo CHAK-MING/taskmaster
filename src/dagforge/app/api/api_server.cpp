@@ -6,6 +6,8 @@
 #include "dagforge/app/metrics_exporter.hpp"
 #include "dagforge/http/http_server.hpp"
 #include "dagforge/util/log.hpp"
+
+#include <chrono>
 #include <cstdlib>
 #include <tuple>
 
@@ -73,14 +75,21 @@ struct ApiServer::Impl : std::enable_shared_from_this<Impl> {
                  api_cfg.bearer_token_env);
       return fail(Error::InvalidArgument);
     }
-    auto body_limit =
-        server_->set_request_body_limit(api_cfg.max_request_body_bytes);
-    if (!body_limit) {
-      return fail(body_limit.error());
+    auto configured = server_->configure(http::HttpServerConfig{
+        .max_request_header_bytes = api_cfg.max_request_header_bytes,
+        .max_request_body_bytes = api_cfg.max_request_body_bytes,
+        .connection_idle_timeout =
+            std::chrono::milliseconds(api_cfg.connection_idle_timeout_ms),
+        .max_connections = api_cfg.max_connections,
+        .max_requests_per_connection = api_cfg.max_requests_per_connection,
+    });
+    if (!configured) {
+      return fail(configured.error());
     }
     if (api_cfg.tls_enabled) {
       auto tls_res = server_->set_tls_credentials(api_cfg.tls_cert_file,
-                                                  api_cfg.tls_key_file);
+                                                  api_cfg.tls_key_file,
+                                                  api_cfg.tls_min_version);
       if (!tls_res) {
         log::error("API TLS setup failed: {}", tls_res.error().message());
         return fail(tls_res.error());

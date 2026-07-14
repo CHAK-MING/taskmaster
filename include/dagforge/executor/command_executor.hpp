@@ -28,6 +28,7 @@ struct CommandExecutionResult {
   pmr::string stderr_output{current_memory_resource_or_default()};
   pmr::string error{current_memory_resource_or_default()};
   bool timed_out{false};
+  bool resource_exhausted{false};
   bool stdout_streamed{false};
   bool stderr_streamed{false};
 };
@@ -74,7 +75,7 @@ class ICommandExecutor;
 
 [[nodiscard]] auto create_command_executor(Runtime &runtime,
                                            SandboxConfig sandbox)
-    -> std::unique_ptr<ICommandExecutor>;
+    -> Result<std::unique_ptr<ICommandExecutor>>;
 
 class ICommandExecutor {
 public:
@@ -85,6 +86,7 @@ public:
       -> Result<void> = 0;
 
   virtual auto cancel(const InstanceId &instance_id) -> void = 0;
+  virtual auto shutdown() noexcept -> void = 0;
 };
 
 inline auto execute_command_async(

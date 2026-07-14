@@ -32,6 +32,14 @@ All notable changes to DAGForge will be documented in this file.
   exact server-owned origin allowlists, HTTPS verification, input-derived
   headers and bodies, accepted-status policy, bounded responses, per-shard
   concurrency, cancellation, timeout, and stable response outputs.
+- Added resolved-address egress policy with private/special-use denial and CIDR
+  exceptions, process-wide HTTP capacity, TLS minimum-version control,
+  additional CA trust, optional mTLS, and TLS-only API listeners.
+- Added active HTTP connection, idle-time, parser, and requests-per-connection
+  limits. Server shutdown closes and drains active connections.
+- Added fail-closed known-binary Command policy, trusted Minijail/BPF preflight,
+  private workspaces, stdout/stderr/line limits, and executor shutdown that
+  kills and reaps active process groups.
 - Added OpenSpec coverage and real Command → HTTP → Command Workflow JSON tests
   for TLS, retry, cancellation, timeout, response limits, UTF-8 validation,
   status handling, and outbound-policy rejection.
@@ -78,11 +86,19 @@ All notable changes to DAGForge will be documented in this file.
   now contains only the HTTP control plane used by the runtime.
 - Enum metadata and JSON/TOML enum serialization now share Glaze `enumerate` definitions.
 - HTTP headers use Boost.Beast fields, preserving case-insensitive lookup and duplicate fields.
+- HTTP requests are serialized through Boost.Beast messages instead of manual
+  wire construction; unsupported inbound methods now return `405`.
+- Program, environment, executor, and private-network policy defaults are now
+  deny-by-default. Permissive settings are explicit development overrides.
 - Shard hashes use `ankerl::unordered_dense` hashing.
 - Removed the direct Boost.Filesystem dependency; Boost.Charconv remains linked because Boost.URL uses it in the current system build.
 - Runtime benchmarks now target the shipped 0.4 runtime primitives instead of the retired Airflow-style scheduler stack.
 
 ### Fixed
+- Application shutdown now quiesces Workflow Runtime, drains active HTTP and
+  Task coroutines through owner-shard barriers, and only then stops Runtime
+  threads. HTTP server socket closure is executor-affine, eliminating the
+  shutdown race and in-flight coroutine leaks found by TSAN and LSAN.
 - Executor completion callbacks are marshalled back to the awaiting runtime
   executor and accepted exactly once, including synchronous and foreign-thread
   executor completions.
@@ -93,6 +109,9 @@ All notable changes to DAGForge will be documented in this file.
   while the runtime uses Minijail static mode.
 - A Run can only succeed when every published Workflow output exists, and
   scalar Workflow values remain JSON scalars in API responses.
+- DNS results are filtered before connect, command policy is enforced again at
+  the low-level process boundary, and output overflow terminates the sandbox
+  instead of continuing with silently truncated data.
 
 ## [0.3.0] - 2026-03-30
 

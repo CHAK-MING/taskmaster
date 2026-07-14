@@ -1,7 +1,6 @@
 #include "dagforge/executor/command_executor.hpp"
 
 #include "detail/command_validation.hpp"
-#include "detail/shard_state.hpp"
 #include "dagforge/executor/process_launch.hpp"
 #include "dagforge/executor/process_management.hpp"
 #include "dagforge/util/log.hpp"
@@ -18,16 +17,20 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cctype>
 #include <cstdlib>
 #include <experimental/scope>
 #include <filesystem>
 #include <format>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #if defined(__linux__)
@@ -42,7 +45,6 @@ namespace {
 namespace bp = boost::process::v2;
 namespace fs = std::filesystem;
 
-inline constexpr std::size_t kMaxOutputSize = 10UZ * 1024 * 1024;
 inline constexpr std::size_t kReadBufferSize = 4096;
 inline constexpr std::size_t kInitialOutputReserve = 8192;
 inline constexpr int kTimeoutExitCode = kExitCodeTimeout;
@@ -52,19 +54,69 @@ inline constexpr std::string_view kSandboxPath =
 inline constexpr std::array<std::string_view, 3> kReservedEnvironment{
     "HOME", "PATH", "TMPDIR"};
 
-using CommandShardState =
-    executor_detail::ShardExecutionState<ActiveProcess>;
+struct SandboxProcessRegistry {
+  std::atomic_bool shutting_down{false};
+  std::mutex mutex;
+  std::condition_variable changed;
+  std::unordered_map<std::string, pid_t> active;
 
-struct ExecutionContext {
-  CommandShardState *state{};
-
-  auto register_process(const InstanceId &id, pid_t pid) const noexcept
-      -> void {
-    state->register_active(id, ActiveProcess{.pid = pid});
+  [[nodiscard]] auto register_process(const InstanceId &id, pid_t pid) -> bool {
+    std::lock_guard lock(mutex);
+    if (shutting_down.load(std::memory_order_acquire)) {
+      return false;
+    }
+    return active.emplace(id.str(), pid).second;
   }
 
-  auto unregister_process(const InstanceId &id) const noexcept -> void {
-    state->unregister_active(id);
+  auto unregister_process(const InstanceId &id) -> void {
+    {
+      std::lock_guard lock(mutex);
+      active.erase(id.str());
+    }
+    changed.notify_all();
+  }
+
+  [[nodiscard]] auto find_process(const InstanceId &id) -> pid_t {
+    std::lock_guard lock(mutex);
+    const auto it = active.find(id.str());
+    return it == active.end() ? -1 : it->second;
+  }
+
+  auto shutdown() noexcept -> void {
+    shutting_down.store(true, std::memory_order_release);
+    std::vector<pid_t> processes;
+    {
+      std::lock_guard lock(mutex);
+      processes.reserve(active.size());
+      for (const auto &[_, pid] : active) {
+        processes.push_back(pid);
+      }
+    }
+    for (const auto pid : processes) {
+      kill_process_group_or_process(pid);
+    }
+    std::unique_lock lock(mutex);
+    if (!changed.wait_for(lock, std::chrono::seconds(5),
+                          [this] { return active.empty(); })) {
+      for (const auto &[_, pid] : active) {
+        kill_process_group_or_process(pid);
+      }
+      log::error("Timed out while reaping {} sandbox process groups",
+                 active.size());
+    }
+  }
+};
+
+struct ExecutionContext {
+  std::shared_ptr<SandboxProcessRegistry> registry;
+
+  [[nodiscard]] auto register_process(const InstanceId &id, pid_t pid) const
+      -> bool {
+    return registry->register_process(id, pid);
+  }
+
+  auto unregister_process(const InstanceId &id) const -> void {
+    registry->unregister_process(id);
   }
 };
 
@@ -104,28 +156,48 @@ struct ExecutionContext {
 }
 
 [[nodiscard]] auto resolve_regular_file(std::string_view configured,
-                                        bool require_executable)
+                                        bool require_executable,
+                                        bool require_trusted_permissions)
     -> Result<fs::path> {
   std::error_code error;
   auto path = fs::absolute(expand_user_path(configured), error);
   if (error) {
     return fail(error);
   }
-  path = fs::weakly_canonical(path, error);
-  if (error || !fs::is_regular_file(path, error)) {
-    return fail(Error::NotFound);
-  }
-#if defined(__linux__)
-  if (require_executable && ::access(path.c_str(), X_OK) != 0) {
-    return fail(Error::Unauthorized);
-  }
-#else
-  (void)require_executable;
-#endif
-  return ok(std::move(path));
+  return executor_detail::trusted_regular_file(
+      path, require_executable, require_trusted_permissions);
 }
 
-[[nodiscard]] auto resolve_workspace(const SandboxConfig &sandbox,
+[[nodiscard]] auto prepare_workspace_root(const SandboxConfig &sandbox)
+    -> Result<fs::path> {
+  std::error_code error;
+  auto root = fs::absolute(expand_user_path(sandbox.workspace_root), error);
+  if (error) {
+    return fail(error);
+  }
+  if (fs::exists(root, error) && fs::is_symlink(fs::symlink_status(root, error))) {
+    return fail(Error::Unauthorized);
+  }
+  fs::create_directories(root, error);
+  if (error) {
+    return fail(error);
+  }
+  fs::permissions(root, fs::perms::owner_all, fs::perm_options::replace, error);
+  if (error) {
+    return fail(error);
+  }
+  root = fs::canonical(root, error);
+  if (error || !fs::is_directory(root, error)) {
+    return fail(error ? error : make_error_code(Error::InvalidArgument));
+  }
+  auto temporary_root = fs::canonical(fs::temp_directory_path(error), error);
+  if (error || root == temporary_root || path_is_within(root, temporary_root)) {
+    return fail(Error::InvalidArgument);
+  }
+  return ok(std::move(root));
+}
+
+[[nodiscard]] auto resolve_workspace(const fs::path &root,
                                      const InstanceId &instance_id)
     -> Result<fs::path> {
   if (!safe_instance_name(instance_id.value())) {
@@ -133,25 +205,21 @@ struct ExecutionContext {
   }
 
   std::error_code error;
-  auto root = fs::absolute(expand_user_path(sandbox.workspace_root), error);
-  if (error) {
-    return fail(error);
-  }
-  fs::create_directories(root, error);
-  if (error) {
-    return fail(error);
-  }
-  root = fs::canonical(root, error);
-  if (error) {
-    return fail(error);
-  }
-  auto temporary_root = fs::canonical(fs::temp_directory_path(error), error);
-  if (error || path_is_within(root, temporary_root)) {
-    return fail(Error::InvalidArgument);
-  }
-
   auto workspace = root / instance_id.str();
-  fs::create_directories(workspace, error);
+  if (fs::exists(workspace, error)) {
+    if (error) {
+      return fail(error);
+    }
+    return fail(Error::AlreadyExists);
+  }
+  if (!fs::create_directory(workspace, error)) {
+    return fail(error ? error : make_error_code(Error::AlreadyExists));
+  }
+  if (error) {
+    return fail(error);
+  }
+  fs::permissions(workspace, fs::perms::owner_all, fs::perm_options::replace,
+                  error);
   if (error) {
     return fail(error);
   }
@@ -165,13 +233,7 @@ struct ExecutionContext {
 
 [[nodiscard]] auto resolve_executable_program(const fs::path &program)
     -> Result<fs::path> {
-  std::error_code error;
-  auto resolved = fs::canonical(program, error);
-  if (error || !fs::is_regular_file(resolved, error) ||
-      ::access(resolved.c_str(), X_OK) != 0) {
-    return fail(Error::Unauthorized);
-  }
-  return ok(std::move(resolved));
+  return executor_detail::trusted_regular_file(program, true, false);
 }
 
 auto add_existing_path(std::vector<std::string> &args,
@@ -311,13 +373,33 @@ auto run_executor_heartbeat(
   }
 }
 
+struct OutputLimitState {
+  bool exceeded{false};
+  std::string stream;
+};
+
+auto mark_output_limit_exceeded(
+    OutputLimitState &limit_state, std::string_view stream, pid_t pid,
+    boost::asio::cancellation_signal &cancel_signal) -> void {
+  if (limit_state.exceeded) {
+    return;
+  }
+  limit_state.exceeded = true;
+  limit_state.stream.assign(stream);
+  kill_process_group_or_process(pid);
+  cancel_signal.emit(boost::asio::cancellation_type::total);
+}
+
 [[nodiscard]] auto read_pipe_all(boost::asio::readable_pipe &pipe,
                                  pmr::string &out,
                                  boost::asio::cancellation_signal &cancel_sig,
                                  const InstanceId &instance_id,
                                  CommandExecutionSink &sink,
                                  std::string stream,
-                                 bool &streamed_any) -> task<void> {
+                                 bool &streamed_any, pid_t pid,
+                                 std::uint64_t max_output_bytes,
+                                 std::uint64_t max_stream_line_bytes,
+                                 OutputLimitState &limit_state) -> task<void> {
   std::array<char, kReadBufferSize> buffer{};
   std::string pending_line;
   pending_line.reserve(kReadBufferSize);
@@ -351,13 +433,19 @@ auto run_executor_heartbeat(
       co_return;
     }
     const auto bytes = *read_result;
-    if (bytes > 0 && out.size() < kMaxOutputSize) {
-      const auto remaining = kMaxOutputSize - out.size();
-      out.append(buffer.data(), std::min<std::size_t>(remaining, bytes));
+    if (bytes > max_output_bytes -
+                    std::min<std::uint64_t>(out.size(), max_output_bytes)) {
+      mark_output_limit_exceeded(limit_state, stream, pid, cancel_sig);
+      co_return;
     }
     if (bytes > 0) {
+      out.append(buffer.data(), bytes);
       pending_line.append(buffer.data(), bytes);
       flush_complete_lines();
+      if (pending_line.size() > max_stream_line_bytes) {
+        mark_output_limit_exceeded(limit_state, stream, pid, cancel_sig);
+        co_return;
+      }
     }
   }
 }
@@ -389,7 +477,7 @@ auto execute_command(fs::path minijail, std::vector<std::string> arguments,
                      std::shared_ptr<CommandHeartbeatCallback> heartbeat,
                      ExecutionContext context,
                      std::shared_ptr<pmr::memory_resource> resource_owner,
-                     Runtime &runtime) -> spawn_task {
+                     SandboxConfig sandbox, Runtime &runtime) -> spawn_task {
   auto *resource = resource_owner != nullptr
                        ? resource_owner.get()
                        : current_memory_resource_or_default();
@@ -399,6 +487,13 @@ auto execute_command(fs::path minijail, std::vector<std::string> arguments,
   auto result = make_command_execution_result(resource);
   result.stdout_output.reserve(kInitialOutputReserve);
   result.stderr_output.reserve(kInitialOutputReserve);
+  const auto cleanup_workspace = std::experimental::scope_exit(
+      [workspace, retain = sandbox.retain_workspaces] {
+        if (!retain) {
+          std::error_code ignored;
+          fs::remove_all(workspace, ignored);
+        }
+      });
 
   auto heartbeat_stop = std::make_shared<std::atomic_bool>(false);
   const auto stop_heartbeat = std::experimental::scope_exit([heartbeat_stop] {
@@ -430,7 +525,15 @@ auto execute_command(fs::path minijail, std::vector<std::string> arguments,
     co_return;
   }
 
-  context.register_process(instance_id, process->id());
+  if (!context.register_process(instance_id, process->id())) {
+    auto stopped = co_await terminate_and_reap_process(*process);
+    result.exit_code = stopped ? stopped->exit_code : -1;
+    result.error.assign("Sandbox executor is shutting down");
+    if (sink.on_complete) {
+      sink.on_complete(instance_id, std::move(result));
+    }
+    co_return;
+  }
   if (sink.on_state) {
     sink.on_state(instance_id, "running");
   }
@@ -440,17 +543,28 @@ auto execute_command(fs::path minijail, std::vector<std::string> arguments,
   boost::asio::cancellation_signal cancel_signal;
   bool stdout_streamed = false;
   bool stderr_streamed = false;
+  OutputLimitState output_limit;
   using namespace boost::asio::experimental::awaitable_operators;
   auto wait_result =
       co_await (read_pipe_all(stdout_pipe, result.stdout_output, cancel_signal,
-                              instance_id, sink, "stdout", stdout_streamed) &&
+                              instance_id, sink, "stdout", stdout_streamed,
+                              process->id(), sandbox.max_stdout_bytes,
+                              sandbox.max_stream_line_bytes, output_limit) &&
                 read_pipe_all(stderr_pipe, result.stderr_output, cancel_signal,
-                              instance_id, sink, "stderr", stderr_streamed) &&
+                              instance_id, sink, "stderr", stderr_streamed,
+                              process->id(), sandbox.max_stderr_bytes,
+                              sandbox.max_stream_line_bytes, output_limit) &&
                 wait_process_with_timeout(*process, timeout, cancel_signal));
 
   result.stdout_streamed = stdout_streamed;
   result.stderr_streamed = stderr_streamed;
-  if (!wait_result) {
+  if (output_limit.exceeded) {
+    result.resource_exhausted = true;
+    result.exit_code = wait_result ? wait_result->exit_code : -1;
+    result.error = pmr::string(
+        std::format("{} output exceeded configured limit", output_limit.stream),
+        resource);
+  } else if (!wait_result) {
     result.exit_code = -1;
     result.error = pmr::string(
         std::format("Failed to wait for sandbox: {}",
@@ -480,29 +594,57 @@ auto execute_command(fs::path minijail, std::vector<std::string> arguments,
 
 class MinijailCommandExecutor final : public ICommandExecutor {
 public:
-  MinijailCommandExecutor(Runtime &runtime, SandboxConfig sandbox)
+  MinijailCommandExecutor(Runtime &runtime, SandboxConfig sandbox,
+                          fs::path minijail, fs::path seccomp_bpf,
+                          fs::path workspace_root,
+                          std::unordered_set<std::string> allowed_programs,
+                          std::unordered_set<std::string> allowed_environment)
       : runtime_(&runtime), sandbox_(std::move(sandbox)),
-        shard_states_(runtime.shard_count()) {}
+        minijail_(std::move(minijail)), seccomp_bpf_(std::move(seccomp_bpf)),
+        workspace_root_(std::move(workspace_root)),
+        allowed_programs_(std::move(allowed_programs)),
+        allowed_environment_(std::move(allowed_environment)),
+        registry_(std::make_shared<SandboxProcessRegistry>()) {}
+
+  ~MinijailCommandExecutor() override { shutdown(); }
 
   auto start(CommandExecutionRequest request, CommandExecutionSink sink)
       -> Result<void> override {
-    if (!landlock_available()) {
-      return fail(Error::Unsupported);
+    if (registry_->shutting_down.load(std::memory_order_acquire)) {
+      return fail(Error::InvalidState);
     }
-    auto minijail = resolve_regular_file(sandbox_.minijail_path, true);
-    if (!minijail) {
-      return fail(minijail.error());
+    auto canonical_program = executor_detail::canonical_program(
+        request.command.program, sandbox_.require_trusted_files);
+    if (!canonical_program) {
+      return fail(canonical_program.error());
     }
-    auto seccomp = resolve_regular_file(sandbox_.seccomp_bpf_path, false);
-    if (!seccomp) {
-      return fail(seccomp.error());
+    request.command.program = std::move(*canonical_program);
+    if (!sandbox_.allow_unlisted_programs &&
+        !allowed_programs_.contains(request.command.program)) {
+      return fail(Error::Unauthorized);
     }
-    auto workspace = resolve_workspace(sandbox_, request.instance_id);
+    for (const auto &[key, _] : request.command.environment) {
+      if (!executor_detail::is_valid_environment_key(key)) {
+        return fail(Error::InvalidArgument);
+      }
+      if (!sandbox_.allow_unlisted_environment &&
+          !allowed_environment_.contains(key)) {
+        return fail(Error::Unauthorized);
+      }
+    }
+    auto workspace = resolve_workspace(workspace_root_, request.instance_id);
     if (!workspace) {
       return fail(workspace.error());
     }
+    bool cleanup_on_failure = !sandbox_.retain_workspaces;
+    const auto cleanup_workspace = std::experimental::scope_exit([&] {
+      if (cleanup_on_failure) {
+        std::error_code ignored;
+        fs::remove_all(*workspace, ignored);
+      }
+    });
     auto arguments = build_sandbox_arguments(
-        sandbox_, *seccomp, *workspace, request.command,
+        sandbox_, seccomp_bpf_, *workspace, request.command,
         request.execution_timeout);
     if (!arguments) {
       return fail(arguments.error());
@@ -512,49 +654,94 @@ public:
 
     log::debug("CommandExecutor start instance_id={} program='{}'",
                request.instance_id, request.command.program);
-    auto shard = runtime_->is_current_shard() ? runtime_->current_shard() : 0;
     std::shared_ptr<CommandHeartbeatCallback> heartbeat;
     if (sink.on_heartbeat) {
       heartbeat = std::make_shared<CommandHeartbeatCallback>(
           std::move(sink.on_heartbeat));
     }
     runtime_->spawn(execute_command(
-        std::move(*minijail), std::move(*arguments), std::move(environment),
+        minijail_, std::move(*arguments), std::move(environment),
         std::move(*workspace), request.execution_timeout, request.instance_id,
         CommandExecutionSink{.on_state = std::move(sink.on_state),
                              .on_stdout = std::move(sink.on_stdout),
                              .on_stderr = std::move(sink.on_stderr),
                              .on_complete = std::move(sink.on_complete)},
-        std::move(heartbeat), ExecutionContext{.state = &shard_states_[shard]},
-        request.memory_resource, *runtime_));
+        std::move(heartbeat), ExecutionContext{.registry = registry_},
+        request.memory_resource, sandbox_, *runtime_));
+    cleanup_on_failure = false;
     return ok();
   }
 
   auto cancel(const InstanceId &instance_id) -> void override {
-    executor_detail::cancel_on_all_shards(
-        *runtime_, shard_states_, instance_id,
-        [](CommandShardState &state, const InstanceId &id) {
-          auto active = state.find_active_mut(id);
-          if (active == state.active_end() || active->second.pid <= 0) {
-            return;
-          }
-          kill_process_group_or_process(active->second.pid);
-          log::debug("Cancelled sandbox for instance {}", id);
-        });
+    const auto pid = registry_->find_process(instance_id);
+    if (pid > 0) {
+      kill_process_group_or_process(pid);
+      log::debug("Cancelled sandbox for instance {}", instance_id);
+    }
+  }
+
+  auto shutdown() noexcept -> void override {
+    registry_->shutdown();
   }
 
 private:
   Runtime *runtime_;
   SandboxConfig sandbox_;
-  std::vector<CommandShardState> shard_states_;
+  fs::path minijail_;
+  fs::path seccomp_bpf_;
+  fs::path workspace_root_;
+  std::unordered_set<std::string> allowed_programs_;
+  std::unordered_set<std::string> allowed_environment_;
+  std::shared_ptr<SandboxProcessRegistry> registry_;
 };
 
 } // namespace
 
 auto create_command_executor(Runtime &runtime, SandboxConfig sandbox)
-    -> std::unique_ptr<ICommandExecutor> {
-  return std::make_unique<MinijailCommandExecutor>(runtime,
-                                                   std::move(sandbox));
+    -> Result<std::unique_ptr<ICommandExecutor>> {
+  if (!landlock_available()) {
+    return fail(Error::Unsupported);
+  }
+  if (sandbox.max_memory_bytes == 0 || sandbox.max_file_bytes == 0 ||
+      sandbox.tmp_bytes == 0 || sandbox.max_stdout_bytes == 0 ||
+      sandbox.max_stderr_bytes == 0 || sandbox.max_stream_line_bytes == 0 ||
+      sandbox.max_processes == 0 || sandbox.max_open_files == 0) {
+    return fail(Error::InvalidArgument);
+  }
+  auto minijail = resolve_regular_file(sandbox.minijail_path, true,
+                                       sandbox.require_trusted_files);
+  if (!minijail) {
+    return fail(minijail.error());
+  }
+  auto seccomp = resolve_regular_file(sandbox.seccomp_bpf_path, false,
+                                      sandbox.require_trusted_files);
+  if (!seccomp) {
+    return fail(seccomp.error());
+  }
+  auto workspace_root = prepare_workspace_root(sandbox);
+  if (!workspace_root) {
+    return fail(workspace_root.error());
+  }
+  std::unordered_set<std::string> allowed_programs;
+  for (const auto &configured : sandbox.allowed_programs) {
+    auto canonical = executor_detail::canonical_program(
+        configured, sandbox.require_trusted_files);
+    if (!canonical || !allowed_programs.emplace(std::move(*canonical)).second) {
+      return fail(canonical ? Error::InvalidArgument : canonical.error());
+    }
+  }
+  std::unordered_set<std::string> allowed_environment;
+  for (const auto &configured : sandbox.allowed_environment) {
+    if (!executor_detail::is_valid_environment_key(configured) ||
+        !allowed_environment.emplace(configured).second) {
+      return fail(Error::InvalidArgument);
+    }
+  }
+  return ok(std::unique_ptr<ICommandExecutor>{
+      std::make_unique<MinijailCommandExecutor>(
+          runtime, std::move(sandbox), std::move(*minijail),
+          std::move(*seccomp), std::move(*workspace_root),
+          std::move(allowed_programs), std::move(allowed_environment))});
 }
 
 } // namespace dagforge

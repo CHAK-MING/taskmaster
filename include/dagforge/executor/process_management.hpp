@@ -18,10 +18,6 @@ namespace dagforge {
 
 namespace bp = boost::process::v2;
 
-struct ActiveProcess {
-  pid_t pid{-1};
-};
-
 struct ProcessWaitResult {
   int exit_code{-1};
   bool timed_out{false};

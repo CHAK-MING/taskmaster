@@ -7,6 +7,7 @@
 #include "dagforge/io/context.hpp"
 
 #include <boost/asio/cancellation_signal.hpp>
+#include <boost/asio/ip/address.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/local/stream_protocol.hpp>
 #include <boost/asio/ssl/context.hpp>
@@ -16,6 +17,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -30,9 +32,15 @@ namespace dagforge::http {
 struct HttpClientConfig {
   std::chrono::milliseconds connect_timeout{30000};
   std::chrono::milliseconds read_timeout{30000};
+  std::size_t max_response_headers{128};
   std::size_t max_response_header_size{64UL * 1024UL};
   std::size_t max_response_size{10UL * 1024UL * 1024UL};
   bool keep_alive{true};
+  std::string tls_min_version{"1.2"};
+  std::string tls_ca_file;
+  std::string tls_client_cert_file;
+  std::string tls_client_key_file;
+  std::function<bool(const boost::asio::ip::address &)> endpoint_allowed;
 };
 
 template <typename T>

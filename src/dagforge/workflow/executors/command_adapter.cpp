@@ -67,11 +67,6 @@ namespace {
 using workflow::executor_detail::add_output;
 using workflow::executor_detail::input_exists;
 
-[[nodiscard]] auto allowed(std::span<const std::string> values,
-                           std::string_view value) -> bool {
-  return std::ranges::find(values, value) != values.end();
-}
-
 [[nodiscard]] auto value_to_string(const workflow::WorkflowValue &value)
     -> std::string {
   return std::visit(
@@ -99,8 +94,12 @@ using workflow::executor_detail::input_exists;
 class CommandWorkflowAdapter final : public workflow::ITaskExecutor {
 public:
   CommandWorkflowAdapter(ICommandExecutor &command_executor,
-                         SandboxConfig sandbox)
-      : command_executor_(command_executor), sandbox_(std::move(sandbox)) {}
+                         SandboxConfig sandbox,
+                         std::unordered_set<std::string> allowed_programs,
+                         std::unordered_set<std::string> allowed_environment)
+      : command_executor_(command_executor), sandbox_(std::move(sandbox)),
+        allowed_programs_(std::move(allowed_programs)),
+        allowed_environment_(std::move(allowed_environment)) {}
 
   [[nodiscard]] auto type() const noexcept -> std::string_view override {
     return "command";
@@ -110,12 +109,17 @@ public:
       JsonValue config, workflow::ExecutorCompileContext context) const
       -> Result<JsonValue> override {
     auto parsed = parse_json_as<detail::CommandNodeConfig>(dump_json(config));
-    if (!parsed || parsed->program.empty() ||
-        !std::filesystem::path(parsed->program).is_absolute()) {
-      return fail(Error::InvalidArgument);
+    if (!parsed) {
+      return fail(parsed.error());
     }
+    auto canonical = dagforge::executor_detail::canonical_program(
+        parsed->program, sandbox_.require_trusted_files);
+    if (!canonical) {
+      return fail(canonical.error());
+    }
+    parsed->program = std::move(*canonical);
     if (!sandbox_.allow_unlisted_programs &&
-        !allowed(sandbox_.allowed_programs, parsed->program)) {
+        !allowed_programs_.contains(parsed->program)) {
       return fail(Error::Unauthorized);
     }
 
@@ -126,7 +130,7 @@ public:
         return fail(Error::InvalidArgument);
       }
       if (!sandbox_.allow_unlisted_environment &&
-          !allowed(sandbox_.allowed_environment, entry.key)) {
+          !allowed_environment_.contains(entry.key)) {
         return fail(Error::Unauthorized);
       }
     }
@@ -137,7 +141,7 @@ public:
         return fail(Error::InvalidArgument);
       }
       if (!sandbox_.allow_unlisted_environment &&
-          !allowed(sandbox_.allowed_environment, binding.environment)) {
+          !allowed_environment_.contains(binding.environment)) {
         return fail(Error::Unauthorized);
       }
     }
@@ -194,6 +198,10 @@ public:
             on_complete(instance_id, fail(Error::Timeout));
             return;
           }
+          if (result.resource_exhausted) {
+            on_complete(instance_id, fail(Error::ResourceExhausted));
+            return;
+          }
           if (result.exit_code != 0) {
             on_complete(instance_id, fail(Error::Unknown));
             return;
@@ -227,6 +235,8 @@ public:
 private:
   ICommandExecutor &command_executor_;
   SandboxConfig sandbox_;
+  std::unordered_set<std::string> allowed_programs_;
+  std::unordered_set<std::string> allowed_environment_;
 };
 
 } // namespace
@@ -235,9 +245,26 @@ namespace workflow {
 
 auto create_command_executor_adapter(ICommandExecutor &command_executor,
                                      SandboxConfig sandbox)
-    -> std::shared_ptr<ITaskExecutor> {
-  return std::make_shared<CommandWorkflowAdapter>(command_executor,
-                                                   std::move(sandbox));
+    -> Result<std::shared_ptr<ITaskExecutor>> {
+  std::unordered_set<std::string> allowed_programs;
+  for (const auto &configured : sandbox.allowed_programs) {
+    auto canonical = dagforge::executor_detail::canonical_program(
+        configured, sandbox.require_trusted_files);
+    if (!canonical || !allowed_programs.emplace(std::move(*canonical)).second) {
+      return fail(canonical ? Error::InvalidArgument : canonical.error());
+    }
+  }
+  std::unordered_set<std::string> allowed_environment;
+  for (const auto &configured : sandbox.allowed_environment) {
+    if (!dagforge::executor_detail::is_valid_environment_key(configured) ||
+        !allowed_environment.emplace(configured).second) {
+      return fail(Error::InvalidArgument);
+    }
+  }
+  return ok(std::shared_ptr<ITaskExecutor>{
+      std::make_shared<CommandWorkflowAdapter>(
+          command_executor, std::move(sandbox), std::move(allowed_programs),
+          std::move(allowed_environment))});
 }
 
 } // namespace workflow

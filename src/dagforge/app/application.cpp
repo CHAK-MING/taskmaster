@@ -8,8 +8,10 @@
 #include "dagforge/workflow/executors/http_adapter.hpp"
 #include "dagforge/workflow/workflow_control_plane.hpp"
 #include "dagforge/workflow/workflow_runtime.hpp"
+#include "dagforge/util/log.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <thread>
@@ -58,14 +60,19 @@ auto Application::rebuild_components() -> Result<void> {
   runtime_ = std::make_unique<Runtime>(
       shard_count, config_.runtime.pin_shards_to_cores,
       static_cast<unsigned>(config_.runtime.cpu_affinity_offset));
-  command_executor_ = create_command_executor(*runtime_, config_.sandbox);
-  if (!command_executor_) {
-    return fail(Error::InvalidState);
+  auto command_executor = create_command_executor(*runtime_, config_.sandbox);
+  if (!command_executor) {
+    return fail(command_executor.error());
   }
+  command_executor_ = std::move(*command_executor);
   executor_registry_ = std::make_unique<workflow::ExecutorRegistry>();
-  auto command_registered = executor_registry_->register_executor(
-      workflow::create_command_executor_adapter(*command_executor_,
-                                                config_.sandbox));
+  auto command_adapter = workflow::create_command_executor_adapter(
+      *command_executor_, config_.sandbox);
+  if (!command_adapter) {
+    return fail(command_adapter.error());
+  }
+  auto command_registered =
+      executor_registry_->register_executor(std::move(*command_adapter));
   if (!command_registered) {
     return fail(command_registered.error());
   }
@@ -194,6 +201,16 @@ auto Application::stop() noexcept -> void {
   }
   if (api_) {
     api_->stop();
+  }
+  if (workflow_runtime_ && runtime_ && runtime_->is_running()) {
+    auto quiesced = workflow_runtime_->quiesce(std::chrono::seconds(10));
+    if (!quiesced) {
+      log::error("Workflow runtime shutdown did not quiesce: {}",
+                 quiesced.error().message());
+    }
+  }
+  if (command_executor_) {
+    command_executor_->shutdown();
   }
   if (runtime_) {
     runtime_->stop();

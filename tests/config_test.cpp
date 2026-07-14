@@ -22,6 +22,12 @@ TEST(ConfigTest, SandboxDefaults) {
   EXPECT_EQ(cfg.workspace_root, "./workspaces");
   EXPECT_EQ(cfg.max_memory_bytes, 1024ULL * 1024ULL * 1024ULL);
   EXPECT_EQ(cfg.tmp_bytes, 64ULL * 1024ULL * 1024ULL);
+  EXPECT_EQ(cfg.max_stdout_bytes, 10ULL * 1024ULL * 1024ULL);
+  EXPECT_EQ(cfg.max_stream_line_bytes, 64ULL * 1024ULL);
+  EXPECT_FALSE(cfg.allow_unlisted_programs);
+  EXPECT_FALSE(cfg.allow_unlisted_environment);
+  EXPECT_TRUE(cfg.require_trusted_files);
+  EXPECT_FALSE(cfg.retain_workspaces);
 }
 
 TEST(ConfigTest, ApiDefaults) {
@@ -35,13 +41,18 @@ TEST(ConfigTest, HttpExecutorDefaultsAreDenyByDefault) {
   HttpExecutorConfig cfg;
   EXPECT_FALSE(cfg.enabled);
   EXPECT_FALSE(cfg.allow_plaintext);
+  EXPECT_TRUE(cfg.deny_private_networks);
   EXPECT_TRUE(cfg.allowed_origins.empty());
+  EXPECT_TRUE(cfg.allowed_ip_cidrs.empty());
   EXPECT_EQ(cfg.max_request_headers, 64U);
   EXPECT_EQ(cfg.max_request_header_bytes, 64ULL * 1024ULL);
   EXPECT_EQ(cfg.max_request_body_bytes, 1024ULL * 1024ULL);
+  EXPECT_EQ(cfg.max_response_headers, 128U);
   EXPECT_EQ(cfg.max_response_header_bytes, 64ULL * 1024ULL);
   EXPECT_EQ(cfg.max_response_body_bytes, 10ULL * 1024ULL * 1024ULL);
   EXPECT_EQ(cfg.max_concurrent_requests_per_shard, 32U);
+  EXPECT_EQ(cfg.max_concurrent_requests, 256U);
+  EXPECT_EQ(cfg.tls_min_version, "1.2");
 }
 
 TEST(ConfigTest, LoadFromTomlString) {
@@ -58,23 +69,36 @@ workspace_root = "/var/lib/dagforge/workspaces"
 max_memory_bytes = 536870912
 max_file_bytes = 33554432
 tmp_bytes = 16777216
+max_stdout_bytes = 1048576
+max_stderr_bytes = 2097152
+max_stream_line_bytes = 4096
 max_processes = 64
 max_open_files = 128
 allow_unlisted_programs = false
 allow_unlisted_environment = false
+require_trusted_files = true
+retain_workspaces = true
 allowed_programs = ["/bin/echo"]
 allowed_environment = ["DAGFORGE_INPUT"]
 
 [http_executor]
 enabled = true
 allow_plaintext = true
+deny_private_networks = true
 allowed_origins = ["http://127.0.0.1:8081", "https://example.com"]
+allowed_ip_cidrs = ["127.0.0.0/8"]
 max_request_headers = 12
 max_request_header_bytes = 1024
 max_request_body_bytes = 2048
+max_response_headers = 10
 max_response_header_bytes = 4096
 max_response_body_bytes = 8192
 max_concurrent_requests_per_shard = 3
+max_concurrent_requests = 5
+tls_min_version = "1.3"
+tls_ca_file = "/opt/dagforge/ca.pem"
+tls_client_cert_file = "/opt/dagforge/client.pem"
+tls_client_key_file = "/opt/dagforge/client.key"
 
 [admission]
 allow_unlisted_executors = false
@@ -94,8 +118,13 @@ max_evidence_records = 200
 enabled = true
 port = 9999
 host = "0.0.0.0"
+tls_min_version = "1.3"
 bearer_token_env = "DAGFORGE_TEST_TOKEN"
+max_request_header_bytes = 2048
 max_request_body_bytes = 4096
+connection_idle_timeout_ms = 1500
+max_connections = 9
+max_requests_per_connection = 4
 max_concurrent_requests = 7
 )";
 
@@ -109,20 +138,26 @@ max_concurrent_requests = 7
   EXPECT_EQ(result->sandbox.minijail_path, "/opt/dagforge/minijail0");
   EXPECT_EQ(result->sandbox.max_memory_bytes, 536870912U);
   EXPECT_EQ(result->sandbox.max_processes, 64U);
+  EXPECT_EQ(result->sandbox.max_stdout_bytes, 1048576U);
+  EXPECT_TRUE(result->sandbox.retain_workspaces);
   EXPECT_FALSE(result->sandbox.allow_unlisted_programs);
   ASSERT_EQ(result->sandbox.allowed_programs.size(), 1U);
   EXPECT_EQ(result->sandbox.allowed_programs.front(), "/bin/echo");
   EXPECT_TRUE(result->http_executor.enabled);
   EXPECT_TRUE(result->http_executor.allow_plaintext);
+  EXPECT_TRUE(result->http_executor.deny_private_networks);
   ASSERT_EQ(result->http_executor.allowed_origins.size(), 2U);
   EXPECT_EQ(result->http_executor.allowed_origins.front(),
             "http://127.0.0.1:8081");
   EXPECT_EQ(result->http_executor.max_request_headers, 12U);
   EXPECT_EQ(result->http_executor.max_request_header_bytes, 1024U);
   EXPECT_EQ(result->http_executor.max_request_body_bytes, 2048U);
+  EXPECT_EQ(result->http_executor.max_response_headers, 10U);
   EXPECT_EQ(result->http_executor.max_response_header_bytes, 4096U);
   EXPECT_EQ(result->http_executor.max_response_body_bytes, 8192U);
   EXPECT_EQ(result->http_executor.max_concurrent_requests_per_shard, 3U);
+  EXPECT_EQ(result->http_executor.max_concurrent_requests, 5U);
+  EXPECT_EQ(result->http_executor.tls_min_version, "1.3");
   EXPECT_FALSE(result->admission.allow_unlisted_executors);
   ASSERT_EQ(result->admission.allowed_executors.size(), 1U);
   EXPECT_EQ(result->admission.allowed_executors.front(), "command");
@@ -135,6 +170,10 @@ max_concurrent_requests = 7
   EXPECT_EQ(result->api.port, 9999);
   EXPECT_EQ(result->api.bearer_token_env, "DAGFORGE_TEST_TOKEN");
   EXPECT_EQ(result->api.max_request_body_bytes, 4096U);
+  EXPECT_EQ(result->api.max_request_header_bytes, 2048U);
+  EXPECT_EQ(result->api.connection_idle_timeout_ms, 1500U);
+  EXPECT_EQ(result->api.max_connections, 9U);
+  EXPECT_EQ(result->api.max_requests_per_connection, 4U);
   EXPECT_EQ(result->api.max_concurrent_requests, 7U);
 }
 
@@ -161,6 +200,20 @@ max_response_body_bytes = 0
 )");
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error(), make_error_code(Error::ParseError));
+}
+
+TEST(ConfigTest, RejectsIncompleteTlsIdentityAndInvalidTlsVersion) {
+  auto incomplete_identity = SystemConfigLoader::load_from_string(R"(
+[http_executor]
+tls_client_cert_file = "/tmp/client.pem"
+)" );
+  ASSERT_FALSE(incomplete_identity.has_value());
+
+  auto invalid_version = SystemConfigLoader::load_from_string(R"(
+[api]
+tls_min_version = "1.1"
+)" );
+  ASSERT_FALSE(invalid_version.has_value());
 }
 
 TEST(ConfigTest, EnvironmentOverridesTakePrecedence) {

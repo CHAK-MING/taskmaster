@@ -7,6 +7,7 @@
 #include "dagforge/workflow/workflow_runtime.hpp"
 
 #include <CLI/CLI.hpp>
+#include <boost/url/parse.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -14,6 +15,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <fstream>
+#include <format>
 #include <optional>
 #include <print>
 #include <sstream>
@@ -57,6 +59,38 @@ extern "C" void handle_signal(int) {
   return dagforge::workflow::is_terminal(state);
 }
 
+[[nodiscard]] auto offline_validation_config(
+    const dagforge::workflow::WorkflowPlan &plan) -> dagforge::SystemConfig {
+  dagforge::SystemConfig config;
+  config.api.enabled = false;
+  config.admission.allow_unlisted_executors = true;
+  config.sandbox.allow_unlisted_programs = true;
+  config.sandbox.allow_unlisted_environment = true;
+  config.sandbox.require_trusted_files = false;
+  config.http_executor.enabled = true;
+  config.http_executor.allow_plaintext = true;
+  config.http_executor.deny_private_networks = false;
+
+  for (const auto &node : plan.nodes) {
+    if (node.executor != "http" || !node.config.is_object()) {
+      continue;
+    }
+    const auto &object = node.config.get_object();
+    const auto url = object.find("url");
+    if (url == object.end() || !url->second.is_string()) {
+      continue;
+    }
+    const auto parsed =
+        boost::urls::parse_uri(url->second.as<std::string>());
+    if (!parsed || parsed->scheme().empty() || parsed->host().empty()) {
+      continue;
+    }
+    config.http_executor.allowed_origins.push_back(std::format(
+        "{}://{}", parsed->scheme(), parsed->encoded_authority()));
+  }
+  return config;
+}
+
 auto run_serve(const std::string &config_path) -> int {
   dagforge::Application app;
   auto loaded = app.load_config(config_path);
@@ -83,7 +117,14 @@ auto run_serve(const std::string &config_path) -> int {
 
 auto run_validate(const std::string &config_path,
                   const std::string &plan_path) -> int {
-  dagforge::Application app;
+  auto plan = load_plan(plan_path);
+  if (!plan) {
+    std::println(stderr, "Invalid workflow plan: {}", plan.error().message());
+    return 1;
+  }
+  dagforge::Application app{config_path.empty()
+                                ? offline_validation_config(*plan)
+                                : dagforge::SystemConfig{}};
   if (!config_path.empty()) {
     auto loaded = app.load_config(config_path);
     if (!loaded) {
@@ -92,9 +133,8 @@ auto run_validate(const std::string &config_path,
       return 1;
     }
   }
-  auto plan = load_plan(plan_path);
-  if (!plan) {
-    std::println(stderr, "Invalid workflow plan: {}", plan.error().message());
+  if (app.workflow_control_plane() == nullptr) {
+    std::println(stderr, "Failed to initialize workflow validation components");
     return 1;
   }
   auto compiled =

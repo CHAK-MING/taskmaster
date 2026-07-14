@@ -42,9 +42,9 @@ understanding, planning, and agent loops stay above the runtime boundary.
 - **🔌 Executor-neutral scheduling:** The Workflow Runtime routes each Task by
   executor name and never interprets executor-specific configuration.
 - **🛡️ Mandatory command sandboxing:** The shipped Command executor has no
-  unsandboxed fallback.
+  unsandboxed fallback and accepts exact allowlisted known binaries by default.
 - **🌐 Governed HTTP execution:** The optional HTTP executor uses asynchronous
-  DNS/TCP/TLS/HTTP I/O behind an exact server-owned origin allowlist.
+  DNS/TCP/TLS/HTTP I/O behind exact Origin and resolved-address policy.
 - **🔄 Run / Task / Attempt states:** Pause, resume, delayed retry, timeout,
   fail-fast, cancellation, and process reaping have explicit lifecycle states.
 - **📦 Artifacts:** Large values can be externalized as Artifact references.
@@ -123,8 +123,18 @@ receives:
 - memory, file, process, descriptor, CPU, and wall-time limits;
 - an isolated writable workspace.
 
-Missing sandbox binaries, policies, or required kernel capabilities cause the
-task to fail. DAGForge does not fall back to direct host execution.
+Minijail is used as a known-binary containment mechanism. Production
+configuration requires administrator-installed absolute program paths and exact
+environment allowlists. It is not intended to safely execute malicious native
+binaries or attacker-controlled shared libraries. Missing or writable sandbox
+helpers/policies, unsafe workspaces, unavailable Landlock, and invalid limits
+fail during application initialization. DAGForge never falls back to direct
+host execution.
+
+Stdout, stderr, and unterminated streamed lines have independent hard limits.
+Overflow kills the process group instead of silently truncating. Application
+shutdown prevents new starts, kills active process groups, and waits for them
+to be reaped before stopping Runtime threads.
 
 `MinijailCommandExecutor` implements the Command execution interface directly.
 Workflow scheduling depends only on `ICommandExecutor`; Minijail arguments,
@@ -142,20 +152,37 @@ policy is owned by system configuration, not by Workflow JSON:
 [http_executor]
 enabled = true
 allow_plaintext = false
+deny_private_networks = true
 allowed_origins = ["https://api.example.com"]
+allowed_ip_cidrs = []
 max_request_headers = 64
 max_request_header_bytes = 65536
 max_request_body_bytes = 1048576
+max_response_headers = 128
 max_response_header_bytes = 65536
 max_response_body_bytes = 10485760
 max_concurrent_requests_per_shard = 32
+max_concurrent_requests = 256
+tls_min_version = "1.2"
+tls_ca_file = ""
+tls_client_cert_file = ""
+tls_client_key_file = ""
 ```
 
-Origins match exact scheme, host, and effective port. HTTPS uses the OpenSSL
-trust store with SNI and hostname verification. Redirects, proxies, cookies,
-binary bodies, and dynamic URLs are intentionally unsupported in v1. Request
-cancellation interrupts DNS, TCP connect, TLS handshake, write, and read
-operations. See [`dags/http_pipeline.json`](dags/http_pipeline.json).
+Origins match exact scheme, host, and effective port. Every DNS result is
+checked before connect; loopback, link-local, private, multicast, documentation,
+and other special-use ranges are denied by default unless covered by an
+explicit CIDR. HTTPS uses SNI and hostname verification, supports a private CA
+and optional mTLS identity, and enforces TLS 1.2 or 1.3 as configured. Redirects,
+proxies, cookies, and dynamic URLs are intentionally unsupported in v1.
+Per-shard and process-wide request ceilings apply before a socket opens.
+Cancellation interrupts DNS, TCP connect, TLS handshake, write, and read.
+
+When the control-plane listener has TLS credentials it is TLS-only; plaintext
+is never auto-detected or routed on that port. The server owns active-connection,
+idle-time, parser, requests-per-connection, and route concurrency limits and
+closes active connections during shutdown. See
+[`dags/http_pipeline.json`](dags/http_pipeline.json).
 
 ---
 
