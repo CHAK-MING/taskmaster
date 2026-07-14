@@ -1,4 +1,4 @@
-#include "dagforge/app/metrics_registry.hpp"
+#include "../src/dagforge/app/api/detail/http_metrics_registry.hpp"
 
 #include "gtest/gtest.h"
 
@@ -45,7 +45,7 @@ auto find_http_duration_snapshot(
 } // namespace
 
 TEST(MetricsRegistryTest, HttpRegistryRecordsRouteCountsAndDurations) {
-  detail::HttpMetricsRegistry registry;
+  api_detail::HttpMetricsRegistry registry;
   const auto health = registry.register_route(HttpMethod::GET, "/api/health",
                                               kBucketsNs);
   const auto metrics =
@@ -75,7 +75,7 @@ TEST(MetricsRegistryTest, HttpRegistryRecordsRouteCountsAndDurations) {
 }
 
 TEST(MetricsRegistryTest, HttpRegistrySharesEndpointHistogramAcrossMethods) {
-  detail::HttpMetricsRegistry registry;
+  api_detail::HttpMetricsRegistry registry;
   const auto get_route =
       registry.register_route(HttpMethod::GET, "/api/dags", kBucketsNs);
   const auto post_route =

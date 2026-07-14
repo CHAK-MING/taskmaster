@@ -1,0 +1,38 @@
+{
+  "workflow_id": "real-fail-fast",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "fail",
+      "executor": "command",
+      "outputs": ["result"],
+      "max_retries": 0,
+      "config": {
+        "program": "/bin/sh",
+        "arguments": ["-c", "sleep 0.2; exit 9"],
+        "env": [],
+        "input_env": []
+      }
+    },
+    {
+      "id": "slow",
+      "executor": "command",
+      "outputs": ["result"],
+      "config": {
+        "program": "/bin/sh",
+        "arguments": ["-c", "sleep 10; printf completed"],
+        "env": [],
+        "input_env": []
+      }
+    }
+  ],
+  "policy": {
+    "failure_policy": "fail_fast",
+    "budget": {
+      "max_nodes": 256,
+      "max_parallel_nodes": 32,
+      "max_total_output_bytes": 67108864,
+      "max_run_duration_sec": 3600
+    }
+  }
+}

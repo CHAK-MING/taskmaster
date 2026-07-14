@@ -8,9 +8,11 @@ All notable changes to DAGForge will be documented in this file.
 - Removed the unused in-process ComputePool, its Runtime submission API,
   configuration, metrics, and tests. Workflow CPU work remains isolated in
   sandboxed command processes.
-- Collapsed Workflow Plan nodes to one sandboxed command contract. Removed the
-  HTTP, Model, Tool, Compute, Evaluator, and Noop node variants, AI/MCP runtime
-  adapters, and plan-owned capability allowlists.
+- Replaced protocol-specific node variants with executor-neutral Tasks. Each
+  Task selects a registered executor and carries executor-owned JSON config;
+  Workflow Runtime no longer interprets Command, HTTP, Python, Model, or Tool
+  behavior.
+- Workflow Plans are now strict JSON only. System configuration remains TOML.
 - Replaced the flat run/node lifecycle with explicit Run, Task, and Attempt
   state machines. Cancellation and fail-fast now remain `stopping` until every
   active attempt is reaped.
@@ -20,10 +22,19 @@ All notable changes to DAGForge will be documented in this file.
 - Removed the retired 0.3 TaskConfig, DAG manager, scheduler, cron, sensor, MySQL persistence, management CLI, DAG REST routes, and Web UI stacks.
 - Replaced `[scheduler]`, `[database]`, and `[dag_source]` configuration with the 0.4 `[runtime]`, `[sandbox]`, `[workflow]`, and `[api]` contract.
 - Removed legacy DAG/task IDs and the DAG-specific Lua task context.
-- Replaced the Shell, Docker, Lua, Noop, composite, and registry executor stack with one sandboxed Command executor; Noop remains an inline workflow node.
+- Replaced the Shell, Docker, Lua, Noop, and composite executor stack with a
+  generic Task executor registry. The shipped `command` adapter remains
+  sandboxed and has no direct-host fallback.
 - Unknown TOML fields are rejected instead of being silently ignored.
 
 ### Added
+- Added an optional executor-neutral HTTP task adapter with strict JSON config,
+  exact server-owned origin allowlists, HTTPS verification, input-derived
+  headers and bodies, accepted-status policy, bounded responses, per-shard
+  concurrency, cancellation, timeout, and stable response outputs.
+- Added OpenSpec coverage and real Command → HTTP → Command Workflow JSON tests
+  for TLS, retry, cancellation, timeout, response limits, UTF-8 validation,
+  status handling, and outbound-policy rejection.
 - Added explicit `plan_id` Run selection, Artifact upload/download/delete
   routes, collection pagination, and bounded completed-Run/Evidence retention.
 - Added environment-backed Bearer authentication, parser and route request-body
@@ -31,12 +42,12 @@ All notable changes to DAGForge will be documented in this file.
 - Added optional file-backed Run checkpoints, append-only Evidence, durable
   Artifacts, completed-run recovery, and explicit infrastructure failure for
   non-terminal Attempts found after restart.
-- Added server-owned `AdmissionPolicy` checks for executable allowlists,
-  environment allowlists, and plan budget ceilings. Workflow Plans no longer
-  contain self-authorizing capability switches.
-- Added an `ISandboxBackend` boundary. `CommandExecutor` delegates launch,
-  lifecycle events, and termination to the selected backend; Minijail is the
-  shipped implementation.
+- Added server-owned `AdmissionPolicy` checks for executor allowlists and plan
+  budget ceilings. Command program and environment allowlists are enforced by
+  the Command adapter rather than the generic Workflow layer.
+- Added the generic `ITaskExecutor` and `ExecutorRegistry` boundary. The
+  compiler delegates executor config validation, while the runtime routes
+  start/cancel and enforces declared output ports.
 - Added pause/resume, delayed retries with bounded exponential backoff,
   failure classification, per-attempt history, skip reasons, stop intent, and
   explicit `continue_independent` / `fail_fast` policies.
@@ -44,6 +55,23 @@ All notable changes to DAGForge will be documented in this file.
 - Added a pinned Google Minijail helper with user/PID/mount/network/IPC/UTS/cgroup namespaces, Landlock, seccomp, private tmpfs, resource limits, integration tests, and release packaging.
 
 ### Changed
+- Separated low-level Command execution from Workflow executor adapters.
+  Minijail now implements `ICommandExecutor` directly, Workflow-specific
+  Command and HTTP adapters live under `workflow/executors`, and normalized
+  commands use the explicit `CommandSpec` contract.
+- Reorganized subsystem boundaries: common HTTP client/parser/router/server
+  code now lives under `dagforge/http`, while `app/api` contains only control
+  plane assembly and routes.
+- Split Workflow values, Plan IR, runtime snapshots, Evidence types, Plan JSON
+  loading, Artifact storage, Evidence storage, and Checkpoint storage into
+  focused components. Compatibility aggregate headers remain available, but
+  internal code uses precise includes.
+- Moved API route bodies and HTTP metric registry implementation out of
+  headers, and removed unused legacy Buffer, URL, MySQL formatter, BatchWriter,
+  and utility aggregate headers.
+- Updated Agent coding guidance to remove the retired ComputePool and MySQL
+  architecture and document current executor, HTTP, storage, and `detail/`
+  placement rules.
 - Removed the unused vendored Lua source distribution and its verification
   metadata.
 - Removed the unused QueryParams helper and WebSocket stack; the optional API
@@ -53,6 +81,18 @@ All notable changes to DAGForge will be documented in this file.
 - Shard hashes use `ankerl::unordered_dense` hashing.
 - Removed the direct Boost.Filesystem dependency; Boost.Charconv remains linked because Boost.URL uses it in the current system build.
 - Runtime benchmarks now target the shipped 0.4 runtime primitives instead of the retired Airflow-style scheduler stack.
+
+### Fixed
+- Executor completion callbacks are marshalled back to the awaiting runtime
+  executor and accepted exactly once, including synchronous and foreign-thread
+  executor completions.
+- Restarting an `Application` now rebuilds Workflow components quiesced during
+  shutdown, and `init()` reconciles changes to `workflow.enabled`.
+- Command environments are passed explicitly to the Minijail process, so
+  sanitized variables and `input_env` mappings reach sandboxed commands even
+  while the runtime uses Minijail static mode.
+- A Run can only succeed when every published Workflow output exists, and
+  scalar Workflow values remain JSON scalars in API responses.
 
 ## [0.3.0] - 2026-03-30
 

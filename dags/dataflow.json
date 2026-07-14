@@ -1,0 +1,55 @@
+{
+  "workflow_id": "real-dataflow",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "produce",
+      "executor": "command",
+      "outputs": ["result"],
+      "timeout_sec": 30,
+      "config": {
+        "program": "/bin/printf",
+        "arguments": ["hello"],
+        "env": [],
+        "input_env": []
+      }
+    },
+    {
+      "id": "transform",
+      "executor": "command",
+      "inputs": [
+        {"input": "message", "node": "produce", "port": "result"}
+      ],
+      "outputs": ["result"],
+      "timeout_sec": 30,
+      "config": {
+        "program": "/bin/sh",
+        "arguments": ["-c", "printf 'received:%s' \"$DAGFORGE_INPUT\""],
+        "env": [],
+        "input_env": [
+          {"input": "message", "environment": "DAGFORGE_INPUT"}
+        ]
+      }
+    },
+    {
+      "id": "publish",
+      "executor": "command",
+      "inputs": [
+        {"input": "value", "node": "transform", "port": "result"}
+      ],
+      "outputs": ["result"],
+      "timeout_sec": 30,
+      "config": {
+        "program": "/bin/sh",
+        "arguments": ["-c", "printf 'published:%s' \"$FINAL_VALUE\""],
+        "env": [],
+        "input_env": [
+          {"input": "value", "environment": "FINAL_VALUE"}
+        ]
+      }
+    }
+  ],
+  "outputs": [
+    {"node": "publish", "port": "result"}
+  ]
+}

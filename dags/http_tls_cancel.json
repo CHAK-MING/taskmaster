@@ -1,0 +1,19 @@
+{
+  "workflow_id": "http-tls-cancel",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "request",
+      "executor": "http",
+      "outputs": ["result"],
+      "timeout_sec": 15,
+      "config": {
+        "method": "GET",
+        "url": "https://localhost:__TLS_SILENT_PORT__/blocked",
+        "headers": [],
+        "input_headers": [],
+        "accepted_statuses": []
+      }
+    }
+  ]
+}

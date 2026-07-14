@@ -1,0 +1,56 @@
+{
+  "workflow_id": "real-conditional",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "decide",
+      "executor": "command",
+      "outputs": ["result"],
+      "config": {
+        "program": "/bin/printf",
+        "arguments": ["go"],
+        "env": [],
+        "input_env": []
+      }
+    },
+    {
+      "id": "selected",
+      "executor": "command",
+      "outputs": ["result"],
+      "config": {
+        "program": "/bin/printf",
+        "arguments": ["selected"],
+        "env": [],
+        "input_env": []
+      }
+    },
+    {
+      "id": "rejected",
+      "executor": "command",
+      "outputs": ["result"],
+      "config": {
+        "program": "/bin/printf",
+        "arguments": ["rejected"],
+        "env": [],
+        "input_env": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source_node": "decide",
+      "source_port": "result",
+      "target": "selected",
+      "condition": {"kind": "string_equals", "expected_string": "go"}
+    },
+    {
+      "source_node": "decide",
+      "source_port": "result",
+      "target": "rejected",
+      "condition": {"kind": "string_equals", "expected_string": "stop"}
+    }
+  ],
+  "outputs": [
+    {"node": "selected", "port": "result"}
+  ]
+}

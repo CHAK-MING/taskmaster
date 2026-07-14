@@ -17,6 +17,6 @@ export import dagforge.util;
 
 export {
 #define DAGFORGE_BUILDING_MODULE_INTERFACE 1
-#include "dagforge/executor/executor_types.hpp"
+#include "dagforge/executor/command_spec.hpp"
 #undef DAGFORGE_BUILDING_MODULE_INTERFACE
 }

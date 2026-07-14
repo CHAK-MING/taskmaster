@@ -30,10 +30,12 @@ DAGForge 负责校验、编译、调度、执行、暂停、恢复、取消和�
 ## ✨ 核心特性
 
 - **🚀 分片运行时：** 每个 Workflow Run 归属固定 Owner Shard，运行状态采用单写者模型。
-- **🧱 不可变执行计划：** 严格的 JSON 或 TOML Workflow Plan 编译为不可变 Execution Plan。
+- **🧱 不可变执行计划：** 严格的 JSON Workflow Plan 编译为不可变 Execution Plan。
 - **✅ 编译期准入校验：** 执行前校验节点、依赖、环、端口、条件边、策略、重试设置和资源预算。
 - **🔗 显式强类型数据流：** 节点只通过声明的输入绑定和输出端口传递值，不依赖隐藏共享状态。
-- **🛡️ 强制命令沙箱：** Command 是唯一启动外部进程的执行器，不提供非沙箱降级路径。
+- **🔌 执行器无关调度：** Workflow Runtime 只按执行器名称路由 Task，不解释执行器专属配置。
+- **🛡️ 强制命令沙箱：** 当前提供的 Command 执行器不允许降级为宿主机直接执行。
+- **🌐 受治理的 HTTP 执行：** 可选 HTTP 执行器使用异步 DNS/TCP/TLS/HTTP I/O，并受服务端精确 Origin 白名单约束。
 - **🔄 Run / Task / Attempt 状态机：** 暂停、恢复、延迟重试、超时、Fail-fast、取消和进程回收都有明确状态。
 - **📦 Artifact：** 大型值可外置为 Artifact 引用，避免在节点之间复制大对象。
 - **🧾 Evidence 与 Checkpoint：** 记录关键运行事件，并在指定任务边界生成检查点。
@@ -45,10 +47,10 @@ DAGForge 负责校验、编译、调度、执行、暂停、恢复、取消和�
 ## 🏗️ 运行架构
 
 ```text
-上层应用 / 工作流作者
+上层 AI / 应用
           |
           v
-   Workflow Plan v1
+ JSON Workflow Plan v1
           |
           v
      Plan Compiler
@@ -57,35 +59,38 @@ DAGForge 负责校验、编译、调度、执行、暂停、恢复、取消和�
   Immutable Execution Plan
           |
           v
-    Workflow Runtime
+ Workflow Runtime / Scheduler
           |
           v
-  CommandExecutor
-   |
-   v
-SandboxBackend
-   |
-   v
+      Executor Registry
+       /              \
+      v                v
+Command Executor   HTTP Executor
+      |             异步 TCP/TLS
+      v
 Minijail Sandbox
 ```
 
-Workflow Plan 描述执行意图；运行时负责确定性的校验、状态转换、调度、输出传播
-和执行清理。
+JSON Plan 描述 Task、依赖、输入输出绑定、执行策略、执行器名称和不透明的执行器
+配置。Compiler 校验图结构，并把配置校验委托给对应执行器。Workflow Runtime
+负责 Run / Task / Attempt 状态、调度、重试、输出传播、暂停、取消和结束判断，
+不理解 Task 的业务含义。
 
 ---
 
 ## 🧩 执行模型
 
-`CommandExecutor` 是唯一会启动外部进程的执行器。Command 必须使用绝对程序
-路径和显式参数数组，运行时不会隐式插入 Shell。
+每个 Task 都包含执行器名称和 JSON `config`。通用 Compiler 与 Runtime 把
+`config` 当作不透明数据；`ExecutorRegistry` 负责解析名称、委托配置编译、启动
+任务和路由取消。
 
-Workflow Plan 中的每个节点都是沙箱命令任务。上游值只有通过显式输入绑定和
-`input_env` 映射，才会进入命令环境。HTTP 调用、模型推理、MCP Tool、评估和
-其他领域逻辑都由上层选择普通程序实现，C++ 运行时不再把这些协议编码成节点
-类型。
+`command` 执行器负责解释 `program`、`arguments`、`env` 和 `input_env`，
+并启动沙箱外部进程。可选 `http` 执行器负责方法、URL、请求头、请求体输入绑定、
+可接受状态码、取消和响应输出。第二种异步执行模型接入后，Workflow Runtime
+仍不需要增加 HTTP 分支或新的 Task 类型。
 
-所有 Workflow 工作都通过沙箱外部命令执行。协程 Owner Shard 只负责调度、
-定时器、进程 I/O、取消和状态转换，不在 DAGForge 进程内执行用户的 CPU 任务。
+Owner Shard 协程只负责调度、定时器、执行器回调、取消和状态转换；具体工作以
+何种方式执行，由执行器实现自行决定。
 
 ---
 
@@ -103,8 +108,34 @@ Command 通过固定版本的 Google Minijail Helper 启动。每个 Command 都
 沙箱二进制、策略文件或必要内核能力缺失时，任务直接失败。DAGForge 不会退回
 宿主机直接执行。
 
-`CommandExecutor` 只依赖 `ISandboxBackend` 接口。当前发布的实现是
-Minijail；工作流调度和命令执行不再依赖 Minijail 参数或进程管理细节。
+`MinijailCommandExecutor` 直接实现 Command 执行接口。Workflow 调度只依赖
+`ICommandExecutor`；Minijail 参数、进程监管和沙箱状态都封装在底层执行器
+实现内部。
+
+---
+
+## 🌐 HTTP 执行器
+
+可选 `http` 执行器默认关闭。出站网络权限由系统配置控制，Workflow JSON 无权
+自行扩大访问范围：
+
+```toml
+[http_executor]
+enabled = true
+allow_plaintext = false
+allowed_origins = ["https://api.example.com"]
+max_request_headers = 64
+max_request_header_bytes = 65536
+max_request_body_bytes = 1048576
+max_response_header_bytes = 65536
+max_response_body_bytes = 10485760
+max_concurrent_requests_per_shard = 32
+```
+
+Origin 按 scheme、host 和有效端口精确匹配。HTTPS 使用 OpenSSL 信任库，并
+校验 SNI 与主机名。v1 不支持重定向、代理、Cookie、二进制 Body 和动态 URL。
+取消请求会中断 DNS、TCP 连接、TLS 握手、写入和读取。真实混合执行示例见
+[`dags/http_pipeline.json`](dags/http_pipeline.json)。
 
 ---
 
@@ -132,7 +163,15 @@ Minijail；工作流调度和命令执行不再依赖 Minijail 参数或进程�
 ### 3) 校验 Workflow Plan
 
 ```bash
-dagforge validate --file dags/hello_world.toml
+dagforge validate --file dags/hello_world.json
+```
+
+执行器权限由系统配置决定。HTTP Workflow 应使用运行时相同的配置进行校验：
+
+```bash
+dagforge validate \
+  --config system_config.toml \
+  --file dags/http_pipeline.json
 ```
 
 ### 4) 本地运行
@@ -140,7 +179,7 @@ dagforge validate --file dags/hello_world.toml
 ```bash
 dagforge run \
   --config system_config.toml \
-  --file dags/hello_world.toml \
+  --file dags/hello_world.json \
   --wait
 ```
 
@@ -149,7 +188,7 @@ dagforge run \
 ```bash
 dagforge run \
   --config system_config.toml \
-  --file dags/hello_world.toml \
+  --file dags/hello_world.json \
   --payload '{"request":"hello"}' \
   --wait
 ```
@@ -170,50 +209,34 @@ docker compose up --build
 
 ## 📝 Workflow Plan
 
-DAGForge 接受严格的 JSON 或 TOML Workflow Plan，未知字段会被拒绝。
+DAGForge 只接受严格的 JSON Workflow Plan，未知字段会被拒绝。
 
-最小 TOML 示例：
-
-```toml
-workflow_id = "hello-world"
-schema_version = 1
-
-[[nodes]]
-id = "start"
-outputs = ["stdout", "stderr", "exit_code", "result"]
-timeout_sec = 30
-
-[nodes.config]
-program = "/bin/echo"
-arguments = ["hello from DAGForge"]
+```json
+{
+  "workflow_id": "hello-world",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "start",
+      "executor": "command",
+      "outputs": ["stdout", "stderr", "exit_code", "result"],
+      "timeout_sec": 30,
+      "config": {
+        "program": "/bin/echo",
+        "arguments": ["hello from DAGForge"],
+        "env": [],
+        "input_env": []
+      }
+    }
+  ]
+}
 ```
 
-沙箱 Command 示例：
+通用输入绑定位于执行器配置之外。执行器按照自己的契约映射输入，例如 Command
+执行器可通过 `config.input_env` 将输入映射为环境变量。
 
-```toml
-[[nodes]]
-id = "render"
-outputs = ["stdout", "stderr", "exit_code", "result"]
-timeout_sec = 30
-
-[nodes.config]
-program = "/usr/bin/python3"
-arguments = ["-c", "print('hello from the sandbox')"]
-env = [{ key = "MODE", value = "test" }]
-```
-
-上游输出必须显式映射到环境变量：
-
-```toml
-inputs = [{ input = "payload", source_node = "prepare", source_port = "result" }]
-
-[nodes.config]
-program = "/usr/bin/python3"
-arguments = ["/workspace/consume.py"]
-input_env = [{ input = "payload", environment = "DAGFORGE_INPUT" }]
-```
-
-完整约定见 [`dags/hello_world.toml`](dags/hello_world.toml) 和
+完整约定见 [`dags/hello_world.json`](dags/hello_world.json)、
+[`dags/http_pipeline.json`](dags/http_pipeline.json) 和
 [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)。
 
 ---
@@ -240,9 +263,9 @@ Plan 中的 Node 在运行时投影为 Task，每次真实执行都会创建独�
 | 区段 | 用途 |
 | --- | --- |
 | `[runtime]` | Shard 数量和 CPU 亲和性 |
-| `[sandbox]` | Minijail 路径、Workspace 根目录和资源限制 |
+| `[sandbox]` | Command 沙箱路径、资源限制和命令白名单 |
 | `[workflow]` | Workflow 运行时开关 |
-| `[admission]` | 服务端拥有的程序、环境变量和预算限制 |
+| `[admission]` | 服务端拥有的执行器白名单和 Plan 预算限制 |
 | `[storage]` | 可选的持久化 Run、Evidence 和 Artifact 目录 |
 | `[api]` | 可选 HTTP 地址、端口和 TLS 配置 |
 
@@ -266,8 +289,8 @@ HTTP 控制面支持从环境变量加载 Bearer Token，并限制请求体大�
 - 暂停、恢复和取消；
 - 健康检查、运行状态和 Prometheus 指标。
 
-API 禁用时不会分配 HTTP Server。当前控制面没有内置认证中间件，开发环境外
-应绑定回环地址，或部署在可信网关之后。
+API 禁用时不会分配 HTTP Server。配置 `api.bearer_token_env` 后，所有路由
+都要求对应的 Bearer Token。
 
 接口说明见 [`docs/API.md`](docs/API.md)。
 
@@ -294,6 +317,14 @@ Artifact。
 
 ```bash
 ~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/all-unit-tests
+```
+
+通过真实 HTTP 服务、Command executor 和 Minijail 沙箱运行 Workflow JSON
+端到端集合：
+
+```bash
+python3 scripts/test-real-workflows.py \
+  --binary "$HOME/.local/share/build2-configs/dagforge-gcc/dagforge/bin/dagforge"
 ```
 
 运行 Runtime 和内存基准：

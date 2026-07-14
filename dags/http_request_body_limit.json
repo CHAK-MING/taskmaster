@@ -1,0 +1,34 @@
+{
+  "workflow_id": "http-request-body-limit",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "produce",
+      "executor": "command",
+      "outputs": ["result"],
+      "config": {
+        "program": "/usr/bin/python3",
+        "arguments": ["-c", "print('x' * 2048, end='')"],
+        "env": [],
+        "input_env": []
+      }
+    },
+    {
+      "id": "request",
+      "executor": "http",
+      "inputs": [
+        {"input": "large", "node": "produce", "port": "result"}
+      ],
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__HTTP_TARGET_PORT__/transform?mode=test",
+        "headers": [],
+        "input_headers": [],
+        "body_input": "large",
+        "accepted_statuses": [201]
+      }
+    }
+  ]
+}

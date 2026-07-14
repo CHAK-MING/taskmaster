@@ -1,0 +1,26 @@
+{
+  "workflow_id": "real-sanitized-environment",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "inspect",
+      "executor": "command",
+      "outputs": ["result", "exit_code"],
+      "config": {
+        "program": "/bin/sh",
+        "arguments": [
+          "-c",
+          "printf '%s|%s|%s|%s' \"$CUSTOM_VALUE\" \"$PATH\" \"$TMPDIR\" \"${DEVSPACE_WORKSPACE_ID-unset}\""
+        ],
+        "env": [
+          {"key": "CUSTOM_VALUE", "value": "visible"}
+        ],
+        "input_env": []
+      }
+    }
+  ],
+  "outputs": [
+    {"node": "inspect", "port": "result"},
+    {"node": "inspect", "port": "exit_code"}
+  ]
+}

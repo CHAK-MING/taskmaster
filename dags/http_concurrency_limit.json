@@ -1,0 +1,32 @@
+{
+  "workflow_id": "http-concurrency-limit",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "first",
+      "executor": "http",
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "GET",
+        "url": "http://127.0.0.1:__HTTP_TARGET_PORT__/hold",
+        "headers": [],
+        "input_headers": [],
+        "accepted_statuses": []
+      }
+    },
+    {
+      "id": "second",
+      "executor": "http",
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "GET",
+        "url": "http://127.0.0.1:__HTTP_TARGET_PORT__/hold",
+        "headers": [],
+        "input_headers": [],
+        "accepted_statuses": []
+      }
+    }
+  ]
+}

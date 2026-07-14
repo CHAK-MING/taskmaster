@@ -32,15 +32,19 @@ understanding, planning, and agent loops stay above the runtime boundary.
 
 - **🚀 Sharded runtime:** Workflow state belongs to one owner shard and is
   mutated through single-writer execution.
-- **🧱 Immutable execution plans:** Strict JSON or TOML plans compile into
-  immutable Execution Plans.
+- **🧱 Immutable execution plans:** Strict JSON plans compile into immutable
+  Execution Plans.
 - **✅ Compile-time admission checks:** Nodes, dependencies, cycles, ports,
   conditional edges, policies, retry settings, and budgets are validated
   before execution.
 - **🔗 Explicit typed data flow:** Nodes exchange values through declared
   input bindings and output ports instead of hidden shared state.
-- **🛡️ Mandatory command sandboxing:** Command is the only external-process
-  executor, and it has no unsandboxed fallback.
+- **🔌 Executor-neutral scheduling:** The Workflow Runtime routes each Task by
+  executor name and never interprets executor-specific configuration.
+- **🛡️ Mandatory command sandboxing:** The shipped Command executor has no
+  unsandboxed fallback.
+- **🌐 Governed HTTP execution:** The optional HTTP executor uses asynchronous
+  DNS/TCP/TLS/HTTP I/O behind an exact server-owned origin allowlist.
 - **🔄 Run / Task / Attempt states:** Pause, resume, delayed retry, timeout,
   fail-fast, cancellation, and process reaping have explicit lifecycle states.
 - **📦 Artifacts:** Large values can be externalized as Artifact references.
@@ -56,10 +60,10 @@ understanding, planning, and agent loops stay above the runtime boundary.
 ## 🏗️ Runtime Architecture
 
 ```text
-Upstream application / workflow author
+Upstream AI / application
                  |
                  v
-          Workflow Plan v1
+       JSON Workflow Plan v1
                  |
                  v
             Plan Compiler
@@ -68,38 +72,42 @@ Upstream application / workflow author
        Immutable Execution Plan
                  |
                  v
-           Workflow Runtime
+    Workflow Runtime / Scheduler
                  |
                  v
-         CommandExecutor
-        |
-        v
-   SandboxBackend
-        |
-        v
-  Minijail Sandbox
+          Executor Registry
+          /               \
+         v                 v
+ Command Executor      HTTP Executor
+         |              Async TCP/TLS
+         v
+ Minijail Sandbox
 ```
 
-The plan describes workflow intent. The runtime owns deterministic validation,
-state transitions, scheduling, output propagation, and execution cleanup.
+The JSON plan describes Tasks, dependencies, input/output bindings, execution
+policies, an executor name, and opaque executor configuration. The compiler
+validates the graph and asks each executor to validate its own configuration.
+The Workflow Runtime owns Run/Task/Attempt state, scheduling, retries, output
+propagation, pause/cancel, and completion. It does not know what a Task does.
 
 ---
 
 ## 🧩 Execution Model
 
-`CommandExecutor` is the only executor that launches an external process.
-Every command uses an absolute program path and an explicit argument vector;
-the runtime never inserts an implicit shell.
+Every Task contains an executor name and a JSON `config` object. The generic
+compiler and runtime treat that object as opaque. `ExecutorRegistry` resolves
+the name, delegates configuration compilation, starts the Task, and routes
+cancellation.
 
-Every Workflow Plan node is a sandboxed command task. Upstream values are only
-made visible to a command through explicit input bindings and `input_env`
-mappings. HTTP calls, model inference, MCP tools, evaluation, and other domain
-logic run as ordinary programs chosen by the upper layer; the C++ runtime does
-not encode those protocols as node types.
+The shipped `command` executor launches an external sandboxed process and owns
+the `program`, `arguments`, `env`, and `input_env` contract. The optional
+`http` executor owns methods, URLs, headers, request-body bindings, accepted
+statuses, cancellation, and response outputs. Adding the second asynchronous
+adapter requires no new Task type and no Workflow Runtime state-machine branch.
 
-All workflow work runs as sandboxed external commands. Coroutine owner shards
-coordinate scheduling, timers, process I/O, cancellation, and state changes;
-they do not execute user CPU workloads in-process.
+Owner-shard coroutines coordinate scheduling, timers, executor callbacks,
+cancellation, and state changes. Executor implementations decide how their
+work is performed.
 
 ---
 
@@ -118,9 +126,36 @@ receives:
 Missing sandbox binaries, policies, or required kernel capabilities cause the
 task to fail. DAGForge does not fall back to direct host execution.
 
-`CommandExecutor` depends on the `ISandboxBackend` interface. Minijail is the
-shipped backend; workflow scheduling and command execution do not depend on
-Minijail arguments or process-management details.
+`MinijailCommandExecutor` implements the Command execution interface directly.
+Workflow scheduling depends only on `ICommandExecutor`; Minijail arguments,
+process supervision, and sandbox state remain private to the low-level
+executor implementation.
+
+---
+
+## 🌐 HTTP Executor
+
+The optional `http` executor is disabled by default. Its outbound network
+policy is owned by system configuration, not by Workflow JSON:
+
+```toml
+[http_executor]
+enabled = true
+allow_plaintext = false
+allowed_origins = ["https://api.example.com"]
+max_request_headers = 64
+max_request_header_bytes = 65536
+max_request_body_bytes = 1048576
+max_response_header_bytes = 65536
+max_response_body_bytes = 10485760
+max_concurrent_requests_per_shard = 32
+```
+
+Origins match exact scheme, host, and effective port. HTTPS uses the OpenSSL
+trust store with SNI and hostname verification. Redirects, proxies, cookies,
+binary bodies, and dynamic URLs are intentionally unsupported in v1. Request
+cancellation interrupts DNS, TCP connect, TLS handshake, write, and read
+operations. See [`dags/http_pipeline.json`](dags/http_pipeline.json).
 
 ---
 
@@ -148,7 +183,16 @@ The build scripts print the selected build2 configuration and executable path.
 ### 3) Validate a Workflow Plan
 
 ```bash
-dagforge validate --file dags/hello_world.toml
+dagforge validate --file dags/hello_world.json
+```
+
+Executor policy is server-owned. Validate plans that use the optional HTTP
+executor with the same system configuration used to run them:
+
+```bash
+dagforge validate \
+  --config system_config.toml \
+  --file dags/http_pipeline.json
 ```
 
 ### 4) Run Locally
@@ -156,7 +200,7 @@ dagforge validate --file dags/hello_world.toml
 ```bash
 dagforge run \
   --config system_config.toml \
-  --file dags/hello_world.toml \
+  --file dags/hello_world.json \
   --wait
 ```
 
@@ -165,7 +209,7 @@ Trigger data can be supplied as JSON or text:
 ```bash
 dagforge run \
   --config system_config.toml \
-  --file dags/hello_world.toml \
+  --file dags/hello_world.json \
   --payload '{"request":"hello"}' \
   --wait
 ```
@@ -186,51 +230,35 @@ docker compose up --build
 
 ## 📝 Workflow Plan
 
-DAGForge accepts strict JSON or TOML Workflow Plans. Unknown fields are
-rejected.
+DAGForge accepts strict JSON Workflow Plans. Unknown fields are rejected.
 
-Minimal TOML plan:
-
-```toml
-workflow_id = "hello-world"
-schema_version = 1
-
-[[nodes]]
-id = "start"
-outputs = ["stdout", "stderr", "exit_code", "result"]
-timeout_sec = 30
-
-[nodes.config]
-program = "/bin/echo"
-arguments = ["hello from DAGForge"]
+```json
+{
+  "workflow_id": "hello-world",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "start",
+      "executor": "command",
+      "outputs": ["stdout", "stderr", "exit_code", "result"],
+      "timeout_sec": 30,
+      "config": {
+        "program": "/bin/echo",
+        "arguments": ["hello from DAGForge"],
+        "env": [],
+        "input_env": []
+      }
+    }
+  ]
+}
 ```
 
-Sandboxed command example:
+Generic input bindings remain outside executor configuration. An executor may
+then map a named input according to its own contract. The Command executor, for
+example, can map it to an environment variable through `config.input_env`.
 
-```toml
-[[nodes]]
-id = "render"
-outputs = ["stdout", "stderr", "exit_code", "result"]
-timeout_sec = 30
-
-[nodes.config]
-program = "/usr/bin/python3"
-arguments = ["-c", "print('hello from the sandbox')"]
-env = [{ key = "MODE", value = "test" }]
-```
-
-An upstream output can be injected into the environment explicitly:
-
-```toml
-inputs = [{ input = "payload", source_node = "prepare", source_port = "result" }]
-
-[nodes.config]
-program = "/usr/bin/python3"
-arguments = ["/workspace/consume.py"]
-input_env = [{ input = "payload", environment = "DAGFORGE_INPUT" }]
-```
-
-See [`dags/hello_world.toml`](dags/hello_world.toml) and
+See [`dags/hello_world.json`](dags/hello_world.json),
+[`dags/http_pipeline.json`](dags/http_pipeline.json), and
 [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) for the complete contract.
 
 ---
@@ -259,9 +287,9 @@ The configuration file contains six top-level sections:
 | Section | Purpose |
 | --- | --- |
 | `[runtime]` | Shard count and CPU affinity |
-| `[sandbox]` | Minijail paths, workspace root, and resource limits |
+| `[sandbox]` | Command sandbox paths, limits, and command allowlists |
 | `[workflow]` | Workflow runtime switch |
-| `[admission]` | Server-owned program, environment, and budget limits |
+| `[admission]` | Server-owned executor allowlist and plan budget limits |
 | `[storage]` | Optional durable Run, Evidence, and Artifact directory |
 | `[api]` | Optional HTTP address, port, and TLS settings |
 
@@ -286,9 +314,9 @@ When `[api].enabled = true`, the service provides:
 - pause, resume, and cancellation;
 - health, runtime status, and Prometheus metrics.
 
-The HTTP server is not allocated when the API is disabled. The current control
-plane has no built-in authentication middleware; bind it to loopback or place
-it behind a trusted gateway.
+The HTTP server is not allocated when the API is disabled. When
+`api.bearer_token_env` is configured, all routes require the corresponding
+Bearer Token.
 
 See [`docs/API.md`](docs/API.md) for endpoint details.
 
@@ -317,6 +345,14 @@ Run all unit and integration tests:
 
 ```bash
 ~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/all-unit-tests
+```
+
+Run the real Workflow JSON suite against the HTTP service, Command executor,
+and Minijail sandbox:
+
+```bash
+python3 scripts/test-real-workflows.py \
+  --binary "$HOME/.local/share/build2-configs/dagforge-gcc/dagforge/bin/dagforge"
 ```
 
 Run the runtime and memory benchmarks:

@@ -1,20 +1,18 @@
 #include "dagforge/workflow/plan_compiler.hpp"
 
 #include "dagforge/util/json.hpp"
-#include "dagforge/workflow/node_configs.hpp"
 
 #include <openssl/evp.h>
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstdint>
 #include <deque>
-#include <format>
 #include <memory>
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -23,22 +21,37 @@
 namespace dagforge::workflow {
 namespace {
 
-[[nodiscard]] auto valid_env_key(std::string_view key) -> bool {
-  if (key.empty() ||
-      !(std::isalpha(static_cast<unsigned char>(key.front())) != 0 ||
-        key.front() == '_')) {
-    return false;
-  }
-  return std::ranges::all_of(key.substr(1), [](unsigned char ch) {
-    return std::isalnum(ch) != 0 || ch == '_';
-  });
-}
-
 [[nodiscard]] auto contains_port(const NodePlan &node,
                                  const WorkflowPortId &port) -> bool {
   return std::ranges::any_of(node.outputs, [&](const auto &candidate) {
     return candidate == port;
   });
+}
+
+[[nodiscard]] auto canonical_json(const JsonValue &value) -> JsonValue {
+  if (value.is_object()) {
+    std::vector<std::pair<std::string_view, const JsonValue *>> fields;
+    fields.reserve(value.get_object().size());
+    for (const auto &[key, field] : value.get_object()) {
+      fields.emplace_back(key, &field);
+    }
+    std::ranges::sort(fields, {}, &decltype(fields)::value_type::first);
+
+    JsonValue sorted = JsonValue::object_t{};
+    for (const auto &[key, field] : fields) {
+      sorted[std::string{key}] = canonical_json(*field);
+    }
+    return sorted;
+  }
+  if (value.is_array()) {
+    JsonValue sorted = JsonValue::array_t{};
+    sorted.get_array().reserve(value.get_array().size());
+    for (const auto &element : value.get_array()) {
+      sorted.get_array().push_back(canonical_json(element));
+    }
+    return sorted;
+  }
+  return value;
 }
 
 [[nodiscard]] auto sha256(std::string_view input) -> Result<std::string> {
@@ -83,39 +96,62 @@ namespace {
   }
   std::ranges::sort(edges, [](const ConditionalEdge *lhs,
                               const ConditionalEdge *rhs) {
-    return std::tie(lhs->source.node_id, lhs->source.port, lhs->target) <
-           std::tie(rhs->source.node_id, rhs->source.port, rhs->target);
+    return std::tie(lhs->source.node_id, lhs->source.port, lhs->target,
+                    lhs->condition.kind, lhs->condition.expected_bool,
+                    lhs->condition.expected_string) <
+           std::tie(rhs->source.node_id, rhs->source.port, rhs->target,
+                    rhs->condition.kind, rhs->condition.expected_bool,
+                    rhs->condition.expected_string);
   });
 
-  std::string canonical;
-  canonical.reserve(1024 + plan.nodes.size() * 256);
-  std::format_to(std::back_inserter(canonical), "workflow={};schema={};",
-                 plan.workflow_id, plan.schema_version);
-  std::format_to(
-      std::back_inserter(canonical),
-      "policy={},{},{},{},{};",
-      static_cast<unsigned>(plan.policy.failure_policy),
-      plan.policy.budget.max_nodes, plan.policy.budget.max_parallel_nodes,
-      plan.policy.budget.max_total_output_bytes,
+  JsonValue canonical = JsonValue::object_t{};
+  canonical["workflow_id"] = plan.workflow_id.str();
+  canonical["schema_version"] =
+      static_cast<std::int64_t>(plan.schema_version);
+
+  JsonValue budget = JsonValue::object_t{};
+  budget["max_nodes"] =
+      static_cast<std::int64_t>(plan.policy.budget.max_nodes);
+  budget["max_parallel_nodes"] =
+      static_cast<std::int64_t>(plan.policy.budget.max_parallel_nodes);
+  budget["max_total_output_bytes"] = static_cast<std::int64_t>(
+      plan.policy.budget.max_total_output_bytes);
+  budget["max_run_duration"] = static_cast<std::int64_t>(
       plan.policy.budget.max_run_duration.count());
 
+  JsonValue policy = JsonValue::object_t{};
+  policy["failure_policy"] = static_cast<std::int64_t>(
+      static_cast<unsigned>(plan.policy.failure_policy));
+  policy["budget"] = std::move(budget);
+  canonical["policy"] = std::move(policy);
+
+  JsonValue canonical_nodes = JsonValue::array_t{};
+  canonical_nodes.get_array().reserve(nodes.size());
+
   for (const auto *node : nodes) {
-    auto config = serialize_json(node->command);
-    if (!config) {
-      return fail(config.error());
-    }
-    std::format_to(std::back_inserter(canonical),
-                   "node={};name={};retry={};retry_initial={};retry_max={};timeout={};checkpoint={};command={};",
-                   node->node_id, node->name,
-                   node->max_retries, node->retry_initial_delay.count(),
-                   node->retry_max_delay.count(), node->timeout.count(),
-                   node->checkpoint, *config);
+    JsonValue serialized = JsonValue::object_t{};
+    serialized["id"] = node->node_id.str();
+    serialized["name"] = node->name;
+    serialized["executor"] = node->executor;
+    serialized["config"] = canonical_json(node->config);
+    serialized["max_retries"] =
+        static_cast<std::int64_t>(node->max_retries);
+    serialized["retry_initial_delay"] = static_cast<std::int64_t>(
+        node->retry_initial_delay.count());
+    serialized["retry_max_delay"] =
+        static_cast<std::int64_t>(node->retry_max_delay.count());
+    serialized["timeout"] =
+        static_cast<std::int64_t>(node->timeout.count());
+    serialized["checkpoint"] = node->checkpoint;
 
     auto outputs = node->outputs;
     std::ranges::sort(outputs);
+    JsonValue serialized_outputs = JsonValue::array_t{};
+    serialized_outputs.get_array().reserve(outputs.size());
     for (const auto &output : outputs) {
-      std::format_to(std::back_inserter(canonical), "out={};", output);
+      serialized_outputs.get_array().push_back(output.str());
     }
+    serialized["outputs"] = std::move(serialized_outputs);
 
     auto inputs = node->inputs;
     std::ranges::sort(inputs, [](const InputBinding &lhs,
@@ -123,22 +159,55 @@ namespace {
       return std::tie(lhs.input, lhs.source.node_id, lhs.source.port) <
              std::tie(rhs.input, rhs.source.node_id, rhs.source.port);
     });
+    JsonValue serialized_inputs = JsonValue::array_t{};
+    serialized_inputs.get_array().reserve(inputs.size());
     for (const auto &input : inputs) {
-      std::format_to(std::back_inserter(canonical), "in={}:{}:{};",
-                     input.input, input.source.node_id, input.source.port);
+      JsonValue binding = JsonValue::object_t{};
+      binding["input"] = input.input.str();
+      binding["node"] = input.source.node_id.str();
+      binding["port"] = input.source.port.str();
+      serialized_inputs.get_array().push_back(std::move(binding));
     }
+    serialized["inputs"] = std::move(serialized_inputs);
+    canonical_nodes.get_array().push_back(std::move(serialized));
   }
+  canonical["nodes"] = std::move(canonical_nodes);
 
+  JsonValue canonical_edges = JsonValue::array_t{};
+  canonical_edges.get_array().reserve(edges.size());
   for (const auto *edge : edges) {
-    std::format_to(std::back_inserter(canonical),
-                   "edge={}:{}:{}:{}:{}:{};", edge->source.node_id,
-                   edge->source.port, edge->target,
-                   static_cast<unsigned>(edge->condition.kind),
-                   edge->condition.expected_bool,
-                   edge->condition.expected_string);
-  }
+    JsonValue condition = JsonValue::object_t{};
+    condition["kind"] = static_cast<std::int64_t>(
+        static_cast<unsigned>(edge->condition.kind));
+    condition["expected_bool"] = edge->condition.expected_bool;
+    condition["expected_string"] = edge->condition.expected_string;
 
-  return ok(std::move(canonical));
+    JsonValue serialized = JsonValue::object_t{};
+    serialized["source_node"] = edge->source.node_id.str();
+    serialized["source_port"] = edge->source.port.str();
+    serialized["target"] = edge->target.str();
+    serialized["condition"] = std::move(condition);
+    canonical_edges.get_array().push_back(std::move(serialized));
+  }
+  canonical["edges"] = std::move(canonical_edges);
+
+  auto published_outputs = plan.outputs;
+  std::ranges::sort(published_outputs, [](const OutputRef &lhs,
+                                          const OutputRef &rhs) {
+    return std::tie(lhs.node_id, lhs.port) <
+           std::tie(rhs.node_id, rhs.port);
+  });
+  JsonValue canonical_outputs = JsonValue::array_t{};
+  canonical_outputs.get_array().reserve(published_outputs.size());
+  for (const auto &output : published_outputs) {
+    JsonValue serialized = JsonValue::object_t{};
+    serialized["node"] = output.node_id.str();
+    serialized["port"] = output.port.str();
+    canonical_outputs.get_array().push_back(std::move(serialized));
+  }
+  canonical["outputs"] = std::move(canonical_outputs);
+
+  return serialize_json(canonical);
 }
 
 } // namespace
@@ -173,33 +242,16 @@ auto PolicyEngine::validate(const WorkflowPlan &plan) const -> Result<void> {
       return fail(Error::InvalidArgument);
     }
 
-    if (node.command.program.empty() ||
-        !std::string_view(node.command.program).starts_with('/')) {
+    if (node.executor.empty()) {
       return fail(Error::InvalidArgument);
-    }
-    std::unordered_set<std::string> env_names;
-    for (const auto &entry : node.command.env) {
-      if (!valid_env_key(entry.key) || !env_names.emplace(entry.key).second) {
-        return fail(Error::InvalidArgument);
-      }
-    }
-    std::unordered_set<std::string> input_names;
-    for (const auto &input : node.inputs) {
-      input_names.emplace(input.input.str());
-    }
-    for (const auto &binding : node.command.input_env) {
-      if (binding.input.empty() || !input_names.contains(binding.input) ||
-          !valid_env_key(binding.environment) ||
-          !env_names.emplace(binding.environment).second) {
-        return fail(Error::InvalidArgument);
-      }
     }
   }
   return ok();
 }
 
-PlanCompiler::PlanCompiler(PolicyEngine policy_engine)
-    : policy_engine_(std::move(policy_engine)) {}
+PlanCompiler::PlanCompiler(const ExecutorRegistry &executors,
+                           PolicyEngine policy_engine)
+    : executors_(&executors), policy_engine_(std::move(policy_engine)) {}
 
 auto PlanCompiler::compile(WorkflowPlan plan) const
     -> Result<std::shared_ptr<const ExecutionPlan>> {
@@ -224,6 +276,24 @@ auto PlanCompiler::compile(WorkflowPlan plan) const
     }
 
     if (!node_index.emplace(node.node_id.str(), index).second) {
+      return fail(Error::AlreadyExists);
+    }
+  }
+
+  std::unordered_set<std::string> published_outputs;
+  for (const auto &output : plan.outputs) {
+    const auto source = node_index.find(output.node_id.str());
+    std::string key;
+    key.reserve(output.node_id.size() + output.port.size() + 1);
+    key.append(output.node_id.value());
+    key.push_back('\x1f');
+    key.append(output.port.value());
+    if (output.node_id.empty() || output.port.empty() ||
+        source == node_index.end() ||
+        !contains_port(plan.nodes[source->second], output.port)) {
+      return fail(Error::NotFound);
+    }
+    if (!published_outputs.emplace(std::move(key)).second) {
       return fail(Error::AlreadyExists);
     }
   }
@@ -257,6 +327,16 @@ auto PlanCompiler::compile(WorkflowPlan plan) const
       }
       add_dependency(source_it->second, target);
     }
+
+    auto compiled_config = executors_->compile(
+        compiled[target].plan.executor, compiled[target].plan.config,
+        ExecutorCompileContext{.inputs = compiled[target].plan.inputs,
+                               .outputs = compiled[target].plan.outputs});
+    if (!compiled_config) {
+      return fail(compiled_config.error());
+    }
+    compiled[target].plan.config = std::move(*compiled_config);
+    plan.nodes[target].config = compiled[target].plan.config;
   }
 
   for (const auto &edge : plan.edges) {

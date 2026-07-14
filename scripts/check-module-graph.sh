@@ -8,7 +8,7 @@ buildfile="${repo_root}/src/buildfile"
 
 declare -A expected_module=(
   [base.cppm]=dagforge.base
-  [client.cppm]=dagforge.http
+  [http.cppm]=dagforge.http
   [config.cppm]=dagforge.config
   [core.cppm]=dagforge.core
   [dagforge.cppm]=dagforge.foundation
@@ -148,8 +148,7 @@ for module in "${!module_rank[@]}"; do
 done
 
 if grep -RInE '^((export )?import dagforge;|export module dagforge;|export import dagforge\.(app|client|storage);)' \
-    "${modules_dir}" "${repo_root}/tests/modules-foundation-smoke.cpp" \
-    "${repo_root}/tests/modules_core_smoke_test.cpp"; then
+    "${modules_dir}" "${repo_root}/tests/modules-foundation-smoke.cpp"; then
   echo "legacy or semantically broad module name remains" >&2
   exit 1
 fi

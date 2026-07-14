@@ -1,0 +1,70 @@
+{
+  "workflow_id": "real-fanout-fanin",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "root",
+      "executor": "command",
+      "outputs": ["result"],
+      "config": {
+        "program": "/bin/printf",
+        "arguments": ["seed"],
+        "env": [],
+        "input_env": []
+      }
+    },
+    {
+      "id": "left",
+      "executor": "command",
+      "inputs": [
+        {"input": "root", "node": "root", "port": "result"}
+      ],
+      "outputs": ["result"],
+      "config": {
+        "program": "/bin/sh",
+        "arguments": ["-c", "printf 'left:%s' \"$ROOT_VALUE\""],
+        "env": [],
+        "input_env": [
+          {"input": "root", "environment": "ROOT_VALUE"}
+        ]
+      }
+    },
+    {
+      "id": "right",
+      "executor": "command",
+      "inputs": [
+        {"input": "root", "node": "root", "port": "result"}
+      ],
+      "outputs": ["result"],
+      "config": {
+        "program": "/bin/sh",
+        "arguments": ["-c", "printf 'right:%s' \"$ROOT_VALUE\""],
+        "env": [],
+        "input_env": [
+          {"input": "root", "environment": "ROOT_VALUE"}
+        ]
+      }
+    },
+    {
+      "id": "join",
+      "executor": "command",
+      "inputs": [
+        {"input": "left", "node": "left", "port": "result"},
+        {"input": "right", "node": "right", "port": "result"}
+      ],
+      "outputs": ["result"],
+      "config": {
+        "program": "/bin/sh",
+        "arguments": ["-c", "printf '%s|%s' \"$LEFT_VALUE\" \"$RIGHT_VALUE\""],
+        "env": [],
+        "input_env": [
+          {"input": "left", "environment": "LEFT_VALUE"},
+          {"input": "right", "environment": "RIGHT_VALUE"}
+        ]
+      }
+    }
+  ],
+  "outputs": [
+    {"node": "join", "port": "result"}
+  ]
+}

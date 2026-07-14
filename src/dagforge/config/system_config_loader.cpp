@@ -14,6 +14,7 @@ namespace detail {
 
 struct SystemToml {
   WorkflowConfig workflow{};
+  HttpExecutorConfig http_executor{};
   AdmissionConfig admission{};
   StorageConfig storage{};
   RuntimeConfig runtime{};
@@ -30,13 +31,24 @@ template <> struct meta<dagforge::WorkflowConfig> {
   static constexpr auto value = object("enabled", &T::enabled);
 };
 
+template <> struct meta<dagforge::HttpExecutorConfig> {
+  using T = dagforge::HttpExecutorConfig;
+  static constexpr auto value = object(
+      "enabled", &T::enabled, "allow_plaintext", &T::allow_plaintext,
+      "allowed_origins", &T::allowed_origins, "max_request_headers",
+      &T::max_request_headers, "max_request_header_bytes",
+      &T::max_request_header_bytes, "max_request_body_bytes",
+      &T::max_request_body_bytes, "max_response_header_bytes",
+      &T::max_response_header_bytes, "max_response_body_bytes",
+      &T::max_response_body_bytes, "max_concurrent_requests_per_shard",
+      &T::max_concurrent_requests_per_shard);
+};
+
 template <> struct meta<dagforge::AdmissionConfig> {
   using T = dagforge::AdmissionConfig;
   static constexpr auto value = object(
-      "allow_unlisted_programs", &T::allow_unlisted_programs,
-      "allow_unlisted_environment", &T::allow_unlisted_environment,
-      "allowed_programs", &T::allowed_programs, "allowed_environment",
-      &T::allowed_environment, "max_nodes", &T::max_nodes,
+      "allow_unlisted_executors", &T::allow_unlisted_executors,
+      "allowed_executors", &T::allowed_executors, "max_nodes", &T::max_nodes,
       "max_parallel_nodes", &T::max_parallel_nodes,
       "max_total_output_bytes", &T::max_total_output_bytes,
       "max_run_duration_sec", &T::max_run_duration_sec);
@@ -65,7 +77,10 @@ template <> struct meta<dagforge::SandboxConfig> {
       "max_memory_bytes", &T::max_memory_bytes,
       "max_file_bytes", &T::max_file_bytes, "tmp_bytes", &T::tmp_bytes,
       "max_processes", &T::max_processes, "max_open_files",
-      &T::max_open_files);
+      &T::max_open_files, "allow_unlisted_programs",
+      &T::allow_unlisted_programs, "allow_unlisted_environment",
+      &T::allow_unlisted_environment, "allowed_programs",
+      &T::allowed_programs, "allowed_environment", &T::allowed_environment);
 };
 
 template <> struct meta<dagforge::ApiConfig> {
@@ -82,9 +97,9 @@ template <> struct meta<dagforge::ApiConfig> {
 template <> struct meta<dagforge::detail::SystemToml> {
   using T = dagforge::detail::SystemToml;
   static constexpr auto value = object(
-      "workflow", &T::workflow, "admission", &T::admission, "storage",
-      &T::storage, "runtime", &T::runtime, "sandbox", &T::sandbox, "api",
-      &T::api);
+      "workflow", &T::workflow, "http_executor", &T::http_executor,
+      "admission", &T::admission, "storage", &T::storage, "runtime",
+      &T::runtime, "sandbox", &T::sandbox, "api", &T::api);
 };
 } // namespace glz
 
@@ -120,6 +135,7 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
 
   SystemConfig cfg{};
   cfg.workflow = std::move(raw.workflow);
+  cfg.http_executor = std::move(raw.http_executor);
   cfg.admission = std::move(raw.admission);
   cfg.storage = std::move(raw.storage);
   cfg.runtime = std::move(raw.runtime);
@@ -141,6 +157,24 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
                      cfg.api.max_concurrent_requests);
 
   apply_env_override_bool("DAGFORGE_WORKFLOW_ENABLED", cfg.workflow.enabled);
+
+  apply_env_override_bool("DAGFORGE_HTTP_EXECUTOR_ENABLED",
+                          cfg.http_executor.enabled);
+  apply_env_override_bool("DAGFORGE_HTTP_EXECUTOR_ALLOW_PLAINTEXT",
+                          cfg.http_executor.allow_plaintext);
+  apply_env_override("DAGFORGE_HTTP_EXECUTOR_MAX_REQUEST_HEADERS",
+                     cfg.http_executor.max_request_headers);
+  apply_env_override("DAGFORGE_HTTP_EXECUTOR_MAX_REQUEST_HEADER_BYTES",
+                     cfg.http_executor.max_request_header_bytes);
+  apply_env_override("DAGFORGE_HTTP_EXECUTOR_MAX_REQUEST_BODY_BYTES",
+                     cfg.http_executor.max_request_body_bytes);
+  apply_env_override("DAGFORGE_HTTP_EXECUTOR_MAX_RESPONSE_HEADER_BYTES",
+                     cfg.http_executor.max_response_header_bytes);
+  apply_env_override("DAGFORGE_HTTP_EXECUTOR_MAX_RESPONSE_BODY_BYTES",
+                     cfg.http_executor.max_response_body_bytes);
+  apply_env_override(
+      "DAGFORGE_HTTP_EXECUTOR_MAX_CONCURRENT_REQUESTS_PER_SHARD",
+      cfg.http_executor.max_concurrent_requests_per_shard);
 
   apply_env_override("DAGFORGE_RUNTIME_SHARDS", cfg.runtime.shards);
   apply_env_override_bool("DAGFORGE_RUNTIME_PIN_SHARDS",
@@ -171,6 +205,12 @@ auto apply_env_override_bool(const char *name, bool &target) -> void {
       cfg.sandbox.max_memory_bytes == 0 || cfg.sandbox.max_file_bytes == 0 ||
       cfg.sandbox.tmp_bytes == 0 || cfg.sandbox.max_processes == 0 ||
       cfg.sandbox.max_open_files == 0 || cfg.admission.max_nodes == 0 ||
+      cfg.http_executor.max_request_headers == 0 ||
+      cfg.http_executor.max_request_header_bytes == 0 ||
+      cfg.http_executor.max_request_body_bytes == 0 ||
+      cfg.http_executor.max_response_header_bytes == 0 ||
+      cfg.http_executor.max_response_body_bytes == 0 ||
+      cfg.http_executor.max_concurrent_requests_per_shard == 0 ||
       cfg.admission.max_parallel_nodes == 0 ||
       cfg.admission.max_parallel_nodes > cfg.admission.max_nodes ||
       cfg.admission.max_total_output_bytes == 0 ||

@@ -3,8 +3,8 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/core/shard.hpp"
-#include "dagforge/workflow/workflow_storage.hpp"
-#include "dagforge/workflow/workflow_types.hpp"
+#include "dagforge/workflow/artifact_store.hpp"
+#include "dagforge/workflow/workflow_value.hpp"
 
 #include <cstddef>
 #include <memory>

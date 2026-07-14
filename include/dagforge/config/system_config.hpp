@@ -28,6 +28,10 @@ struct SandboxConfig {
   std::uint64_t tmp_bytes{64ULL * 1024ULL * 1024ULL};
   std::uint32_t max_processes{128};
   std::uint32_t max_open_files{256};
+  bool allow_unlisted_programs{true};
+  bool allow_unlisted_environment{true};
+  std::vector<std::string> allowed_programs;
+  std::vector<std::string> allowed_environment;
 
   auto operator==(const SandboxConfig &) const -> bool = default;
 };
@@ -38,11 +42,23 @@ struct WorkflowConfig {
   auto operator==(const WorkflowConfig &) const -> bool = default;
 };
 
+struct HttpExecutorConfig {
+  bool enabled{false};
+  bool allow_plaintext{false};
+  std::vector<std::string> allowed_origins;
+  std::size_t max_request_headers{64};
+  std::uint64_t max_request_header_bytes{64ULL * 1024ULL};
+  std::uint64_t max_request_body_bytes{1024ULL * 1024ULL};
+  std::uint64_t max_response_header_bytes{64ULL * 1024ULL};
+  std::uint64_t max_response_body_bytes{10ULL * 1024ULL * 1024ULL};
+  std::size_t max_concurrent_requests_per_shard{32};
+
+  auto operator==(const HttpExecutorConfig &) const -> bool = default;
+};
+
 struct AdmissionConfig {
-  bool allow_unlisted_programs{true};
-  bool allow_unlisted_environment{true};
-  std::vector<std::string> allowed_programs;
-  std::vector<std::string> allowed_environment;
+  bool allow_unlisted_executors{true};
+  std::vector<std::string> allowed_executors;
   std::size_t max_nodes{256};
   std::size_t max_parallel_nodes{32};
   std::uint64_t max_total_output_bytes{64ULL * 1024ULL * 1024ULL};
@@ -77,6 +93,7 @@ struct ApiConfig {
 
 struct SystemConfig {
   WorkflowConfig workflow;
+  HttpExecutorConfig http_executor;
   AdmissionConfig admission;
   StorageConfig storage;
   RuntimeConfig runtime;

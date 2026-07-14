@@ -3,6 +3,7 @@
 #include "dagforge/util/json.hpp"
 #include "dagforge/util/log.hpp"
 #include "dagforge/workflow/workflow_control_plane.hpp"
+#include "dagforge/workflow/workflow_plan_loader.hpp"
 #include "dagforge/workflow/workflow_runtime.hpp"
 
 #include <CLI/CLI.hpp>
@@ -12,7 +13,6 @@
 #include <cstdio>
 #include <csignal>
 #include <cstdlib>
-#include <filesystem>
 #include <fstream>
 #include <optional>
 #include <print>
@@ -49,10 +49,6 @@ extern "C" void handle_signal(int) {
   if (!text) {
     return dagforge::fail(text.error());
   }
-  const auto extension = std::filesystem::path(path).extension().string();
-  if (extension == ".toml") {
-    return dagforge::workflow::WorkflowPlanLoader::from_toml(*text);
-  }
   return dagforge::workflow::WorkflowPlanLoader::from_json(*text);
 }
 
@@ -85,13 +81,24 @@ auto run_serve(const std::string &config_path) -> int {
   return 0;
 }
 
-auto run_validate(const std::string &plan_path) -> int {
+auto run_validate(const std::string &config_path,
+                  const std::string &plan_path) -> int {
+  dagforge::Application app;
+  if (!config_path.empty()) {
+    auto loaded = app.load_config(config_path);
+    if (!loaded) {
+      std::println(stderr, "Failed to load config: {}",
+                   loaded.error().message());
+      return 1;
+    }
+  }
   auto plan = load_plan(plan_path);
   if (!plan) {
     std::println(stderr, "Invalid workflow plan: {}", plan.error().message());
     return 1;
   }
-  auto compiled = dagforge::workflow::PlanCompiler{}.compile(std::move(*plan));
+  auto compiled =
+      app.workflow_control_plane()->register_plan(std::move(*plan));
   if (!compiled) {
     std::println(stderr, "Workflow rejected: {}", compiled.error().message());
     return 1;
@@ -203,8 +210,12 @@ int main(int argc, char **argv) {
       ->check(CLI::ExistingFile);
 
   std::string validate_plan;
+  std::string validate_config;
   auto *validate = app.add_subcommand("validate", "Compile and validate a plan");
-  validate->add_option("-f,--file", validate_plan, "Workflow JSON or TOML")
+  validate->add_option("-c,--config", validate_config,
+                       "Optional system config TOML for executor policy")
+      ->check(CLI::ExistingFile);
+  validate->add_option("-f,--file", validate_plan, "Workflow Plan JSON")
       ->required()
       ->check(CLI::ExistingFile);
 
@@ -216,7 +227,7 @@ int main(int argc, char **argv) {
   run->add_option("-c,--config", run_config, "System config TOML")
       ->required()
       ->check(CLI::ExistingFile);
-  run->add_option("-f,--file", run_plan, "Workflow JSON or TOML")
+  run->add_option("-f,--file", run_plan, "Workflow Plan JSON")
       ->required()
       ->check(CLI::ExistingFile);
   run->add_option("--payload", run_payload, "JSON or text trigger payload");
@@ -227,7 +238,7 @@ int main(int argc, char **argv) {
     return run_serve(serve_config);
   }
   if (*validate) {
-    return run_validate(validate_plan);
+    return run_validate(validate_config, validate_plan);
   }
   return run_local(run_config, run_plan, run_payload, run_wait);
 }

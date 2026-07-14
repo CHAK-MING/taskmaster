@@ -1,0 +1,18 @@
+{
+  "workflow_id": "http-unlisted-origin",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "request",
+      "executor": "http",
+      "outputs": ["result"],
+      "config": {
+        "method": "GET",
+        "url": "http://127.0.0.1:1/private",
+        "headers": [],
+        "input_headers": [],
+        "accepted_statuses": []
+      }
+    }
+  ]
+}

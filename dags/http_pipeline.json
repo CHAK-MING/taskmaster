@@ -1,0 +1,69 @@
+{
+  "workflow_id": "http-pipeline",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "produce",
+      "executor": "command",
+      "outputs": ["result"],
+      "config": {
+        "program": "/bin/printf",
+        "arguments": ["hello"],
+        "env": [],
+        "input_env": []
+      }
+    },
+    {
+      "id": "token",
+      "executor": "command",
+      "outputs": ["result"],
+      "config": {
+        "program": "/bin/printf",
+        "arguments": ["secret"],
+        "env": [],
+        "input_env": []
+      }
+    },
+    {
+      "id": "request",
+      "executor": "http",
+      "inputs": [
+        {"input": "payload", "node": "produce", "port": "result"},
+        {"input": "token", "node": "token", "port": "result"}
+      ],
+      "outputs": ["status", "body", "headers", "result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__HTTP_TARGET_PORT__/transform?mode=test",
+        "headers": [
+          {"name": "Content-Type", "value": "text/plain; charset=utf-8"}
+        ],
+        "input_headers": [
+          {"input": "token", "header": "X-Token"}
+        ],
+        "body_input": "payload",
+        "accepted_statuses": [201]
+      }
+    },
+    {
+      "id": "publish",
+      "executor": "command",
+      "inputs": [
+        {"input": "response", "node": "request", "port": "result"}
+      ],
+      "outputs": ["result"],
+      "config": {
+        "program": "/bin/sh",
+        "arguments": ["-c", "printf 'published:%s' \"$HTTP_RESPONSE\""],
+        "env": [],
+        "input_env": [
+          {"input": "response", "environment": "HTTP_RESPONSE"}
+        ]
+      }
+    }
+  ],
+  "outputs": [
+    {"node": "publish", "port": "result"}
+  ]
+}

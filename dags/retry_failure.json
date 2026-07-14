@@ -1,0 +1,24 @@
+{
+  "workflow_id": "real-retry-failure",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "unstable",
+      "executor": "command",
+      "outputs": ["result"],
+      "max_retries": 2,
+      "retry_initial_delay_ms": 10,
+      "retry_max_delay_ms": 20,
+      "timeout_sec": 30,
+      "config": {
+        "program": "/bin/sh",
+        "arguments": ["-c", "exit 75"],
+        "env": [],
+        "input_env": []
+      }
+    }
+  ],
+  "outputs": [
+    {"node": "unstable", "port": "result"}
+  ]
+}

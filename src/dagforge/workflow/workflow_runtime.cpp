@@ -16,6 +16,7 @@
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -24,30 +25,6 @@ namespace {
 
 [[nodiscard]] auto is_success(TaskState state) noexcept -> bool {
   return state == TaskState::Succeeded;
-}
-
-[[nodiscard]] auto has_output(const NodePlan &node,
-                              std::string_view port) -> bool {
-  return std::ranges::any_of(node.outputs, [&](const auto &output) {
-    return output == port;
-  });
-}
-
-auto add_output(NodeOutputs &outputs, const NodePlan &node,
-                std::string_view preferred_port, WorkflowValue value) -> void {
-  if (has_output(node, preferred_port)) {
-    outputs.emplace_back(WorkflowPortId{preferred_port}, std::move(value));
-    return;
-  }
-  if (preferred_port == "result" && node.outputs.size() == 1 &&
-      outputs.empty()) {
-    outputs.emplace_back(node.outputs.front().clone(), std::move(value));
-  }
-}
-
-template <typename T>
-[[nodiscard]] auto parse_node_config(const JsonValue &config) -> Result<T> {
-  return parse_json_as_allow_unknown<T>(dump_json(config));
 }
 
 [[nodiscard]] auto value_to_string(const WorkflowValue &value) -> std::string {
@@ -96,8 +73,19 @@ template <typename T>
       value);
 }
 
-using RuntimeInputMap = std::unordered_map<
-    std::string, std::shared_ptr<const WorkflowValue>>;
+[[nodiscard]] auto outputs_match_contract(
+    const NodePlan &node, const ExecutorOutputs &outputs) -> bool {
+  std::unordered_set<std::string> seen;
+  seen.reserve(outputs.size());
+  for (const auto &[port, _] : outputs) {
+    const auto declared = std::ranges::find(node.outputs, port);
+    if (port.empty() || declared == node.outputs.end() ||
+        !seen.emplace(port.str()).second) {
+      return false;
+    }
+  }
+  return true;
+}
 
 [[nodiscard]] auto make_metadata(
     std::initializer_list<std::pair<std::string, JsonValue>> fields)
@@ -184,12 +172,12 @@ using RuntimeInputMap = std::unordered_map<
 } // namespace
 
 WorkflowRuntime::WorkflowRuntime(
-    Runtime &runtime, IExecutor &executor,
+    Runtime &runtime, ExecutorRegistry &executors,
     std::shared_ptr<IArtifactStore> artifact_store,
     std::shared_ptr<EvidenceLedger> evidence_ledger,
     std::shared_ptr<CheckpointStore> checkpoint_store,
     std::size_t max_completed_runs)
-    : runtime_(runtime), executor_(executor),
+    : runtime_(runtime), executors_(executors),
       artifact_store_(std::move(artifact_store)),
       evidence_ledger_(std::move(evidence_ledger)),
       checkpoint_store_(std::move(checkpoint_store)),
@@ -544,8 +532,8 @@ auto WorkflowRuntime::begin_attempt(ActiveRun &run, std::size_t task_index)
                                  {"number", task.snapshot.attempt_count}}));
   append_evidence(run, task_index, EvidenceType::TaskStarted,
                   make_metadata({{"attempt", task.snapshot.attempt_count},
-                                 {"program", run.plan->nodes[task_index]
-                                                  .plan.command.program}}));
+                                 {"executor", run.plan->nodes[task_index]
+                                                   .plan.executor}}));
   assert(invariants_hold(run));
   return attempt_id;
 }
@@ -660,7 +648,7 @@ auto WorkflowRuntime::start_async_task(WorkflowRunId run_id,
     complete_task(run_id, task_index, attempt_id, fail(inputs.error()));
     co_return;
   }
-  auto result = co_await execute_command_node(
+  auto result = co_await execute_task(
       run_id.clone(), task_index, attempt_id.clone(), std::move(node),
       std::move(*inputs));
 
@@ -683,7 +671,7 @@ auto WorkflowRuntime::start_async_task(WorkflowRunId run_id,
 auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
                                     std::size_t task_index,
                                     const AttemptId &attempt_id,
-                                    Result<NodeOutputs> result) -> void {
+                                    Result<ExecutorOutputs> result) -> void {
   const auto owner = owner_shard(run_id);
   if (!runtime_.is_current_shard() || runtime_.current_shard() != owner) {
     runtime_.post_to(owner,
@@ -796,6 +784,14 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
 
   if (attempt->state == AttemptState::Starting) {
     (void)transition_attempt(*attempt, AttemptState::Running);
+  }
+
+  const auto &node = run.plan->nodes[task_index].plan;
+  if (!outputs_match_contract(node, *result)) {
+    finish_failure(make_error_code(Error::ProtocolError));
+    settle_control_state(run_id);
+    dispatch(run_id);
+    return;
   }
 
   std::optional<std::error_code> output_error;
@@ -971,8 +967,8 @@ auto WorkflowRuntime::conditions_pass(const ActiveRun &run,
 
 auto WorkflowRuntime::input_values(const ActiveRun &run,
                                    std::size_t node_index) const
-    -> Result<InputMap> {
-  InputMap inputs;
+    -> Result<ExecutorInputs> {
+  ExecutorInputs inputs;
   for (const auto &binding : run.plan->nodes[node_index].plan.inputs) {
     auto value = run.values->get(binding.source);
     if (!value) {
@@ -1016,7 +1012,7 @@ auto WorkflowRuntime::request_stop(const WorkflowRunId &run_id,
                   make_metadata({{"intent", std::string{to_string_view(intent)}},
                                  {"reason", run.snapshot.stop_reason}}));
   run.ready.clear();
-  std::vector<InstanceId> instances_to_cancel;
+  std::vector<std::pair<std::string, InstanceId>> instances_to_cancel;
 
   for (std::size_t index = 0; index < run.tasks.size(); ++index) {
     auto &task = run.tasks[index];
@@ -1044,15 +1040,16 @@ auto WorkflowRuntime::request_stop(const WorkflowRunId &run_id,
       emit_task_state(run, index);
     }
     if (task.instance_id) {
-      instances_to_cancel.push_back(task.instance_id->clone());
+      instances_to_cancel.emplace_back(
+          run.plan->nodes[index].plan.executor, task.instance_id->clone());
     }
   }
   assert(invariants_hold(run));
 
   // Executor callbacks may complete synchronously. Do not retain or access
   // ActiveRun references after crossing this external boundary.
-  for (const auto &instance_id : instances_to_cancel) {
-    executor_.cancel(instance_id);
+  for (const auto &[executor, instance_id] : instances_to_cancel) {
+    executors_.cancel(executor, instance_id);
   }
   (void)finalize_run_if_ready(run_id);
   return ok();
@@ -1119,6 +1116,18 @@ auto WorkflowRuntime::finalize_run_if_ready(const WorkflowRunId &run_id)
     terminal_state = any_cancelled ? RunState::Cancelled
                                    : (any_failed ? RunState::Failed
                                                  : RunState::Succeeded);
+  }
+  if (terminal_state == RunState::Succeeded) {
+    for (const auto &published : run.plan->outputs) {
+      if (run.values->contains(published)) {
+        continue;
+      }
+      terminal_state = RunState::Failed;
+      run.snapshot.error = std::format(
+          "required workflow output is missing: {}.{}",
+          published.node_id, published.port);
+      break;
+    }
   }
   if (run.snapshot.error.empty() && terminal_state != RunState::Succeeded) {
     const auto failed_task = std::ranges::find_if(
@@ -1235,40 +1244,25 @@ auto WorkflowRuntime::checkpoint(ActiveRun &run) -> void {
   (void)checkpoint_store_->save(std::move(checkpoint));
 }
 
-auto WorkflowRuntime::execute_command_node(WorkflowRunId run_id,
-                                           std::size_t task_index,
-                                           AttemptId attempt_id,
-                                           NodePlan node, InputMap inputs)
-    -> task<Result<NodeOutputs>> {
-  if (node.command.program.empty()) {
+auto WorkflowRuntime::execute_task(WorkflowRunId run_id,
+                                   std::size_t task_index,
+                                   AttemptId attempt_id, NodePlan node,
+                                   ExecutorInputs inputs)
+    -> task<Result<ExecutorOutputs>> {
+  if (node.executor.empty()) {
     co_return fail(Error::InvalidArgument);
   }
 
-  CommandExecutorConfig command{
-      .program = std::move(node.command.program),
-      .arguments = std::move(node.command.arguments),
-  };
-  for (auto &entry : node.command.env) {
-    if (!command.env.emplace(std::move(entry.key), std::move(entry.value))
-             .second) {
-      co_return fail(Error::InvalidArgument);
-    }
-  }
-  for (const auto &binding : node.command.input_env) {
-    const auto input = inputs.find(binding.input);
-    if (input == inputs.end() ||
-        !command.env.emplace(binding.environment,
-                             value_to_string(*input->second))
-             .second) {
-      co_return fail(Error::InvalidArgument);
-    }
-  }
-
   const auto instance_id = instance_id_for(run_id, node.node_id, attempt_id);
-
-  auto result = co_await execute_async(
-      runtime_, executor_, instance_id, std::move(command), {}, {}, {}, {},
-      node.timeout,
+  auto result = co_await execute_task_async(
+      runtime_, owner_shard(run_id), executors_, node.executor,
+      TaskExecutionRequest{
+          .instance_id = instance_id.clone(),
+          .config = std::move(node.config),
+          .inputs = std::move(inputs),
+          .outputs = node.outputs,
+          .timeout = node.timeout,
+      },
       [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
        run_id = run_id.clone(), task_index,
        attempt_id = attempt_id.clone()](std::string_view state) mutable {
@@ -1295,23 +1289,7 @@ auto WorkflowRuntime::execute_command_node(WorkflowRunId run_id,
           runtime_.post_to(owner, std::move(mark_running));
         }
       });
-  if (!result) {
-    co_return fail(result.error());
-  }
-
-  NodeOutputs outputs;
-  add_output(outputs, node, "stdout", std::string{result->stdout_output});
-  add_output(outputs, node, "stderr", std::string{result->stderr_output});
-  add_output(outputs, node, "exit_code",
-             static_cast<std::int64_t>(result->exit_code));
-  add_output(outputs, node, "result", std::string{result->stdout_output});
-  if (result->timed_out) {
-    co_return fail(Error::Timeout);
-  }
-  if (result->exit_code != 0) {
-    co_return fail(Error::Unknown);
-  }
-  co_return ok(std::move(outputs));
+  co_return result;
 }
 
 auto WorkflowRuntime::snapshot(const WorkflowRunId &run_id) const

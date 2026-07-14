@@ -1,7 +1,6 @@
 #include "dagforge/core/runtime.hpp"
 #include "dagforge/core/sync_wait.hpp"
-#include "dagforge/executor/executor.hpp"
-#include "dagforge/executor/sandbox_backend.hpp"
+#include "dagforge/executor/command_executor.hpp"
 
 #include <gtest/gtest.h>
 
@@ -21,33 +20,6 @@ namespace dagforge::test {
 namespace {
 
 namespace fs = std::filesystem;
-
-class RecordingSandboxBackend final : public ISandboxBackend {
-public:
-  auto launch(SandboxRequest request, SandboxEvents events)
-      -> Result<void> override {
-    last_request = request;
-    if (events.on_state) {
-      events.on_state(request.instance_id, "running");
-    }
-    if (events.on_complete) {
-      auto result = make_executor_result(
-          request.memory_resource != nullptr
-              ? request.memory_resource.get()
-              : current_memory_resource_or_default());
-      result.stdout_output = "backend-ok";
-      events.on_complete(request.instance_id, std::move(result));
-    }
-    return ok();
-  }
-
-  auto terminate(const InstanceId &instance_id) -> void override {
-    terminated = instance_id.clone();
-  }
-
-  std::optional<SandboxRequest> last_request;
-  std::optional<InstanceId> terminated;
-};
 
 [[nodiscard]] auto configured_path(const char *environment,
                                    std::string_view relative) -> std::string {
@@ -97,15 +69,16 @@ protected:
            fs::is_regular_file(sandbox_.seccomp_bpf_path, error);
   }
 
-  [[nodiscard]] auto run(CommandExecutorConfig command,
+  [[nodiscard]] auto run(CommandSpec command,
                          std::chrono::seconds timeout =
                              std::chrono::seconds(5))
-      -> Result<ExecutorResult> {
+      -> Result<CommandExecutionResult> {
     const auto instance =
         InstanceId{std::format("command-test-{}", next_instance_++)};
     return sync_wait_on_runtime(
-        runtime_, execute_async(runtime_, *executor_, instance,
-                                std::move(command), {}, {}, {}, {}, timeout));
+        runtime_, execute_command_async(*executor_, instance,
+                                        std::move(command), {}, {}, {}, {},
+                                        timeout));
   }
 
   [[nodiscard]] auto workspace(std::size_t instance) const -> fs::path {
@@ -115,39 +88,16 @@ protected:
 
   Runtime runtime_{1, false, 0};
   SandboxConfig sandbox_;
-  std::unique_ptr<IExecutor> executor_;
+  std::unique_ptr<ICommandExecutor> executor_;
   std::size_t next_instance_{0};
 };
-
-TEST(CommandExecutorBoundaryTest, DelegatesOnlyThroughSandboxBackend) {
-  Runtime runtime(1, false, 0);
-  ASSERT_TRUE(runtime.start().has_value());
-  auto backend = std::make_unique<RecordingSandboxBackend>();
-  auto *recording = backend.get();
-  auto executor = create_command_executor(std::move(backend));
-
-  const InstanceId instance{"sandbox-boundary"};
-  auto result = sync_wait_on_runtime(
-      runtime, execute_async(runtime, *executor, instance.clone(),
-                             CommandExecutorConfig{.program = "/bin/true"}));
-  ASSERT_TRUE(result.has_value()) << result.error().message();
-  EXPECT_EQ(result->stdout_output, "backend-ok");
-  ASSERT_TRUE(recording->last_request.has_value());
-  EXPECT_EQ(recording->last_request->instance_id, instance);
-  EXPECT_EQ(recording->last_request->command.program, "/bin/true");
-
-  executor->cancel(instance);
-  ASSERT_TRUE(recording->terminated.has_value());
-  EXPECT_EQ(*recording->terminated, instance);
-  runtime.stop();
-}
 
 TEST_F(CommandExecutorTest, RunsInsideWritableWorkspace) {
   if (!sandbox_available()) {
     GTEST_SKIP() << "Minijail helper is not installed";
   }
 
-  auto result = run(CommandExecutorConfig{
+  auto result = run(CommandSpec{
       .program = "/bin/sh",
       .arguments = {"-c",
                     "grep -Eq '^NoNewPrivs:[[:space:]]+1$' "
@@ -176,9 +126,9 @@ TEST_F(CommandExecutorTest, ReportsRunningAfterSandboxLaunch) {
   const auto instance =
       InstanceId{std::format("command-test-{}", next_instance_++)};
   auto result = sync_wait_on_runtime(
-      runtime_, execute_async(
-                    runtime_, *executor_, instance,
-                    CommandExecutorConfig{.program = "/bin/true"}, {}, {}, {},
+      runtime_, execute_command_async(
+                    *executor_, instance,
+                    CommandSpec{.program = "/bin/true"}, {}, {}, {},
                     {}, std::chrono::seconds(5),
                     [&states](std::string_view state) {
                       states.emplace_back(state);
@@ -194,7 +144,7 @@ TEST_F(CommandExecutorTest, DeniesHostFilesOutsideAllowlist) {
     GTEST_SKIP() << "Minijail helper is not installed";
   }
 
-  auto result = run(CommandExecutorConfig{
+  auto result = run(CommandSpec{
       .program = "/bin/cat",
       .arguments = {"/etc/hostname"},
   });
@@ -209,7 +159,7 @@ TEST_F(CommandExecutorTest, DeniesExternalNetwork) {
     GTEST_SKIP() << "Minijail helper is not installed";
   }
 
-  auto result = run(CommandExecutorConfig{
+  auto result = run(CommandSpec{
       .program = "/usr/bin/python3",
       .arguments = {
           "-c",
@@ -225,12 +175,12 @@ TEST_F(CommandExecutorTest, RejectsRelativeProgramAndReservedEnvironment) {
     GTEST_SKIP() << "Minijail helper is not installed";
   }
 
-  auto relative = run(CommandExecutorConfig{.program = "sh"});
+  auto relative = run(CommandSpec{.program = "sh"});
   ASSERT_FALSE(relative.has_value());
   EXPECT_EQ(relative.error(), make_error_code(Error::Unauthorized));
 
-  CommandExecutorConfig reserved{.program = "/bin/true"};
-  reserved.env.emplace("PATH", "/tmp");
+  CommandSpec reserved{.program = "/bin/true"};
+  reserved.environment.emplace("PATH", "/tmp");
   auto reserved_result = run(std::move(reserved));
   ASSERT_FALSE(reserved_result.has_value());
   EXPECT_EQ(reserved_result.error(), make_error_code(Error::InvalidArgument));
@@ -241,7 +191,7 @@ TEST_F(CommandExecutorTest, EnforcesWallTimeout) {
     GTEST_SKIP() << "Minijail helper is not installed";
   }
 
-  auto result = run(CommandExecutorConfig{
+  auto result = run(CommandSpec{
                         .program = "/bin/sh",
                         .arguments = {"-c", "sleep 5"},
                     },

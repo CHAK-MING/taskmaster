@@ -6,7 +6,7 @@ intf_libs = -lboost_url
 
 ./: lib{dagforge-foundation}: libul{dagforge-foundation}: \
   mxx{modules/base modules/core modules/util modules/domain modules/io \
-      modules/config modules/client modules/executor modules/workflow \
+      modules/config modules/http modules/executor modules/workflow \
       modules/dagforge}
 
 lib{dagforge-foundation}:
@@ -27,21 +27,31 @@ lib{dagforge}:                                                   \
   cxx{dagforge/core/shard                                         \
       dagforge/core/runtime                                       \
       dagforge/workflow/admission_policy                          \
+      dagforge/workflow/artifact_store                            \
+      dagforge/workflow/checkpoint_store                          \
+      dagforge/workflow/detail/storage_codec                      \
+      dagforge/workflow/evidence_ledger                           \
+      dagforge/workflow/executor_registry                         \
       dagforge/workflow/plan_compiler                             \
-      dagforge/workflow/workflow_storage                          \
       dagforge/workflow/run_value_store                           \
       dagforge/workflow/workflow_runtime                          \
       dagforge/workflow/workflow_control_plane                    \
+      dagforge/workflow/workflow_plan_loader                     \
       dagforge/io/context                                         \
       dagforge/io/timing_wheel                                    \
       dagforge/app/metrics_exporter                               \
       dagforge/executor/command_executor                          \
+      dagforge/workflow/executors/command_adapter                 \
+      dagforge/workflow/executors/http_adapter                    \
       dagforge/app/application                                    \
       dagforge/app/api/api_server                                 \
-      dagforge/client/http/http_parser                            \
-      dagforge/app/http/router                                    \
-      dagforge/app/http/http_server                               \
-      dagforge/client/http/http_client                            \
+      dagforge/app/api/detail/http_metrics_registry               \
+      dagforge/app/api/detail/routes/system                       \
+      dagforge/app/api/detail/routes/workflows                    \
+      dagforge/http/http_parser                                   \
+      dagforge/http/router                                        \
+      dagforge/http/http_server                                   \
+      dagforge/http/http_client                                   \
       dagforge/config/system_config_loader                        \
       dagforge/util/daemon                                        \
       dagforge/util/log}                                          \
@@ -75,6 +85,6 @@ mxx{modules/util}@modules/: cxx.module_name = dagforge.util
 mxx{modules/domain}@modules/: cxx.module_name = dagforge.domain
 mxx{modules/io}@modules/: cxx.module_name = dagforge.io
 mxx{modules/config}@modules/: cxx.module_name = dagforge.config
-mxx{modules/client}@modules/: cxx.module_name = dagforge.http
+mxx{modules/http}@modules/: cxx.module_name = dagforge.http
 mxx{modules/executor}@modules/: cxx.module_name = dagforge.executor
 mxx{modules/workflow}@modules/: cxx.module_name = dagforge.workflow

@@ -1,8 +1,8 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include "dagforge/app/metrics_registry.hpp"
 #include "dagforge/core/error.hpp"
+#include "dagforge/core/metrics.hpp"
 #endif
 
 #include <memory>

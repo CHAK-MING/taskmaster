@@ -2,7 +2,8 @@
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
-#include "dagforge/workflow/workflow_types.hpp"
+#include "dagforge/workflow/executor_registry.hpp"
+#include "dagforge/workflow/workflow_plan.hpp"
 
 #include <memory>
 #include <string>
@@ -19,7 +20,8 @@ public:
 
 class PlanCompiler {
 public:
-  explicit PlanCompiler(PolicyEngine policy_engine = {});
+  explicit PlanCompiler(const ExecutorRegistry &executors,
+                        PolicyEngine policy_engine = {});
 
   [[nodiscard]] auto compile(WorkflowPlan plan) const
       -> Result<std::shared_ptr<const ExecutionPlan>>;
@@ -31,6 +33,7 @@ public:
       -> Result<std::string>;
 
 private:
+  const ExecutorRegistry *executors_;
   PolicyEngine policy_engine_;
 };
 

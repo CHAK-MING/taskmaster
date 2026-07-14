@@ -1,0 +1,35 @@
+{
+  "workflow_id": "http-header-limit",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "produce",
+      "executor": "command",
+      "outputs": ["result"],
+      "config": {
+        "program": "/usr/bin/python3",
+        "arguments": ["-c", "print('x' * 70000, end='')"],
+        "env": [],
+        "input_env": []
+      }
+    },
+    {
+      "id": "request",
+      "executor": "http",
+      "inputs": [
+        {"input": "large", "node": "produce", "port": "result"}
+      ],
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "GET",
+        "url": "http://127.0.0.1:__HTTP_TARGET_PORT__/not-found",
+        "headers": [],
+        "input_headers": [
+          {"input": "large", "header": "X-Large"}
+        ],
+        "accepted_statuses": [404]
+      }
+    }
+  ]
+}

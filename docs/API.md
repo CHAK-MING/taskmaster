@@ -52,24 +52,24 @@ The response has status `201 Created`:
 
 Plans with the same canonical digest are deduplicated in the current process.
 
-### `POST /api/v1/workflows/plans/toml`
-
-Registers a TOML Workflow Plan v1. The request body is raw TOML, not JSON.
-
 ### `GET /api/v1/workflows/plans`
 
-Lists plans currently registered in the in-memory control plane.
+Lists plans currently registered in the in-memory control plane. The optional
+`offset` and `limit` query parameters select a page. The response includes
+`plans`, `total`, `offset`, and `limit`.
 
 ## Run endpoints
 
 ### `POST /api/v1/workflows/{workflow_id}/runs`
 
-Starts the latest registered plan for `workflow_id`.
+Starts a registered plan for `workflow_id`. When `plan_id` is omitted, the
+latest registered plan is selected.
 
 Optional body:
 
 ```json
 {
+  "plan_id": "019...",
   "source": "api",
   "event_type": "request",
   "payload": {"request":"hello"},
@@ -147,7 +147,27 @@ encoded as Artifact reference objects.
 
 ### `GET /api/v1/workflow-runs/{run_id}/evidence`
 
-Returns evidence records for the run.
+Returns evidence records for the run. The optional `offset` and `limit` query
+parameters select a page. The response includes `evidence`, `total`, `offset`,
+and `limit`.
+
+## Artifact endpoints
+
+### `POST /api/v1/artifacts`
+
+Stores the raw request body as an Artifact. `Content-Type` becomes the stored
+media type and defaults to `application/octet-stream`. The response has status
+`201 Created` and contains `artifact_id`, `media_type`, `size_bytes`, and
+`digest`.
+
+### `GET /api/v1/artifacts/{artifact_id}`
+
+Returns the Artifact bytes with the stored `Content-Type` and digest in the
+`ETag` header.
+
+### `DELETE /api/v1/artifacts/{artifact_id}`
+
+Deletes the Artifact and returns `{"status":"deleted"}`.
 
 ### `POST /api/v1/workflow-runs/{run_id}/cancel`
 
@@ -182,9 +202,6 @@ Moves a paused run back to `running` and resumes dispatch.
 ## Current limitations
 
 - plan registration without a Run is not persisted independently;
-- there is no endpoint to upload or download artifact bytes;
-- run creation selects the latest plan for a workflow instead of an explicit
-  plan ID;
 - Evidence persistence is append-only JSON Lines rather than a query database.
 
 These are explicit 0.4 follow-up milestones rather than hidden guarantees.

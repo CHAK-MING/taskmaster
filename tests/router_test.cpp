@@ -1,4 +1,4 @@
-#include "dagforge/app/http/router.hpp"
+#include "dagforge/http/router.hpp"
 
 #include "test_utils.hpp"
 #include "gtest/gtest.h"

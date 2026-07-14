@@ -4,7 +4,7 @@
 #include "detail/routes/system.hpp"
 #include "detail/routes/workflows.hpp"
 #include "dagforge/app/metrics_exporter.hpp"
-#include "dagforge/app/http/http_server.hpp"
+#include "dagforge/http/http_server.hpp"
 #include "dagforge/util/log.hpp"
 #include <cstdlib>
 #include <tuple>
@@ -15,7 +15,7 @@ struct ApiServer::Impl : std::enable_shared_from_this<Impl> {
   Application &app_;
   std::shared_ptr<http::HttpServer> server_;
   std::atomic<std::uint64_t> http_active_requests_{0};
-  detail::HttpMetricsRegistry http_metrics_;
+  api_detail::HttpMetricsRegistry http_metrics_;
   api_detail::ApiContext ctx_;
   bool auth_configuration_valid_{true};
 

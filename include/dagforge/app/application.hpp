@@ -4,7 +4,6 @@
 #include "dagforge/config/system_config.hpp"
 #include "dagforge/core/error.hpp"
 #include "dagforge/core/runtime.hpp"
-#include "dagforge/executor/executor.hpp"
 #endif
 
 #include <atomic>
@@ -14,8 +13,10 @@
 namespace dagforge {
 
 class ApiServer;
+class ICommandExecutor;
 
 namespace workflow {
+class ExecutorRegistry;
 class WorkflowControlPlane;
 class WorkflowRuntime;
 } // namespace workflow
@@ -56,7 +57,8 @@ private:
   std::atomic<bool> running_{false};
   SystemConfig config_;
   std::unique_ptr<Runtime> runtime_;
-  std::unique_ptr<IExecutor> executor_;
+  std::unique_ptr<ICommandExecutor> command_executor_;
+  std::unique_ptr<workflow::ExecutorRegistry> executor_registry_;
   std::unique_ptr<workflow::WorkflowControlPlane> workflow_control_plane_;
   std::unique_ptr<workflow::WorkflowRuntime> workflow_runtime_;
   std::unique_ptr<ApiServer> api_;

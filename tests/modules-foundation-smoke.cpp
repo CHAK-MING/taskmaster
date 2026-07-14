@@ -28,7 +28,7 @@ auto main() -> int {
   if (config.api.port != 8888 || !config.workflow.enabled) {
     return 7;
   }
-  dagforge::CommandExecutorConfig command;
+  dagforge::CommandSpec command;
   command.program = "/bin/true";
   if (command.program.size() != 9 || command.program.front() != '/' ||
       config.sandbox.tmp_bytes == 0) {

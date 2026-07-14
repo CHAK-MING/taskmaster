@@ -4,32 +4,20 @@
 #include "dagforge/core/error.hpp"
 #include "dagforge/workflow/admission_policy.hpp"
 #include "dagforge/workflow/plan_compiler.hpp"
-#include "dagforge/workflow/workflow_types.hpp"
+#include "dagforge/workflow/workflow_plan.hpp"
 
 #include <memory>
 #include <mutex>
 #include <string>
-#include <string_view>
 #include <unordered_map>
 #include <vector>
 #endif
 
 namespace dagforge::workflow {
 
-class WorkflowPlanLoader {
-public:
-  [[nodiscard]] static auto from_json(std::string_view text)
-      -> Result<WorkflowPlan>;
-  [[nodiscard]] static auto from_toml(std::string_view text)
-      -> Result<WorkflowPlan>;
-  [[nodiscard]] static auto to_json(const WorkflowPlan &plan)
-      -> Result<std::string>;
-};
-
 class WorkflowControlPlane {
 public:
-  WorkflowControlPlane();
-  explicit WorkflowControlPlane(PlanCompiler compiler,
+  explicit WorkflowControlPlane(const ExecutorRegistry &executors,
                                 AdmissionPolicy admission = {});
 
   [[nodiscard]] auto register_plan(WorkflowPlan plan)

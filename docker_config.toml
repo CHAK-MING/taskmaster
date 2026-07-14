@@ -12,15 +12,28 @@ max_file_bytes = 67108864
 tmp_bytes = 67108864
 max_processes = 128
 max_open_files = 256
-
-[workflow]
-enabled = true
-
-[admission]
 allow_unlisted_programs = true
 allow_unlisted_environment = true
 allowed_programs = []
 allowed_environment = []
+
+[workflow]
+enabled = true
+
+[http_executor]
+enabled = false
+allow_plaintext = false
+allowed_origins = []
+max_request_headers = 64
+max_request_header_bytes = 65536
+max_request_body_bytes = 1048576
+max_response_header_bytes = 65536
+max_response_body_bytes = 10485760
+max_concurrent_requests_per_shard = 32
+
+[admission]
+allow_unlisted_executors = true
+allowed_executors = []
 max_nodes = 256
 max_parallel_nodes = 32
 max_total_output_bytes = 67108864

@@ -1,0 +1,22 @@
+{
+  "workflow_id": "http-accepted-status",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "request",
+      "executor": "http",
+      "outputs": ["status", "body", "result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "GET",
+        "url": "http://127.0.0.1:__HTTP_TARGET_PORT__/not-found",
+        "headers": [],
+        "input_headers": [],
+        "accepted_statuses": [404]
+      }
+    }
+  ],
+  "outputs": [
+    {"node": "request", "port": "result"}
+  ]
+}

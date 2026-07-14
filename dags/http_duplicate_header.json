@@ -1,0 +1,21 @@
+{
+  "workflow_id": "http-duplicate-header",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "request",
+      "executor": "http",
+      "outputs": ["result"],
+      "config": {
+        "method": "GET",
+        "url": "http://127.0.0.1:__HTTP_TARGET_PORT__/not-found",
+        "headers": [
+          {"name": "X-Test", "value": "first"},
+          {"name": "x-test", "value": "second"}
+        ],
+        "input_headers": [],
+        "accepted_statuses": [404]
+      }
+    }
+  ]
+}

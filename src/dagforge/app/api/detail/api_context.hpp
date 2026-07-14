@@ -1,9 +1,9 @@
 #pragma once
 
 #include "dagforge/app/application.hpp"
-#include "dagforge/app/http/http_server.hpp"
-#include "dagforge/app/http/router.hpp"
-#include "dagforge/app/metrics_registry.hpp"
+#include "dagforge/http/http_server.hpp"
+#include "dagforge/http/router.hpp"
+#include "http_metrics_registry.hpp"
 
 #include <array>
 #include <atomic>
@@ -28,7 +28,7 @@ struct ApiContext {
   Application &app;
   http::HttpServer &server;
   std::atomic<std::uint64_t> &http_active_requests;
-  detail::HttpMetricsRegistry &http_metrics;
+  HttpMetricsRegistry &http_metrics;
   std::string bearer_token;
   std::uint64_t max_request_body_bytes{1024ULL * 1024ULL};
   std::size_t max_concurrent_requests{128};

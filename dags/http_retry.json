@@ -1,0 +1,25 @@
+{
+  "workflow_id": "http-retry",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "request",
+      "executor": "http",
+      "outputs": ["result"],
+      "max_retries": 2,
+      "retry_initial_delay_ms": 10,
+      "retry_max_delay_ms": 20,
+      "timeout_sec": 5,
+      "config": {
+        "method": "GET",
+        "url": "http://127.0.0.1:__HTTP_TARGET_PORT__/retry",
+        "headers": [],
+        "input_headers": [],
+        "accepted_statuses": []
+      }
+    }
+  ],
+  "outputs": [
+    {"node": "request", "port": "result"}
+  ]
+}

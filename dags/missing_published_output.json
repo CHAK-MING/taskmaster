@@ -1,0 +1,39 @@
+{
+  "workflow_id": "real-missing-output",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "decide",
+      "executor": "command",
+      "outputs": ["result"],
+      "config": {
+        "program": "/bin/printf",
+        "arguments": ["no"],
+        "env": [],
+        "input_env": []
+      }
+    },
+    {
+      "id": "publish",
+      "executor": "command",
+      "outputs": ["result"],
+      "config": {
+        "program": "/bin/printf",
+        "arguments": ["should-not-run"],
+        "env": [],
+        "input_env": []
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source_node": "decide",
+      "source_port": "result",
+      "target": "publish",
+      "condition": {"kind": "string_equals", "expected_string": "yes"}
+    }
+  ],
+  "outputs": [
+    {"node": "publish", "port": "result"}
+  ]
+}

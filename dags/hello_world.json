@@ -1,0 +1,19 @@
+{
+  "workflow_id": "hello-world",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "start",
+      "name": "Start",
+      "executor": "command",
+      "outputs": ["stdout", "stderr", "exit_code", "result"],
+      "timeout_sec": 30,
+      "config": {
+        "program": "/bin/echo",
+        "arguments": ["hello from DAGForge"],
+        "env": [],
+        "input_env": []
+      }
+    }
+  ]
+}

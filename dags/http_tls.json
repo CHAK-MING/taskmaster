@@ -1,0 +1,22 @@
+{
+  "workflow_id": "http-tls",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "request",
+      "executor": "http",
+      "outputs": ["status", "result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "GET",
+        "url": "https://localhost:__HTTPS_TARGET_PORT__/tls",
+        "headers": [],
+        "input_headers": [],
+        "accepted_statuses": []
+      }
+    }
+  ],
+  "outputs": [
+    {"node": "request", "port": "result"}
+  ]
+}

@@ -2,7 +2,10 @@
 
 #include "dagforge/app/api/api_server.hpp"
 #include "dagforge/config/system_config_loader.hpp"
-#include "dagforge/executor/executor.hpp"
+#include "dagforge/executor/command_executor.hpp"
+#include "dagforge/workflow/executor_registry.hpp"
+#include "dagforge/workflow/executors/command_adapter.hpp"
+#include "dagforge/workflow/executors/http_adapter.hpp"
 #include "dagforge/workflow/workflow_control_plane.hpp"
 #include "dagforge/workflow/workflow_runtime.hpp"
 
@@ -44,7 +47,8 @@ auto Application::rebuild_components() -> Result<void> {
   api_.reset();
   workflow_runtime_.reset();
   workflow_control_plane_.reset();
-  executor_.reset();
+  executor_registry_.reset();
+  command_executor_.reset();
   runtime_.reset();
 
   const auto shard_count =
@@ -54,9 +58,28 @@ auto Application::rebuild_components() -> Result<void> {
   runtime_ = std::make_unique<Runtime>(
       shard_count, config_.runtime.pin_shards_to_cores,
       static_cast<unsigned>(config_.runtime.cpu_affinity_offset));
-  executor_ = create_command_executor(*runtime_, config_.sandbox);
-  if (!executor_) {
+  command_executor_ = create_command_executor(*runtime_, config_.sandbox);
+  if (!command_executor_) {
     return fail(Error::InvalidState);
+  }
+  executor_registry_ = std::make_unique<workflow::ExecutorRegistry>();
+  auto command_registered = executor_registry_->register_executor(
+      workflow::create_command_executor_adapter(*command_executor_,
+                                                config_.sandbox));
+  if (!command_registered) {
+    return fail(command_registered.error());
+  }
+  if (config_.http_executor.enabled) {
+    auto http_executor = workflow::create_http_executor_adapter(
+        *runtime_, config_.http_executor);
+    if (!http_executor) {
+      return fail(http_executor.error());
+    }
+    auto http_registered =
+        executor_registry_->register_executor(std::move(*http_executor));
+    if (!http_registered) {
+      return fail(http_registered.error());
+    }
   }
 
   if (config_.workflow.enabled) {
@@ -79,10 +102,10 @@ auto Application::rebuild_components() -> Result<void> {
     }
 
     workflow_control_plane_ = std::make_unique<workflow::WorkflowControlPlane>(
-        workflow::PlanCompiler{},
+        *executor_registry_,
         workflow::AdmissionPolicy{config_.admission});
     workflow_runtime_ = std::make_unique<workflow::WorkflowRuntime>(
-        *runtime_, *executor_, std::move(artifact_store),
+        *runtime_, *executor_registry_, std::move(artifact_store),
         std::move(evidence_ledger), checkpoint_store,
         config_.storage.max_completed_runs);
 
@@ -112,7 +135,15 @@ auto Application::rebuild_components() -> Result<void> {
 auto Application::init() -> Result<void> {
   const auto api_configuration_changed =
       config_.api.enabled != static_cast<bool>(api_);
-  if (!runtime_ || !executor_ || api_configuration_changed) {
+  const auto workflow_configuration_changed =
+      config_.workflow.enabled != static_cast<bool>(workflow_runtime_) ||
+      config_.workflow.enabled != static_cast<bool>(workflow_control_plane_);
+  const auto http_executor_configuration_changed =
+      executor_registry_ != nullptr &&
+      config_.http_executor.enabled != executor_registry_->contains("http");
+  if (!runtime_ || !command_executor_ || !executor_registry_ ||
+      api_configuration_changed || workflow_configuration_changed ||
+      http_executor_configuration_changed) {
     return rebuild_components();
   }
   return ok();
@@ -124,7 +155,15 @@ auto Application::start() -> Result<void> {
   }
   const auto api_configuration_changed =
       config_.api.enabled != static_cast<bool>(api_);
-  if (!runtime_ || !executor_ || api_configuration_changed) {
+  const auto workflow_configuration_changed =
+      config_.workflow.enabled != static_cast<bool>(workflow_runtime_) ||
+      config_.workflow.enabled != static_cast<bool>(workflow_control_plane_);
+  const auto http_executor_configuration_changed =
+      executor_registry_ != nullptr &&
+      config_.http_executor.enabled != executor_registry_->contains("http");
+  if (!runtime_ || !command_executor_ || !executor_registry_ ||
+      api_configuration_changed || workflow_configuration_changed ||
+      http_executor_configuration_changed) {
     auto initialized = init();
     if (!initialized) {
       running_.store(false, std::memory_order_release);

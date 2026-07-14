@@ -1,0 +1,19 @@
+{
+  "workflow_id": "http-undeclared-input",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "request",
+      "executor": "http",
+      "outputs": ["result"],
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__HTTP_TARGET_PORT__/transform?mode=test",
+        "headers": [],
+        "input_headers": [],
+        "body_input": "missing",
+        "accepted_statuses": [201]
+      }
+    }
+  ]
+}

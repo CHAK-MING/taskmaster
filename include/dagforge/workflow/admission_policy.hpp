@@ -3,7 +3,7 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/config/system_config.hpp"
 #include "dagforge/core/error.hpp"
-#include "dagforge/workflow/workflow_types.hpp"
+#include "dagforge/workflow/workflow_plan.hpp"
 
 #include <utility>
 #endif

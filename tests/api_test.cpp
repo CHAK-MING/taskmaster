@@ -1,7 +1,11 @@
 #include "dagforge/app/api/api_server.hpp"
 #include "dagforge/app/application.hpp"
-#include "dagforge/app/http/http_server.hpp"
+#include "dagforge/http/http_server.hpp"
 #include "dagforge/core/sync_wait.hpp"
+#include "dagforge/util/json.hpp"
+#include "dagforge/workflow/plan_compiler.hpp"
+#include "dagforge/workflow/workflow_control_plane.hpp"
+#include "dagforge/workflow/workflow_plan_loader.hpp"
 
 #include "../src/dagforge/app/api/detail/api_context.hpp"
 #include "../src/dagforge/app/api/detail/routes/workflows.hpp"
@@ -63,6 +67,82 @@ TEST(ApiTest, InitReconcilesApiConfigurationChanges) {
   EXPECT_NE(app.api_server(), nullptr);
 }
 
+TEST(ApiTest, InitReconcilesWorkflowConfigurationChanges) {
+  Application app;
+  ASSERT_NE(app.workflow_runtime(), nullptr);
+  ASSERT_NE(app.workflow_control_plane(), nullptr);
+
+  app.config().workflow.enabled = false;
+  ASSERT_TRUE(app.init().has_value());
+  EXPECT_EQ(app.workflow_runtime(), nullptr);
+  EXPECT_EQ(app.workflow_control_plane(), nullptr);
+
+  app.config().workflow.enabled = true;
+  ASSERT_TRUE(app.init().has_value());
+  EXPECT_NE(app.workflow_runtime(), nullptr);
+  EXPECT_NE(app.workflow_control_plane(), nullptr);
+}
+
+TEST(ApiTest, InitReconcilesHttpExecutorEnablement) {
+  Application app;
+  const auto make_plan = [] {
+    return workflow::WorkflowPlanLoader::from_json(R"({
+      "workflow_id":"http-toggle",
+      "schema_version":1,
+      "nodes":[{
+        "id":"request",
+        "executor":"http",
+        "outputs":["result"],
+        "config":{
+          "method":"GET",
+          "url":"https://example.com/resource",
+          "headers":[],
+          "input_headers":[],
+          "accepted_statuses":[]
+        }
+      }]
+    })");
+  };
+
+  auto disabled_plan = make_plan();
+  ASSERT_TRUE(disabled_plan.has_value());
+  auto disabled =
+      app.workflow_control_plane()->register_plan(std::move(*disabled_plan));
+  ASSERT_FALSE(disabled.has_value());
+  EXPECT_EQ(disabled.error(), make_error_code(Error::Unsupported));
+
+  app.config().http_executor.enabled = true;
+  app.config().http_executor.allowed_origins = {"https://example.com"};
+  ASSERT_TRUE(app.init().has_value());
+  auto enabled_plan = make_plan();
+  ASSERT_TRUE(enabled_plan.has_value());
+  auto enabled =
+      app.workflow_control_plane()->register_plan(std::move(*enabled_plan));
+  ASSERT_TRUE(enabled.has_value()) << enabled.error().message();
+
+  app.config().http_executor.enabled = false;
+  ASSERT_TRUE(app.init().has_value());
+  auto disabled_again_plan = make_plan();
+  ASSERT_TRUE(disabled_again_plan.has_value());
+  auto disabled_again = app.workflow_control_plane()->register_plan(
+      std::move(*disabled_again_plan));
+  ASSERT_FALSE(disabled_again.has_value());
+  EXPECT_EQ(disabled_again.error(), make_error_code(Error::Unsupported));
+}
+
+TEST(ApiTest, RestartRebuildsQuiescedWorkflowComponents) {
+  Application app;
+  ASSERT_TRUE(app.start().has_value());
+  app.stop();
+  ASSERT_EQ(app.workflow_runtime(), nullptr);
+  ASSERT_EQ(app.workflow_control_plane(), nullptr);
+
+  ASSERT_TRUE(app.start().has_value());
+  EXPECT_NE(app.workflow_runtime(), nullptr);
+  EXPECT_NE(app.workflow_control_plane(), nullptr);
+  app.stop();
+}
+
 TEST(ApiTest, AccessPolicyAuthenticatesAndLimitsRequests) {
   SystemConfig config;
   config.api.enabled = false;
@@ -71,7 +151,7 @@ TEST(ApiTest, AccessPolicyAuthenticatesAndLimitsRequests) {
 
   http::HttpServer server(app.runtime());
   std::atomic<std::uint64_t> active{0};
-  detail::HttpMetricsRegistry metrics;
+  api_detail::HttpMetricsRegistry metrics;
   api_detail::ApiContext context{
       .app = app,
       .server = server,
@@ -149,7 +229,7 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
 
   http::HttpServer server(app.runtime());
   std::atomic<std::uint64_t> active{0};
-  detail::HttpMetricsRegistry metrics;
+  api_detail::HttpMetricsRegistry metrics;
   api_detail::ApiContext context{
       .app = app,
       .server = server,
@@ -168,7 +248,7 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
     request.method = http::HttpMethod::POST;
     request.path = "/api/v1/workflows/plans";
     const auto body = std::format(
-        R"({{"workflow_id":"{}","schema_version":1,"nodes":[{{"id":"command","config":{{"program":"{}"}},"outputs":["result"]}}]}})",
+        R"({{"workflow_id":"{}","schema_version":1,"nodes":[{{"id":"command","executor":"command","config":{{"program":"{}","arguments":[],"env":[],"input_env":[]}},"outputs":["result"]}}]}})",
         workflow, program);
     request.body.assign(body.begin(), body.end());
     auto response =

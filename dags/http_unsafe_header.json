@@ -1,0 +1,20 @@
+{
+  "workflow_id": "http-unsafe-header",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "request",
+      "executor": "http",
+      "outputs": ["result"],
+      "config": {
+        "method": "GET",
+        "url": "http://127.0.0.1:__HTTP_TARGET_PORT__/transform",
+        "headers": [
+          {"name": "Host", "value": "attacker.invalid"}
+        ],
+        "input_headers": [],
+        "accepted_statuses": []
+      }
+    }
+  ]
+}

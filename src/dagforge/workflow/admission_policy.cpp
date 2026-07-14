@@ -26,21 +26,9 @@ auto AdmissionPolicy::validate(const WorkflowPlan &plan) const -> Result<void> {
   }
 
   for (const auto &node : plan.nodes) {
-    if (!config_.allow_unlisted_programs &&
-        !contains(config_.allowed_programs, node.command.program)) {
+    if (!config_.allow_unlisted_executors &&
+        !contains(config_.allowed_executors, node.executor)) {
       return fail(Error::Unauthorized);
-    }
-    for (const auto &entry : node.command.env) {
-      if (!config_.allow_unlisted_environment &&
-          !contains(config_.allowed_environment, entry.key)) {
-        return fail(Error::Unauthorized);
-      }
-    }
-    for (const auto &binding : node.command.input_env) {
-      if (!config_.allow_unlisted_environment &&
-          !contains(config_.allowed_environment, binding.environment)) {
-        return fail(Error::Unauthorized);
-      }
     }
   }
   return ok();

@@ -1,0 +1,19 @@
+{
+  "workflow_id": "http-invalid-header-utf8",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "request",
+      "executor": "http",
+      "outputs": ["headers", "result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "GET",
+        "url": "http://127.0.0.1:__HTTP_TARGET_PORT__/invalid-header-utf8",
+        "headers": [],
+        "input_headers": [],
+        "accepted_statuses": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "workflow_id": "real-large-artifact",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "generate",
+      "executor": "command",
+      "outputs": ["result"],
+      "timeout_sec": 30,
+      "config": {
+        "program": "/usr/bin/python3",
+        "arguments": ["-c", "import sys; sys.stdout.write('x' * 300000)"],
+        "env": [],
+        "input_env": []
+      }
+    }
+  ],
+  "outputs": [
+    {"node": "generate", "port": "result"}
+  ]
+}

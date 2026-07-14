@@ -4,11 +4,14 @@
 #include "dagforge/core/coroutine.hpp"
 #include "dagforge/core/error.hpp"
 #include "dagforge/core/runtime.hpp"
-#include "dagforge/executor/executor.hpp"
-#include "dagforge/workflow/node_configs.hpp"
+#include "dagforge/workflow/executor_registry.hpp"
 #include "dagforge/workflow/run_value_store.hpp"
-#include "dagforge/workflow/workflow_storage.hpp"
-#include "dagforge/workflow/workflow_types.hpp"
+#include "dagforge/workflow/artifact_store.hpp"
+#include "dagforge/workflow/checkpoint_store.hpp"
+#include "dagforge/workflow/evidence_ledger.hpp"
+#include "dagforge/workflow/evidence_types.hpp"
+#include "dagforge/workflow/workflow_plan.hpp"
+#include "dagforge/workflow/workflow_runtime_types.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -27,8 +30,6 @@
 
 namespace dagforge::workflow {
 
-using NodeOutputs = std::vector<std::pair<WorkflowPortId, WorkflowValue>>;
-
 struct WorkflowCallbacks {
   std::move_only_function<void(const RunSnapshot &)> on_run_state;
   std::move_only_function<void(const WorkflowRunId &, const TaskSnapshot &)>
@@ -41,7 +42,7 @@ struct WorkflowCallbacks {
 class WorkflowRuntime {
 public:
   WorkflowRuntime(
-      Runtime &runtime, IExecutor &executor,
+      Runtime &runtime, ExecutorRegistry &executors,
       std::shared_ptr<IArtifactStore> artifact_store =
           std::make_shared<InMemoryArtifactStore>(),
       std::shared_ptr<EvidenceLedger> evidence_ledger =
@@ -86,9 +87,6 @@ public:
   }
 
 private:
-  using InputMap = std::unordered_map<
-      std::string, std::shared_ptr<const WorkflowValue>>;
-
   struct TaskRuntimeState {
     TaskSnapshot snapshot;
     std::optional<InstanceId> instance_id;
@@ -130,7 +128,8 @@ private:
                         AttemptId attempt_id)
       -> spawn_task;
   auto complete_task(const WorkflowRunId &run_id, std::size_t task_index,
-                     const AttemptId &attempt_id, Result<NodeOutputs> result)
+                     const AttemptId &attempt_id,
+                     Result<ExecutorOutputs> result)
       -> void;
   auto finalize_run_if_ready(const WorkflowRunId &run_id) -> bool;
   auto update_dependents(const WorkflowRunId &run_id,
@@ -159,7 +158,7 @@ private:
       -> Result<bool>;
   [[nodiscard]] auto input_values(const ActiveRun &run,
                                   std::size_t node_index) const
-      -> Result<InputMap>;
+      -> Result<ExecutorInputs>;
   [[nodiscard]] auto make_snapshot(const ActiveRun &run) const
       -> std::shared_ptr<const RunSnapshot>;
   auto emit_run_state(ActiveRun &run) -> void;
@@ -168,14 +167,14 @@ private:
                        EvidenceType type, JsonValue metadata = {}) -> void;
   auto checkpoint(ActiveRun &run) -> void;
 
-  [[nodiscard]] auto execute_command_node(WorkflowRunId run_id,
-                                          std::size_t task_index,
-                                          AttemptId attempt_id,
-                                          NodePlan node, InputMap inputs)
-      -> task<Result<NodeOutputs>>;
+  [[nodiscard]] auto execute_task(WorkflowRunId run_id,
+                                  std::size_t task_index,
+                                  AttemptId attempt_id, NodePlan node,
+                                  ExecutorInputs inputs)
+      -> task<Result<ExecutorOutputs>>;
 
   Runtime &runtime_;
-  IExecutor &executor_;
+  ExecutorRegistry &executors_;
   std::shared_ptr<IArtifactStore> artifact_store_;
   std::shared_ptr<EvidenceLedger> evidence_ledger_;
   std::shared_ptr<CheckpointStore> checkpoint_store_;

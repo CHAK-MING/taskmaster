@@ -1,4 +1,4 @@
-#include "dagforge/app/http/http_server.hpp"
+#include "dagforge/http/http_server.hpp"
 #include "dagforge/core/runtime.hpp"
 
 #include "test_utils.hpp"

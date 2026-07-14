@@ -1,7 +1,7 @@
-#include "dagforge/executor/executor.hpp"
-#include "dagforge/executor/sandbox_backend.hpp"
-#include "dagforge/executor/executor_state.hpp"
-#include "dagforge/executor/executor_utils.hpp"
+#include "dagforge/executor/command_executor.hpp"
+
+#include "detail/command_validation.hpp"
+#include "detail/shard_state.hpp"
 #include "dagforge/executor/process_launch.hpp"
 #include "dagforge/executor/process_management.hpp"
 #include "dagforge/util/log.hpp"
@@ -52,7 +52,8 @@ inline constexpr std::string_view kSandboxPath =
 inline constexpr std::array<std::string_view, 3> kReservedEnvironment{
     "HOME", "PATH", "TMPDIR"};
 
-using CommandShardState = ExecutorShardState<ActiveProcess>;
+using CommandShardState =
+    executor_detail::ShardExecutionState<ActiveProcess>;
 
 struct ExecutionContext {
   CommandShardState *state{};
@@ -187,9 +188,23 @@ auto add_existing_path(std::vector<std::string> &args,
   return std::format("{},{},{}", name, value, value);
 }
 
+[[nodiscard]] auto build_sandbox_environment(
+    const fs::path &workspace, const CommandSpec &command)
+    -> bp::process_environment {
+  std::vector<std::pair<std::string, std::string>> environment;
+  environment.reserve(command.environment.size() + 3);
+  environment.emplace_back("PATH", kSandboxPath);
+  environment.emplace_back("HOME", workspace.string());
+  environment.emplace_back("TMPDIR", "/tmp");
+  for (const auto &[key, value] : command.environment) {
+    environment.emplace_back(key, value);
+  }
+  return bp::process_environment(std::move(environment));
+}
+
 [[nodiscard]] auto build_sandbox_arguments(
     const SandboxConfig &sandbox, const fs::path &seccomp_bpf,
-    const fs::path &workspace, const CommandExecutorConfig &command,
+    const fs::path &workspace, const CommandSpec &command,
     std::chrono::seconds timeout) -> Result<std::vector<std::string>> {
   if (command.program.empty() || command.program.contains('\0') ||
       !fs::path(command.program).is_absolute()) {
@@ -204,8 +219,9 @@ auto add_existing_path(std::vector<std::string> &args,
       })) {
     return fail(Error::InvalidArgument);
   }
-  for (const auto &[key, value] : command.env) {
-    if (!is_valid_env_key(key) || value.contains('\0') ||
+  for (const auto &[key, value] : command.environment) {
+    if (!executor_detail::is_valid_environment_key(key) ||
+        value.contains('\0') ||
         std::ranges::find(kReservedEnvironment, key) !=
             kReservedEnvironment.end()) {
       return fail(Error::InvalidArgument);
@@ -215,16 +231,7 @@ auto add_existing_path(std::vector<std::string> &args,
   std::vector<std::string> args{
       "--logging=syslog", "-T", "static", "-U", "-m", "-M", "-e",
       "-l", "--uts=dagforge", "-N", "-v", "-n",
-      std::format("-t{}", sandbox.tmp_bytes), "--env-reset",
-      "--env-add", std::format("PATH={}", kSandboxPath), "--env-add",
-      std::format("HOME={}", workspace.string()), "--env-add",
-      "TMPDIR=/tmp",
-      "--fs-default-paths"};
-
-  for (const auto &[key, value] : command.env) {
-    args.emplace_back("--env-add");
-    args.push_back(std::format("{}={}", key, value));
-  }
+      std::format("-t{}", sandbox.tmp_bytes), "--fs-default-paths"};
 
   add_existing_path(args, "--fs-path-rx", "/usr/local/bin");
   add_existing_path(args, "--fs-path-rx", "/usr/local/lib");
@@ -266,7 +273,8 @@ auto add_existing_path(std::vector<std::string> &args,
   return ok(std::move(args));
 }
 
-auto emit_stream_line(ExecutionSink &sink, const InstanceId &instance_id,
+auto emit_stream_line(CommandExecutionSink &sink,
+                      const InstanceId &instance_id,
                       std::string_view stream, std::string_view line,
                       bool &streamed_any) -> void {
   auto &callback = stream == "stdout" ? sink.on_stdout : sink.on_stderr;
@@ -277,7 +285,7 @@ auto emit_stream_line(ExecutionSink &sink, const InstanceId &instance_id,
 }
 
 auto emit_heartbeat(
-    const std::shared_ptr<ExecutorHeartbeatCallback> &heartbeat_callback,
+    const std::shared_ptr<CommandHeartbeatCallback> &heartbeat_callback,
     const InstanceId &instance_id) -> void {
   if (heartbeat_callback && *heartbeat_callback) {
     (*heartbeat_callback)(instance_id);
@@ -285,7 +293,7 @@ auto emit_heartbeat(
 }
 
 auto run_executor_heartbeat(
-    std::shared_ptr<ExecutorHeartbeatCallback> heartbeat_callback,
+    std::shared_ptr<CommandHeartbeatCallback> heartbeat_callback,
     std::shared_ptr<std::atomic_bool> stop, InstanceId instance_id)
     -> spawn_task {
   if (!heartbeat_callback || !*heartbeat_callback) {
@@ -307,7 +315,8 @@ auto run_executor_heartbeat(
                                  pmr::string &out,
                                  boost::asio::cancellation_signal &cancel_sig,
                                  const InstanceId &instance_id,
-                                 ExecutionSink &sink, std::string stream,
+                                 CommandExecutionSink &sink,
+                                 std::string stream,
                                  bool &streamed_any) -> task<void> {
   std::array<char, kReadBufferSize> buffer{};
   std::string pending_line;
@@ -374,9 +383,10 @@ wait_process_with_timeout(bp::process &process, std::chrono::seconds timeout,
 }
 
 auto execute_command(fs::path minijail, std::vector<std::string> arguments,
-                     fs::path workspace, std::chrono::seconds timeout,
-                     InstanceId instance_id, ExecutionSink sink,
-                     std::shared_ptr<ExecutorHeartbeatCallback> heartbeat,
+                     bp::process_environment environment, fs::path workspace,
+                     std::chrono::seconds timeout, InstanceId instance_id,
+                     CommandExecutionSink sink,
+                     std::shared_ptr<CommandHeartbeatCallback> heartbeat,
                      ExecutionContext context,
                      std::shared_ptr<pmr::memory_resource> resource_owner,
                      Runtime &runtime) -> spawn_task {
@@ -386,7 +396,7 @@ auto execute_command(fs::path minijail, std::vector<std::string> arguments,
   auto &io = current_io_context();
   boost::asio::readable_pipe stdout_pipe(io);
   boost::asio::readable_pipe stderr_pipe(io);
-  auto result = make_executor_result(resource);
+  auto result = make_command_execution_result(resource);
   result.stdout_output.reserve(kInitialOutputReserve);
   result.stderr_output.reserve(kInitialOutputReserve);
 
@@ -409,6 +419,7 @@ auto execute_command(fs::path minijail, std::vector<std::string> arguments,
                 .stdio = bp::process_stdio{.in = nullptr,
                                            .out = stdout_pipe,
                                            .err = stderr_pipe},
+                .env = std::move(environment),
                 .working_dir = workspace.string()}));
   } catch (const std::exception &error) {
     result.exit_code = -1;
@@ -467,13 +478,13 @@ auto execute_command(fs::path minijail, std::vector<std::string> arguments,
   }
 }
 
-class MinijailSandboxBackend final : public ISandboxBackend {
+class MinijailCommandExecutor final : public ICommandExecutor {
 public:
-  MinijailSandboxBackend(Runtime &runtime, SandboxConfig sandbox)
+  MinijailCommandExecutor(Runtime &runtime, SandboxConfig sandbox)
       : runtime_(&runtime), sandbox_(std::move(sandbox)),
         shard_states_(runtime.shard_count()) {}
 
-  auto launch(SandboxRequest request, SandboxEvents sink)
+  auto start(CommandExecutionRequest request, CommandExecutionSink sink)
       -> Result<void> override {
     if (!landlock_available()) {
       return fail(Error::Unsupported);
@@ -492,43 +503,44 @@ public:
     }
     auto arguments = build_sandbox_arguments(
         sandbox_, *seccomp, *workspace, request.command,
-        request.timeout);
+        request.execution_timeout);
     if (!arguments) {
       return fail(arguments.error());
     }
+    auto environment =
+        build_sandbox_environment(*workspace, request.command);
 
     log::debug("CommandExecutor start instance_id={} program='{}'",
                request.instance_id, request.command.program);
     auto shard = runtime_->is_current_shard() ? runtime_->current_shard() : 0;
-    std::shared_ptr<ExecutorHeartbeatCallback> heartbeat;
+    std::shared_ptr<CommandHeartbeatCallback> heartbeat;
     if (sink.on_heartbeat) {
-      heartbeat = std::make_shared<ExecutorHeartbeatCallback>(
+      heartbeat = std::make_shared<CommandHeartbeatCallback>(
           std::move(sink.on_heartbeat));
     }
     runtime_->spawn(execute_command(
-        std::move(*minijail), std::move(*arguments), std::move(*workspace),
-        request.timeout, request.instance_id,
-        ExecutionSink{.on_heartbeat = std::move(sink.on_heartbeat),
-                      .on_state = std::move(sink.on_state),
-                      .on_stdout = std::move(sink.on_stdout),
-                      .on_stderr = std::move(sink.on_stderr),
-                      .on_complete = std::move(sink.on_complete)},
+        std::move(*minijail), std::move(*arguments), std::move(environment),
+        std::move(*workspace), request.execution_timeout, request.instance_id,
+        CommandExecutionSink{.on_state = std::move(sink.on_state),
+                             .on_stdout = std::move(sink.on_stdout),
+                             .on_stderr = std::move(sink.on_stderr),
+                             .on_complete = std::move(sink.on_complete)},
         std::move(heartbeat), ExecutionContext{.state = &shard_states_[shard]},
         request.memory_resource, *runtime_));
     return ok();
   }
 
-  auto terminate(const InstanceId &instance_id) -> void override {
-    cancel_on_all_shards(*runtime_, shard_states_, instance_id,
-                         [](CommandShardState &state, const InstanceId &id) {
-                           auto active = state.find_active_mut(id);
-                           if (active == state.active_end() ||
-                               active->second.pid <= 0) {
-                             return;
-                           }
-                           kill_process_group_or_process(active->second.pid);
-                           log::debug("Cancelled sandbox for instance {}", id);
-                         });
+  auto cancel(const InstanceId &instance_id) -> void override {
+    executor_detail::cancel_on_all_shards(
+        *runtime_, shard_states_, instance_id,
+        [](CommandShardState &state, const InstanceId &id) {
+          auto active = state.find_active_mut(id);
+          if (active == state.active_end() || active->second.pid <= 0) {
+            return;
+          }
+          kill_process_group_or_process(active->second.pid);
+          log::debug("Cancelled sandbox for instance {}", id);
+        });
   }
 
 private:
@@ -537,54 +549,12 @@ private:
   std::vector<CommandShardState> shard_states_;
 };
 
-class CommandExecutor final : public IExecutor {
-public:
-  explicit CommandExecutor(std::unique_ptr<ISandboxBackend> backend)
-      : backend_(std::move(backend)) {}
-
-  auto start(ExecutorRequest request, ExecutionSink sink)
-      -> Result<void> override {
-    if (!backend_) {
-      return fail(Error::InvalidState);
-    }
-    return backend_->launch(
-        SandboxRequest{.instance_id = std::move(request.instance_id),
-                       .command = std::move(request.command),
-                       .timeout = request.execution_timeout,
-                       .memory_resource = std::move(request.memory_resource)},
-        SandboxEvents{.on_heartbeat = std::move(sink.on_heartbeat),
-                      .on_state = std::move(sink.on_state),
-                      .on_stdout = std::move(sink.on_stdout),
-                      .on_stderr = std::move(sink.on_stderr),
-                      .on_complete = std::move(sink.on_complete)});
-  }
-
-  auto cancel(const InstanceId &instance_id) -> void override {
-    if (backend_) {
-      backend_->terminate(instance_id);
-    }
-  }
-
-private:
-  std::unique_ptr<ISandboxBackend> backend_;
-};
-
 } // namespace
 
 auto create_command_executor(Runtime &runtime, SandboxConfig sandbox)
-    -> std::unique_ptr<IExecutor> {
-  return create_command_executor(
-      create_minijail_sandbox_backend(runtime, std::move(sandbox)));
-}
-
-auto create_command_executor(std::unique_ptr<ISandboxBackend> sandbox_backend)
-    -> std::unique_ptr<IExecutor> {
-  return std::make_unique<CommandExecutor>(std::move(sandbox_backend));
-}
-
-auto create_minijail_sandbox_backend(Runtime &runtime, SandboxConfig config)
-    -> std::unique_ptr<ISandboxBackend> {
-  return std::make_unique<MinijailSandboxBackend>(runtime, std::move(config));
+    -> std::unique_ptr<ICommandExecutor> {
+  return std::make_unique<MinijailCommandExecutor>(runtime,
+                                                   std::move(sandbox));
 }
 
 } // namespace dagforge

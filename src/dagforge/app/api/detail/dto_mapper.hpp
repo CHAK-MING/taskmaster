@@ -1,6 +1,6 @@
 #pragma once
 
-#include "dagforge/client/http/http_types.hpp"
+#include "dagforge/http/http_types.hpp"
 #include "dagforge/io/result.hpp"
 #include "dagforge/util/json.hpp"
 #include "dagforge/util/log.hpp"

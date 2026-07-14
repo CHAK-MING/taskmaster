@@ -31,6 +31,19 @@ TEST(ConfigTest, ApiDefaults) {
   EXPECT_EQ(cfg.port, 8888);
 }
 
+TEST(ConfigTest, HttpExecutorDefaultsAreDenyByDefault) {
+  HttpExecutorConfig cfg;
+  EXPECT_FALSE(cfg.enabled);
+  EXPECT_FALSE(cfg.allow_plaintext);
+  EXPECT_TRUE(cfg.allowed_origins.empty());
+  EXPECT_EQ(cfg.max_request_headers, 64U);
+  EXPECT_EQ(cfg.max_request_header_bytes, 64ULL * 1024ULL);
+  EXPECT_EQ(cfg.max_request_body_bytes, 1024ULL * 1024ULL);
+  EXPECT_EQ(cfg.max_response_header_bytes, 64ULL * 1024ULL);
+  EXPECT_EQ(cfg.max_response_body_bytes, 10ULL * 1024ULL * 1024ULL);
+  EXPECT_EQ(cfg.max_concurrent_requests_per_shard, 32U);
+}
+
 TEST(ConfigTest, LoadFromTomlString) {
   std::string toml = R"(
 [runtime]
@@ -47,12 +60,25 @@ max_file_bytes = 33554432
 tmp_bytes = 16777216
 max_processes = 64
 max_open_files = 128
-
-[admission]
 allow_unlisted_programs = false
 allow_unlisted_environment = false
 allowed_programs = ["/bin/echo"]
 allowed_environment = ["DAGFORGE_INPUT"]
+
+[http_executor]
+enabled = true
+allow_plaintext = true
+allowed_origins = ["http://127.0.0.1:8081", "https://example.com"]
+max_request_headers = 12
+max_request_header_bytes = 1024
+max_request_body_bytes = 2048
+max_response_header_bytes = 4096
+max_response_body_bytes = 8192
+max_concurrent_requests_per_shard = 3
+
+[admission]
+allow_unlisted_executors = false
+allowed_executors = ["command"]
 max_nodes = 64
 max_parallel_nodes = 8
 max_total_output_bytes = 1048576
@@ -83,9 +109,23 @@ max_concurrent_requests = 7
   EXPECT_EQ(result->sandbox.minijail_path, "/opt/dagforge/minijail0");
   EXPECT_EQ(result->sandbox.max_memory_bytes, 536870912U);
   EXPECT_EQ(result->sandbox.max_processes, 64U);
-  EXPECT_FALSE(result->admission.allow_unlisted_programs);
-  ASSERT_EQ(result->admission.allowed_programs.size(), 1U);
-  EXPECT_EQ(result->admission.allowed_programs.front(), "/bin/echo");
+  EXPECT_FALSE(result->sandbox.allow_unlisted_programs);
+  ASSERT_EQ(result->sandbox.allowed_programs.size(), 1U);
+  EXPECT_EQ(result->sandbox.allowed_programs.front(), "/bin/echo");
+  EXPECT_TRUE(result->http_executor.enabled);
+  EXPECT_TRUE(result->http_executor.allow_plaintext);
+  ASSERT_EQ(result->http_executor.allowed_origins.size(), 2U);
+  EXPECT_EQ(result->http_executor.allowed_origins.front(),
+            "http://127.0.0.1:8081");
+  EXPECT_EQ(result->http_executor.max_request_headers, 12U);
+  EXPECT_EQ(result->http_executor.max_request_header_bytes, 1024U);
+  EXPECT_EQ(result->http_executor.max_request_body_bytes, 2048U);
+  EXPECT_EQ(result->http_executor.max_response_header_bytes, 4096U);
+  EXPECT_EQ(result->http_executor.max_response_body_bytes, 8192U);
+  EXPECT_EQ(result->http_executor.max_concurrent_requests_per_shard, 3U);
+  EXPECT_FALSE(result->admission.allow_unlisted_executors);
+  ASSERT_EQ(result->admission.allowed_executors.size(), 1U);
+  EXPECT_EQ(result->admission.allowed_executors.front(), "command");
   EXPECT_EQ(result->admission.max_parallel_nodes, 8U);
   EXPECT_TRUE(result->storage.enabled);
   EXPECT_EQ(result->storage.directory, "/tmp/dagforge-test-state");
@@ -112,6 +152,15 @@ max_memory_bytes = 0
 )");
   ASSERT_FALSE(empty_limit.has_value());
   EXPECT_EQ(empty_limit.error(), make_error_code(Error::ParseError));
+}
+
+TEST(ConfigTest, RejectsInvalidHttpExecutorLimits) {
+  auto result = SystemConfigLoader::load_from_string(R"(
+[http_executor]
+max_response_body_bytes = 0
+)");
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error(), make_error_code(Error::ParseError));
 }
 
 TEST(ConfigTest, EnvironmentOverridesTakePrecedence) {
