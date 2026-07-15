@@ -105,6 +105,7 @@ struct TaskSnapshot {
   std::optional<std::chrono::system_clock::time_point> next_attempt_at;
   std::optional<SkipReason> skip_reason;
   std::optional<ExecutionFailure> failure;
+  std::optional<WorkflowRunId> reused_from_run_id;
   std::vector<AttemptSnapshot> attempts;
   std::chrono::system_clock::time_point started_at{};
   std::chrono::system_clock::time_point finished_at{};
@@ -117,6 +118,10 @@ struct RunSnapshot {
   RunState state{RunState::Running};
   std::optional<StopIntent> stop_intent;
   std::string stop_reason;
+  std::optional<WorkflowRunId> parent_run_id;
+  std::optional<WorkflowPlanId> parent_plan_id;
+  std::uint32_t repair_revision{0};
+  std::string repair_reason;
   std::vector<TaskSnapshot> tasks;
   std::chrono::system_clock::time_point created_at{};
   std::chrono::system_clock::time_point started_at{};

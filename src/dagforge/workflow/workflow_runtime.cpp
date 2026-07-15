@@ -2,10 +2,16 @@
 
 #include "dagforge/util/json.hpp"
 #include "dagforge/util/log.hpp"
+#include "dagforge/workflow/plan_compiler.hpp"
+
+#include "detail/recovery_state.hpp"
+#include "detail/repair_planner.hpp"
+#include "detail/storage_codec.hpp"
 
 #include <boost/asio/async_result.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -15,6 +21,7 @@
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <span>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -120,10 +127,24 @@ namespace {
     return FailureClass::Permanent;
   }
   if (error == Error::SystemNotRunning || error == Error::QueueFull ||
-      error == Error::ProcessForkFailed) {
+      error == Error::ProcessForkFailed ||
+      error == Error::PersistenceError) {
     return FailureClass::Infrastructure;
   }
   return FailureClass::Retryable;
+}
+
+[[nodiscard]] auto checkpoint_persistence_failure(std::error_code cause)
+    -> ExecutionFailure {
+  JsonValue details = JsonValue::object_t{};
+  JsonValue cause_json = JsonValue::object_t{};
+  cause_json["category"] = std::string{cause.category().name()};
+  cause_json["value"] = static_cast<std::int64_t>(cause.value());
+  cause_json["message"] = cause.message();
+  details["cause"] = std::move(cause_json);
+  return make_execution_failure(
+      Error::PersistenceError, "checkpoint_persist_failed",
+      "Workflow checkpoint could not be persisted", std::move(details));
 }
 
 [[nodiscard]] auto retryable(FailureClass failure_class) noexcept -> bool {
@@ -155,6 +176,52 @@ namespace {
   plan.outputs = execution.outputs;
   plan.policy = execution.policy;
   return plan;
+}
+
+[[nodiscard]] auto bytes_of(std::string_view value)
+    -> std::span<const std::byte> {
+  return std::as_bytes(std::span{value.data(), value.size()});
+}
+
+[[nodiscard]] auto make_initial_checkpoint(
+    const ExecutionPlan &plan, TriggerEnvelope trigger, WorkflowRunId run_id,
+    std::optional<WorkflowRunId> parent_run_id = std::nullopt,
+    std::optional<WorkflowPlanId> parent_plan_id = std::nullopt,
+    std::uint32_t repair_revision = 0, std::string repair_reason = {},
+    const std::unordered_set<std::string> &reused_nodes = {},
+    std::vector<std::pair<OutputRef, WorkflowValue>> values = {})
+    -> WorkflowCheckpoint {
+  const auto now = std::chrono::system_clock::now();
+  RunSnapshot snapshot;
+  snapshot.run_id = run_id.clone();
+  snapshot.workflow_id = plan.workflow_id.clone();
+  snapshot.plan_id = plan.plan_id.clone();
+  snapshot.state = RunState::Running;
+  snapshot.parent_run_id = std::move(parent_run_id);
+  snapshot.parent_plan_id = std::move(parent_plan_id);
+  snapshot.repair_revision = repair_revision;
+  snapshot.repair_reason = std::move(repair_reason);
+  snapshot.created_at = now;
+  snapshot.started_at = now;
+  snapshot.tasks.reserve(plan.nodes.size());
+  for (const auto &compiled : plan.nodes) {
+    TaskSnapshot task;
+    task.node_id = compiled.plan.node_id.clone();
+    if (reused_nodes.contains(compiled.plan.node_id.str())) {
+      task.state = TaskState::Succeeded;
+      task.reused_from_run_id = snapshot.parent_run_id;
+      task.started_at = now;
+      task.finished_at = now;
+    }
+    snapshot.tasks.push_back(std::move(task));
+  }
+  return WorkflowCheckpoint{
+      .plan = source_plan(plan),
+      .trigger = std::move(trigger),
+      .snapshot = std::move(snapshot),
+      .values = std::move(values),
+      .created_at = now,
+  };
 }
 
 [[nodiscard]] auto to_boost_error(std::error_code error)
@@ -303,17 +370,33 @@ auto WorkflowRuntime::start(std::shared_ptr<const ExecutionPlan> plan,
         quiescing_.load(std::memory_order_acquire)) {
       return fail(Error::SystemNotRunning);
     }
+    std::unique_lock idempotency_lock(idempotency_mutex_, std::defer_lock);
     if (!trigger.idempotency_key.empty()) {
-      std::lock_guard idempotency_lock(idempotency_mutex_);
+      idempotency_lock.lock();
       if (const auto it = idempotency_runs_.find(trigger.idempotency_key);
           it != idempotency_runs_.end()) {
-        return ok(it->second.clone());
+        if (it->second.parent_run_id ||
+            it->second.workflow_id != plan->workflow_id ||
+            it->second.plan_id != plan->plan_id) {
+          return fail(Error::AlreadyExists);
+        }
+        return ok(it->second.run_id.clone());
       }
     }
     run_id = generate_workflow_run_id(plan->workflow_id);
+    auto persisted = checkpoint_store_->save(
+        make_initial_checkpoint(*plan, trigger, run_id.clone()));
+    if (!persisted) {
+      return fail(persisted.error());
+    }
     if (!trigger.idempotency_key.empty()) {
-      std::lock_guard idempotency_lock(idempotency_mutex_);
-      idempotency_runs_.emplace(trigger.idempotency_key, run_id.clone());
+      idempotency_runs_.emplace(
+          trigger.idempotency_key,
+          IdempotencyBinding{
+              .run_id = run_id.clone(),
+              .workflow_id = plan->workflow_id.clone(),
+              .plan_id = plan->plan_id.clone(),
+          });
     }
     pending_initializations_.fetch_add(1, std::memory_order_release);
   }
@@ -324,15 +407,15 @@ auto WorkflowRuntime::start(std::shared_ptr<const ExecutionPlan> plan,
       [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
        run_id = run_id.clone(), plan = std::move(plan),
        trigger = std::move(trigger), callbacks = std::move(callbacks)]() mutable {
-        if (weak_lifetime.expired()) {
-          return;
-        }
         const auto initialization_finished = std::experimental::scope_exit(
             [this] {
               pending_initializations_.fetch_sub(1,
                                                  std::memory_order_acq_rel);
               notify_lifecycle_changed();
             });
+        if (weak_lifetime.expired()) {
+          return;
+        }
         initialize_run(std::move(run_id), std::move(plan), std::move(trigger),
                        std::move(callbacks));
       });
@@ -346,119 +429,529 @@ auto WorkflowRuntime::restore(std::shared_ptr<const ExecutionPlan> plan,
       checkpoint.snapshot.workflow_id != plan->workflow_id) {
     return fail(Error::InvalidState);
   }
-
-  auto snapshot = std::move(checkpoint.snapshot);
-  if (!is_terminal(snapshot.state)) {
-    const auto now = std::chrono::system_clock::now();
-    constexpr std::string_view kRestartError =
-        "runtime restarted before workflow completion";
-    const auto restart_failure = make_execution_failure(
-        Error::SystemNotRunning, "runtime_restarted",
-        std::string{kRestartError});
-    for (auto &task : snapshot.tasks) {
-      if (is_terminal(task.state)) {
-        continue;
-      }
-      if (task.active_attempt_id && !task.attempts.empty()) {
-        auto &attempt = task.attempts.back();
-        if (attempt.attempt_id == *task.active_attempt_id &&
-            !is_terminal(attempt.state)) {
-          attempt.state = AttemptState::Failed;
-          attempt.failure_class = FailureClass::Infrastructure;
-          attempt.termination_reason = TerminationReason::RunFailed;
-          attempt.failure = restart_failure;
-          attempt.finished_at = now;
-        }
-      }
-      task.active_attempt_id.reset();
-      task.next_attempt_at.reset();
-      task.failure = restart_failure;
-      task.state = TaskState::Failed;
-      task.finished_at = now;
+  auto validated = storage_detail::validate_checkpoint(checkpoint);
+  if (!validated) {
+    return fail(validated.error());
+  }
+  auto checkpoint_plan = PlanCompiler{executors_}.compile(
+      checkpoint.plan, checkpoint.snapshot.plan_id);
+  if (!checkpoint_plan) {
+    return fail(checkpoint_plan.error());
+  }
+  if ((*checkpoint_plan)->digest != plan->digest) {
+    return fail(Error::InvalidState);
+  }
+  for (const auto &[_, value] : checkpoint.values) {
+    const auto *reference = std::get_if<ArtifactRef>(&value);
+    if (reference == nullptr) {
+      continue;
     }
-    snapshot.state = RunState::Failed;
-    snapshot.stop_intent = StopIntent::Fail;
-    snapshot.stop_reason = kRestartError;
-    snapshot.failure = restart_failure;
-    snapshot.finished_at = now;
-    checkpoint.snapshot = snapshot;
-    (void)checkpoint_store_->save(checkpoint);
+    auto artifact = artifact_store_->get(reference->artifact_id);
+    if (!artifact) {
+      return fail(artifact.error());
+    }
+    if (artifact->ref.media_type != reference->media_type ||
+        artifact->ref.size_bytes != reference->size_bytes ||
+        artifact->ref.digest != reference->digest) {
+      return fail(Error::ParseError);
+    }
   }
 
+  auto snapshot = checkpoint.snapshot;
   const auto owner = owner_shard(snapshot.run_id);
+  if (shard_states_[owner].completed_runs.contains(snapshot.run_id.str()) ||
+      std::ranges::any_of(restored_runs_, [&](const RestoredRun &restored) {
+        return restored.checkpoint.snapshot.run_id == snapshot.run_id;
+      })) {
+    return fail(Error::AlreadyExists);
+  }
+  if (!checkpoint.trigger.idempotency_key.empty()) {
+    std::lock_guard lock(idempotency_mutex_);
+    auto [binding, inserted] = idempotency_runs_.emplace(
+        checkpoint.trigger.idempotency_key,
+        IdempotencyBinding{
+            .run_id = snapshot.run_id.clone(),
+            .workflow_id = snapshot.workflow_id.clone(),
+            .plan_id = snapshot.plan_id.clone(),
+            .parent_run_id = snapshot.parent_run_id,
+        });
+    if (!inserted &&
+        (binding->second.run_id != snapshot.run_id ||
+         binding->second.workflow_id != snapshot.workflow_id ||
+         binding->second.plan_id != snapshot.plan_id ||
+         binding->second.parent_run_id != snapshot.parent_run_id)) {
+      return fail(Error::AlreadyExists);
+    }
+  }
+  if (!is_terminal(snapshot.state)) {
+    restored_runs_.push_back(
+        RestoredRun{.plan = std::move(plan),
+                    .checkpoint = std::move(checkpoint)});
+    return ok();
+  }
+
   auto stored = std::make_shared<const RunSnapshot>(snapshot);
   auto &state = shard_states_[owner];
   state.completed_runs[snapshot.run_id.str()] = stored;
   state.completed_values[snapshot.run_id.str()] =
       std::move(checkpoint.values);
   state.completed_order.push_back(snapshot.run_id.str());
-  while (state.completed_order.size() > max_completed_runs_) {
-    auto expired = std::move(state.completed_order.front());
-    state.completed_order.pop_front();
-    state.completed_runs.erase(expired);
-    state.completed_values.erase(expired);
-    (void)checkpoint_store_->erase(WorkflowRunId{expired});
-    std::lock_guard lock(idempotency_mutex_);
-    std::erase_if(idempotency_runs_, [&](const auto &entry) {
-      return entry.second.str() == expired;
+  enforce_completed_retention(state);
+  return ok();
+}
+
+auto WorkflowRuntime::activate_restored() -> Result<void> {
+  if (!runtime_.is_running() || runtime_.is_current_shard() ||
+      quiescing_.load(std::memory_order_acquire)) {
+    return fail(Error::InvalidState);
+  }
+
+  auto restored = std::move(restored_runs_);
+  restored_runs_.clear();
+  for (auto &run : restored) {
+    const auto owner = owner_shard(run.checkpoint.snapshot.run_id);
+    pending_initializations_.fetch_add(1, std::memory_order_release);
+    runtime_.post_to(
+        owner,
+        [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
+         plan = std::move(run.plan),
+         checkpoint = std::move(run.checkpoint)]() mutable {
+          const auto initialization_finished = std::experimental::scope_exit(
+              [this] {
+                pending_initializations_.fetch_sub(1,
+                                                   std::memory_order_acq_rel);
+                notify_lifecycle_changed();
+              });
+          if (weak_lifetime.expired()) {
+            return;
+          }
+          initialize_checkpoint_run(std::move(plan), std::move(checkpoint),
+                                    {}, ActivationKind::RestartRecovery);
+        });
+  }
+  if (!restored.empty()) {
+    std::unique_lock lock(lifecycle_mutex_);
+    lifecycle_changed_.wait(lock, [this] {
+      return pending_initializations_.load(std::memory_order_acquire) == 0;
     });
   }
-  if (!checkpoint.trigger.idempotency_key.empty()) {
-    std::lock_guard lock(idempotency_mutex_);
-    idempotency_runs_[checkpoint.trigger.idempotency_key] =
-        snapshot.run_id.clone();
-  }
   return ok();
+}
+
+auto WorkflowRuntime::repair(std::shared_ptr<const ExecutionPlan> plan,
+                             const WorkflowRunId &parent_run_id,
+                             RepairRequest request,
+                             WorkflowCallbacks callbacks)
+    -> Result<RepairStartResult> {
+  if (!plan || parent_run_id.empty() || request.reason.empty() ||
+      !runtime_.is_running() ||
+      quiescing_.load(std::memory_order_acquire)) {
+    return fail(Error::InvalidState);
+  }
+  auto parent = checkpoint_store_->load(parent_run_id);
+  if (!parent) {
+    return fail(parent.error());
+  }
+  if (!is_terminal(parent->snapshot.state) ||
+      parent->snapshot.workflow_id != plan->workflow_id) {
+    return fail(Error::InvalidState);
+  }
+  auto planned = detail::plan_repair(*plan, *parent, *artifact_store_);
+  if (!planned) {
+    return fail(planned.error());
+  }
+
+  WorkflowRunId run_id;
+  const auto revised_plan_id = plan->plan_id.clone();
+  {
+    std::lock_guard lifecycle_lock(lifecycle_mutex_);
+    if (!runtime_.is_running() ||
+        quiescing_.load(std::memory_order_acquire)) {
+      return fail(Error::SystemNotRunning);
+    }
+    std::optional<WorkflowRunId> existing_run_id;
+    if (!request.idempotency_key.empty()) {
+      std::lock_guard idempotency_lock(idempotency_mutex_);
+      if (const auto existing =
+              idempotency_runs_.find(request.idempotency_key);
+          existing != idempotency_runs_.end()) {
+        if (!existing->second.parent_run_id ||
+            *existing->second.parent_run_id != parent_run_id ||
+            existing->second.workflow_id != plan->workflow_id ||
+            existing->second.plan_id != plan->plan_id) {
+          return fail(Error::AlreadyExists);
+        }
+        existing_run_id = existing->second.run_id.clone();
+      }
+    }
+    if (existing_run_id) {
+      auto existing_checkpoint = checkpoint_store_->load(*existing_run_id);
+      if (!existing_checkpoint ||
+          existing_checkpoint->snapshot.parent_run_id != parent_run_id) {
+        return fail(Error::AlreadyExists);
+      }
+      std::vector<RepairNodeDecision> existing_decisions;
+      existing_decisions.reserve(existing_checkpoint->snapshot.tasks.size());
+      for (const auto &task : existing_checkpoint->snapshot.tasks) {
+        const bool reused = task.reused_from_run_id == parent_run_id;
+        existing_decisions.push_back(RepairNodeDecision{
+            .node_id = task.node_id.clone(),
+            .reused = reused,
+            .reason = reused ? "reused" : "existing_repair",
+        });
+      }
+      return ok(RepairStartResult{
+          .run_id = existing_run_id->clone(),
+          .parent_run_id = existing_checkpoint->snapshot.parent_run_id->clone(),
+          .plan_id = existing_checkpoint->snapshot.plan_id.clone(),
+          .nodes = std::move(existing_decisions),
+      });
+    }
+
+    auto trigger = parent->trigger;
+    trigger.trigger_id = generate_workflow_trigger_id();
+    trigger.source = "repair";
+    trigger.event_type = "workflow_repair";
+    trigger.idempotency_key = request.idempotency_key;
+    trigger.occurred_at = std::chrono::system_clock::now();
+    run_id = generate_workflow_run_id(plan->workflow_id);
+    auto checkpoint = make_initial_checkpoint(
+        *plan, std::move(trigger), run_id.clone(), parent_run_id.clone(),
+        parent->snapshot.plan_id.clone(), parent->snapshot.repair_revision + 1,
+        request.reason, planned->reused_nodes, planned->values);
+    auto persisted = checkpoint_store_->save(checkpoint);
+    if (!persisted) {
+      return fail(persisted.error());
+    }
+    if (!request.idempotency_key.empty()) {
+      std::lock_guard idempotency_lock(idempotency_mutex_);
+      idempotency_runs_.emplace(
+          request.idempotency_key,
+          IdempotencyBinding{
+              .run_id = run_id.clone(),
+              .workflow_id = plan->workflow_id.clone(),
+              .plan_id = plan->plan_id.clone(),
+              .parent_run_id = parent_run_id.clone(),
+          });
+    }
+    pending_initializations_.fetch_add(1, std::memory_order_release);
+
+    const auto owner = owner_shard(run_id);
+    runtime_.post_to(
+        owner,
+        [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
+         plan = std::move(plan), checkpoint = std::move(checkpoint),
+         callbacks = std::move(callbacks),
+         decisions = planned->decisions]() mutable {
+          const auto initialization_finished = std::experimental::scope_exit(
+              [this] {
+                pending_initializations_.fetch_sub(1,
+                                                   std::memory_order_acq_rel);
+                notify_lifecycle_changed();
+              });
+          if (weak_lifetime.expired()) {
+            return;
+          }
+          initialize_checkpoint_run(
+              std::move(plan), std::move(checkpoint), std::move(callbacks),
+              ActivationKind::RepairRun, std::move(decisions));
+        });
+  }
+  return ok(RepairStartResult{
+      .run_id = std::move(run_id),
+      .parent_run_id = parent_run_id.clone(),
+      .plan_id = revised_plan_id,
+      .nodes = std::move(planned->decisions),
+  });
 }
 
 auto WorkflowRuntime::initialize_run(
     WorkflowRunId run_id, std::shared_ptr<const ExecutionPlan> plan,
     TriggerEnvelope trigger, WorkflowCallbacks callbacks) -> void {
+  initialize_checkpoint_run(
+      plan, make_initial_checkpoint(*plan, std::move(trigger), run_id.clone()),
+      std::move(callbacks), ActivationKind::NewRun);
+}
+
+auto WorkflowRuntime::initialize_checkpoint_run(
+    std::shared_ptr<const ExecutionPlan> plan,
+    WorkflowCheckpoint restored_checkpoint, WorkflowCallbacks callbacks,
+    ActivationKind activation,
+    std::vector<RepairNodeDecision> repair_decisions) -> void {
+  if (!plan ||
+      restored_checkpoint.snapshot.tasks.size() != plan->nodes.size()) {
+    log::error("Cannot activate workflow checkpoint with mismatched Plan");
+    return;
+  }
+
   const auto owner = runtime_.current_shard();
   auto &state = shard_states_[owner];
+  const auto run_id = restored_checkpoint.snapshot.run_id.clone();
+  const auto now = std::chrono::system_clock::now();
 
   ActiveRun run;
   run.plan = std::move(plan);
-  run.trigger = std::move(trigger);
-  run.snapshot.run_id = run_id.clone();
-  run.snapshot.workflow_id = run.plan->workflow_id.clone();
-  run.snapshot.plan_id = run.plan->plan_id.clone();
-  run.snapshot.state = RunState::Running;
-  run.snapshot.created_at = std::chrono::system_clock::now();
-  run.snapshot.started_at = run.snapshot.created_at;
+  run.trigger = std::move(restored_checkpoint.trigger);
+  run.snapshot = std::move(restored_checkpoint.snapshot);
   run.callbacks = std::move(callbacks);
   run.values = std::make_unique<RunValueStore>(
       runtime_, owner, *artifact_store_,
       run.plan->policy.budget.max_total_output_bytes);
 
-  run.tasks.reserve(run.plan->nodes.size());
-  run.snapshot.tasks.reserve(run.plan->nodes.size());
-  for (const auto &compiled : run.plan->nodes) {
-    TaskRuntimeState task;
-    task.snapshot.node_id = compiled.plan.node_id.clone();
-    if (compiled.dependencies.empty()) {
-      task.snapshot.state = TaskState::Ready;
-      run.ready.push_back(compiled.index);
-    }
-    run.snapshot.tasks.push_back(task.snapshot);
-    run.tasks.push_back(std::move(task));
+  detail::RestartPreparation restart_preparation;
+  if (activation == ActivationKind::RestartRecovery) {
+    restart_preparation =
+        detail::prepare_restart_snapshot(run.snapshot, now);
   }
-  assert(invariants_hold(run));
 
+  run.tasks.reserve(run.snapshot.tasks.size());
+  for (std::size_t index = 0; index < run.snapshot.tasks.size(); ++index) {
+    if (run.snapshot.tasks[index].node_id !=
+        run.plan->nodes[index].plan.node_id) {
+      log::error("Cannot activate workflow {} with reordered checkpoint Tasks",
+                 run_id);
+      return;
+    }
+    run.tasks.push_back(
+        TaskRuntimeState{.snapshot = run.snapshot.tasks[index]});
+  }
+  for (auto &[output, value] : restored_checkpoint.values) {
+    auto restored = run.values->put(std::move(output), std::move(value));
+    if (!restored) {
+      const auto failure = make_execution_failure(
+          restored.error(), "recovery_value_restore_failed",
+          "A retained workflow value could not be restored");
+      run.snapshot.state = RunState::Failed;
+      run.snapshot.stop_intent = StopIntent::Fail;
+      run.snapshot.stop_reason = failure.message;
+      run.snapshot.failure = failure;
+      run.snapshot.finished_at = now;
+      for (auto &task : run.tasks) {
+        if (!is_terminal(task.snapshot.state)) {
+          task.snapshot.state = TaskState::Failed;
+          task.snapshot.failure = failure;
+          task.snapshot.finished_at = now;
+        }
+      }
+      run.snapshot.tasks.clear();
+      for (const auto &task : run.tasks) {
+        run.snapshot.tasks.push_back(task.snapshot);
+      }
+      auto failed_checkpoint = WorkflowCheckpoint{
+          .plan = source_plan(*run.plan),
+          .trigger = run.trigger,
+          .snapshot = run.snapshot,
+          .values = {},
+          .created_at = now,
+      };
+      (void)checkpoint_store_->save(std::move(failed_checkpoint));
+      state.completed_runs[run_id.str()] =
+          std::make_shared<const RunSnapshot>(run.snapshot);
+      state.completed_values[run_id.str()] = {};
+      state.completed_order.push_back(run_id.str());
+      return;
+    }
+  }
+
+  run.snapshot.tasks.clear();
+  run.snapshot.tasks.reserve(run.tasks.size());
+  for (const auto &task : run.tasks) {
+    run.snapshot.tasks.push_back(task.snapshot);
+  }
   auto [it, inserted] = state.active_runs.emplace(run_id.str(), std::move(run));
   if (!inserted) {
     return;
   }
-  it->second.deadline_handle = runtime_.schedule_after_on(
-      owner, it->second.plan->policy.budget.max_run_duration,
+  auto &active = it->second;
+  active_run_count_.fetch_add(1, std::memory_order_release);
+
+  auto primed = prime_ready_tasks(active);
+  if (!primed) {
+    (void)request_stop(
+        run_id, StopIntent::Fail,
+        "workflow dependencies could not be restored",
+        make_execution_failure(primed.error(), "recovery_prime_failed",
+                               "Workflow dependencies could not be restored"));
+    return;
+  }
+  schedule_run_deadline(active);
+
+  if (activation == ActivationKind::RestartRecovery) {
+    append_evidence(active, active.tasks.size(),
+                    EvidenceType::RunRecoveryResumed,
+                    make_metadata({{"plan_id", active.plan->plan_id.str()}}));
+    for (const auto index : restart_preparation.finalized_attempts) {
+      const auto &task = active.tasks[index].snapshot;
+      const auto &attempt = task.attempts.back();
+      append_evidence(
+          active, index, EvidenceType::AttemptCompleted,
+          make_metadata(
+              {{"attempt_id", attempt.attempt_id.str()},
+               {"state", std::string{to_string_view(attempt.state)}},
+               {"recovered", true},
+               {"failure", execution_failure_json(*attempt.failure)}}));
+    }
+    for (const auto index : restart_preparation.failed_tasks) {
+      const auto &task = active.tasks[index].snapshot;
+      append_evidence(
+          active, index, EvidenceType::TaskFailed,
+          make_metadata({{"recovered", true},
+                         {"failure",
+                          execution_failure_json(*task.failure)}}));
+    }
+  } else {
+    append_evidence(active, active.tasks.size(), EvidenceType::TriggerReceived,
+                    make_metadata({{"source", active.trigger.source},
+                                   {"event_type", active.trigger.event_type},
+                                   {"plan_digest", active.plan->digest}}));
+    append_evidence(active, active.tasks.size(), EvidenceType::PlanCompiled,
+                    make_metadata({{"plan_id", active.plan->plan_id.str()},
+                                   {"digest", active.plan->digest}}));
+  }
+  if (activation == ActivationKind::RepairRun) {
+    append_evidence(
+        active, active.tasks.size(), EvidenceType::RepairRunStarted,
+        make_metadata({{"parent_run_id",
+                        active.snapshot.parent_run_id
+                            ? active.snapshot.parent_run_id->str()
+                            : std::string{}},
+                       {"parent_plan_id",
+                        active.snapshot.parent_plan_id
+                            ? active.snapshot.parent_plan_id->str()
+                            : std::string{}},
+                       {"revision", active.snapshot.repair_revision},
+                       {"reason", active.snapshot.repair_reason}}));
+    for (const auto &decision : repair_decisions) {
+      const auto node = std::ranges::find_if(
+          active.plan->nodes, [&](const auto &compiled) {
+            return compiled.plan.node_id == decision.node_id;
+          });
+      if (node == active.plan->nodes.end()) {
+        continue;
+      }
+      append_evidence(
+          active, node->index,
+          decision.reused ? EvidenceType::TaskReused
+                          : EvidenceType::TaskInvalidated,
+          make_metadata({{"reason", decision.reason},
+                         {"parent_run_id",
+                          active.snapshot.parent_run_id
+                              ? active.snapshot.parent_run_id->str()
+                              : std::string{}}}));
+    }
+  }
+
+  emit_run_state(active);
+  if (active.snapshot.state == RunState::Stopping) {
+    (void)finalize_run_if_ready(run_id);
+    return;
+  }
+  if (active.snapshot.state == RunState::Paused) {
+    return;
+  }
+  if (quiescing_.load(std::memory_order_acquire)) {
+    (void)request_stop(run_id, StopIntent::Cancel,
+                       "workflow runtime is shutting down");
+    return;
+  }
+  dispatch(run_id);
+}
+
+auto WorkflowRuntime::prime_ready_tasks(ActiveRun &run) -> Result<void> {
+  run.ready.clear();
+  const auto now = std::chrono::system_clock::now();
+  for (const auto index : run.plan->topological_order) {
+    auto &task = run.tasks[index];
+    if (task.snapshot.state == TaskState::RetryWaiting) {
+      if (!task.snapshot.next_attempt_at ||
+          *task.snapshot.next_attempt_at <= now) {
+        task.snapshot.state = TaskState::Ready;
+        task.snapshot.next_attempt_at.reset();
+      } else {
+        schedule_retry(run.snapshot.run_id, index);
+        continue;
+      }
+    }
+    if (task.snapshot.state == TaskState::Pending) {
+      const auto &dependencies = run.plan->nodes[index].dependencies;
+      const auto all_terminal = std::ranges::all_of(
+          dependencies, [&](std::size_t dependency) {
+            return is_terminal(run.tasks[dependency].snapshot.state);
+          });
+      if (!all_terminal) {
+        continue;
+      }
+      const auto all_success = std::ranges::all_of(
+          dependencies, [&](std::size_t dependency) {
+            return is_success(run.tasks[dependency].snapshot.state);
+          });
+      if (!all_success) {
+        task.snapshot.state = TaskState::Skipped;
+        task.snapshot.skip_reason = SkipReason::BranchNotSelected;
+        for (const auto dependency : dependencies) {
+          const auto dependency_state =
+              run.tasks[dependency].snapshot.state;
+          if (dependency_state == TaskState::Failed) {
+            task.snapshot.skip_reason = SkipReason::UpstreamFailed;
+            break;
+          }
+          if (dependency_state == TaskState::Cancelled) {
+            task.snapshot.skip_reason = SkipReason::UpstreamCancelled;
+          }
+        }
+        task.snapshot.finished_at = now;
+      } else {
+        auto passes = conditions_pass(run, index);
+        if (!passes) {
+          return fail(passes.error());
+        }
+        if (*passes) {
+          task.snapshot.state = TaskState::Ready;
+        } else {
+          task.snapshot.state = TaskState::Skipped;
+          task.snapshot.skip_reason = SkipReason::ConditionFalse;
+          task.snapshot.finished_at = now;
+        }
+      }
+    }
+    if (task.snapshot.state == TaskState::Ready) {
+      run.ready.push_back(index);
+    }
+  }
+  run.snapshot.tasks.clear();
+  run.snapshot.tasks.reserve(run.tasks.size());
+  for (const auto &task : run.tasks) {
+    run.snapshot.tasks.push_back(task.snapshot);
+  }
+  return ok();
+}
+
+auto WorkflowRuntime::schedule_run_deadline(ActiveRun &run) -> void {
+  const auto now = std::chrono::system_clock::now();
+  auto started = run.snapshot.started_at;
+  if (started == std::chrono::system_clock::time_point{}) {
+    started = run.snapshot.created_at;
+  }
+  if (started == std::chrono::system_clock::time_point{}) {
+    started = now;
+    run.snapshot.created_at = now;
+    run.snapshot.started_at = now;
+  }
+  const auto deadline = started + run.plan->policy.budget.max_run_duration;
+  const auto run_id = run.snapshot.run_id.clone();
+  const auto delay = deadline <= now
+                         ? std::chrono::milliseconds::zero()
+                         : std::chrono::duration_cast<
+                               std::chrono::milliseconds>(deadline - now);
+  run.deadline_handle = runtime_.schedule_after_on(
+      runtime_.current_shard(), delay,
       [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
-       run_id = run_id.clone()] {
+       run_id = std::move(run_id)] {
         if (weak_lifetime.expired()) {
           return;
         }
         auto &owner_state = shard_states_[owner_shard(run_id)];
-        const auto active = owner_state.active_runs.find(run_id.str());
-        if (active == owner_state.active_runs.end()) {
+        if (!owner_state.active_runs.contains(run_id.str())) {
           return;
         }
         (void)request_stop(run_id, StopIntent::Fail,
@@ -467,23 +960,6 @@ auto WorkflowRuntime::initialize_run(
                                Error::Timeout, "run_deadline_exceeded",
                                "Workflow run deadline exceeded"));
       });
-  active_run_count_.fetch_add(1, std::memory_order_release);
-  append_evidence(it->second, it->second.tasks.size(),
-                  EvidenceType::TriggerReceived,
-                  make_metadata({{"source", it->second.trigger.source},
-                                 {"event_type", it->second.trigger.event_type},
-                                 {"plan_digest", it->second.plan->digest}}));
-  append_evidence(it->second, it->second.tasks.size(),
-                  EvidenceType::PlanCompiled,
-                  make_metadata({{"plan_id", it->second.plan->plan_id.str()},
-                                 {"digest", it->second.plan->digest}}));
-  emit_run_state(it->second);
-  if (quiescing_.load(std::memory_order_acquire)) {
-    (void)request_stop(run_id, StopIntent::Cancel,
-                       "workflow runtime is shutting down");
-  } else {
-    dispatch(run_id);
-  }
 }
 
 auto WorkflowRuntime::transition_run(ActiveRun &run, RunState state)
@@ -673,6 +1149,10 @@ auto WorkflowRuntime::dispatch(const WorkflowRunId &run_id) -> void {
   if (it == state.active_runs.end() || it->second.dispatching) {
     return;
   }
+  if (it->second.persistence_failure) {
+    handle_persistence_failure(run_id);
+    return;
+  }
   if (it->second.snapshot.state != RunState::Running) {
     settle_control_state(run_id);
     return;
@@ -685,6 +1165,11 @@ auto WorkflowRuntime::dispatch(const WorkflowRunId &run_id) -> void {
       return;
     }
     auto &run = it->second;
+    if (run.persistence_failure) {
+      run.dispatching = false;
+      handle_persistence_failure(run_id);
+      return;
+    }
     if (run.snapshot.state != RunState::Running) {
       break;
     }
@@ -733,6 +1218,11 @@ auto WorkflowRuntime::start_task(const WorkflowRunId &run_id,
                                  std::size_t task_index) -> void {
   auto &run = shard_states_[owner_shard(run_id)].active_runs.at(run_id.str());
   const auto attempt_id = begin_attempt(run, task_index);
+  if (run.persistence_failure) {
+    complete_task(run_id, task_index, attempt_id,
+                  task_failed(*run.persistence_failure));
+    return;
+  }
   active_task_coroutines_.fetch_add(1, std::memory_order_release);
   runtime_.spawn_on(owner_shard(run_id),
                     start_async_task(run_id.clone(), task_index,
@@ -824,6 +1314,7 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
   }
 
   auto finish_failure = [&](ExecutionFailure failure) {
+    failure = retain_failure_details(std::move(failure));
     const auto failure_class = classify_failure(failure.kind);
     attempt->failure_class = failure_class;
     attempt->failure = failure;
@@ -940,6 +1431,11 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
   }
 
   if (output_error) {
+    auto rolled_back = run.values->erase_node(
+        run.plan->nodes[task_index].plan.node_id);
+    if (!rolled_back) {
+      output_error = rolled_back.error();
+    }
     finish_failure(make_execution_failure(
         *output_error, "output_storage_failed",
         "Task output could not be stored"));
@@ -978,9 +1474,13 @@ auto WorkflowRuntime::schedule_retry(const WorkflowRunId &run_id,
   }
   auto &run = run_it->second;
   auto &task = run.tasks[task_index];
-  const auto delay =
-      retry_delay(run.plan->nodes[task_index].plan,
-                  task.snapshot.attempt_count);
+  const auto now = std::chrono::system_clock::now();
+  const auto delay = task.snapshot.next_attempt_at &&
+                             *task.snapshot.next_attempt_at > now
+                         ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                               *task.snapshot.next_attempt_at - now)
+                         : retry_delay(run.plan->nodes[task_index].plan,
+                                       task.snapshot.attempt_count);
   task.retry_handle = runtime_.schedule_after_on(
       owner, delay,
       [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
@@ -1248,7 +1748,11 @@ auto WorkflowRuntime::finalize_run_if_ready(const WorkflowRunId &run_id)
   // Stopping. Without this bridge, an executor that rejects start with
   // Error::Cancelled leaves the run permanently active because
   // Running -> Cancelled is not a legal transition.
-  if (any_cancelled && run.snapshot.state != RunState::Stopping) {
+  if (run.persistence_failure) {
+    run.snapshot.stop_intent = StopIntent::Fail;
+    run.snapshot.stop_reason = run.persistence_failure->message;
+    run.snapshot.failure = run.persistence_failure;
+  } else if (any_cancelled && run.snapshot.state != RunState::Stopping) {
     run.snapshot.stop_intent = StopIntent::Cancel;
     if (run.snapshot.stop_reason.empty()) {
       const auto cancelled_task = std::ranges::find_if(
@@ -1273,7 +1777,9 @@ auto WorkflowRuntime::finalize_run_if_ready(const WorkflowRunId &run_id)
   }
 
   RunState terminal_state = RunState::Succeeded;
-  if (run.snapshot.state == RunState::Stopping) {
+  if (run.persistence_failure) {
+    terminal_state = RunState::Failed;
+  } else if (run.snapshot.state == RunState::Stopping) {
     switch (run.snapshot.stop_intent.value_or(StopIntent::Fail)) {
     case StopIntent::Succeed:
       terminal_state = RunState::Succeeded;
@@ -1357,17 +1863,7 @@ auto WorkflowRuntime::finalize_run_if_ready(const WorkflowRunId &run_id)
   state.active_runs.erase(it);
   active_run_count_.fetch_sub(1, std::memory_order_release);
   notify_lifecycle_changed();
-  while (state.completed_order.size() > max_completed_runs_) {
-    auto expired = std::move(state.completed_order.front());
-    state.completed_order.pop_front();
-    state.completed_runs.erase(expired);
-    state.completed_values.erase(expired);
-    (void)checkpoint_store_->erase(WorkflowRunId{expired});
-    std::lock_guard lock(idempotency_mutex_);
-    std::erase_if(idempotency_runs_, [&](const auto &entry) {
-      return entry.second.str() == expired;
-    });
-  }
+  enforce_completed_retention(state);
   return true;
 }
 
@@ -1382,7 +1878,29 @@ auto WorkflowRuntime::make_snapshot(const ActiveRun &run) const
   return std::make_shared<const RunSnapshot>(std::move(snapshot));
 }
 
+auto WorkflowRuntime::enforce_completed_retention(ShardState &state) -> void {
+  while (state.completed_order.size() > max_completed_runs_) {
+    const auto &expired = state.completed_order.front();
+    auto erased = checkpoint_store_->erase(WorkflowRunId{expired});
+    if (!erased && erased.error() != make_error_code(Error::NotFound)) {
+      log::error("Failed to evict workflow checkpoint {}: {}", expired,
+                 erased.error().message());
+      return;
+    }
+    state.completed_runs.erase(expired);
+    state.completed_values.erase(expired);
+    {
+      std::lock_guard lock(idempotency_mutex_);
+      std::erase_if(idempotency_runs_, [&](const auto &entry) {
+        return entry.second.run_id.str() == expired;
+      });
+    }
+    state.completed_order.pop_front();
+  }
+}
+
 auto WorkflowRuntime::emit_run_state(ActiveRun &run) -> void {
+  checkpoint(run);
   if (run.callbacks.on_run_state) {
     run.callbacks.on_run_state(run.snapshot);
   }
@@ -1391,6 +1909,7 @@ auto WorkflowRuntime::emit_run_state(ActiveRun &run) -> void {
 auto WorkflowRuntime::emit_task_state(ActiveRun &run, std::size_t task_index)
     -> void {
   run.snapshot.tasks[task_index] = run.tasks[task_index].snapshot;
+  checkpoint(run);
   if (run.callbacks.on_task_state) {
     run.callbacks.on_task_state(run.snapshot.run_id,
                                 run.tasks[task_index].snapshot);
@@ -1408,12 +1927,20 @@ auto WorkflowRuntime::append_evidence(const ActiveRun &run,
   record.type = type;
   record.actor = run.trigger.principal;
   record.metadata = std::move(metadata);
-  (void)evidence_ledger_->append(std::move(record));
+  auto appended = evidence_ledger_->append(std::move(record));
+  if (!appended) {
+    log::error("Failed to append workflow Evidence for {}: {}",
+               run.snapshot.run_id, appended.error().message());
+  }
 }
 
 auto WorkflowRuntime::checkpoint(ActiveRun &run) -> void {
+  if (run.persistence_failure) {
+    return;
+  }
   auto values = run.values->snapshot();
   if (!values) {
+    record_persistence_failure(run, values.error());
     return;
   }
   WorkflowCheckpoint checkpoint{
@@ -1423,7 +1950,96 @@ auto WorkflowRuntime::checkpoint(ActiveRun &run) -> void {
       .values = std::move(*values),
       .created_at = std::chrono::system_clock::now(),
   };
-  (void)checkpoint_store_->save(std::move(checkpoint));
+  auto saved = checkpoint_store_->save(std::move(checkpoint));
+  if (!saved) {
+    record_persistence_failure(run, saved.error());
+  }
+}
+
+auto WorkflowRuntime::record_persistence_failure(ActiveRun &run,
+                                                 std::error_code cause)
+    -> void {
+  if (run.persistence_failure) {
+    return;
+  }
+  run.persistence_failure = checkpoint_persistence_failure(cause);
+  if (run.snapshot.state == RunState::Stopping ||
+      is_terminal(run.snapshot.state)) {
+    run.snapshot.stop_intent = StopIntent::Fail;
+    run.snapshot.stop_reason = run.persistence_failure->message;
+    run.snapshot.failure = run.persistence_failure;
+    if (is_terminal(run.snapshot.state)) {
+      run.snapshot.state = RunState::Failed;
+    }
+  }
+  log::error("Failed to persist workflow checkpoint {}: {}",
+             run.snapshot.run_id, cause.message());
+  const auto run_id = run.snapshot.run_id.clone();
+  runtime_.post_to(
+      runtime_.current_shard(),
+      [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
+       run_id = std::move(run_id)] {
+        if (!weak_lifetime.expired()) {
+          handle_persistence_failure(run_id);
+        }
+      });
+}
+
+auto WorkflowRuntime::handle_persistence_failure(
+    const WorkflowRunId &run_id) -> void {
+  const auto owner = owner_shard(run_id);
+  if (!runtime_.is_current_shard() || runtime_.current_shard() != owner) {
+    runtime_.post_to(owner, [this, run_id = run_id.clone()] {
+      handle_persistence_failure(run_id);
+    });
+    return;
+  }
+  auto &state = shard_states_[owner];
+  const auto it = state.active_runs.find(run_id.str());
+  if (it == state.active_runs.end() || !it->second.persistence_failure ||
+      is_terminal(it->second.snapshot.state)) {
+    return;
+  }
+  auto &run = it->second;
+  const auto failure = *run.persistence_failure;
+  if (run.snapshot.state == RunState::Stopping) {
+    run.snapshot.stop_intent = StopIntent::Fail;
+    run.snapshot.stop_reason = failure.message;
+    run.snapshot.failure = failure;
+    return;
+  }
+  (void)request_stop(run_id, StopIntent::Fail, failure.message, failure);
+}
+
+auto WorkflowRuntime::retain_failure_details(ExecutionFailure failure)
+    -> ExecutionFailure {
+  constexpr std::size_t kInlineFailureDetailsBytes = 64 * 1024;
+  const auto encoded = dump_json(failure.details);
+  if (encoded.size() <= kInlineFailureDetailsBytes ||
+      std::ranges::any_of(failure.artifacts, [](const auto &artifact) {
+        return artifact.name == "details";
+      })) {
+    return failure;
+  }
+  auto stored = artifact_store_->put(bytes_of(encoded), "application/json");
+  if (!stored) {
+    log::error("Failed to retain oversized failure details: {}",
+               stored.error().message());
+    JsonValue summary = JsonValue::object_t{};
+    summary["externalization_failed"] = true;
+    summary["size_bytes"] = static_cast<std::int64_t>(encoded.size());
+    summary["storage_error"] = stored.error().message();
+    failure.details = std::move(summary);
+    return failure;
+  }
+  failure.artifacts.push_back(
+      FailureArtifact{.name = "details", .artifact = *stored});
+  JsonValue summary = JsonValue::object_t{};
+  summary["externalized"] = true;
+  summary["artifact_id"] = stored->artifact_id.str();
+  summary["size_bytes"] = static_cast<std::int64_t>(stored->size_bytes);
+  failure.details = std::move(summary);
+  return failure;
 }
 
 auto WorkflowRuntime::execute_task(WorkflowRunId run_id,
@@ -1532,6 +2148,50 @@ auto WorkflowRuntime::snapshot(const WorkflowRunId &run_id) const
     co_return fail(result.error());
   }
   co_return ok(std::move(*result));
+}
+
+auto WorkflowRuntime::failure_report(const WorkflowRunId &run_id) const
+    -> task<Result<RunFailureReport>> {
+  auto current = co_await snapshot(run_id);
+  if (!current) {
+    co_return fail(current.error());
+  }
+
+  RunFailureReport report{
+      .run_id = run_id.clone(),
+      .workflow_id = (*current)->workflow_id.clone(),
+      .plan_id = (*current)->plan_id.clone(),
+      .state = (*current)->state,
+      .parent_run_id = (*current)->parent_run_id,
+      .parent_plan_id = (*current)->parent_plan_id,
+      .repair_revision = (*current)->repair_revision,
+      .failure = (*current)->failure,
+  };
+  for (const auto &task : (*current)->tasks) {
+    TaskFailureReport task_report{
+        .node_id = task.node_id.clone(),
+        .state = task.state,
+        .reused_from_run_id = task.reused_from_run_id,
+        .failure = task.failure,
+    };
+    for (const auto &attempt : task.attempts) {
+      if (!attempt.failure) {
+        continue;
+      }
+      task_report.attempts.push_back(AttemptFailureReport{
+          .attempt_id = attempt.attempt_id.clone(),
+          .number = attempt.number,
+          .state = attempt.state,
+          .failure_class = attempt.failure_class,
+          .termination_reason = attempt.termination_reason,
+          .failure = *attempt.failure,
+      });
+    }
+    if (task_report.failure || !task_report.attempts.empty()) {
+      report.tasks.push_back(std::move(task_report));
+    }
+  }
+  co_return ok(std::move(report));
 }
 
 auto WorkflowRuntime::output(const WorkflowRunId &run_id,

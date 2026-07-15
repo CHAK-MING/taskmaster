@@ -31,10 +31,13 @@ lib{dagforge}:                                                   \
       dagforge/workflow/artifact_store                            \
       dagforge/workflow/checkpoint_store                          \
       dagforge/workflow/detail/storage_codec                      \
+      dagforge/workflow/detail/repair_planner                     \
+      dagforge/workflow/detail/recovery_state                     \
       dagforge/workflow/evidence_ledger                           \
       dagforge/workflow/execution_failure                         \
       dagforge/workflow/executor_registry                         \
       dagforge/workflow/plan_compiler                             \
+      dagforge/workflow/plan_store                                \
       dagforge/workflow/run_value_store                           \
       dagforge/workflow/workflow_runtime                          \
       dagforge/workflow/workflow_control_plane                    \

@@ -122,6 +122,7 @@ Compiler 保证图是正确的，Runtime 负责调度和生命周期状态，Exe
 
 - [用户指南](docs/USER_GUIDE.md) — Workflow Plan、运行语义和系统配置
 - [API 参考](docs/API.md) — HTTP 控制面接口
+- [North-Star Workflow](docs/NORTH_STAR_WORKFLOW.md) — 目标 fan-out、模型、修复和条件路由场景
 - [0.4 开发状态](docs/0.4_DEVELOPMENT_STATUS.md) — 已完成能力、验证证据和后续里程碑
 - [系统配置](system_config.toml) — 完整配置示例
 - [状态机 ADR](docs/adr/0001-run-task-attempt-state-machine.md) — Run、Task 和 Attempt 语义

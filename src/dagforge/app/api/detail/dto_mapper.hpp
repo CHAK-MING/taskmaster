@@ -4,6 +4,7 @@
 #include "dagforge/io/result.hpp"
 #include "dagforge/util/json.hpp"
 #include "dagforge/util/log.hpp"
+#include "dagforge/workflow/execution_failure.hpp"
 
 #include <string>
 #include <string_view>
@@ -81,7 +82,47 @@ inline auto json_response(const json &value,
 
 inline auto error_response(int code, std::string_view message)
     -> http::HttpResponse {
-  return json_response(json{{"error", std::string{message}}},
+  Error kind = Error::Unknown;
+  std::string stable_code{"http_error"};
+  switch (code) {
+  case 400:
+    kind = Error::InvalidArgument;
+    stable_code = "invalid_request";
+    break;
+  case 401:
+    kind = Error::Unauthorized;
+    stable_code = "unauthorized";
+    break;
+  case 403:
+    kind = Error::Unauthorized;
+    stable_code = "forbidden";
+    break;
+  case 404:
+    kind = Error::NotFound;
+    stable_code = "not_found";
+    break;
+  case 409:
+    kind = Error::AlreadyExists;
+    stable_code = "conflict";
+    break;
+  case 413:
+    kind = Error::ResourceExhausted;
+    stable_code = "payload_too_large";
+    break;
+  case 429:
+    kind = Error::RateLimited;
+    stable_code = "rate_limited";
+    break;
+  case 503:
+    kind = Error::SystemNotRunning;
+    stable_code = "service_unavailable";
+    break;
+  default:
+    break;
+  }
+  auto failure = workflow::make_execution_failure(
+      kind, std::move(stable_code), std::string{message});
+  return json_response(json{{"error", workflow::execution_failure_json(failure)}},
                        static_cast<http::HttpStatus>(code));
 }
 
@@ -104,8 +145,11 @@ inline auto typed_json_response(
 
 inline auto to_result_response(const std::error_code &error)
     -> Result<http::HttpResponse> {
-  return ok(error_response(static_cast<int>(status_from_error(error)),
-                           error.message()));
+  auto failure = workflow::make_execution_failure(
+      error, {}, error.message());
+  return ok(json_response(
+      json{{"error", workflow::execution_failure_json(failure)}},
+      status_from_error(error)));
 }
 
 } // namespace dagforge::api_detail

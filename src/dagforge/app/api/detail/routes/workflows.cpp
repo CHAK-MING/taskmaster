@@ -182,6 +182,9 @@ inline auto add_timestamp(
       task_json["failure"] =
           workflow::execution_failure_json(*task.failure);
     }
+    if (task.reused_from_run_id) {
+      task_json["reused_from_run_id"] = task.reused_from_run_id->str();
+    }
     if (task.active_attempt_id) {
       task_json["active_attempt_id"] = task.active_attempt_id->str();
     }
@@ -209,6 +212,16 @@ inline auto add_timestamp(
     result["stop_intent"] =
         std::string{workflow::to_string_view(*snapshot.stop_intent)};
   }
+  if (snapshot.parent_run_id) {
+    result["parent_run_id"] = snapshot.parent_run_id->str();
+  }
+  if (snapshot.parent_plan_id) {
+    result["parent_plan_id"] = snapshot.parent_plan_id->str();
+  }
+  result["repair_revision"] = snapshot.repair_revision;
+  if (!snapshot.repair_reason.empty()) {
+    result["repair_reason"] = snapshot.repair_reason;
+  }
   add_timestamp(result, "created_at_ms", snapshot.created_at);
   add_timestamp(result, "started_at_ms", snapshot.started_at);
   add_timestamp(result, "finished_at_ms", snapshot.finished_at);
@@ -232,6 +245,75 @@ inline auto add_timestamp(
     out.get_array().push_back(std::move(item));
   }
   return out;
+}
+
+[[nodiscard]] inline auto execution_plan_json(
+    const workflow::ExecutionPlan &execution) -> Result<JsonValue> {
+  workflow::WorkflowPlan plan;
+  plan.workflow_id = execution.workflow_id.clone();
+  plan.nodes.reserve(execution.nodes.size());
+  for (const auto &compiled : execution.nodes) {
+    plan.nodes.push_back(compiled.plan);
+  }
+  plan.edges = execution.edges;
+  plan.outputs = execution.outputs;
+  plan.policy = execution.policy;
+  auto encoded = workflow::WorkflowPlanLoader::to_json(plan);
+  if (!encoded) {
+    return fail(encoded.error());
+  }
+  return parse_json(*encoded);
+}
+
+[[nodiscard]] inline auto failure_report_json(
+    const workflow::RunFailureReport &report) -> JsonValue {
+  json tasks = json::array_t{};
+  for (const auto &task : report.tasks) {
+    json attempts = json::array_t{};
+    for (const auto &attempt : task.attempts) {
+      json attempt_json{
+          {"attempt_id", attempt.attempt_id.str()},
+          {"number", attempt.number},
+          {"state", std::string{workflow::to_string_view(attempt.state)}},
+          {"failure", workflow::execution_failure_json(attempt.failure)},
+      };
+      if (attempt.failure_class) {
+        attempt_json["failure_class"] =
+            std::string{workflow::to_string_view(*attempt.failure_class)};
+      }
+      if (attempt.termination_reason) {
+        attempt_json["termination_reason"] = std::string{
+            workflow::to_string_view(*attempt.termination_reason)};
+      }
+      attempts.get_array().push_back(std::move(attempt_json));
+    }
+    json item{{"node_id", task.node_id.str()},
+              {"state", std::string{workflow::to_string_view(task.state)}},
+              {"attempts", std::move(attempts)}};
+    if (task.reused_from_run_id) {
+      item["reused_from_run_id"] = task.reused_from_run_id->str();
+    }
+    if (task.failure) {
+      item["failure"] = workflow::execution_failure_json(*task.failure);
+    }
+    tasks.get_array().push_back(std::move(item));
+  }
+  json result{{"run_id", report.run_id.str()},
+              {"workflow_id", report.workflow_id.str()},
+              {"plan_id", report.plan_id.str()},
+              {"state", std::string{workflow::to_string_view(report.state)}},
+              {"repair_revision", report.repair_revision},
+              {"tasks", std::move(tasks)}};
+  if (report.parent_run_id) {
+    result["parent_run_id"] = report.parent_run_id->str();
+  }
+  if (report.parent_plan_id) {
+    result["parent_plan_id"] = report.parent_plan_id->str();
+  }
+  if (report.failure) {
+    result["failure"] = workflow::execution_failure_json(*report.failure);
+  }
+  return result;
 }
 
 [[nodiscard]] inline auto unavailable() -> http::HttpResponse {
@@ -299,6 +381,30 @@ auto register_workflow_routes(ApiContext &ctx) -> void {
                                      {"total", registered.size()},
                                      {"offset", page.offset},
                                      {"limit", page.limit}});
+          }));
+
+  router.get(
+      "/api/v1/workflows/plans/{plan_id}",
+      ctx.make_instrumented_route(
+          http::HttpMethod::GET, "/api/v1/workflows/plans/{plan_id}",
+          [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
+            auto *control = ctx.app.workflow_control_plane();
+            auto plan_id = req.path_param("plan_id");
+            if (!control || !plan_id) {
+              co_return control ? error_response(400, "Missing plan_id")
+                                : unavailable();
+            }
+            auto execution = control->get_plan(WorkflowPlanId{*plan_id});
+            if (!execution) {
+              co_return to_result_response(execution.error()).value();
+            }
+            auto plan = execution_plan_json(**execution);
+            if (!plan) {
+              co_return to_result_response(plan.error()).value();
+            }
+            co_return json_response({{"plan_id", (*execution)->plan_id.str()},
+                                     {"digest", (*execution)->digest},
+                                     {"plan", std::move(*plan)}});
           }));
 
   router.post(
@@ -385,6 +491,88 @@ auto register_workflow_routes(ApiContext &ctx) -> void {
               co_return to_result_response(snapshot.error()).value();
             }
             co_return json_response(snapshot_json(**snapshot));
+          }));
+
+  router.get(
+      "/api/v1/workflow-runs/{run_id}/failures",
+      ctx.make_instrumented_route(
+          http::HttpMethod::GET,
+          "/api/v1/workflow-runs/{run_id}/failures",
+          [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
+            auto *runtime = ctx.app.workflow_runtime();
+            auto run_id = req.path_param("run_id");
+            if (!runtime || !run_id) {
+              co_return runtime ? error_response(400, "Missing run_id")
+                                : unavailable();
+            }
+            auto report =
+                co_await runtime->failure_report(WorkflowRunId{*run_id});
+            if (!report) {
+              co_return to_result_response(report.error()).value();
+            }
+            co_return json_response(failure_report_json(*report));
+          }));
+
+  router.post(
+      "/api/v1/workflow-runs/{run_id}/repairs",
+      ctx.make_instrumented_route(
+          http::HttpMethod::POST,
+          "/api/v1/workflow-runs/{run_id}/repairs",
+          [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
+            auto *control = ctx.app.workflow_control_plane();
+            auto *runtime = ctx.app.workflow_runtime();
+            auto parent_run_id = req.path_param("run_id");
+            if (!control || !runtime || !parent_run_id) {
+              co_return control && runtime
+                            ? error_response(400, "Missing run_id")
+                            : unavailable();
+            }
+            auto body = parse_json(req.body_as_string());
+            if (!body || !body->is_object()) {
+              co_return error_response(400, "Invalid repair JSON body");
+            }
+            const auto *plan_value = member(*body, "plan");
+            if (!plan_value || !plan_value->is_object()) {
+              co_return error_response(400, "Repair body requires plan");
+            }
+            auto revised = workflow::WorkflowPlanLoader::from_json(
+                dump_json(*plan_value));
+            if (!revised) {
+              co_return error_response(400, revised.error().message());
+            }
+            auto compiled = control->register_plan(std::move(*revised));
+            if (!compiled) {
+              co_return to_result_response(compiled.error()).value();
+            }
+            std::string idempotency_key =
+                string_member(*body, "idempotency_key");
+            if (idempotency_key.empty()) {
+              if (auto header = req.header("Idempotency-Key"); header) {
+                idempotency_key = std::move(*header);
+              }
+            }
+            auto started = runtime->repair(
+                *compiled, WorkflowRunId{*parent_run_id},
+                workflow::RepairRequest{
+                    .reason = string_member(*body, "reason"),
+                    .idempotency_key = std::move(idempotency_key),
+                });
+            if (!started) {
+              co_return to_result_response(started.error()).value();
+            }
+            json nodes = json::array_t{};
+            for (const auto &decision : started->nodes) {
+              nodes.get_array().push_back(
+                  json{{"node_id", decision.node_id.str()},
+                       {"reused", decision.reused},
+                       {"reason", decision.reason}});
+            }
+            co_return json_response(
+                {{"run_id", started->run_id.str()},
+                 {"parent_run_id", started->parent_run_id.str()},
+                 {"plan_id", started->plan_id.str()},
+                 {"nodes", std::move(nodes)}},
+                http::HttpStatus::Accepted);
           }));
 
   router.get(

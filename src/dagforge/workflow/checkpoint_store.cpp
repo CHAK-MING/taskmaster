@@ -4,11 +4,20 @@
 
 #include <filesystem>
 #include <ranges>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 namespace dagforge::workflow {
+namespace {
+
+[[nodiscard]] auto valid_storage_key(std::string_view value) -> bool {
+  return !value.empty() && value != "." && value != ".." &&
+         std::filesystem::path{value}.filename() == value;
+}
+
+} // namespace
 
 CheckpointStore::CheckpointStore(std::filesystem::path directory)
     : directory_(std::move(directory)) {
@@ -23,9 +32,11 @@ auto CheckpointStore::file_path(const WorkflowRunId &run_id) const
 
 auto CheckpointStore::save(WorkflowCheckpoint checkpoint) -> Result<void> {
   if (checkpoint.snapshot.run_id.empty() ||
-      checkpoint.snapshot.plan_id.empty()) {
+      checkpoint.snapshot.plan_id.empty() ||
+      !valid_storage_key(checkpoint.snapshot.run_id.str())) {
     return fail(Error::InvalidArgument);
   }
+  std::lock_guard lock(mutex_);
   if (!directory_.empty()) {
     auto encoded = storage_detail::encode_checkpoint(checkpoint);
     if (!encoded) {
@@ -36,14 +47,21 @@ auto CheckpointStore::save(WorkflowCheckpoint checkpoint) -> Result<void> {
     if (!written) {
       return fail(written.error());
     }
+  } else {
+    auto validated = storage_detail::validate_checkpoint(checkpoint);
+    if (!validated) {
+      return fail(validated.error());
+    }
   }
-  std::lock_guard lock(mutex_);
   checkpoints_[checkpoint.snapshot.run_id.str()] = std::move(checkpoint);
   return ok();
 }
 
 auto CheckpointStore::load(const WorkflowRunId &run_id) const
     -> Result<WorkflowCheckpoint> {
+  if (!valid_storage_key(run_id.str())) {
+    return fail(Error::InvalidArgument);
+  }
   std::lock_guard lock(mutex_);
   const auto it = checkpoints_.find(run_id.str());
   if (it == checkpoints_.end()) {
@@ -54,12 +72,19 @@ auto CheckpointStore::load(const WorkflowRunId &run_id) const
     if (!text) {
       return fail(text.error());
     }
-    return storage_detail::decode_checkpoint(*text);
+    auto checkpoint = storage_detail::decode_checkpoint(*text);
+    if (!checkpoint || checkpoint->snapshot.run_id != run_id) {
+      return fail(checkpoint ? Error::ParseError : checkpoint.error());
+    }
+    return checkpoint;
   }
   return ok(it->second);
 }
 
 auto CheckpointStore::erase(const WorkflowRunId &run_id) -> Result<void> {
+  if (!valid_storage_key(run_id.str())) {
+    return fail(Error::InvalidArgument);
+  }
   std::lock_guard lock(mutex_);
   const auto erased = checkpoints_.erase(run_id.str()) != 0;
   bool removed = false;
@@ -104,6 +129,9 @@ auto CheckpointStore::list() const
     auto checkpoint = storage_detail::decode_checkpoint(*text);
     if (!checkpoint) {
       return fail(checkpoint.error());
+    }
+    if (it->path().stem().string() != checkpoint->snapshot.run_id.str()) {
+      return fail(Error::ParseError);
     }
     if (known.emplace(checkpoint->snapshot.run_id.str(), true).second) {
       checkpoints.push_back(std::move(*checkpoint));

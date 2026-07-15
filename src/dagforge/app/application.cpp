@@ -5,6 +5,7 @@
 #include "dagforge/executors/command/executor.hpp"
 #include "dagforge/executors/http/executor.hpp"
 #include "dagforge/workflow/executor_registry.hpp"
+#include "dagforge/workflow/plan_store.hpp"
 #include "dagforge/workflow/workflow_control_plane.hpp"
 #include "dagforge/workflow/workflow_runtime.hpp"
 #include "dagforge/util/log.hpp"
@@ -97,6 +98,7 @@ auto Application::rebuild_components() -> Result<void> {
     std::shared_ptr<workflow::IArtifactStore> artifact_store;
     std::shared_ptr<workflow::EvidenceLedger> evidence_ledger;
     std::shared_ptr<workflow::CheckpointStore> checkpoint_store;
+    std::shared_ptr<workflow::PlanStore> plan_store;
     if (config_.storage.enabled) {
       const auto root = std::filesystem::path(config_.storage.directory);
       artifact_store =
@@ -105,28 +107,51 @@ auto Application::rebuild_components() -> Result<void> {
           root / "evidence.jsonl", config_.storage.max_evidence_records);
       checkpoint_store =
           std::make_shared<workflow::CheckpointStore>(root / "runs");
+      plan_store = std::make_shared<workflow::PlanStore>(root / "plans");
     } else {
       artifact_store = std::make_shared<workflow::InMemoryArtifactStore>();
       evidence_ledger = std::make_shared<workflow::EvidenceLedger>(
           config_.storage.max_evidence_records);
       checkpoint_store = std::make_shared<workflow::CheckpointStore>();
+      plan_store = std::make_shared<workflow::PlanStore>();
     }
 
     workflow_control_plane_ = std::make_unique<workflow::WorkflowControlPlane>(
         *executor_registry_,
-        workflow::AdmissionPolicy{config_.admission});
+        workflow::AdmissionPolicy{config_.admission}, plan_store);
     workflow_runtime_ = std::make_unique<workflow::WorkflowRuntime>(
         *runtime_, *executor_registry_, std::move(artifact_store),
         std::move(evidence_ledger), checkpoint_store,
         config_.storage.max_completed_runs);
+
+    auto plans = plan_store->list();
+    if (!plans) {
+      return fail(plans.error());
+    }
+    for (auto &stored : *plans) {
+      auto restored = workflow_control_plane_->restore_plan(
+          std::move(stored.plan), stored.plan_id, stored.digest);
+      if (!restored) {
+        return fail(restored.error());
+      }
+    }
 
     auto checkpoints = checkpoint_store->list();
     if (!checkpoints) {
       return fail(checkpoints.error());
     }
     for (auto &checkpoint : *checkpoints) {
-      auto plan = workflow_control_plane_->restore_plan(
-          checkpoint.plan, checkpoint.snapshot.plan_id);
+      auto plan = workflow_control_plane_->get_plan(checkpoint.snapshot.plan_id);
+      if (!plan) {
+        plan = workflow_control_plane_->restore_plan(
+            checkpoint.plan, checkpoint.snapshot.plan_id);
+        if (plan) {
+          auto persisted = plan_store->save(**plan);
+          if (!persisted) {
+            return fail(persisted.error());
+          }
+        }
+      }
       if (!plan) {
         return fail(plan.error());
       }
@@ -191,6 +216,15 @@ auto Application::start() -> Result<void> {
   if (!runtime_started) {
     running_.store(false, std::memory_order_release);
     return fail(runtime_started.error());
+  }
+
+  if (workflow_runtime_) {
+    auto activated = workflow_runtime_->activate_restored();
+    if (!activated) {
+      runtime_->stop();
+      running_.store(false, std::memory_order_release);
+      return fail(activated.error());
+    }
   }
 
   if (config_.api.enabled && api_) {

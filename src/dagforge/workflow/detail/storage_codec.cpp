@@ -3,6 +3,8 @@
 #include "dagforge/util/json.hpp"
 #include "dagforge/workflow/workflow_plan_loader.hpp"
 
+#include "value_size.hpp"
+
 #include <openssl/evp.h>
 
 #include <array>
@@ -11,7 +13,9 @@
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 namespace dagforge::workflow::detail {
@@ -35,11 +39,20 @@ struct OutputValueDto {
   ValueDto value;
 };
 
+struct FailureArtifactDto {
+  std::string name;
+  std::string artifact_id;
+  std::string media_type;
+  std::uint64_t size_bytes{0};
+  std::string digest;
+};
+
 struct FailureDto {
   std::uint8_t kind{static_cast<std::uint8_t>(Error::Unknown)};
   std::string code;
   std::string message;
   JsonValue details = JsonValue::object_t{};
+  std::vector<FailureArtifactDto> artifacts;
 };
 
 struct AttemptDto {
@@ -63,6 +76,7 @@ struct TaskDto {
   std::optional<std::int64_t> next_attempt_at_ms;
   std::optional<std::uint8_t> skip_reason;
   std::optional<FailureDto> failure;
+  std::optional<std::string> reused_from_run_id;
   std::vector<AttemptDto> attempts;
   std::int64_t started_at_ms{0};
   std::int64_t finished_at_ms{0};
@@ -75,6 +89,10 @@ struct SnapshotDto {
   std::uint8_t state{0};
   std::optional<std::uint8_t> stop_intent;
   std::string stop_reason;
+  std::optional<std::string> parent_run_id;
+  std::optional<std::string> parent_plan_id;
+  std::uint32_t repair_revision{0};
+  std::string repair_reason;
   std::vector<TaskDto> tasks;
   std::int64_t created_at_ms{0};
   std::int64_t started_at_ms{0};
@@ -141,11 +159,17 @@ template <> struct meta<dagforge::workflow::detail::OutputValueDto> {
   static constexpr auto value = object("node_id", &T::node_id, "port",
                                        &T::port, "value", &T::value);
 };
+template <> struct meta<dagforge::workflow::detail::FailureArtifactDto> {
+  using T = dagforge::workflow::detail::FailureArtifactDto;
+  static constexpr auto value = object(
+      "name", &T::name, "artifact_id", &T::artifact_id, "media_type",
+      &T::media_type, "size_bytes", &T::size_bytes, "digest", &T::digest);
+};
 template <> struct meta<dagforge::workflow::detail::FailureDto> {
   using T = dagforge::workflow::detail::FailureDto;
   static constexpr auto value =
       object("kind", &T::kind, "code", &T::code, "message", &T::message,
-             "details", &T::details);
+             "details", &T::details, "artifacts", &T::artifacts);
 };
 template <> struct meta<dagforge::workflow::detail::AttemptDto> {
   using T = dagforge::workflow::detail::AttemptDto;
@@ -162,18 +186,21 @@ template <> struct meta<dagforge::workflow::detail::TaskDto> {
       "node_id", &T::node_id, "state", &T::state, "attempt_count",
       &T::attempt_count, "active_attempt_id", &T::active_attempt_id,
       "next_attempt_at_ms", &T::next_attempt_at_ms, "skip_reason",
-      &T::skip_reason, "failure", &T::failure, "attempts", &T::attempts,
-      "started_at_ms", &T::started_at_ms, "finished_at_ms",
-      &T::finished_at_ms);
+      &T::skip_reason, "failure", &T::failure, "reused_from_run_id",
+      &T::reused_from_run_id, "attempts", &T::attempts, "started_at_ms",
+      &T::started_at_ms, "finished_at_ms", &T::finished_at_ms);
 };
 template <> struct meta<dagforge::workflow::detail::SnapshotDto> {
   using T = dagforge::workflow::detail::SnapshotDto;
   static constexpr auto value = object(
       "run_id", &T::run_id, "workflow_id", &T::workflow_id, "plan_id",
       &T::plan_id, "state", &T::state, "stop_intent", &T::stop_intent,
-      "stop_reason", &T::stop_reason, "tasks", &T::tasks, "created_at_ms",
-      &T::created_at_ms, "started_at_ms", &T::started_at_ms, "finished_at_ms",
-      &T::finished_at_ms, "failure", &T::failure);
+      "stop_reason", &T::stop_reason, "parent_run_id", &T::parent_run_id,
+      "parent_plan_id", &T::parent_plan_id, "repair_revision",
+      &T::repair_revision, "repair_reason", &T::repair_reason, "tasks",
+      &T::tasks, "created_at_ms", &T::created_at_ms, "started_at_ms",
+      &T::started_at_ms, "finished_at_ms", &T::finished_at_ms, "failure",
+      &T::failure);
 };
 template <> struct meta<dagforge::workflow::detail::TriggerDto> {
   using T = dagforge::workflow::detail::TriggerDto;
@@ -322,12 +349,23 @@ namespace {
 
 [[nodiscard]] auto failure_to_dto(const ExecutionFailure &failure)
     -> detail::FailureDto {
-  return detail::FailureDto{
+  detail::FailureDto dto{
       .kind = static_cast<std::uint8_t>(failure.kind),
       .code = failure.code,
       .message = failure.message,
       .details = failure.details,
   };
+  dto.artifacts.reserve(failure.artifacts.size());
+  for (const auto &artifact : failure.artifacts) {
+    dto.artifacts.push_back(detail::FailureArtifactDto{
+        .name = artifact.name,
+        .artifact_id = artifact.artifact.artifact_id.str(),
+        .media_type = artifact.artifact.media_type,
+        .size_bytes = artifact.artifact.size_bytes,
+        .digest = artifact.artifact.digest,
+    });
+  }
+  return dto;
 }
 
 [[nodiscard]] auto valid_failure_dto(
@@ -338,7 +376,101 @@ namespace {
   return failure->kind > std::to_underlying(Error::Success) &&
          failure->kind <= std::to_underlying(Error::Unknown) &&
          !failure->code.empty() && !failure->message.empty() &&
-         failure->details.is_object();
+         failure->details.is_object() &&
+         std::ranges::all_of(failure->artifacts, [](const auto &artifact) {
+           return !artifact.name.empty() && !artifact.artifact_id.empty() &&
+                  !artifact.media_type.empty() && !artifact.digest.empty();
+         });
+}
+
+template <typename Enum>
+[[nodiscard]] auto valid_enum_value(std::uint8_t value, Enum maximum) -> bool {
+  return value <= std::to_underlying(maximum);
+}
+
+[[nodiscard]] auto valid_attempt_dto(const detail::AttemptDto &attempt,
+                                     std::uint32_t expected_number) -> bool {
+  return !attempt.attempt_id.empty() && attempt.number == expected_number &&
+         valid_enum_value(attempt.state, AttemptState::Cancelled) &&
+         (!attempt.termination_reason ||
+          valid_enum_value(*attempt.termination_reason,
+                           TerminationReason::AttemptTimeout)) &&
+         (!attempt.failure_class ||
+          valid_enum_value(*attempt.failure_class,
+                           FailureClass::Infrastructure)) &&
+         valid_failure_dto(attempt.failure);
+}
+
+[[nodiscard]] auto valid_task_dto(const detail::TaskDto &task) -> bool {
+  if (task.node_id.empty() ||
+      !valid_enum_value(task.state, TaskState::Cancelled) ||
+      task.attempt_count != task.attempts.size() ||
+      (task.skip_reason &&
+       !valid_enum_value(*task.skip_reason, SkipReason::BranchNotSelected)) ||
+      (task.reused_from_run_id && task.reused_from_run_id->empty()) ||
+      !valid_failure_dto(task.failure)) {
+    return false;
+  }
+  for (std::size_t index = 0; index < task.attempts.size(); ++index) {
+    if (!valid_attempt_dto(task.attempts[index],
+                           static_cast<std::uint32_t>(index + 1))) {
+      return false;
+    }
+  }
+  const auto task_state = static_cast<TaskState>(task.state);
+  if (task.active_attempt_id) {
+    if (task.active_attempt_id->empty() || task.attempts.empty() ||
+        task.attempts.back().attempt_id != *task.active_attempt_id ||
+        is_terminal(static_cast<AttemptState>(task.attempts.back().state)) ||
+        task_state != TaskState::Running) {
+      return false;
+    }
+  } else if (task_state == TaskState::Running) {
+    return false;
+  }
+  if (task_state == TaskState::RetryWaiting && !task.next_attempt_at_ms) {
+    return false;
+  }
+  if (is_terminal(task_state) && task.active_attempt_id) {
+    return false;
+  }
+  if (task.reused_from_run_id &&
+      (task_state != TaskState::Succeeded || !task.attempts.empty())) {
+    return false;
+  }
+  return true;
+}
+
+[[nodiscard]] auto valid_snapshot_structure(
+    const detail::SnapshotDto &snapshot) -> bool {
+  if (snapshot.run_id.empty() || snapshot.workflow_id.empty() ||
+      snapshot.plan_id.empty() ||
+      !valid_enum_value(snapshot.state, RunState::Cancelled) ||
+      (snapshot.stop_intent &&
+       !valid_enum_value(*snapshot.stop_intent, StopIntent::Cancel)) ||
+      snapshot.parent_run_id.has_value() !=
+          snapshot.parent_plan_id.has_value() ||
+      (snapshot.parent_run_id && snapshot.parent_run_id->empty()) ||
+      (snapshot.parent_plan_id && snapshot.parent_plan_id->empty()) ||
+      (snapshot.parent_run_id ? snapshot.repair_revision == 0
+                              : snapshot.repair_revision != 0) ||
+      !valid_failure_dto(snapshot.failure)) {
+    return false;
+  }
+
+  std::unordered_set<std::string> node_ids;
+  for (const auto &task : snapshot.tasks) {
+    if (!valid_task_dto(task) || !node_ids.emplace(task.node_id).second) {
+      return false;
+    }
+  }
+  if (is_terminal(static_cast<RunState>(snapshot.state)) &&
+      !std::ranges::all_of(snapshot.tasks, [](const auto &task) {
+        return is_terminal(static_cast<TaskState>(task.state));
+      })) {
+    return false;
+  }
+  return true;
 }
 
 [[nodiscard]] auto valid_snapshot_failures(
@@ -361,9 +493,22 @@ namespace {
 
 [[nodiscard]] auto failure_from_dto(detail::FailureDto dto)
     -> ExecutionFailure {
-  return make_execution_failure(static_cast<Error>(dto.kind),
-                                std::move(dto.code), std::move(dto.message),
-                                std::move(dto.details));
+  auto failure = make_execution_failure(
+      static_cast<Error>(dto.kind), std::move(dto.code),
+      std::move(dto.message), std::move(dto.details));
+  failure.artifacts.reserve(dto.artifacts.size());
+  for (auto &artifact : dto.artifacts) {
+    failure.artifacts.push_back(FailureArtifact{
+        .name = std::move(artifact.name),
+        .artifact = ArtifactRef{
+            .artifact_id = ArtifactId{std::move(artifact.artifact_id)},
+            .media_type = std::move(artifact.media_type),
+            .size_bytes = artifact.size_bytes,
+            .digest = std::move(artifact.digest),
+        },
+    });
+  }
+  return failure;
 }
 
 [[nodiscard]] auto attempt_to_dto(const AttemptSnapshot &attempt)
@@ -434,6 +579,10 @@ namespace {
       .failure = task.failure
                      ? std::optional{failure_to_dto(*task.failure)}
                      : std::nullopt,
+      .reused_from_run_id = task.reused_from_run_id
+                                ? std::optional{
+                                      task.reused_from_run_id->str()}
+                                : std::nullopt,
       .started_at_ms = to_milliseconds(task.started_at),
       .finished_at_ms = to_milliseconds(task.finished_at),
   };
@@ -465,6 +614,10 @@ namespace {
                      ? std::optional{failure_from_dto(
                            std::move(*dto.failure))}
                      : std::nullopt,
+      .reused_from_run_id = dto.reused_from_run_id
+                                ? std::optional{WorkflowRunId{
+                                      std::move(*dto.reused_from_run_id)}}
+                                : std::nullopt,
       .started_at = from_milliseconds(dto.started_at_ms),
       .finished_at = from_milliseconds(dto.finished_at_ms),
   };
@@ -487,6 +640,14 @@ namespace {
                                *snapshot.stop_intent)}
                          : std::nullopt,
       .stop_reason = snapshot.stop_reason,
+      .parent_run_id = snapshot.parent_run_id
+                           ? std::optional{snapshot.parent_run_id->str()}
+                           : std::nullopt,
+      .parent_plan_id = snapshot.parent_plan_id
+                            ? std::optional{snapshot.parent_plan_id->str()}
+                            : std::nullopt,
+      .repair_revision = snapshot.repair_revision,
+      .repair_reason = snapshot.repair_reason,
       .created_at_ms = to_milliseconds(snapshot.created_at),
       .started_at_ms = to_milliseconds(snapshot.started_at),
       .finished_at_ms = to_milliseconds(snapshot.finished_at),
@@ -512,6 +673,16 @@ namespace {
                                *dto.stop_intent)}
                          : std::nullopt,
       .stop_reason = std::move(dto.stop_reason),
+      .parent_run_id = dto.parent_run_id
+                           ? std::optional{WorkflowRunId{
+                                 std::move(*dto.parent_run_id)}}
+                           : std::nullopt,
+      .parent_plan_id = dto.parent_plan_id
+                            ? std::optional{WorkflowPlanId{
+                                  std::move(*dto.parent_plan_id)}}
+                            : std::nullopt,
+      .repair_revision = dto.repair_revision,
+      .repair_reason = std::move(dto.repair_reason),
       .created_at = from_milliseconds(dto.created_at_ms),
       .started_at = from_milliseconds(dto.started_at_ms),
       .finished_at = from_milliseconds(dto.finished_at_ms),
@@ -525,6 +696,76 @@ namespace {
     snapshot.tasks.push_back(task_from_dto(std::move(task)));
   }
   return snapshot;
+}
+
+[[nodiscard]] auto output_declared(const WorkflowPlan &plan,
+                                   const OutputRef &output) -> bool {
+  const auto node = std::ranges::find_if(
+      plan.nodes, [&](const NodePlan &candidate) {
+        return candidate.node_id == output.node_id;
+      });
+  return node != plan.nodes.end() &&
+         std::ranges::find(node->outputs, output.port) != node->outputs.end();
+}
+
+[[nodiscard]] auto valid_checkpoint_model(
+    const WorkflowCheckpoint &checkpoint) -> bool {
+  if (checkpoint.plan.workflow_id.empty() ||
+      checkpoint.trigger.trigger_id.empty() ||
+      checkpoint.plan.workflow_id != checkpoint.trigger.workflow_id ||
+      checkpoint.plan.workflow_id != checkpoint.snapshot.workflow_id ||
+      checkpoint.snapshot.tasks.size() != checkpoint.plan.nodes.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < checkpoint.plan.nodes.size(); ++index) {
+    if (checkpoint.snapshot.tasks[index].node_id !=
+        checkpoint.plan.nodes[index].node_id) {
+      return false;
+    }
+  }
+  std::unordered_set<std::string> outputs;
+  std::uint64_t total_output_bytes = 0;
+  for (const auto &[output, value] : checkpoint.values) {
+    const auto node = std::ranges::find_if(
+        checkpoint.plan.nodes, [&](const NodePlan &candidate) {
+          return candidate.node_id == output.node_id;
+        });
+    if (node == checkpoint.plan.nodes.end()) {
+      return false;
+    }
+    const auto node_index = static_cast<std::size_t>(
+        std::distance(checkpoint.plan.nodes.begin(), node));
+    const auto key = output.node_id.str() + "\x1f" + output.port.str();
+    if (!output_declared(checkpoint.plan, output) ||
+        checkpoint.snapshot.tasks[node_index].state != TaskState::Succeeded ||
+        !outputs.emplace(key).second) {
+      return false;
+    }
+    const auto value_bytes = detail::value_size_bytes(value);
+    if (value_bytes >
+        checkpoint.plan.policy.budget.max_total_output_bytes -
+            total_output_bytes) {
+      return false;
+    }
+    total_output_bytes += value_bytes;
+  }
+  if (checkpoint.snapshot.state == RunState::Succeeded) {
+    if (checkpoint.snapshot.failure ||
+        !std::ranges::all_of(checkpoint.snapshot.tasks, [](const auto &task) {
+          return task.state == TaskState::Succeeded ||
+                 task.state == TaskState::Skipped;
+        })) {
+      return false;
+    }
+    for (const auto &published : checkpoint.plan.outputs) {
+      const auto key =
+          published.node_id.str() + "\x1f" + published.port.str();
+      if (!outputs.contains(key)) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 [[nodiscard]] auto trigger_to_dto(const TriggerEnvelope &trigger)
@@ -578,7 +819,8 @@ namespace {
       .snapshot = snapshot_to_dto(checkpoint.snapshot),
       .created_at_ms = to_milliseconds(checkpoint.created_at),
   };
-  if (!valid_snapshot_failures(dto.snapshot)) {
+  if (!valid_snapshot_failures(dto.snapshot) ||
+      !valid_snapshot_structure(dto.snapshot)) {
     return fail(Error::InvalidArgument);
   }
   dto.values.reserve(checkpoint.values.size());
@@ -597,7 +839,8 @@ namespace {
   if (dto.schema_version != 1) {
     return fail(Error::Unsupported);
   }
-  if (!valid_snapshot_failures(dto.snapshot)) {
+  if (!valid_snapshot_failures(dto.snapshot) ||
+      !valid_snapshot_structure(dto.snapshot)) {
     return fail(Error::ParseError);
   }
   auto plan = WorkflowPlanLoader::from_json(dto.plan_json);
@@ -621,6 +864,9 @@ namespace {
         OutputRef{.node_id = WorkflowNodeId{std::move(entry.node_id)},
                   .port = WorkflowPortId{std::move(entry.port)}},
         std::move(*value));
+  }
+  if (!valid_checkpoint_model(checkpoint)) {
+    return fail(Error::ParseError);
   }
   return ok(std::move(checkpoint));
 }
@@ -684,9 +930,11 @@ namespace {
 auto write_text_file_atomic(const std::filesystem::path &path,
                             std::string_view text) -> Result<void> {
   std::error_code error;
-  std::filesystem::create_directories(path.parent_path(), error);
-  if (error) {
-    return fail(error);
+  if (!path.parent_path().empty()) {
+    std::filesystem::create_directories(path.parent_path(), error);
+    if (error) {
+      return fail(error);
+    }
   }
   auto temporary = path;
   temporary += ".tmp";
@@ -698,16 +946,19 @@ auto write_text_file_atomic(const std::filesystem::path &path,
     output.write(text.data(), static_cast<std::streamsize>(text.size()));
     output.flush();
     if (!output) {
+      std::error_code cleanup_error;
+      std::filesystem::remove(temporary, cleanup_error);
       return fail(Error::Unknown);
     }
   }
   std::filesystem::rename(temporary, path, error);
   if (error) {
-    std::filesystem::remove(path, error);
-    error.clear();
-    std::filesystem::rename(temporary, path, error);
+    const auto cause = error;
+    std::error_code cleanup_error;
+    std::filesystem::remove(temporary, cleanup_error);
+    return fail(cause);
   }
-  return error ? fail(error) : ok();
+  return ok();
 }
 
 } // namespace
@@ -756,6 +1007,10 @@ auto decode_evidence(std::string_view json) -> Result<EvidenceRecord> {
 
 auto encode_checkpoint(const WorkflowCheckpoint &checkpoint)
     -> Result<std::string> {
+  auto validated = validate_checkpoint(checkpoint);
+  if (!validated) {
+    return fail(validated.error());
+  }
   auto dto = checkpoint_to_dto(checkpoint);
   if (!dto) {
     return fail(dto.error());
@@ -769,6 +1024,17 @@ auto decode_checkpoint(std::string_view json) -> Result<WorkflowCheckpoint> {
     return fail(dto.error());
   }
   return checkpoint_from_dto(std::move(*dto));
+}
+
+auto validate_checkpoint(const WorkflowCheckpoint &checkpoint)
+    -> Result<void> {
+  const auto snapshot = snapshot_to_dto(checkpoint.snapshot);
+  if (!valid_checkpoint_model(checkpoint) ||
+      !valid_snapshot_failures(snapshot) ||
+      !valid_snapshot_structure(snapshot)) {
+    return fail(Error::InvalidArgument);
+  }
+  return ok();
 }
 
 auto load_text_file(const std::filesystem::path &path) -> Result<std::string> {

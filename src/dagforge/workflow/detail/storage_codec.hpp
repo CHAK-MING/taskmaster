@@ -29,6 +29,8 @@ namespace dagforge::workflow::storage_detail {
     -> Result<std::string>;
 [[nodiscard]] auto decode_checkpoint(std::string_view json)
     -> Result<WorkflowCheckpoint>;
+[[nodiscard]] auto validate_checkpoint(const WorkflowCheckpoint &checkpoint)
+    -> Result<void>;
 
 [[nodiscard]] auto load_text_file(const std::filesystem::path &path)
     -> Result<std::string>;

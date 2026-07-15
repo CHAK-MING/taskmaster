@@ -129,6 +129,7 @@ state. Executors handle the mechanics of completing one task.
 
 - [User Guide](docs/USER_GUIDE.md) — workflow plans, runtime behavior, and configuration
 - [API Reference](docs/API.md) — HTTP control-plane endpoints
+- [North-Star Workflow](docs/NORTH_STAR_WORKFLOW.md) — target fan-out, model, repair, and routing scenario
 - [0.4 Development Status](docs/0.4_DEVELOPMENT_STATUS.md) — completed capabilities, evidence, and next milestones
 - [System Configuration](system_config.toml) — complete configuration example
 - [State Machine ADR](docs/adr/0001-run-task-attempt-state-machine.md) — Run, Task, and Attempt semantics

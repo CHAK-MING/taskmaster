@@ -61,18 +61,24 @@ TEST(ApiTest, ApplicationRestoresPersistentCheckpointOnStart) {
   ASSERT_TRUE(plan.has_value()) << plan.error().message();
   workflow::WorkflowCheckpoint checkpoint;
   checkpoint.plan = std::move(*plan);
+  checkpoint.trigger.trigger_id = WorkflowTriggerId{"persisted-trigger"};
   checkpoint.trigger.workflow_id = WorkflowId{"persisted-flow"};
   checkpoint.trigger.idempotency_key = "persisted-key";
   checkpoint.snapshot.run_id = WorkflowRunId{"persisted-run"};
   checkpoint.snapshot.workflow_id = WorkflowId{"persisted-flow"};
   checkpoint.snapshot.plan_id = WorkflowPlanId{"persisted-plan"};
   checkpoint.snapshot.state = workflow::RunState::Succeeded;
+  checkpoint.snapshot.tasks.push_back(workflow::TaskSnapshot{
+      .node_id = WorkflowNodeId{"command"},
+      .state = workflow::TaskState::Succeeded,
+  });
   checkpoint.values.emplace_back(
       workflow::OutputRef{.node_id = WorkflowNodeId{"command"},
                           .port = WorkflowPortId{"result"}},
       std::string{"restored-value"});
   workflow::CheckpointStore store(root / "runs");
-  ASSERT_TRUE(store.save(std::move(checkpoint)).has_value());
+  auto saved = store.save(std::move(checkpoint));
+  ASSERT_TRUE(saved.has_value()) << saved.error().message();
 
   SystemConfig config;
   config.api.enabled = false;
@@ -102,6 +108,61 @@ TEST(ApiTest, ApplicationRestoresPersistentCheckpointOnStart) {
   ASSERT_TRUE(value.has_value()) << value.error().message();
   EXPECT_EQ(std::get<std::string>(**value), "restored-value");
   app.stop();
+  std::filesystem::remove_all(root, error);
+}
+
+TEST(ApiTest, ApplicationRestoresPlanCatalogWithoutRunCheckpoint) {
+  const auto root = std::filesystem::temp_directory_path() /
+                    std::format("dagforge-app-plan-catalog-{}", ::getpid());
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+
+  const auto make_config = [&] {
+    SystemConfig config;
+    config.api.enabled = false;
+    config.storage.enabled = true;
+    config.storage.directory = root.string();
+    config.admission.allowed_executors = {"command"};
+    config.executors.command.policy.allowed_programs = {"/bin/true"};
+    return config;
+  };
+
+  WorkflowPlanId plan_id;
+  {
+    Application app(make_config());
+    ASSERT_TRUE(app.start().has_value());
+    auto plan = workflow::WorkflowPlanLoader::from_json(R"({
+      "workflow_id":"catalog-flow","schema_version":1,
+      "nodes":[{"id":"command","executor":"command",
+        "config":{"program":"/bin/true","arguments":[],"env":[],"input_env":[]},
+        "outputs":["result"]}]
+    })");
+    ASSERT_TRUE(plan.has_value()) << plan.error().message();
+    auto registered =
+        app.workflow_control_plane()->register_plan(std::move(*plan));
+    ASSERT_TRUE(registered.has_value()) << registered.error().message();
+    plan_id = (*registered)->plan_id.clone();
+    app.stop();
+  }
+
+  EXPECT_TRUE(std::filesystem::exists(root / "plans" /
+                                      (plan_id.str() + ".json")));
+  bool has_run_checkpoint = false;
+  for (const auto &entry : std::filesystem::directory_iterator(root / "runs")) {
+    has_run_checkpoint = has_run_checkpoint || entry.is_regular_file();
+  }
+  EXPECT_FALSE(has_run_checkpoint);
+
+  Application restored(make_config());
+  ASSERT_TRUE(restored.start().has_value());
+  auto by_id = restored.workflow_control_plane()->get_plan(plan_id);
+  ASSERT_TRUE(by_id.has_value()) << by_id.error().message();
+  EXPECT_EQ((*by_id)->workflow_id, WorkflowId{"catalog-flow"});
+  auto latest = restored.workflow_control_plane()->get_latest(
+      WorkflowId{"catalog-flow"});
+  ASSERT_TRUE(latest.has_value()) << latest.error().message();
+  EXPECT_EQ((*latest)->plan_id, plan_id);
+  restored.stop();
   std::filesystem::remove_all(root, error);
 }
 
@@ -431,6 +492,23 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
   ASSERT_TRUE(first_plan.has_value());
   ASSERT_TRUE(second_plan.has_value());
 
+  http::HttpRequest get_plan;
+  get_plan.method = http::HttpMethod::GET;
+  get_plan.path =
+      std::format("/api/v1/workflows/plans/{}", first_plan.value());
+  auto fetched_plan =
+      sync_wait_on_runtime(app.runtime(), invoke(std::move(get_plan)));
+  ASSERT_TRUE(fetched_plan.has_value());
+  ASSERT_EQ(fetched_plan->status, http::HttpStatus::Ok);
+  auto fetched_plan_body = parse_json(response_text(*fetched_plan));
+  ASSERT_TRUE(fetched_plan_body.has_value());
+  EXPECT_EQ(fetched_plan_body->get_object()
+                .at("plan")
+                .get_object()
+                .at("workflow_id")
+                .as<std::string>(),
+            "api-flow");
+
   http::HttpRequest list;
   list.method = http::HttpMethod::GET;
   list.path = "/api/v1/workflows/plans";
@@ -524,12 +602,18 @@ TEST(ApiTest, WorkflowRoutesReturnUnavailableWhenWorkflowSubsystemIsDisabled) {
        std::vector<std::pair<http::HttpMethod, std::string>>{
            {http::HttpMethod::POST, "/api/v1/workflows/plans"},
            {http::HttpMethod::GET, "/api/v1/workflows/plans"},
+           {http::HttpMethod::GET,
+            "/api/v1/workflows/plans/missing-plan"},
            {http::HttpMethod::POST, "/api/v1/workflows/flow/runs"},
            {http::HttpMethod::GET, "/api/v1/workflow-runs/run"},
            {http::HttpMethod::GET,
             "/api/v1/workflow-runs/run/outputs/node/port"},
            {http::HttpMethod::GET,
             "/api/v1/workflow-runs/run/evidence"},
+           {http::HttpMethod::GET,
+            "/api/v1/workflow-runs/run/failures"},
+           {http::HttpMethod::POST,
+            "/api/v1/workflow-runs/run/repairs"},
            {http::HttpMethod::POST, "/api/v1/artifacts"},
            {http::HttpMethod::GET, "/api/v1/artifacts/artifact"},
            {http::HttpMethod::DELETE, "/api/v1/artifacts/artifact"},
@@ -638,6 +722,14 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
   auto malformed = invoke(request(http::HttpMethod::POST,
                                   "/api/v1/workflows/plans", "not-json"));
   EXPECT_EQ(malformed.status, http::HttpStatus::BadRequest);
+  auto malformed_body = parse_json(response_text(malformed));
+  ASSERT_TRUE(malformed_body.has_value());
+  const auto &malformed_error =
+      malformed_body->get_object().at("error").get_object();
+  EXPECT_EQ(malformed_error.at("kind").as<std::string>(),
+            "invalid_argument");
+  EXPECT_EQ(malformed_error.at("code").as<std::string>(),
+            "invalid_request");
   auto invalid_plan = invoke(request(
       http::HttpMethod::POST, "/api/v1/workflows/plans",
       R"({"workflow_id":"invalid","schema_version":1,"nodes":[{"id":"task","executor":"unknown","outputs":["result"]}]})"));
@@ -722,6 +814,29 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
   ASSERT_TRUE(duplicate_body.has_value());
   EXPECT_EQ(duplicate_body->get_object().at("run_id").as<std::string>(),
             run_id);
+
+  const auto revised_echo_plan = register_plan(R"({
+    "workflow_id":"route-echo","schema_version":1,
+    "nodes":[{"id":"command","executor":"command",
+      "config":{"program":"/bin/echo","arguments":["api-output-v2"],"env":[],"input_env":[]},
+      "outputs":["result"]}]
+  })");
+  const auto revised_echo_plan_id =
+      revised_echo_plan.get_object().at("plan_id").as<std::string>();
+
+  auto idempotency_conflict = invoke(request(
+      http::HttpMethod::POST, "/api/v1/workflows/route-echo/runs",
+      std::format(
+          R"({{"plan_id":"{}","idempotency_key":"route-key"}})",
+          revised_echo_plan_id)));
+  ASSERT_EQ(idempotency_conflict.status, http::HttpStatus::Conflict)
+      << response_text(idempotency_conflict);
+  auto conflict_body = parse_json(response_text(idempotency_conflict));
+  ASSERT_TRUE(conflict_body.has_value());
+  const auto &conflict_error =
+      conflict_body->get_object().at("error").get_object();
+  EXPECT_EQ(conflict_error.at("kind").as<std::string>(), "already_exists");
+  EXPECT_EQ(conflict_error.at("code").as<std::string>(), "already_exists");
 
   auto completed = wait_for_state(run_id, "succeeded");
   ASSERT_EQ(completed.status, http::HttpStatus::Ok)
@@ -816,6 +931,67 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
   EXPECT_EQ(failure_details.at("exit_code").as<std::int64_t>(), 7);
   EXPECT_EQ(failure_details.at("stdout").as<std::string>(), "partial");
   EXPECT_EQ(failure_details.at("stderr").as<std::string>(), "diagnostic");
+
+  auto failure_report = invoke(request(
+      http::HttpMethod::GET,
+      std::format("/api/v1/workflow-runs/{}/failures", failed_run)));
+  ASSERT_EQ(failure_report.status, http::HttpStatus::Ok)
+      << response_text(failure_report);
+  auto failure_report_body = parse_json(response_text(failure_report));
+  ASSERT_TRUE(failure_report_body.has_value());
+  EXPECT_EQ(failure_report_body->get_object()
+                .at("failure")
+                .get_object()
+                .at("code")
+                .as<std::string>(),
+            "command_exit_nonzero");
+  ASSERT_EQ(failure_report_body->get_object().at("tasks").get_array().size(),
+            1U);
+
+  auto repair_response = invoke(request(
+      http::HttpMethod::POST,
+      std::format("/api/v1/workflow-runs/{}/repairs", failed_run),
+      R"({
+        "reason":"replace failing command",
+        "idempotency_key":"route-repair-once",
+        "plan":{
+          "workflow_id":"route-failure","schema_version":1,
+          "nodes":[{"id":"command","executor":"command",
+            "config":{"program":"/bin/echo","arguments":["repaired"],"env":[],"input_env":[]},
+            "outputs":["result"]}]
+        }
+      })"));
+  ASSERT_EQ(repair_response.status, http::HttpStatus::Accepted)
+      << response_text(repair_response);
+  auto repair_body = parse_json(response_text(repair_response));
+  ASSERT_TRUE(repair_body.has_value());
+  const auto repaired_run =
+      repair_body->get_object().at("run_id").as<std::string>();
+  EXPECT_EQ(repair_body->get_object()
+                .at("parent_run_id")
+                .as<std::string>(),
+            failed_run);
+  ASSERT_EQ(repair_body->get_object().at("nodes").get_array().size(), 1U);
+  EXPECT_FALSE(repair_body->get_object()
+                   .at("nodes")
+                   .get_array()
+                   .front()
+                   .get_object()
+                   .at("reused")
+                   .get<bool>());
+  auto repaired_response = wait_for_state(repaired_run, "succeeded");
+  ASSERT_EQ(repaired_response.status, http::HttpStatus::Ok)
+      << response_text(repaired_response);
+  auto repaired_body = parse_json(response_text(repaired_response));
+  ASSERT_TRUE(repaired_body.has_value());
+  EXPECT_EQ(repaired_body->get_object()
+                .at("parent_run_id")
+                .as<std::string>(),
+            failed_run);
+  EXPECT_EQ(repaired_body->get_object()
+                .at("repair_revision")
+                .as<std::int64_t>(),
+            1);
 
   auto failure_evidence = invoke(request(
       http::HttpMethod::GET,

@@ -9,8 +9,14 @@
 namespace dagforge::workflow {
 
 WorkflowControlPlane::WorkflowControlPlane(const ExecutorRegistry &executors,
-                                           AdmissionPolicy admission)
-    : compiler_(executors), admission_(std::move(admission)) {}
+                                           AdmissionPolicy admission,
+                                           std::shared_ptr<PlanStore> plan_store)
+    : compiler_(executors), admission_(std::move(admission)),
+      plan_store_(std::move(plan_store)) {
+  if (!plan_store_) {
+    plan_store_ = std::make_shared<PlanStore>();
+  }
+}
 
 auto WorkflowControlPlane::register_plan(WorkflowPlan plan)
     -> Result<std::shared_ptr<const ExecutionPlan>> {
@@ -29,6 +35,10 @@ auto WorkflowControlPlane::register_plan(WorkflowPlan plan)
     latest_by_workflow_[existing->second->workflow_id.str()] = existing->second;
     return ok(existing->second);
   }
+  auto persisted = plan_store_->save(**compiled);
+  if (!persisted) {
+    return fail(persisted.error());
+  }
   plans_by_id_[(*compiled)->plan_id.str()] = *compiled;
   plans_by_digest_[(*compiled)->digest] = *compiled;
   latest_by_workflow_[(*compiled)->workflow_id.str()] = *compiled;
@@ -36,7 +46,8 @@ auto WorkflowControlPlane::register_plan(WorkflowPlan plan)
 }
 
 auto WorkflowControlPlane::restore_plan(WorkflowPlan plan,
-                                        const WorkflowPlanId &plan_id)
+                                        const WorkflowPlanId &plan_id,
+                                        std::string_view expected_digest)
     -> Result<std::shared_ptr<const ExecutionPlan>> {
   auto admitted = admission_.validate(plan);
   if (!admitted) {
@@ -45,6 +56,9 @@ auto WorkflowControlPlane::restore_plan(WorkflowPlan plan,
   auto compiled = compiler_.compile(std::move(plan), plan_id);
   if (!compiled) {
     return fail(compiled.error());
+  }
+  if (!expected_digest.empty() && (*compiled)->digest != expected_digest) {
+    return fail(Error::ParseError);
   }
   std::lock_guard lock(mutex_);
   plans_by_id_[(*compiled)->plan_id.str()] = *compiled;

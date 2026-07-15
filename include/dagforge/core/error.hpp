@@ -43,11 +43,12 @@ enum class Error : std::uint8_t {
   Unauthorized,
   RateLimited,
   Unsupported,
+  PersistenceError,
   Unknown,
 };
 
 class ErrorCategory : public std::error_category {
-  static constexpr std::array<std::string_view, 28> messages = {
+  static constexpr std::array<std::string_view, 29> messages = {
       "success",
       "file not found",
       "failed to open file",
@@ -75,6 +76,7 @@ class ErrorCategory : public std::error_category {
       "unauthorized",
       "rate limited",
       "unsupported operation",
+      "persistence error",
       "unknown error",
   };
 
@@ -165,6 +167,8 @@ inline auto make_error_code(Error e) -> std::error_code {
     return "rate_limited";
   case Error::Unsupported:
     return "unsupported";
+  case Error::PersistenceError:
+    return "persistence_error";
   case Error::Unknown:
     return "unknown";
   }

@@ -11,6 +11,7 @@
 #include "dagforge/workflow/evidence_ledger.hpp"
 #include "dagforge/workflow/evidence_types.hpp"
 #include "dagforge/workflow/workflow_plan.hpp"
+#include "dagforge/workflow/workflow_recovery.hpp"
 #include "dagforge/workflow/workflow_runtime_types.hpp"
 
 #include <atomic>
@@ -62,6 +63,12 @@ public:
       -> Result<WorkflowRunId>;
   auto restore(std::shared_ptr<const ExecutionPlan> plan,
                WorkflowCheckpoint checkpoint) -> Result<void>;
+  auto activate_restored() -> Result<void>;
+  [[nodiscard]] auto repair(std::shared_ptr<const ExecutionPlan> plan,
+                            const WorkflowRunId &parent_run_id,
+                            RepairRequest request,
+                            WorkflowCallbacks callbacks = {})
+      -> Result<RepairStartResult>;
 
   [[nodiscard]] auto snapshot(const WorkflowRunId &run_id) const
       -> task<Result<std::shared_ptr<const RunSnapshot>>>;
@@ -80,6 +87,8 @@ public:
 
   [[nodiscard]] auto evidence(const WorkflowRunId &run_id) const
       -> std::vector<EvidenceRecord>;
+  [[nodiscard]] auto failure_report(const WorkflowRunId &run_id) const
+      -> task<Result<RunFailureReport>>;
   [[nodiscard]] auto artifact_store() noexcept -> IArtifactStore & {
     return *artifact_store_;
   }
@@ -91,6 +100,12 @@ public:
   }
 
 private:
+  enum class ActivationKind : std::uint8_t {
+    NewRun,
+    RestartRecovery,
+    RepairRun,
+  };
+
   struct TaskRuntimeState {
     TaskSnapshot snapshot;
     std::optional<InstanceId> instance_id;
@@ -106,6 +121,7 @@ private:
     std::deque<std::size_t> ready;
     std::size_t active_attempts{0};
     bool dispatching{false};
+    std::optional<ExecutionFailure> persistence_failure;
     io::TimingWheel::Handle deadline_handle;
     WorkflowCallbacks callbacks;
   };
@@ -120,12 +136,31 @@ private:
     std::deque<std::string> completed_order;
   };
 
+  struct RestoredRun {
+    std::shared_ptr<const ExecutionPlan> plan;
+    WorkflowCheckpoint checkpoint;
+  };
+
+  struct IdempotencyBinding {
+    WorkflowRunId run_id;
+    WorkflowId workflow_id;
+    WorkflowPlanId plan_id;
+    std::optional<WorkflowRunId> parent_run_id;
+  };
+
   [[nodiscard]] auto owner_shard(const WorkflowRunId &run_id) const noexcept
       -> shard_id;
   auto initialize_run(WorkflowRunId run_id,
                       std::shared_ptr<const ExecutionPlan> plan,
                       TriggerEnvelope trigger, WorkflowCallbacks callbacks)
       -> void;
+  auto initialize_checkpoint_run(
+      std::shared_ptr<const ExecutionPlan> plan,
+      WorkflowCheckpoint restored_checkpoint, WorkflowCallbacks callbacks,
+      ActivationKind activation,
+      std::vector<RepairNodeDecision> repair_decisions = {}) -> void;
+  auto prime_ready_tasks(ActiveRun &run) -> Result<void>;
+  auto schedule_run_deadline(ActiveRun &run) -> void;
   auto dispatch(const WorkflowRunId &run_id) -> void;
   auto start_task(const WorkflowRunId &run_id, std::size_t task_index) -> void;
   auto start_async_task(WorkflowRunId run_id, std::size_t task_index,
@@ -167,11 +202,17 @@ private:
       -> Result<ExecutorInputs>;
   [[nodiscard]] auto make_snapshot(const ActiveRun &run) const
       -> std::shared_ptr<const RunSnapshot>;
+  auto enforce_completed_retention(ShardState &state) -> void;
   auto emit_run_state(ActiveRun &run) -> void;
   auto emit_task_state(ActiveRun &run, std::size_t task_index) -> void;
   auto append_evidence(const ActiveRun &run, std::size_t node_index,
                        EvidenceType type, JsonValue metadata = {}) -> void;
   auto checkpoint(ActiveRun &run) -> void;
+  auto record_persistence_failure(ActiveRun &run, std::error_code cause)
+      -> void;
+  auto handle_persistence_failure(const WorkflowRunId &run_id) -> void;
+  [[nodiscard]] auto retain_failure_details(ExecutionFailure failure)
+      -> ExecutionFailure;
   auto notify_lifecycle_changed() noexcept -> void;
   [[nodiscard]] auto lifecycle_quiesced() const noexcept -> bool;
 
@@ -188,9 +229,10 @@ private:
   std::shared_ptr<CheckpointStore> checkpoint_store_;
   std::size_t max_completed_runs_{10'000};
   std::vector<ShardState> shard_states_;
+  std::vector<RestoredRun> restored_runs_;
   std::shared_ptr<int> lifetime_token_{std::make_shared<int>(0)};
   mutable std::mutex idempotency_mutex_;
-  std::unordered_map<std::string, WorkflowRunId> idempotency_runs_;
+  std::unordered_map<std::string, IdempotencyBinding> idempotency_runs_;
   std::atomic<std::uint64_t> active_run_count_{0};
   std::atomic<std::uint64_t> pending_initializations_{0};
   std::atomic<std::uint64_t> active_task_coroutines_{0};

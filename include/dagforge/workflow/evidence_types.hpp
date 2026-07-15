@@ -25,6 +25,10 @@ enum class EvidenceType : std::uint8_t {
   RunCompleted,
   RunFailed,
   RunCancelled,
+  RunRecoveryResumed,
+  RepairRunStarted,
+  TaskReused,
+  TaskInvalidated,
 };
 
 [[nodiscard]] constexpr auto to_string_view(EvidenceType value) noexcept
@@ -64,6 +68,14 @@ enum class EvidenceType : std::uint8_t {
     return "run_failed";
   case EvidenceType::RunCancelled:
     return "run_cancelled";
+  case EvidenceType::RunRecoveryResumed:
+    return "run_recovery_resumed";
+  case EvidenceType::RepairRunStarted:
+    return "repair_run_started";
+  case EvidenceType::TaskReused:
+    return "task_reused";
+  case EvidenceType::TaskInvalidated:
+    return "task_invalidated";
   }
   return "unknown";
 }

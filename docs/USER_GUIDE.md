@@ -326,11 +326,17 @@ max_completed_runs = 10000
 max_evidence_records = 100000
 ```
 
-The directory contains atomic Run checkpoint files, an append-only Evidence
-log, and Artifact data plus metadata. Completed Runs and outputs are restored
-on startup. Non-terminal Runs cannot be reattached to an old sandbox process;
-they recover as failed with an infrastructure failure recorded on the active
-Attempt.
+The directory contains an independent immutable Plan catalog, atomic Run
+checkpoint files, an append-only Evidence log, and Artifact data plus metadata.
+An initial checkpoint is written before a Run ID is accepted. Stable Run and
+Task transitions refresh the checkpoint.
+
+Completed Runs and outputs are restored on startup. Non-terminal Runs continue
+from their checkpoint. A process or request that was active when the process
+stopped is not reattached: its old Attempt is closed with the infrastructure
+failure code `runtime_restarted`, while the Task becomes ready for a new
+Attempt. Succeeded Tasks and retained outputs are not rerun. Paused Runs remain
+paused and retry-waiting Tasks preserve their retry deadline.
 
 When a retention limit is exceeded, the oldest completed Run or Evidence
 record is removed. Evicted durable Run checkpoints are deleted as well.
@@ -428,7 +434,9 @@ Plans are accepted as strict JSON. `schema_version` must be `1`.
 - `retry_initial_delay_ms`: delay before the first retry.
 - `retry_max_delay_ms`: maximum exponential retry delay.
 - `timeout_sec`: node deadline.
-- `checkpoint`: save a runtime checkpoint after successful completion.
+- `checkpoint`: emit an explicit Checkpoint Evidence record after successful
+  completion. Durable recovery no longer depends on this flag because stable
+  Runtime transitions are persisted automatically.
 
 An input binding is:
 
@@ -638,6 +646,13 @@ Use `SIGINT` or `SIGTERM` for graceful shutdown.
   failure is persisted in checkpoints and Evidence, so an external repair
   controller can inspect it without parsing log text. Checkpoint loading rejects
   malformed failure objects instead of admitting them into Runtime state.
+- Task output publication is atomic at the Runtime boundary. If one output
+  violates the budget or storage contract, earlier outputs from the same
+  completion are removed and are not exposed through the normal output API.
+- Large failure details are stored through the existing Artifact store and the
+  failure keeps a named `details` Artifact reference. The dedicated Run
+  failure-report interface returns the complete Run/Task/Attempt hierarchy
+  without knowing Command, HTTP, Model, WASM, or MCP fields.
 - A failed dependency causes downstream tasks to be skipped with a recorded
   reason.
 - Cancellation enters `stopping`, routes cancellation to each active executor,
@@ -645,17 +660,40 @@ Use `SIGINT` or `SIGTERM` for graceful shutdown.
   kills the complete Minijail process namespace; HTTP cancellation interrupts
   DNS, connect, TLS, write, and read operations and closes an established
   socket.
-- Duplicate non-empty idempotency keys return the original run ID while the
-  process remains alive.
+- Duplicate non-empty idempotency keys return the original Run ID while its
+  checkpoint is retained, including after service restart, only when the
+  original Workflow and Plan identity match. Repair keys additionally bind the
+  parent Run. Conflicting reuse is rejected rather than returning an unrelated
+  Run.
 - Large string and JSON outputs are replaced with Artifact references.
 
 ## 6. Current durability boundary
 
-The plan catalog and idempotency registry remain process-local. Run
-checkpoints, Evidence, Artifacts, and completed Run data can use the optional
-file-backed storage configuration. Completed Runs are restored on startup;
-non-terminal Attempts are finalized as infrastructure failures because an old
-executor instance cannot be reattached safely.
+Plan registration and Run checkpoints are independently persisted when file
+storage is enabled. Startup restores the Plan catalog first, then terminal and
+non-terminal Runs. The checkpoint trigger carries the idempotency key, so the
+authoritative Run mapping is reconstructed while the checkpoint remains
+retained. Checkpoint loading revalidates the Plan digest, output budget,
+published outputs, successful Task ownership of normal outputs, and referenced
+Artifact metadata/content before the Run is admitted.
+
+Control-plane errors use the same structured shape as execution failures:
+`kind`, stable `code`, `message`, bounded `details`, and `artifacts`. AI and
+operator clients should branch on `code`, never on message text.
+
+Repair does not mutate a failed Run. A revised full Plan is compiled and starts
+a child Run with `parent_run_id`, `parent_plan_id`, `repair_revision`, and a
+reason. Successful parent nodes are reused only when their execution contract,
+incoming conditions, dependencies, retained outputs, and referenced Artifacts
+remain valid. Invalidity propagates through descendants; independent successful
+branches remain reusable.
+
+The storage model is single-process and file-backed. Evidence remains an audit
+log rather than a replay database, and an external executor operation cannot be
+reattached across process loss.
+
+The target multi-executor acceptance graph is recorded in
+[`NORTH_STAR_WORKFLOW.md`](NORTH_STAR_WORKFLOW.md).
 
 ## 7. Observability
 

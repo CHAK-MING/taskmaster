@@ -6,10 +6,19 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace dagforge::workflow {
+namespace {
+
+[[nodiscard]] auto valid_storage_key(std::string_view value) -> bool {
+  return !value.empty() && value != "." && value != ".." &&
+         std::filesystem::path{value}.filename() == value;
+}
+
+} // namespace
 
 auto InMemoryArtifactStore::put(std::span<const std::byte> data,
                                 std::string media_type)
@@ -36,6 +45,9 @@ auto InMemoryArtifactStore::put(std::span<const std::byte> data,
 
 auto InMemoryArtifactStore::get(const ArtifactId &artifact_id) const
     -> Result<ArtifactBlob> {
+  if (!valid_storage_key(artifact_id.str())) {
+    return fail(Error::InvalidArgument);
+  }
   std::lock_guard lock(mutex_);
   const auto it = artifacts_.find(artifact_id.str());
   if (it == artifacts_.end()) {
@@ -46,6 +58,9 @@ auto InMemoryArtifactStore::get(const ArtifactId &artifact_id) const
 
 auto InMemoryArtifactStore::erase(const ArtifactId &artifact_id)
     -> Result<void> {
+  if (!valid_storage_key(artifact_id.str())) {
+    return fail(Error::InvalidArgument);
+  }
   std::lock_guard lock(mutex_);
   if (artifacts_.erase(artifact_id.str()) == 0) {
     return fail(Error::NotFound);
@@ -119,6 +134,9 @@ auto FileArtifactStore::put(std::span<const std::byte> data,
 
 auto FileArtifactStore::get(const ArtifactId &artifact_id) const
     -> Result<ArtifactBlob> {
+  if (!valid_storage_key(artifact_id.str())) {
+    return fail(Error::InvalidArgument);
+  }
   std::lock_guard lock(mutex_);
   const auto base = directory_ / artifact_id.str();
   auto metadata_text = storage_detail::load_text_file(base.string() + ".json");
@@ -153,6 +171,9 @@ auto FileArtifactStore::get(const ArtifactId &artifact_id) const
 }
 
 auto FileArtifactStore::erase(const ArtifactId &artifact_id) -> Result<void> {
+  if (!valid_storage_key(artifact_id.str())) {
+    return fail(Error::InvalidArgument);
+  }
   std::lock_guard lock(mutex_);
   const auto base = directory_ / artifact_id.str();
   std::error_code data_error;

@@ -93,6 +93,18 @@ auto execution_failure_json(const ExecutionFailure &failure) -> JsonValue {
   value["code"] = failure.code;
   value["message"] = failure.message;
   value["details"] = failure.details;
+  JsonValue artifacts = JsonValue::array_t{};
+  for (const auto &attachment : failure.artifacts) {
+    JsonValue item = JsonValue::object_t{};
+    item["name"] = attachment.name;
+    item["artifact_id"] = attachment.artifact.artifact_id.str();
+    item["media_type"] = attachment.artifact.media_type;
+    item["size_bytes"] =
+        static_cast<std::int64_t>(attachment.artifact.size_bytes);
+    item["digest"] = attachment.artifact.digest;
+    artifacts.get_array().push_back(std::move(item));
+  }
+  value["artifacts"] = std::move(artifacts);
   return value;
 }
 

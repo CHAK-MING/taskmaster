@@ -3,10 +3,11 @@
 #include "dagforge/core/runtime.hpp"
 #include "dagforge/util/json.hpp"
 
+#include "detail/value_size.hpp"
+
 #include <span>
 #include <string>
 #include <string_view>
-#include <type_traits>
 #include <utility>
 
 namespace dagforge::workflow {
@@ -15,30 +16,6 @@ namespace {
 [[nodiscard]] auto bytes_of(std::string_view value)
     -> std::span<const std::byte> {
   return std::as_bytes(std::span{value.data(), value.size()});
-}
-
-[[nodiscard]] auto estimate_size(const WorkflowValue &value) -> std::uint64_t {
-  return std::visit(
-      [](const auto &typed) -> std::uint64_t {
-        using T = std::decay_t<decltype(typed)>;
-        if constexpr (std::same_as<T, std::monostate>) {
-          return 0;
-        } else if constexpr (std::same_as<T, bool>) {
-          return 1;
-        } else if constexpr (std::same_as<T, std::int64_t> ||
-                             std::same_as<T, double>) {
-          return sizeof(T);
-        } else if constexpr (std::same_as<T, std::string>) {
-          return typed.size();
-        } else if constexpr (std::same_as<T, JsonValue>) {
-          return dump_json(typed).size();
-        } else if constexpr (std::same_as<T, ArtifactRef>) {
-          return typed.artifact_id.size() + typed.media_type.size() +
-                 typed.digest.size();
-        }
-        return 0;
-      },
-      value);
 }
 
 } // namespace
@@ -69,7 +46,7 @@ auto RunValueStore::key(const OutputRef &output) -> std::string {
 
 auto RunValueStore::maybe_externalize(WorkflowValue value)
     -> Result<std::pair<WorkflowValue, std::uint64_t>> {
-  const auto accounted_bytes = estimate_size(value);
+  const auto accounted_bytes = detail::value_size_bytes(value);
   if (accounted_bytes < artifact_threshold_bytes_) {
     return ok(std::pair{std::move(value), accounted_bytes});
   }
