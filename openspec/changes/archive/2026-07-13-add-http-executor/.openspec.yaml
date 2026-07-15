@@ -1,4 +1,0 @@
-schema: spec-driven
-created: 2026-07-13
-goal: A Workflow JSON can execute Command -> HTTP -> Command without
-  WorkflowRuntime knowing HTTP semantics.
