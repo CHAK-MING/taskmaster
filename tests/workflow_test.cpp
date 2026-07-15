@@ -28,6 +28,7 @@
 #include <mutex>
 #include <string>
 #include <stdexcept>
+#include <system_error>
 #include <thread>
 #include <utility>
 
@@ -203,7 +204,7 @@ public:
     runtime_->post_to(
         pending->owner,
         [pending = std::move(*pending),
-         result = ok(std::move(outputs))]() mutable {
+         result = task_succeeded(std::move(outputs))]() mutable {
           if (pending.sink.on_complete) {
             pending.sink.on_complete(pending.instance_id, std::move(result));
           }
@@ -246,9 +247,14 @@ private:
   [[nodiscard]] static auto make_outputs(const Pending &pending,
                                          int exit_code,
                                          const std::string &output)
-      -> Result<ExecutorOutputs> {
+      -> TaskExecutionResult {
     if (exit_code != 0) {
-      return fail(Error::Unknown);
+      JsonValue details = JsonValue::object_t{};
+      details["exit_code"] = static_cast<std::int64_t>(exit_code);
+      return task_failed(make_execution_failure(
+          Error::Unknown, "test_exit_nonzero",
+          std::format("Test executor exited with status {}", exit_code),
+          std::move(details)));
     }
     ExecutorOutputs outputs;
     outputs.reserve(pending.outputs.size());
@@ -262,7 +268,7 @@ private:
         outputs.emplace_back(port.clone(), output);
       }
     }
-    return ok(std::move(outputs));
+    return task_succeeded(std::move(outputs));
   }
 
   [[nodiscard]] auto take_pending(const InstanceId &instance_id)
@@ -556,7 +562,7 @@ public:
           .outputs = {WorkflowPortId{"result"}},
       });
   if (!outputs) {
-    co_return fail(outputs.error());
+    co_return fail(make_error_code(outputs.error().kind));
   }
   const auto after = runtime.is_current_shard() ? runtime.current_shard()
                                                 : kInvalidShard;
@@ -940,10 +946,10 @@ TEST(CommandTaskExecutorTest, OwnsCommandPolicyAndInputMapping) {
   ASSERT_FALSE(blocked_override.has_value());
   EXPECT_EQ(blocked_override.error(), make_error_code(Error::ParseError));
 
-  std::optional<Result<ExecutorOutputs>> completion;
+  std::optional<TaskExecutionResult> completion;
   TaskExecutionSink sink;
   sink.on_complete = [&completion](const InstanceId &,
-                                   Result<ExecutorOutputs> result) {
+                                   TaskExecutionResult result) {
     completion.emplace(std::move(result));
   };
   ExecutorInputs values;
@@ -972,7 +978,7 @@ TEST(CommandTaskExecutorTest, OwnsCommandPolicyAndInputMapping) {
 
   environment.runner->complete(0, "done");
   ASSERT_TRUE(completion.has_value());
-  ASSERT_TRUE(completion->has_value()) << completion->error().message();
+  ASSERT_TRUE(completion->has_value()) << completion->error().message;
   ASSERT_EQ((*completion)->size(), 1U);
   EXPECT_EQ((*completion)->front().first, WorkflowPortId{"result"});
   EXPECT_EQ(std::get<std::string>((*completion)->front().second), "done");
@@ -1043,10 +1049,10 @@ TEST(CommandTaskExecutorTest, MapsAllInputTypesAndCompletionFailures) {
       {"artifact", std::make_shared<const WorkflowValue>(ArtifactRef{
                        .artifact_id = ArtifactId{"artifact-input"}})},
   };
-  std::optional<Result<ExecutorOutputs>> completion;
+  std::optional<TaskExecutionResult> completion;
   TaskExecutionSink sink{
       .on_complete = [&completion](const InstanceId &,
-                                   Result<ExecutorOutputs> result) {
+                                   TaskExecutionResult result) {
         completion.emplace(std::move(result));
       },
   };
@@ -1079,7 +1085,7 @@ TEST(CommandTaskExecutorTest, MapsAllInputTypesAndCompletionFailures) {
     completion.reset();
     TaskExecutionSink failure_sink{
         .on_complete = [&completion](const InstanceId &,
-                                     Result<ExecutorOutputs> value) {
+                                     TaskExecutionResult value) {
           completion.emplace(std::move(value));
         },
     };
@@ -1107,20 +1113,47 @@ TEST(CommandTaskExecutorTest, MapsAllInputTypesAndCompletionFailures) {
     EXPECT_TRUE(started.has_value()) << started.error().message();
     environment.runner->complete_result(std::move(result));
     EXPECT_TRUE(completion.has_value());
-    return completion ? completion->error() : make_error_code(Error::Unknown);
+    if (!completion || completion->has_value()) {
+      return make_execution_failure(
+          Error::Unknown, "test_completion_missing",
+          "Expected Command completion failure was not observed");
+    }
+    return completion->error();
   };
   auto timed_out = make_command_run_result();
   timed_out.timed_out = true;
-  EXPECT_EQ(execute_failure("command-timeout", std::move(timed_out)),
-            make_error_code(Error::Timeout));
+  auto timeout_failure =
+      execute_failure("command-timeout", std::move(timed_out));
+  EXPECT_EQ(timeout_failure.kind, Error::Timeout);
+  EXPECT_EQ(timeout_failure.code, "command_timed_out");
   auto exhausted = make_command_run_result();
   exhausted.resource_exhausted = true;
-  EXPECT_EQ(execute_failure("command-exhausted", std::move(exhausted)),
-            make_error_code(Error::ResourceExhausted));
+  exhausted.error = "stderr exceeded configured limit";
+  auto exhausted_failure =
+      execute_failure("command-exhausted", std::move(exhausted));
+  EXPECT_EQ(exhausted_failure.kind, Error::ResourceExhausted);
+  EXPECT_EQ(exhausted_failure.code, "command_resource_exhausted");
   auto failed = make_command_run_result();
   failed.exit_code = 7;
-  EXPECT_EQ(execute_failure("command-failed", std::move(failed)),
-            make_error_code(Error::Unknown));
+  failed.stdout_output = "partial output";
+  failed.stderr_output = "invalid configuration";
+  auto command_failure =
+      execute_failure("command-failed", std::move(failed));
+  EXPECT_EQ(command_failure.kind, Error::Unknown);
+  EXPECT_EQ(command_failure.code, "command_exit_nonzero");
+  EXPECT_EQ(command_failure.details["exit_code"].as<std::int64_t>(), 7);
+  EXPECT_EQ(command_failure.details["stdout"].as<std::string>(),
+            "partial output");
+  EXPECT_EQ(command_failure.details["stderr"].as<std::string>(),
+            "invalid configuration");
+  auto runner_failed = make_command_run_result();
+  runner_failed.error = "runner failed before process completion";
+  auto runner_failure =
+      execute_failure("command-runner-failed", std::move(runner_failed));
+  EXPECT_EQ(runner_failure.kind, Error::Unknown);
+  EXPECT_EQ(runner_failure.code, "command_runner_failed");
+  EXPECT_EQ(runner_failure.message,
+            "runner failed before process completion");
 
   TaskExecutionSink no_completion;
   ASSERT_TRUE(environment.registry
@@ -1217,6 +1250,76 @@ TEST(ExecutorRegistryTest, MarshalsAndDeduplicatesCompletion) {
   EXPECT_EQ(std::get<std::string>(observed->outputs.front().second), "first");
 
   core.stop();
+}
+
+TEST(ExecutionFailureTest, NormalizesSystemErrorsAndProjectsStableJson) {
+  EXPECT_EQ(normalize_execution_error(
+                std::make_error_code(std::errc::operation_canceled)),
+            Error::Cancelled);
+  EXPECT_EQ(normalize_execution_error(
+                std::make_error_code(std::errc::timed_out)),
+            Error::Timeout);
+  EXPECT_EQ(normalize_execution_error(
+                std::make_error_code(std::errc::permission_denied)),
+            Error::Unauthorized);
+  EXPECT_EQ(normalize_execution_error(
+                std::make_error_code(std::errc::no_such_file_or_directory)),
+            Error::NotFound);
+  EXPECT_EQ(normalize_execution_error(
+                std::make_error_code(std::errc::not_enough_memory)),
+            Error::ResourceExhausted);
+  EXPECT_EQ(normalize_execution_error(
+                std::make_error_code(std::errc::address_family_not_supported)),
+            Error::Unknown);
+  EXPECT_EQ(normalize_execution_error(make_error_code(Error::Success)),
+            Error::Unknown);
+
+  auto normalized = make_execution_failure(Error::Success, {}, {},
+                                           JsonValue::array_t{});
+  EXPECT_EQ(normalized.kind, Error::Unknown);
+  EXPECT_EQ(normalized.code, "unknown");
+  EXPECT_EQ(normalized.message, make_error_code(Error::Unknown).message());
+  EXPECT_TRUE(normalized.details.is_object());
+
+  const auto cause = std::make_error_code(std::errc::permission_denied);
+  auto non_object_details = parse_json(R"("discarded")");
+  ASSERT_TRUE(non_object_details.has_value());
+  ASSERT_TRUE(non_object_details->is_string());
+  auto failure = make_execution_failure(
+      cause, "permission_denied", {}, std::move(*non_object_details));
+  EXPECT_EQ(failure.kind, Error::Unauthorized);
+  EXPECT_EQ(failure.code, "permission_denied");
+  EXPECT_EQ(failure.message, cause.message());
+  ASSERT_TRUE(failure.details.is_object());
+  const auto &cause_json = failure.details["cause"];
+  ASSERT_TRUE(cause_json.is_object());
+  EXPECT_EQ(cause_json["category"].as<std::string>(),
+            cause.category().name());
+  EXPECT_EQ(cause_json["value"].as<std::int64_t>(), cause.value());
+  EXPECT_EQ(cause_json["message"].as<std::string>(), cause.message());
+
+  const auto projected = execution_failure_json(failure);
+  EXPECT_EQ(projected["kind"].as<std::string>(), "unauthorized");
+  EXPECT_EQ(projected["code"].as<std::string>(), "permission_denied");
+  EXPECT_EQ(projected["message"].as<std::string>(), cause.message());
+  EXPECT_TRUE(projected["details"].is_object());
+}
+
+TEST(ExecutorRegistryTest, RejectsInvalidAndDuplicateRegistrations) {
+  ExecutorRegistry registry;
+  EXPECT_EQ(registry.register_executor(nullptr).error(),
+            make_error_code(Error::InvalidArgument));
+  ASSERT_TRUE(
+      registry.register_executor(std::make_shared<ManualTaskExecutor>())
+          .has_value());
+  EXPECT_EQ(registry
+                .register_executor(std::make_shared<ManualTaskExecutor>())
+                .error(),
+            make_error_code(Error::AlreadyExists));
+  EXPECT_EQ(registry
+                .start("missing", TaskExecutionRequest{}, TaskExecutionSink{})
+                .error(),
+            make_error_code(Error::Unsupported));
 }
 
 TEST(ExecutorRegistryTest, QuiesceStopsRegisteredExecutorsAndRejectsNewWork) {
@@ -1425,7 +1528,9 @@ TEST(WorkflowRuntimeTest, RunDeadlineStopsAndReapsActiveAttempt) {
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
   auto failed = wait_for_state(runtime, core, *started, RunState::Failed);
   ASSERT_TRUE(failed.has_value()) << failed.error().message();
-  EXPECT_EQ((*failed)->error, "workflow run deadline exceeded");
+  ASSERT_TRUE((*failed)->failure.has_value());
+  EXPECT_EQ((*failed)->failure->kind, Error::Timeout);
+  EXPECT_EQ((*failed)->failure->code, "run_deadline_exceeded");
   ASSERT_TRUE((*failed)->stop_intent.has_value());
   EXPECT_EQ(*(*failed)->stop_intent, StopIntent::Fail);
   ASSERT_EQ((*failed)->tasks.size(), 1U);
@@ -1640,7 +1745,9 @@ TEST(WorkflowRuntimeTest, PermanentFailureDoesNotRetry) {
   ASSERT_TRUE(started.has_value());
   auto failed = wait_for_state(runtime, core, *started, RunState::Failed);
   ASSERT_TRUE(failed.has_value()) << failed.error().message();
-  EXPECT_EQ((*failed)->error, "unsupported operation");
+  ASSERT_TRUE((*failed)->failure.has_value());
+  EXPECT_EQ((*failed)->failure->kind, Error::Unsupported);
+  EXPECT_EQ((*failed)->failure->code, "executor_start_failed");
   EXPECT_EQ((*failed)->tasks[0].attempt_count, 1U);
   ASSERT_EQ((*failed)->tasks[0].attempts.size(), 1U);
   EXPECT_EQ((*failed)->tasks[0].attempts[0].state, AttemptState::Failed);
@@ -1718,8 +1825,11 @@ TEST(WorkflowRuntimeTest, RejectsUndeclaredExecutorOutput) {
   ASSERT_EQ((*failed)->tasks[0].attempts.size(), 1U);
   EXPECT_EQ((*failed)->tasks[0].attempts[0].failure_class,
             FailureClass::Permanent);
-  EXPECT_EQ((*failed)->tasks[0].attempts[0].error,
-            make_error_code(Error::ProtocolError).message());
+  ASSERT_TRUE((*failed)->tasks[0].attempts[0].failure.has_value());
+  EXPECT_EQ((*failed)->tasks[0].attempts[0].failure->kind,
+            Error::ProtocolError);
+  EXPECT_EQ((*failed)->tasks[0].attempts[0].failure->code,
+            "output_contract_violation");
   core.stop();
 }
 
@@ -3214,7 +3324,11 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
   checkpoint.snapshot.state = RunState::Failed;
   checkpoint.snapshot.stop_intent = StopIntent::Fail;
   checkpoint.snapshot.stop_reason = "terminal failure";
-  checkpoint.snapshot.error = "workflow failed";
+  JsonValue run_failure_details = JsonValue::object_t{};
+  run_failure_details["source"] = "codec";
+  checkpoint.snapshot.failure = make_execution_failure(
+      Error::Unknown, "workflow_failed", "Workflow failed",
+      std::move(run_failure_details));
   checkpoint.snapshot.created_at =
       std::chrono::system_clock::time_point{std::chrono::milliseconds{100}};
   checkpoint.snapshot.started_at =
@@ -3229,7 +3343,8 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
   task.next_attempt_at =
       std::chrono::system_clock::time_point{std::chrono::milliseconds{450}};
   task.skip_reason = SkipReason::BranchNotSelected;
-  task.last_error = "retry scheduled";
+  task.failure = make_execution_failure(
+      Error::Timeout, "retry_scheduled", "Retry scheduled");
   task.started_at =
       std::chrono::system_clock::time_point{std::chrono::milliseconds{210}};
   task.finished_at =
@@ -3241,7 +3356,8 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
       .termination_reason = TerminationReason::AttemptTimeout,
       .failure_class = FailureClass::Timeout,
       .exit_code = 124,
-      .error = "deadline exceeded",
+      .failure = make_execution_failure(
+          Error::Timeout, "deadline_exceeded", "Deadline exceeded"),
       .created_at = std::chrono::system_clock::time_point{
           std::chrono::milliseconds{220}},
       .started_at = std::chrono::system_clock::time_point{
@@ -3283,18 +3399,29 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
             (std::vector<std::string>{"admin", "operator"}));
   EXPECT_EQ(loaded->trigger.trace.parent_span_id, "parent-span");
   EXPECT_EQ(loaded->snapshot.stop_intent, StopIntent::Fail);
+  ASSERT_TRUE(loaded->snapshot.failure.has_value());
+  EXPECT_EQ(loaded->snapshot.failure->code, "workflow_failed");
+  EXPECT_EQ(loaded->snapshot.failure->details["source"].as<std::string>(),
+            "codec");
   ASSERT_EQ(loaded->snapshot.tasks.size(), 1U);
   ASSERT_EQ(loaded->snapshot.tasks.front().attempts.size(), 1U);
   EXPECT_EQ(loaded->snapshot.tasks.front().active_attempt_id,
             AttemptId{"attempt-active"});
   EXPECT_EQ(loaded->snapshot.tasks.front().skip_reason,
             SkipReason::BranchNotSelected);
+  ASSERT_TRUE(loaded->snapshot.tasks.front().failure.has_value());
+  EXPECT_EQ(loaded->snapshot.tasks.front().failure->code,
+            "retry_scheduled");
   EXPECT_EQ(loaded->snapshot.tasks.front().attempts.front().failure_class,
             FailureClass::Timeout);
   EXPECT_EQ(loaded->snapshot.tasks.front()
                 .attempts.front()
                 .termination_reason,
             TerminationReason::AttemptTimeout);
+  ASSERT_TRUE(
+      loaded->snapshot.tasks.front().attempts.front().failure.has_value());
+  EXPECT_EQ(loaded->snapshot.tasks.front().attempts.front().failure->code,
+            "deadline_exceeded");
   ASSERT_EQ(loaded->values.size(), 7U);
   EXPECT_TRUE(std::holds_alternative<std::monostate>(loaded->values[0].second));
   EXPECT_EQ(std::get<bool>(loaded->values[1].second), true);
@@ -3352,6 +3479,30 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
   CheckpointStore unsupported_store(directory / "runs");
   EXPECT_EQ(unsupported_store.load(WorkflowRunId{"unsupported"}).error(),
             make_error_code(Error::Unsupported));
+
+  checkpoint_json->get_object()["schema_version"] = std::int64_t{1};
+  auto &snapshot_json =
+      checkpoint_json->get_object()["snapshot"].get_object();
+  snapshot_json["failure"].get_object()["kind"] = std::int64_t{255};
+  {
+    std::ofstream output(directory / "runs" / "invalid-failure.json",
+                         std::ios::binary | std::ios::trunc);
+    output << dump_json(*checkpoint_json);
+  }
+  CheckpointStore invalid_failure_store(directory / "runs");
+  EXPECT_EQ(
+      invalid_failure_store.load(WorkflowRunId{"invalid-failure"}).error(),
+      make_error_code(Error::ParseError));
+
+  auto invalid_checkpoint = checkpoint;
+  invalid_checkpoint.snapshot.failure = ExecutionFailure{
+      .kind = Error::Success,
+      .code = {},
+      .message = {},
+      .details = JsonValue::array_t{},
+  };
+  EXPECT_EQ(store.save(invalid_checkpoint).error(),
+            make_error_code(Error::InvalidArgument));
 
   std::filesystem::remove_all(directory, error);
 }

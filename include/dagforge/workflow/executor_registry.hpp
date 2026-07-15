@@ -44,9 +44,9 @@ inline auto execute_task_async(
     std::string executor_type,
     TaskExecutionRequest request,
     std::move_only_function<void(std::string_view)> on_state = {})
-    -> task<Result<ExecutorOutputs>> {
+    -> task<TaskExecutionResult> {
   return boost::asio::async_initiate<const boost::asio::use_awaitable_t<>,
-                                     void(Result<ExecutorOutputs>)>(
+                                     void(TaskExecutionResult)>(
       [&runtime, owner, &registry, executor_type = std::move(executor_type),
        request = std::move(request),
        on_state = std::move(on_state)](auto handler) mutable {
@@ -55,7 +55,7 @@ inline auto execute_task_async(
         auto completed = std::make_shared<std::atomic_bool>(false);
         auto complete =
             [&runtime, owner, shared_handler,
-             completed](Result<ExecutorOutputs> result) mutable {
+             completed](TaskExecutionResult result) mutable {
               if (completed->exchange(true, std::memory_order_acq_rel)) {
                 return;
               }
@@ -76,13 +76,18 @@ inline auto execute_task_async(
         }
         sink.on_complete =
             [complete](const InstanceId &,
-                       Result<ExecutorOutputs> result) mutable {
+                       TaskExecutionResult result) mutable {
               complete(std::move(result));
             };
         auto started = registry.start(executor_type, std::move(request),
                                       std::move(sink));
         if (!started) {
-          complete(fail(started.error()));
+          JsonValue details = JsonValue::object_t{};
+          details["executor"] = executor_type;
+          complete(task_failed(make_execution_failure(
+              started.error(), "executor_start_failed",
+              "Task executor rejected the start request",
+              std::move(details))));
         }
       },
       boost::asio::use_awaitable);

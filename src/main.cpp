@@ -7,7 +7,7 @@
 #include "dagforge/workflow/workflow_runtime.hpp"
 
 #include <CLI/CLI.hpp>
-#include <boost/url/parse.hpp>
+#include <boost/url/url.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -83,17 +83,22 @@ extern "C" void handle_signal(int) {
       continue;
     }
     const auto url_text = url->second.as<std::string>();
-    const auto parsed = boost::urls::parse_uri(url_text);
-    if (!parsed || parsed->scheme().empty() || parsed->host().empty()) {
+    boost::urls::url parsed;
+    try {
+      parsed = boost::urls::url{url_text};
+    } catch (const boost::system::system_error &) {
+      continue;
+    }
+    if (parsed.scheme().empty() || parsed.host().empty()) {
       continue;
     }
     std::string origin;
-    origin.reserve(parsed->scheme().size() + parsed->encoded_authority().size() +
+    origin.reserve(parsed.scheme().size() + parsed.encoded_authority().size() +
                    3);
-    origin.append(parsed->scheme().data(), parsed->scheme().size());
+    origin.append(parsed.scheme().data(), parsed.scheme().size());
     origin.append("://");
-    origin.append(parsed->encoded_authority().data(),
-                  parsed->encoded_authority().size());
+    origin.append(parsed.encoded_authority().data(),
+                  parsed.encoded_authority().size());
     config.executors.http.egress.allowed_origins.push_back(std::move(origin));
   }
   return config;

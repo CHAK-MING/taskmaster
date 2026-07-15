@@ -108,6 +108,53 @@ using executors::detail::input_exists;
       value);
 }
 
+[[nodiscard]] auto command_failure_details(
+    const sandbox::CommandRunResult &result) -> JsonValue {
+  JsonValue details = JsonValue::object_t{};
+  details["exit_code"] = static_cast<std::int64_t>(result.exit_code);
+  details["stdout"] = std::string{result.stdout_output};
+  details["stderr"] = std::string{result.stderr_output};
+  details["runner_error"] = std::string{result.error};
+  details["stdout_streamed"] = result.stdout_streamed;
+  details["stderr_streamed"] = result.stderr_streamed;
+  return details;
+}
+
+[[nodiscard]] auto command_failure(sandbox::CommandRunResult result)
+    -> workflow::ExecutionFailure {
+  auto details = command_failure_details(result);
+  if (result.timed_out) {
+    return workflow::make_execution_failure(
+        Error::Timeout, "command_timed_out",
+        result.error.empty() ? "Command execution timed out"
+                             : std::string{result.error},
+        std::move(details));
+  }
+  if (result.resource_exhausted) {
+    return workflow::make_execution_failure(
+        Error::ResourceExhausted, "command_resource_exhausted",
+        result.error.empty() ? "Command exceeded a configured resource limit"
+                             : std::string{result.error},
+        std::move(details));
+  }
+  if (result.exit_code != 0) {
+    return workflow::make_execution_failure(
+        Error::Unknown,
+        result.exit_code < 0 && !result.error.empty()
+            ? "command_runner_failed"
+            : "command_exit_nonzero",
+        result.error.empty()
+            ? std::format("Command exited with status {}", result.exit_code)
+            : std::string{result.error},
+        std::move(details));
+  }
+  return workflow::make_execution_failure(
+      Error::Unknown, "command_runner_failed",
+      result.error.empty() ? "Command runner failed"
+                           : std::string{result.error},
+      std::move(details));
+}
+
 class CommandTaskExecutor final : public workflow::ITaskExecutor {
 public:
   CommandTaskExecutor(std::unique_ptr<sandbox::ICommandRunner> runner,
@@ -191,16 +238,11 @@ public:
           if (!on_complete) {
             return;
           }
-          if (result.timed_out) {
-            on_complete(instance_id, fail(Error::Timeout));
-            return;
-          }
-          if (result.resource_exhausted) {
-            on_complete(instance_id, fail(Error::ResourceExhausted));
-            return;
-          }
-          if (result.exit_code != 0) {
-            on_complete(instance_id, fail(Error::Unknown));
+          if (result.timed_out || result.resource_exhausted ||
+              result.exit_code != 0 || !result.error.empty()) {
+            on_complete(instance_id,
+                        workflow::task_failed(command_failure(
+                            std::move(result))));
             return;
           }
 
@@ -213,7 +255,8 @@ public:
                      static_cast<std::int64_t>(result.exit_code));
           add_output(task_outputs, outputs, "result",
                      std::string{result.stdout_output});
-          on_complete(instance_id, ok(std::move(task_outputs)));
+          on_complete(instance_id,
+                      workflow::task_succeeded(std::move(task_outputs)));
         };
 
     return runner_->start(

@@ -32,6 +32,7 @@ lib{dagforge}:                                                   \
       dagforge/workflow/checkpoint_store                          \
       dagforge/workflow/detail/storage_codec                      \
       dagforge/workflow/evidence_ledger                           \
+      dagforge/workflow/execution_failure                         \
       dagforge/workflow/executor_registry                         \
       dagforge/workflow/plan_compiler                             \
       dagforge/workflow/run_value_store                           \

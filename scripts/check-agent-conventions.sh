@@ -44,7 +44,8 @@ report_matches \
 report_matches \
   "construct Result values with ok(...)/fail(...), not std::expected directly:" \
   'std::expected[[:space:]]*[<{]' \
-  --glob '!include/dagforge/core/error.hpp'
+  --glob '!include/dagforge/core/error.hpp' \
+  --glob '!include/dagforge/workflow/task_executor.hpp'
 
 report_matches \
   "Glaze read/write calls must stay behind DAGForge JSON/TOML wrappers:" \

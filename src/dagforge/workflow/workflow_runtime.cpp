@@ -103,32 +103,24 @@ namespace {
   return InstanceId{std::format("{}_{}_{}", run_id, node_id, attempt_id)};
 }
 
-[[nodiscard]] auto classify_failure(std::error_code error) noexcept
+[[nodiscard]] auto classify_failure(Error error) noexcept
     -> FailureClass {
-  if (error == make_error_code(Error::Cancelled) ||
-      error == std::errc::operation_canceled) {
+  if (error == Error::Cancelled) {
     return FailureClass::Cancelled;
   }
-  if (error == make_error_code(Error::Timeout) ||
-      error == std::errc::timed_out) {
+  if (error == Error::Timeout) {
     return FailureClass::Timeout;
   }
-  if (error == make_error_code(Error::InvalidArgument) ||
-      error == make_error_code(Error::ParseError) ||
-      error == make_error_code(Error::FileNotFound) ||
-      error == make_error_code(Error::NotFound) ||
-      error == make_error_code(Error::AlreadyExists) ||
-      error == make_error_code(Error::InvalidUrl) ||
-      error == make_error_code(Error::ProtocolError) ||
-      error == make_error_code(Error::Unauthorized) ||
-      error == make_error_code(Error::Unsupported) ||
-      error == make_error_code(Error::InvalidState) ||
-      error == make_error_code(Error::ResourceExhausted)) {
+  if (error == Error::InvalidArgument || error == Error::ParseError ||
+      error == Error::FileNotFound || error == Error::NotFound ||
+      error == Error::AlreadyExists || error == Error::InvalidUrl ||
+      error == Error::ProtocolError || error == Error::Unauthorized ||
+      error == Error::Unsupported || error == Error::InvalidState ||
+      error == Error::ResourceExhausted) {
     return FailureClass::Permanent;
   }
-  if (error == make_error_code(Error::SystemNotRunning) ||
-      error == make_error_code(Error::QueueFull) ||
-      error == make_error_code(Error::ProcessForkFailed)) {
+  if (error == Error::SystemNotRunning || error == Error::QueueFull ||
+      error == Error::ProcessForkFailed) {
     return FailureClass::Infrastructure;
   }
   return FailureClass::Retryable;
@@ -360,6 +352,9 @@ auto WorkflowRuntime::restore(std::shared_ptr<const ExecutionPlan> plan,
     const auto now = std::chrono::system_clock::now();
     constexpr std::string_view kRestartError =
         "runtime restarted before workflow completion";
+    const auto restart_failure = make_execution_failure(
+        Error::SystemNotRunning, "runtime_restarted",
+        std::string{kRestartError});
     for (auto &task : snapshot.tasks) {
       if (is_terminal(task.state)) {
         continue;
@@ -371,20 +366,20 @@ auto WorkflowRuntime::restore(std::shared_ptr<const ExecutionPlan> plan,
           attempt.state = AttemptState::Failed;
           attempt.failure_class = FailureClass::Infrastructure;
           attempt.termination_reason = TerminationReason::RunFailed;
-          attempt.error = kRestartError;
+          attempt.failure = restart_failure;
           attempt.finished_at = now;
         }
       }
       task.active_attempt_id.reset();
       task.next_attempt_at.reset();
-      task.last_error = kRestartError;
+      task.failure = restart_failure;
       task.state = TaskState::Failed;
       task.finished_at = now;
     }
     snapshot.state = RunState::Failed;
     snapshot.stop_intent = StopIntent::Fail;
     snapshot.stop_reason = kRestartError;
-    snapshot.error = kRestartError;
+    snapshot.failure = restart_failure;
     snapshot.finished_at = now;
     checkpoint.snapshot = snapshot;
     (void)checkpoint_store_->save(checkpoint);
@@ -467,7 +462,10 @@ auto WorkflowRuntime::initialize_run(
           return;
         }
         (void)request_stop(run_id, StopIntent::Fail,
-                           "workflow run deadline exceeded");
+                           "workflow run deadline exceeded",
+                           make_execution_failure(
+                               Error::Timeout, "run_deadline_exceeded",
+                               "Workflow run deadline exceeded"));
       });
   active_run_count_.fetch_add(1, std::memory_order_release);
   append_evidence(it->second, it->second.tasks.size(),
@@ -706,7 +704,11 @@ auto WorkflowRuntime::dispatch(const WorkflowRunId &run_id) -> void {
 
     auto passes = conditions_pass(run, node_index);
     if (!passes) {
-      (void)request_stop(run_id, StopIntent::Fail, passes.error().message());
+      auto failure = make_execution_failure(
+          passes.error(), "condition_evaluation_failed",
+          "Workflow condition could not be evaluated");
+      (void)request_stop(run_id, StopIntent::Fail, failure.message,
+                         std::move(failure));
       break;
     }
     if (!*passes) {
@@ -756,7 +758,11 @@ auto WorkflowRuntime::start_async_task(WorkflowRunId run_id,
       instance_id_for(run_id, node.node_id, attempt_id);
   auto inputs = input_values(run_it->second, task_index);
   if (!inputs) {
-    complete_task(run_id, task_index, attempt_id, fail(inputs.error()));
+    complete_task(
+        run_id, task_index, attempt_id,
+        task_failed(make_execution_failure(
+            inputs.error(), "input_resolution_failed",
+            "Task inputs could not be resolved")));
     co_return;
   }
   auto result = co_await execute_task(
@@ -782,7 +788,7 @@ auto WorkflowRuntime::start_async_task(WorkflowRunId run_id,
 auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
                                     std::size_t task_index,
                                     const AttemptId &attempt_id,
-                                    Result<ExecutorOutputs> result) -> void {
+                                    TaskExecutionResult result) -> void {
   const auto owner = owner_shard(run_id);
   if (!runtime_.is_current_shard() || runtime_.current_shard() != owner) {
     runtime_.post_to(owner,
@@ -817,11 +823,11 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
     run.active_attempts -= 1;
   }
 
-  auto finish_failure = [&](std::error_code error) {
-    const auto failure_class = classify_failure(error);
+  auto finish_failure = [&](ExecutionFailure failure) {
+    const auto failure_class = classify_failure(failure.kind);
     attempt->failure_class = failure_class;
-    attempt->error = error.message();
-    task.snapshot.last_error = attempt->error;
+    attempt->failure = failure;
+    task.snapshot.failure = failure;
     if (failure_class == FailureClass::Timeout) {
       attempt->termination_reason = TerminationReason::AttemptTimeout;
       (void)transition_attempt(*attempt, AttemptState::TimedOut);
@@ -835,7 +841,8 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
                     make_metadata({{"attempt_id", attempt_id.str()},
                                    {"state", std::string{
                                                  to_string_view(attempt->state)}},
-                                   {"error", attempt->error}}));
+                                   {"failure",
+                                    execution_failure_json(failure)}}));
 
     const auto &plan = run.plan->nodes[task_index].plan;
     if (retryable(failure_class) &&
@@ -856,11 +863,12 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
                                  : TaskState::Failed;
     (void)transition_task(run, task_index, final_state);
     append_evidence(run, task_index, EvidenceType::TaskFailed,
-                    make_metadata({{"error", task.snapshot.last_error}}));
+                    make_metadata({{"failure",
+                                    execution_failure_json(failure)}}));
     assert(invariants_hold(run));
     if (final_state == TaskState::Failed &&
         run.plan->policy.failure_policy == FailurePolicy::FailFast) {
-      (void)request_stop(run_id, StopIntent::Fail, task.snapshot.last_error);
+      (void)request_stop(run_id, StopIntent::Fail, failure.message, failure);
       return;
     }
     update_dependents(run_id, task_index);
@@ -876,18 +884,25 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
             : TerminationReason::RunFailed;
     (void)transition_attempt(*attempt, AttemptState::Cancelled);
     task.snapshot.active_attempt_id.reset();
-    task.snapshot.last_error = run.snapshot.stop_reason;
+    const auto cancellation = make_execution_failure(
+        Error::Cancelled, "run_stopped_task_cancelled",
+        run.snapshot.stop_reason.empty() ? "Task cancelled while stopping run"
+                                         : run.snapshot.stop_reason);
+    attempt->failure = cancellation;
+    task.snapshot.failure = cancellation;
     (void)transition_task(run, task_index, TaskState::Cancelled);
     append_evidence(run, task_index, EvidenceType::AttemptCompleted,
                     make_metadata({{"attempt_id", attempt_id.str()},
-                                   {"state", "cancelled"}}));
+                                   {"state", "cancelled"},
+                                   {"failure", execution_failure_json(
+                                                   cancellation)}}));
     assert(invariants_hold(run));
     settle_control_state(run_id);
     return;
   }
 
   if (!result) {
-    finish_failure(result.error());
+    finish_failure(std::move(result.error()));
     settle_control_state(run_id);
     dispatch(run_id);
     return;
@@ -899,7 +914,9 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
 
   const auto &node = run.plan->nodes[task_index].plan;
   if (!outputs_match_contract(node, *result)) {
-    finish_failure(make_error_code(Error::ProtocolError));
+    finish_failure(make_execution_failure(
+        Error::ProtocolError, "output_contract_violation",
+        "Task executor returned outputs outside the compiled contract"));
     settle_control_state(run_id);
     dispatch(run_id);
     return;
@@ -923,7 +940,9 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
   }
 
   if (output_error) {
-    finish_failure(*output_error);
+    finish_failure(make_execution_failure(
+        *output_error, "output_storage_failed",
+        "Task output could not be stored"));
     settle_control_state(run_id);
     dispatch(run_id);
     return;
@@ -931,7 +950,7 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
 
   (void)transition_attempt(*attempt, AttemptState::Succeeded);
   task.snapshot.active_attempt_id.reset();
-  task.snapshot.last_error.clear();
+  task.snapshot.failure.reset();
   (void)transition_task(run, task_index, TaskState::Succeeded);
   append_evidence(run, task_index, EvidenceType::AttemptCompleted,
                   make_metadata({{"attempt_id", attempt_id.str()},
@@ -1030,7 +1049,11 @@ auto WorkflowRuntime::update_dependents(const WorkflowRunId &run_id,
 
     auto passes = conditions_pass(run, dependent);
     if (!passes) {
-      (void)request_stop(run_id, StopIntent::Fail, passes.error().message());
+      auto failure = make_execution_failure(
+          passes.error(), "condition_evaluation_failed",
+          "Workflow condition could not be evaluated");
+      (void)request_stop(run_id, StopIntent::Fail, failure.message,
+                         std::move(failure));
       return;
     }
     if (!*passes) {
@@ -1092,7 +1115,8 @@ auto WorkflowRuntime::input_values(const ActiveRun &run,
 }
 
 auto WorkflowRuntime::request_stop(const WorkflowRunId &run_id,
-                                   StopIntent intent, std::string reason)
+                                   StopIntent intent, std::string reason,
+                                   std::optional<ExecutionFailure> failure)
     -> Result<void> {
   const auto owner = owner_shard(run_id);
   if (!runtime_.is_current_shard() || runtime_.current_shard() != owner) {
@@ -1113,8 +1137,14 @@ auto WorkflowRuntime::request_stop(const WorkflowRunId &run_id,
 
   run.snapshot.stop_intent = intent;
   run.snapshot.stop_reason = std::move(reason);
-  if (intent == StopIntent::Fail) {
-    run.snapshot.error = run.snapshot.stop_reason;
+  if (failure) {
+    run.snapshot.failure = std::move(*failure);
+  } else if (intent == StopIntent::Fail) {
+    run.snapshot.failure = make_execution_failure(
+        Error::Unknown, "run_stop_failed", run.snapshot.stop_reason);
+  } else if (intent == StopIntent::Cancel) {
+    run.snapshot.failure = make_execution_failure(
+        Error::Cancelled, "run_cancelled", run.snapshot.stop_reason);
   }
   auto transitioned = transition_run(run, RunState::Stopping);
   if (!transitioned) {
@@ -1135,7 +1165,9 @@ auto WorkflowRuntime::request_stop(const WorkflowRunId &run_id,
     if (task.snapshot.state == TaskState::Pending ||
         task.snapshot.state == TaskState::Ready ||
         task.snapshot.state == TaskState::RetryWaiting) {
-      task.snapshot.last_error = run.snapshot.stop_reason;
+      task.snapshot.failure = make_execution_failure(
+          Error::Cancelled, "run_stopped_task_cancelled",
+          run.snapshot.stop_reason);
       (void)transition_task(run, index, TaskState::Cancelled);
       continue;
     }
@@ -1224,7 +1256,11 @@ auto WorkflowRuntime::finalize_run_if_ready(const WorkflowRunId &run_id)
             return task.snapshot.state == TaskState::Cancelled;
           });
       if (cancelled_task != run.tasks.end()) {
-        run.snapshot.stop_reason = cancelled_task->snapshot.last_error;
+        if (cancelled_task->snapshot.failure) {
+          run.snapshot.stop_reason =
+              cancelled_task->snapshot.failure->message;
+          run.snapshot.failure = cancelled_task->snapshot.failure;
+        }
       }
     }
     if (!transition_run(run, RunState::Stopping)) {
@@ -1260,13 +1296,19 @@ auto WorkflowRuntime::finalize_run_if_ready(const WorkflowRunId &run_id)
         continue;
       }
       terminal_state = RunState::Failed;
-      run.snapshot.error = std::format(
-          "required workflow output is missing: {}.{}",
+      auto message = std::format(
+          "Required workflow output is missing: {}.{}",
           published.node_id, published.port);
+      JsonValue details = JsonValue::object_t{};
+      details["node_id"] = published.node_id.str();
+      details["port"] = published.port.str();
+      run.snapshot.failure = make_execution_failure(
+          Error::Incomplete, "required_output_missing", std::move(message),
+          std::move(details));
       break;
     }
   }
-  if (run.snapshot.error.empty() && terminal_state != RunState::Succeeded) {
+  if (!run.snapshot.failure && terminal_state != RunState::Succeeded) {
     const auto failed_task = std::ranges::find_if(
         run.tasks, [terminal_state](const auto &task) {
           return terminal_state == RunState::Failed
@@ -1274,7 +1316,7 @@ auto WorkflowRuntime::finalize_run_if_ready(const WorkflowRunId &run_id)
                      : task.snapshot.state == TaskState::Cancelled;
         });
     if (failed_task != run.tasks.end()) {
-      run.snapshot.error = failed_task->snapshot.last_error;
+      run.snapshot.failure = failed_task->snapshot.failure;
     }
   }
   if (!transition_run(run, terminal_state)) {
@@ -1287,9 +1329,14 @@ auto WorkflowRuntime::finalize_run_if_ready(const WorkflowRunId &run_id)
           : (run.snapshot.state == RunState::Cancelled
                  ? EvidenceType::RunCancelled
                  : EvidenceType::RunFailed);
+  auto terminal_metadata = make_metadata(
+      {{"state", std::string{to_string_view(run.snapshot.state)}}});
+  if (run.snapshot.failure) {
+    terminal_metadata["failure"] =
+        execution_failure_json(*run.snapshot.failure);
+  }
   append_evidence(run, run.tasks.size(), evidence_type,
-                  make_metadata({{"state", std::string{
-                                              to_string_view(run.snapshot.state)}}}));
+                  std::move(terminal_metadata));
   checkpoint(run);
 
   if (run.deadline_handle.valid()) {
@@ -1383,9 +1430,11 @@ auto WorkflowRuntime::execute_task(WorkflowRunId run_id,
                                    std::size_t task_index,
                                    AttemptId attempt_id, NodePlan node,
                                    ExecutorInputs inputs)
-    -> task<Result<ExecutorOutputs>> {
+    -> task<TaskExecutionResult> {
   if (node.executor.empty()) {
-    co_return fail(Error::InvalidArgument);
+    co_return task_failed(make_execution_failure(
+        Error::InvalidArgument, "executor_type_missing",
+        "Task node does not name an executor"));
   }
 
   const auto instance_id = instance_id_for(run_id, node.node_id, attempt_id);

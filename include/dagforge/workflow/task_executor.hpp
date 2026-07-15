@@ -3,9 +3,11 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/util/json.hpp"
+#include "dagforge/workflow/execution_failure.hpp"
 #include "dagforge/workflow/workflow_plan.hpp"
 
 #include <chrono>
+#include <expected>
 #include <functional>
 #include <memory>
 #include <span>
@@ -21,6 +23,18 @@ namespace dagforge::workflow {
 using ExecutorInputs =
     std::unordered_map<std::string, std::shared_ptr<const WorkflowValue>>;
 using ExecutorOutputs = std::vector<std::pair<WorkflowPortId, WorkflowValue>>;
+using TaskExecutionResult =
+    std::expected<ExecutorOutputs, ExecutionFailure>;
+
+[[nodiscard]] inline auto task_succeeded(ExecutorOutputs outputs)
+    -> TaskExecutionResult {
+  return std::move(outputs);
+}
+
+[[nodiscard]] inline auto task_failed(ExecutionFailure failure)
+    -> TaskExecutionResult {
+  return TaskExecutionResult{std::unexpect, std::move(failure)};
+}
 
 struct ExecutorCompileContext {
   std::span<const InputBinding> inputs;
@@ -37,7 +51,7 @@ struct TaskExecutionRequest {
 
 struct TaskExecutionSink {
   std::move_only_function<void(const InstanceId &, std::string_view)> on_state;
-  std::move_only_function<void(const InstanceId &, Result<ExecutorOutputs>)>
+  std::move_only_function<void(const InstanceId &, TaskExecutionResult)>
       on_complete;
 };
 

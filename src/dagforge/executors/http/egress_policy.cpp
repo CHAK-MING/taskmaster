@@ -1,6 +1,7 @@
 #include "detail/egress_policy.hpp"
 
-#include <boost/url/parse.hpp>
+#include <boost/system/system_error.hpp>
+#include <boost/url/url.hpp>
 
 #include <algorithm>
 #include <array>
@@ -43,11 +44,12 @@ namespace {
   if (url.find("://") == std::string_view::npos) {
     return fail(Error::InvalidUrl);
   }
-  auto parsed = boost::urls::parse_uri(url);
-  if (!parsed) {
+  boost::urls::url uri;
+  try {
+    uri = boost::urls::url{url};
+  } catch (const boost::system::system_error &) {
     return fail(Error::InvalidUrl);
   }
-  const auto uri = *parsed;
   const auto scheme = lowercase_ascii(std::string{uri.scheme()});
   if (scheme != "http" && scheme != "https") {
     return fail(Error::InvalidUrl);

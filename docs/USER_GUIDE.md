@@ -630,6 +630,14 @@ Use `SIGINT` or `SIGTERM` for graceful shutdown.
   freezes sandbox processes.
 - Retryable failures enter `retry_waiting` and use bounded exponential
   backoff. Permanent configuration and authorization failures do not retry.
+- Executor completion failures are structured. Every failed Attempt, Task, and
+  Run can expose a normalized `kind`, stable `code`, human `message`, and
+  executor-owned bounded `details` object. Command diagnostics retain exit
+  status/stdout/stderr; HTTP diagnostics retain rejected response or transport
+  cause data, with credential-bearing response header values redacted. The same
+  failure is persisted in checkpoints and Evidence, so an external repair
+  controller can inspect it without parsing log text. Checkpoint loading rejects
+  malformed failure objects instead of admitting them into Runtime state.
 - A failed dependency causes downstream tasks to be skipped with a recorded
   reason.
 - Cancellation enters `stopping`, routes cancellation to each active executor,

@@ -35,6 +35,13 @@ struct OutputValueDto {
   ValueDto value;
 };
 
+struct FailureDto {
+  std::uint8_t kind{static_cast<std::uint8_t>(Error::Unknown)};
+  std::string code;
+  std::string message;
+  JsonValue details = JsonValue::object_t{};
+};
+
 struct AttemptDto {
   std::string attempt_id;
   std::uint32_t number{0};
@@ -42,7 +49,7 @@ struct AttemptDto {
   std::optional<std::uint8_t> termination_reason;
   std::optional<std::uint8_t> failure_class;
   std::optional<int> exit_code;
-  std::string error;
+  std::optional<FailureDto> failure;
   std::int64_t created_at_ms{0};
   std::int64_t started_at_ms{0};
   std::int64_t finished_at_ms{0};
@@ -55,7 +62,7 @@ struct TaskDto {
   std::optional<std::string> active_attempt_id;
   std::optional<std::int64_t> next_attempt_at_ms;
   std::optional<std::uint8_t> skip_reason;
-  std::string last_error;
+  std::optional<FailureDto> failure;
   std::vector<AttemptDto> attempts;
   std::int64_t started_at_ms{0};
   std::int64_t finished_at_ms{0};
@@ -72,7 +79,7 @@ struct SnapshotDto {
   std::int64_t created_at_ms{0};
   std::int64_t started_at_ms{0};
   std::int64_t finished_at_ms{0};
-  std::string error;
+  std::optional<FailureDto> failure;
 };
 
 struct TriggerDto {
@@ -134,12 +141,18 @@ template <> struct meta<dagforge::workflow::detail::OutputValueDto> {
   static constexpr auto value = object("node_id", &T::node_id, "port",
                                        &T::port, "value", &T::value);
 };
+template <> struct meta<dagforge::workflow::detail::FailureDto> {
+  using T = dagforge::workflow::detail::FailureDto;
+  static constexpr auto value =
+      object("kind", &T::kind, "code", &T::code, "message", &T::message,
+             "details", &T::details);
+};
 template <> struct meta<dagforge::workflow::detail::AttemptDto> {
   using T = dagforge::workflow::detail::AttemptDto;
   static constexpr auto value = object(
       "attempt_id", &T::attempt_id, "number", &T::number, "state", &T::state,
       "termination_reason", &T::termination_reason, "failure_class",
-      &T::failure_class, "exit_code", &T::exit_code, "error", &T::error,
+      &T::failure_class, "exit_code", &T::exit_code, "failure", &T::failure,
       "created_at_ms", &T::created_at_ms, "started_at_ms", &T::started_at_ms,
       "finished_at_ms", &T::finished_at_ms);
 };
@@ -149,7 +162,7 @@ template <> struct meta<dagforge::workflow::detail::TaskDto> {
       "node_id", &T::node_id, "state", &T::state, "attempt_count",
       &T::attempt_count, "active_attempt_id", &T::active_attempt_id,
       "next_attempt_at_ms", &T::next_attempt_at_ms, "skip_reason",
-      &T::skip_reason, "last_error", &T::last_error, "attempts", &T::attempts,
+      &T::skip_reason, "failure", &T::failure, "attempts", &T::attempts,
       "started_at_ms", &T::started_at_ms, "finished_at_ms",
       &T::finished_at_ms);
 };
@@ -160,7 +173,7 @@ template <> struct meta<dagforge::workflow::detail::SnapshotDto> {
       &T::plan_id, "state", &T::state, "stop_intent", &T::stop_intent,
       "stop_reason", &T::stop_reason, "tasks", &T::tasks, "created_at_ms",
       &T::created_at_ms, "started_at_ms", &T::started_at_ms, "finished_at_ms",
-      &T::finished_at_ms, "error", &T::error);
+      &T::finished_at_ms, "failure", &T::failure);
 };
 template <> struct meta<dagforge::workflow::detail::TriggerDto> {
   using T = dagforge::workflow::detail::TriggerDto;
@@ -307,6 +320,52 @@ namespace {
   return fail(Error::ParseError);
 }
 
+[[nodiscard]] auto failure_to_dto(const ExecutionFailure &failure)
+    -> detail::FailureDto {
+  return detail::FailureDto{
+      .kind = static_cast<std::uint8_t>(failure.kind),
+      .code = failure.code,
+      .message = failure.message,
+      .details = failure.details,
+  };
+}
+
+[[nodiscard]] auto valid_failure_dto(
+    const std::optional<detail::FailureDto> &failure) -> bool {
+  if (!failure) {
+    return true;
+  }
+  return failure->kind > std::to_underlying(Error::Success) &&
+         failure->kind <= std::to_underlying(Error::Unknown) &&
+         !failure->code.empty() && !failure->message.empty() &&
+         failure->details.is_object();
+}
+
+[[nodiscard]] auto valid_snapshot_failures(
+    const detail::SnapshotDto &snapshot) -> bool {
+  if (!valid_failure_dto(snapshot.failure)) {
+    return false;
+  }
+  for (const auto &task : snapshot.tasks) {
+    if (!valid_failure_dto(task.failure)) {
+      return false;
+    }
+    for (const auto &attempt : task.attempts) {
+      if (!valid_failure_dto(attempt.failure)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] auto failure_from_dto(detail::FailureDto dto)
+    -> ExecutionFailure {
+  return make_execution_failure(static_cast<Error>(dto.kind),
+                                std::move(dto.code), std::move(dto.message),
+                                std::move(dto.details));
+}
+
 [[nodiscard]] auto attempt_to_dto(const AttemptSnapshot &attempt)
     -> detail::AttemptDto {
   return detail::AttemptDto{
@@ -322,7 +381,9 @@ namespace {
                                  *attempt.failure_class)}
                            : std::nullopt,
       .exit_code = attempt.exit_code,
-      .error = attempt.error,
+      .failure = attempt.failure
+                     ? std::optional{failure_to_dto(*attempt.failure)}
+                     : std::nullopt,
       .created_at_ms = to_milliseconds(attempt.created_at),
       .started_at_ms = to_milliseconds(attempt.started_at),
       .finished_at_ms = to_milliseconds(attempt.finished_at),
@@ -344,7 +405,10 @@ namespace {
                                  *dto.failure_class)}
                            : std::nullopt,
       .exit_code = dto.exit_code,
-      .error = std::move(dto.error),
+      .failure = dto.failure
+                     ? std::optional{failure_from_dto(
+                           std::move(*dto.failure))}
+                     : std::nullopt,
       .created_at = from_milliseconds(dto.created_at_ms),
       .started_at = from_milliseconds(dto.started_at_ms),
       .finished_at = from_milliseconds(dto.finished_at_ms),
@@ -367,7 +431,9 @@ namespace {
                          ? std::optional{static_cast<std::uint8_t>(
                                *task.skip_reason)}
                          : std::nullopt,
-      .last_error = task.last_error,
+      .failure = task.failure
+                     ? std::optional{failure_to_dto(*task.failure)}
+                     : std::nullopt,
       .started_at_ms = to_milliseconds(task.started_at),
       .finished_at_ms = to_milliseconds(task.finished_at),
   };
@@ -395,7 +461,10 @@ namespace {
                          ? std::optional{static_cast<SkipReason>(
                                *dto.skip_reason)}
                          : std::nullopt,
-      .last_error = std::move(dto.last_error),
+      .failure = dto.failure
+                     ? std::optional{failure_from_dto(
+                           std::move(*dto.failure))}
+                     : std::nullopt,
       .started_at = from_milliseconds(dto.started_at_ms),
       .finished_at = from_milliseconds(dto.finished_at_ms),
   };
@@ -421,7 +490,9 @@ namespace {
       .created_at_ms = to_milliseconds(snapshot.created_at),
       .started_at_ms = to_milliseconds(snapshot.started_at),
       .finished_at_ms = to_milliseconds(snapshot.finished_at),
-      .error = snapshot.error,
+      .failure = snapshot.failure
+                     ? std::optional{failure_to_dto(*snapshot.failure)}
+                     : std::nullopt,
   };
   dto.tasks.reserve(snapshot.tasks.size());
   for (const auto &task : snapshot.tasks) {
@@ -444,7 +515,10 @@ namespace {
       .created_at = from_milliseconds(dto.created_at_ms),
       .started_at = from_milliseconds(dto.started_at_ms),
       .finished_at = from_milliseconds(dto.finished_at_ms),
-      .error = std::move(dto.error),
+      .failure = dto.failure
+                     ? std::optional{failure_from_dto(
+                           std::move(*dto.failure))}
+                     : std::nullopt,
   };
   snapshot.tasks.reserve(dto.tasks.size());
   for (auto &task : dto.tasks) {
@@ -504,6 +578,9 @@ namespace {
       .snapshot = snapshot_to_dto(checkpoint.snapshot),
       .created_at_ms = to_milliseconds(checkpoint.created_at),
   };
+  if (!valid_snapshot_failures(dto.snapshot)) {
+    return fail(Error::InvalidArgument);
+  }
   dto.values.reserve(checkpoint.values.size());
   for (const auto &[output, value] : checkpoint.values) {
     dto.values.push_back(detail::OutputValueDto{
@@ -519,6 +596,9 @@ namespace {
     -> Result<WorkflowCheckpoint> {
   if (dto.schema_version != 1) {
     return fail(Error::Unsupported);
+  }
+  if (!valid_snapshot_failures(dto.snapshot)) {
+    return fail(Error::ParseError);
   }
   auto plan = WorkflowPlanLoader::from_json(dto.plan_json);
   auto trigger = trigger_from_dto(std::move(dto.trigger));

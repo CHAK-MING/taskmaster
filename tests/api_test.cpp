@@ -774,6 +774,68 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
   ASSERT_TRUE(evidence_body.has_value());
   EXPECT_GT(evidence_body->get_object().at("total").as<std::int64_t>(), 0);
   EXPECT_LE(evidence_body->get_object().at("evidence").get_array().size(), 2U);
+  ASSERT_FALSE(
+      evidence_body->get_object().at("evidence").get_array().empty());
+  EXPECT_TRUE(evidence_body->get_object()
+                  .at("evidence")
+                  .get_array()
+                  .front()
+                  .get_object()
+                  .at("type")
+                  .is_string());
+
+  register_plan(R"({
+    "workflow_id":"route-failure","schema_version":1,
+    "nodes":[{"id":"command","executor":"command",
+      "config":{"program":"/bin/sh","arguments":["-c","printf partial; printf diagnostic >&2; exit 7"],"env":[],"input_env":[]},
+      "outputs":["result"]}]
+  })");
+  const auto failed_run = start_run("route-failure");
+  auto failed_response = wait_for_state(failed_run, "failed");
+  ASSERT_EQ(failed_response.status, http::HttpStatus::Ok)
+      << response_text(failed_response);
+  auto failed_body = parse_json(response_text(failed_response));
+  ASSERT_TRUE(failed_body.has_value());
+  const auto &failed_object = failed_body->get_object();
+  ASSERT_TRUE(failed_object.contains("failure"));
+  EXPECT_FALSE(failed_object.contains("error"));
+  const auto &run_failure = failed_object.at("failure").get_object();
+  EXPECT_EQ(run_failure.at("kind").as<std::string>(), "unknown");
+  EXPECT_EQ(run_failure.at("code").as<std::string>(),
+            "command_exit_nonzero");
+  const auto &failed_task =
+      failed_object.at("tasks").get_array().front().get_object();
+  ASSERT_TRUE(failed_task.contains("failure"));
+  EXPECT_FALSE(failed_task.contains("last_error"));
+  const auto &failed_attempt =
+      failed_task.at("attempts").get_array().front().get_object();
+  ASSERT_TRUE(failed_attempt.contains("failure"));
+  EXPECT_FALSE(failed_attempt.contains("error"));
+  const auto &failure_details =
+      failed_attempt.at("failure").get_object().at("details").get_object();
+  EXPECT_EQ(failure_details.at("exit_code").as<std::int64_t>(), 7);
+  EXPECT_EQ(failure_details.at("stdout").as<std::string>(), "partial");
+  EXPECT_EQ(failure_details.at("stderr").as<std::string>(), "diagnostic");
+
+  auto failure_evidence = invoke(request(
+      http::HttpMethod::GET,
+      std::format("/api/v1/workflow-runs/{}/evidence", failed_run), {},
+      "offset=0&limit=100"));
+  ASSERT_EQ(failure_evidence.status, http::HttpStatus::Ok);
+  auto failure_evidence_body = parse_json(response_text(failure_evidence));
+  ASSERT_TRUE(failure_evidence_body.has_value());
+  const auto &failure_records =
+      failure_evidence_body->get_object().at("evidence").get_array();
+  const auto task_failed = std::ranges::find_if(
+      failure_records, [](const JsonValue &record) {
+        const auto &object = record.get_object();
+        return object.at("type").as<std::string>() == "task_failed";
+      });
+  ASSERT_NE(task_failed, failure_records.end());
+  ASSERT_TRUE(task_failed->get_object()
+                  .at("metadata")
+                  .get_object()
+                  .contains("failure"));
 
   EXPECT_EQ(snapshot("missing-run").status, http::HttpStatus::NotFound);
   for (std::string_view operation : {"pause", "resume", "cancel"}) {

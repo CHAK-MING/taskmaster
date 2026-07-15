@@ -134,6 +134,32 @@ milliseconds with an `_at_ms` suffix when the timestamp exists.
 Failed attempts include `failure_class`; stopped attempts include
 `termination_reason`.
 
+Failed Runs, Tasks, and Attempts expose the same structured `failure` object:
+
+```json
+{
+  "kind": "unknown",
+  "code": "command_exit_nonzero",
+  "message": "Command exited with status 7",
+  "details": {
+    "exit_code": 7,
+    "stdout": "partial output",
+    "stderr": "invalid configuration",
+    "runner_error": "",
+    "stdout_streamed": false,
+    "stderr_streamed": false
+  }
+}
+```
+
+`kind` is the normalized DAGForge error used for retry and terminal-state
+policy. `code` is the stable machine identifier. `details` is executor-owned
+bounded JSON. Command failures can include exit status and captured output;
+HTTP status failures can include status, headers, body, UTF-8 validity, and
+body size. Credential-bearing response headers keep their names but return the
+value `[redacted]` and `redacted: true`. Legacy string-only `error` and
+`last_error` fields are not emitted.
+
 ### `GET /api/v1/workflow-runs/{run_id}/outputs/{node_id}/{port}`
 
 Returns a typed output value:
@@ -149,7 +175,9 @@ encoded as Artifact reference objects.
 
 Returns evidence records for the run. The optional `offset` and `limit` query
 parameters select a page. The response includes `evidence`, `total`, `offset`,
-and `limit`.
+and `limit`. Evidence `type` values are stable strings such as
+`task_failed`, `run_failed`, and `checkpoint`. Failure Evidence stores the
+same structured object under `metadata.failure`.
 
 ## Artifact endpoints
 

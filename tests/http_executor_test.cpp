@@ -59,26 +59,31 @@ auto compile_context(std::span<const workflow::InputBinding> inputs,
     Runtime &runtime, const std::shared_ptr<workflow::ITaskExecutor> &executor,
     workflow::TaskExecutionRequest request,
     std::chrono::milliseconds timeout = std::chrono::seconds(3))
-    -> Result<workflow::ExecutorOutputs> {
+    -> workflow::TaskExecutionResult {
   auto completion =
-      std::make_shared<std::promise<Result<workflow::ExecutorOutputs>>>();
+      std::make_shared<std::promise<workflow::TaskExecutionResult>>();
   auto future = completion->get_future();
   runtime.post_to(
       0, [executor, request = std::move(request), completion]() mutable {
         workflow::TaskExecutionSink sink{
             .on_complete =
                 [completion](const InstanceId &,
-                             Result<workflow::ExecutorOutputs> result) mutable {
+                             workflow::TaskExecutionResult result) mutable {
                   completion->set_value(std::move(result));
                 },
         };
         auto started = executor->start(std::move(request), std::move(sink));
         if (!started) {
-          completion->set_value(fail(started.error()));
+          completion->set_value(workflow::task_failed(
+              workflow::make_execution_failure(
+                  started.error(), "executor_start_failed",
+                  "HTTP executor rejected the start request")));
         }
       });
   if (future.wait_for(timeout) != std::future_status::ready) {
-    return fail(Error::Timeout);
+    return workflow::task_failed(workflow::make_execution_failure(
+        Error::Timeout, "test_wait_timed_out",
+        "Test timed out waiting for HTTP executor completion"));
   }
   return future.get();
 }
@@ -465,7 +470,7 @@ TEST(HttpTaskExecutorTest, ExecutesLocalRequestsMapsOutputsAndReusesClients) {
       .timeout = std::chrono::seconds(2),
   };
   auto first_result = execute_on_shard(runtime, *executor, std::move(first));
-  ASSERT_TRUE(first_result.has_value()) << first_result.error().message();
+  ASSERT_TRUE(first_result.has_value()) << first_result.error().message;
   const auto *status = output_value(*first_result, "status");
   const auto *body = output_value(*first_result, "body");
   const auto *headers = output_value(*first_result, "headers");
@@ -491,7 +496,7 @@ TEST(HttpTaskExecutorTest, ExecutesLocalRequestsMapsOutputsAndReusesClients) {
       .timeout = std::chrono::seconds(2),
   };
   auto second_result = execute_on_shard(runtime, *executor, std::move(second));
-  ASSERT_TRUE(second_result.has_value()) << second_result.error().message();
+  ASSERT_TRUE(second_result.has_value()) << second_result.error().message;
   EXPECT_EQ(std::get<std::string>(*output_value(*second_result, "body")),
             "plain");
   EXPECT_EQ(request_count.load(std::memory_order_relaxed), 2U);
@@ -516,10 +521,14 @@ TEST(HttpTaskExecutorTest, MapsHttpStatusAndProtocolFailures) {
   const auto add_status_route = [&](std::string path,
                                     ::dagforge::http::HttpStatus status) {
     server.router().get(
-        std::move(path), [status](::dagforge::http::HttpRequest)
+      std::move(path), [status](::dagforge::http::HttpRequest)
                              -> task<::dagforge::http::HttpResponse> {
           ::dagforge::http::HttpResponse response;
           response.status = status;
+          if (status == ::dagforge::http::HttpStatus::Unauthorized) {
+            response.set_header("Set-Cookie", "session=secret");
+            response.set_header("X-Trace", "trace-value");
+          }
           response.set_body("status");
           co_return response;
         });
@@ -564,7 +573,10 @@ TEST(HttpTaskExecutorTest, MapsHttpStatusAndProtocolFailures) {
     EXPECT_TRUE(compiled.has_value())
         << (compiled ? "" : compiled.error().message());
     if (!compiled) {
-      return Result<workflow::ExecutorOutputs>{fail(compiled.error())};
+      return workflow::TaskExecutionResult{workflow::task_failed(
+          workflow::make_execution_failure(
+              compiled.error(), "http_compile_failed",
+              "HTTP node configuration did not compile"))};
     }
     return execute_on_shard(
         runtime, *executor,
@@ -577,23 +589,58 @@ TEST(HttpTaskExecutorTest, MapsHttpStatusAndProtocolFailures) {
         });
   };
 
-  EXPECT_EQ(execute_path("/unauthorized").error(),
-            make_error_code(Error::Unauthorized));
-  EXPECT_EQ(execute_path("/forbidden").error(),
-            make_error_code(Error::Unauthorized));
-  EXPECT_EQ(execute_path("/missing").error(),
-            make_error_code(Error::NotFound));
-  EXPECT_EQ(execute_path("/rate").error(),
-            make_error_code(Error::RateLimited));
-  EXPECT_EQ(execute_path("/server").error(),
-            make_error_code(Error::Unknown));
-  EXPECT_EQ(execute_path("/bad").error(),
-            make_error_code(Error::ProtocolError));
-  EXPECT_EQ(execute_path("/invalid-utf8").error(),
-            make_error_code(Error::ProtocolError));
+  auto unauthorized = execute_path("/unauthorized");
+  ASSERT_FALSE(unauthorized.has_value());
+  EXPECT_EQ(unauthorized.error().kind, Error::Unauthorized);
+  EXPECT_EQ(unauthorized.error().code, "http_status_rejected");
+  ASSERT_TRUE(unauthorized.error().details["status"].is_number());
+  EXPECT_EQ(unauthorized.error().details["status"].as<std::int64_t>(), 401);
+  ASSERT_TRUE(unauthorized.error().details["body"].is_string());
+  EXPECT_EQ(unauthorized.error().details["body"].as<std::string>(), "status");
+  ASSERT_TRUE(unauthorized.error().details["headers"].is_array());
+  const JsonValue *set_cookie = nullptr;
+  const JsonValue *trace = nullptr;
+  for (const auto &header :
+       unauthorized.error().details["headers"].get_array()) {
+    const auto name = header["name"].as<std::string>();
+    if (name == "Set-Cookie") {
+      set_cookie = &header;
+    } else if (name == "X-Trace") {
+      trace = &header;
+    }
+  }
+  ASSERT_NE(set_cookie, nullptr);
+  EXPECT_EQ((*set_cookie)["value"].as<std::string>(), "[redacted]");
+  EXPECT_TRUE((*set_cookie)["redacted"].get<bool>());
+  ASSERT_NE(trace, nullptr);
+  EXPECT_EQ((*trace)["value"].as<std::string>(), "trace-value");
+  EXPECT_FALSE((*trace)["redacted"].get<bool>());
+  auto forbidden = execute_path("/forbidden");
+  ASSERT_FALSE(forbidden.has_value());
+  EXPECT_EQ(forbidden.error().kind, Error::Unauthorized);
+  auto missing = execute_path("/missing");
+  ASSERT_FALSE(missing.has_value());
+  EXPECT_EQ(missing.error().kind, Error::NotFound);
+  auto rate_limited = execute_path("/rate");
+  ASSERT_FALSE(rate_limited.has_value());
+  EXPECT_EQ(rate_limited.error().kind, Error::RateLimited);
+  auto server_failure = execute_path("/server");
+  ASSERT_FALSE(server_failure.has_value());
+  EXPECT_EQ(server_failure.error().kind, Error::Unknown);
+  auto bad_request = execute_path("/bad");
+  ASSERT_FALSE(bad_request.has_value());
+  EXPECT_EQ(bad_request.error().kind, Error::ProtocolError);
+  auto invalid_utf8 = execute_path("/invalid-utf8");
+  ASSERT_FALSE(invalid_utf8.has_value());
+  EXPECT_EQ(invalid_utf8.error().kind, Error::ProtocolError);
+  EXPECT_EQ(invalid_utf8.error().code, "http_invalid_response");
+  ASSERT_TRUE(
+      invalid_utf8.error().details["body_valid_utf8"].is_boolean());
+  EXPECT_FALSE(
+      invalid_utf8.error().details["body_valid_utf8"].get<bool>());
   auto accepted_missing = execute_path("/missing", {404});
   ASSERT_TRUE(accepted_missing.has_value())
-      << accepted_missing.error().message();
+      << accepted_missing.error().message;
   EXPECT_EQ(std::get<std::string>(*output_value(*accepted_missing, "result")),
             "status");
 
@@ -641,7 +688,7 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
   ASSERT_TRUE(slow_config.has_value()) << slow_config.error().message();
 
   auto completion =
-      std::make_shared<std::promise<Result<workflow::ExecutorOutputs>>>();
+      std::make_shared<std::promise<workflow::TaskExecutionResult>>();
   auto completion_future = completion->get_future();
   struct Starts {
     Result<void> first;
@@ -655,7 +702,7 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
     workflow::TaskExecutionSink sink{
         .on_complete =
             [completion](const InstanceId &,
-                         Result<workflow::ExecutorOutputs> result) mutable {
+                         workflow::TaskExecutionResult result) mutable {
               completion->set_value(std::move(result));
             },
     };
@@ -701,7 +748,10 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
   (*executor)->cancel(InstanceId{"active"});
   ASSERT_EQ(completion_future.wait_for(std::chrono::seconds(2)),
             std::future_status::ready);
-  EXPECT_EQ(completion_future.get().error(), make_error_code(Error::Cancelled));
+  auto cancelled = completion_future.get();
+  ASSERT_FALSE(cancelled.has_value());
+  EXPECT_EQ(cancelled.error().kind, Error::Cancelled);
+  EXPECT_EQ(cancelled.error().code, "http_cancelled");
 
   const std::array body_inputs{
       workflow::InputBinding{.input = WorkflowPortId{"payload"}},
@@ -726,8 +776,8 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
             .timeout = std::chrono::seconds(2),
         });
   };
-  EXPECT_EQ(execute_inputs({}, "missing-inputs").error(),
-            make_error_code(Error::InvalidArgument));
+  EXPECT_EQ(execute_inputs({}, "missing-inputs").error().kind,
+            Error::InvalidArgument);
   EXPECT_EQ(
       execute_inputs(
           {{"payload", std::make_shared<const workflow::WorkflowValue>(
@@ -736,8 +786,9 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
            {"trace", std::make_shared<const workflow::WorkflowValue>(
                          std::string{"safe"})}},
           "artifact-body")
-          .error(),
-      make_error_code(Error::Unsupported));
+          .error()
+          .kind,
+      Error::Unsupported);
   EXPECT_EQ(
       execute_inputs(
           {{"payload", std::make_shared<const workflow::WorkflowValue>(
@@ -745,8 +796,9 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
            {"trace", std::make_shared<const workflow::WorkflowValue>(
                          std::string{"bad\r\nheader"})}},
           "unsafe-header")
-          .error(),
-      make_error_code(Error::InvalidArgument));
+          .error()
+          .kind,
+      Error::InvalidArgument);
   EXPECT_EQ(
       execute_inputs(
           {{"payload", std::make_shared<const workflow::WorkflowValue>(
@@ -754,8 +806,9 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
            {"trace", std::make_shared<const workflow::WorkflowValue>(
                          1.5)}},
           "oversized-body")
-          .error(),
-      make_error_code(Error::ResourceExhausted));
+          .error()
+          .kind,
+      Error::ResourceExhausted);
 
   auto timeout_result = execute_on_shard(
       runtime, *executor,
@@ -765,10 +818,12 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
           .outputs = {WorkflowPortId{"result"}},
           .timeout = std::chrono::seconds(0),
       });
-  EXPECT_EQ(timeout_result.error(), make_error_code(Error::Timeout));
+  ASSERT_FALSE(timeout_result.has_value());
+  EXPECT_EQ(timeout_result.error().kind, Error::Timeout);
+  EXPECT_EQ(timeout_result.error().code, "http_timed_out");
 
   auto quiesce_completion =
-      std::make_shared<std::promise<Result<workflow::ExecutorOutputs>>>();
+      std::make_shared<std::promise<workflow::TaskExecutionResult>>();
   auto quiesce_future = quiesce_completion->get_future();
   auto started_for_quiesce = std::make_shared<std::promise<Result<void>>>();
   auto started_future = started_for_quiesce->get_future();
@@ -779,7 +834,7 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
             .on_complete =
                 [quiesce_completion](
                     const InstanceId &,
-                    Result<workflow::ExecutorOutputs> result) mutable {
+                    workflow::TaskExecutionResult result) mutable {
                   quiesce_completion->set_value(std::move(result));
                 },
         };
@@ -800,7 +855,9 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
   EXPECT_TRUE((*executor)->quiesce(std::chrono::seconds(2)).has_value());
   ASSERT_EQ(quiesce_future.wait_for(std::chrono::seconds(2)),
             std::future_status::ready);
-  EXPECT_EQ(quiesce_future.get().error(), make_error_code(Error::Cancelled));
+  auto quiesced_request = quiesce_future.get();
+  ASSERT_FALSE(quiesced_request.has_value());
+  EXPECT_EQ(quiesced_request.error().kind, Error::Cancelled);
 
   server.stop();
   runtime.stop();

@@ -151,8 +151,11 @@ inline auto add_timestamp(
           {"attempt_id", attempt.attempt_id.str()},
           {"number", attempt.number},
           {"state", std::string{workflow::to_string_view(attempt.state)}},
-          {"error", attempt.error},
       };
+      if (attempt.failure) {
+        attempt_json["failure"] =
+            workflow::execution_failure_json(*attempt.failure);
+      }
       if (attempt.exit_code) {
         attempt_json["exit_code"] = *attempt.exit_code;
       }
@@ -173,9 +176,12 @@ inline auto add_timestamp(
         {"node_id", task.node_id.str()},
         {"state", std::string{workflow::to_string_view(task.state)}},
         {"attempt_count", task.attempt_count},
-        {"last_error", task.last_error},
         {"attempts", std::move(attempts)},
     };
+    if (task.failure) {
+      task_json["failure"] =
+          workflow::execution_failure_json(*task.failure);
+    }
     if (task.active_attempt_id) {
       task_json["active_attempt_id"] = task.active_attempt_id->str();
     }
@@ -194,9 +200,11 @@ inline auto add_timestamp(
               {"workflow_id", snapshot.workflow_id.str()},
               {"plan_id", snapshot.plan_id.str()},
               {"state", std::string{workflow::to_string_view(snapshot.state)}},
-              {"error", snapshot.error},
               {"stop_reason", snapshot.stop_reason},
               {"tasks", std::move(tasks)}};
+  if (snapshot.failure) {
+    result["failure"] = workflow::execution_failure_json(*snapshot.failure);
+  }
   if (snapshot.stop_intent) {
     result["stop_intent"] =
         std::string{workflow::to_string_view(*snapshot.stop_intent)};
@@ -214,7 +222,7 @@ inline auto add_timestamp(
     json item{{"evidence_id", record.evidence_id.str()},
               {"run_id", record.run_id.str()},
               {"node_id", record.node_id.str()},
-              {"type", static_cast<std::uint64_t>(record.type)},
+              {"type", std::string{workflow::to_string_view(record.type)}},
               {"actor", record.actor.subject},
               {"metadata", record.metadata},
               {"content_digest", record.content_digest}};

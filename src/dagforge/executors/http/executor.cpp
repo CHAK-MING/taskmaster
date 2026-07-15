@@ -431,6 +431,95 @@ auto close_idle_clients(HttpShardState &state) -> void {
   return encoded;
 }
 
+[[nodiscard]] auto sensitive_response_header(std::string_view name) -> bool {
+  static constexpr std::array<std::string_view, 6> kSensitiveHeaders{
+      "authorization", "proxy-authorization", "cookie",
+      "set-cookie",    "www-authenticate",    "proxy-authenticate",
+  };
+  const auto normalized = lowercase_ascii(std::string{name});
+  return std::ranges::find(kSensitiveHeaders, normalized) !=
+             kSensitiveHeaders.end() ||
+         normalized.ends_with("-api-key") ||
+         normalized.ends_with("-secret") ||
+         normalized.ends_with("-token");
+}
+
+[[nodiscard]] auto diagnostic_response_headers_json(
+    const transport::HttpHeaders &headers) -> JsonValue {
+  JsonValue encoded = JsonValue::array_t{};
+  for (const auto &field : headers) {
+    const auto redacted = sensitive_response_header(field.name);
+    JsonValue item = JsonValue::object_t{};
+    item["name"] = field.name;
+    item["value"] = redacted ? "[redacted]" : field.value;
+    item["redacted"] = redacted;
+    encoded.get_array().push_back(std::move(item));
+  }
+  return encoded;
+}
+
+[[nodiscard]] auto http_operation_failure(
+    const std::shared_ptr<HttpRequestState> &state,
+    std::error_code operation_error) -> workflow::ExecutionFailure {
+  JsonValue details = JsonValue::object_t{};
+  JsonValue cause = JsonValue::object_t{};
+  cause["category"] = std::string{operation_error.category().name()};
+  cause["value"] = static_cast<std::int64_t>(operation_error.value());
+  cause["message"] = operation_error.message();
+  details["cause"] = std::move(cause);
+  if (state->timed_out) {
+    return workflow::make_execution_failure(
+        Error::Timeout, "http_timed_out", "HTTP request timed out",
+        std::move(details));
+  }
+  if (state->cancel_requested) {
+    return workflow::make_execution_failure(
+        Error::Cancelled, "http_cancelled",
+        "HTTP request was cancelled", std::move(details));
+  }
+  return workflow::make_execution_failure(
+      operation_error, "http_transport_failed", "HTTP transport failed",
+      std::move(details));
+}
+
+[[nodiscard]] auto http_response_details(
+    std::uint16_t status, const transport::HttpHeaders &headers,
+    std::span<const std::uint8_t> body) -> JsonValue {
+  JsonValue details = JsonValue::object_t{};
+  details["status"] = static_cast<std::int64_t>(status);
+  details["body_size_bytes"] = static_cast<std::int64_t>(body.size());
+  const auto headers_valid = valid_response_headers(headers);
+  const auto body_valid = valid_utf8(body);
+  details["headers_valid_utf8"] = headers_valid;
+  details["body_valid_utf8"] = body_valid;
+  if (headers_valid) {
+    details["headers"] = diagnostic_response_headers_json(headers);
+  }
+  if (body_valid) {
+    details["body"] = std::string{
+        reinterpret_cast<const char *>(body.data()), body.size()};
+  }
+  return details;
+}
+
+[[nodiscard]] auto rejected_status_failure(
+    std::uint16_t status, const transport::HttpHeaders &headers,
+    std::span<const std::uint8_t> body) -> workflow::ExecutionFailure {
+  return workflow::make_execution_failure(
+      error_for_status(status), "http_status_rejected",
+      std::format("HTTP response status {} was not accepted", status),
+      http_response_details(status, headers, body));
+}
+
+[[nodiscard]] auto invalid_response_failure(
+    std::uint16_t status, const transport::HttpHeaders &headers,
+    std::span<const std::uint8_t> body) -> workflow::ExecutionFailure {
+  return workflow::make_execution_failure(
+      Error::ProtocolError, "http_invalid_response",
+      "HTTP response contains invalid UTF-8 data",
+      http_response_details(status, headers, body));
+}
+
 auto cancel_state(const std::shared_ptr<HttpRequestState> &state,
                   bool timed_out) -> void {
   if (state->completed) {
@@ -447,7 +536,7 @@ auto cancel_state(const std::shared_ptr<HttpRequestState> &state,
 auto complete_request(const std::shared_ptr<HttpExecutorCore> &core,
                       shard_id shard,
                       const std::shared_ptr<HttpRequestState> &state,
-                      Result<workflow::ExecutorOutputs> result) -> void {
+                      workflow::TaskExecutionResult result) -> void {
   if (state->completed) {
     return;
   }
@@ -465,18 +554,6 @@ auto complete_request(const std::shared_ptr<HttpExecutorCore> &core,
   if (completion) {
     completion(state->instance_id, std::move(result));
   }
-}
-
-[[nodiscard]] auto lifecycle_error(
-    const std::shared_ptr<HttpRequestState> &state,
-    std::error_code operation_error) -> std::error_code {
-  if (state->timed_out) {
-    return make_error_code(Error::Timeout);
-  }
-  if (state->cancel_requested) {
-    return make_error_code(Error::Cancelled);
-  }
-  return operation_error;
 }
 
 [[nodiscard]] auto interrupted_error(
@@ -499,7 +576,9 @@ auto run_http_request(std::shared_ptr<HttpExecutorCore> core, shard_id shard,
                       std::vector<WorkflowPortId> requested_outputs)
     -> spawn_task {
   if (auto interrupted = interrupted_error(state)) {
-    complete_request(core, shard, state, fail(*interrupted));
+    complete_request(core, shard, state,
+                     workflow::task_failed(
+                         http_operation_failure(state, *interrupted)));
     co_return;
   }
   const auto &egress = core->policy.config();
@@ -537,26 +616,34 @@ auto run_http_request(std::shared_ptr<HttpExecutorCore> core, shard_id shard,
                                current_io_context(), target.host, target.port,
                                client_config, state->cancellation.slot());
     if (!connected) {
-      complete_request(core, shard, state,
-                       fail(lifecycle_error(state, connected.error())));
+      complete_request(
+          core, shard, state,
+          workflow::task_failed(
+              http_operation_failure(state, connected.error())));
       co_return;
     }
     state->client = std::move(*connected);
   }
   if (auto interrupted = interrupted_error(state)) {
-    complete_request(core, shard, state, fail(*interrupted));
+    complete_request(core, shard, state,
+                     workflow::task_failed(
+                         http_operation_failure(state, *interrupted)));
     co_return;
   }
 
   auto response = co_await state->client->request(
       std::move(request), state->cancellation.slot());
   if (!response) {
-    complete_request(core, shard, state,
-                     fail(lifecycle_error(state, response.error())));
+    complete_request(
+        core, shard, state,
+        workflow::task_failed(
+            http_operation_failure(state, response.error())));
     co_return;
   }
   if (auto interrupted = interrupted_error(state)) {
-    complete_request(core, shard, state, fail(*interrupted));
+    complete_request(core, shard, state,
+                     workflow::task_failed(
+                         http_operation_failure(state, *interrupted)));
     co_return;
   }
   if (state->client->is_reusable()) {
@@ -568,12 +655,18 @@ auto run_http_request(std::shared_ptr<HttpExecutorCore> core, shard_id shard,
 
   const auto status = static_cast<std::uint16_t>(response->status);
   if (!accepted_status(status, config.accepted_statuses)) {
-    complete_request(core, shard, state, fail(error_for_status(status)));
+    complete_request(
+        core, shard, state,
+        workflow::task_failed(rejected_status_failure(
+            status, response->headers, response->body)));
     co_return;
   }
   if (!valid_utf8(response->body) ||
       !valid_response_headers(response->headers)) {
-    complete_request(core, shard, state, fail(Error::ProtocolError));
+    complete_request(
+        core, shard, state,
+        workflow::task_failed(invalid_response_failure(
+            status, response->headers, response->body)));
     co_return;
   }
 
@@ -587,7 +680,8 @@ auto run_http_request(std::shared_ptr<HttpExecutorCore> core, shard_id shard,
   add_output(outputs, requested_outputs, "headers",
              response_headers_json(response->headers));
   add_output(outputs, requested_outputs, "result", body);
-  complete_request(core, shard, state, ok(std::move(outputs)));
+  complete_request(core, shard, state,
+                   workflow::task_succeeded(std::move(outputs)));
 }
 
 class HttpTaskExecutor final : public workflow::ITaskExecutor {

@@ -108,6 +108,69 @@ inline auto make_error_code(Error e) -> std::error_code {
   return {std::to_underlying(e), error_category()};
 }
 
+[[nodiscard]] constexpr auto to_string_view(Error error) noexcept
+    -> std::string_view {
+  switch (error) {
+  case Error::Success:
+    return "success";
+  case Error::FileNotFound:
+    return "file_not_found";
+  case Error::FileOpenFailed:
+    return "file_open_failed";
+  case Error::ParseError:
+    return "parse_error";
+  case Error::DatabaseError:
+    return "database_error";
+  case Error::DatabaseOpenFailed:
+    return "database_open_failed";
+  case Error::DatabaseQueryFailed:
+    return "database_query_failed";
+  case Error::InvalidArgument:
+    return "invalid_argument";
+  case Error::NotFound:
+    return "not_found";
+  case Error::AlreadyExists:
+    return "already_exists";
+  case Error::Timeout:
+    return "timeout";
+  case Error::Cancelled:
+    return "cancelled";
+  case Error::CycleDetected:
+    return "cycle_detected";
+  case Error::ReadOnly:
+    return "read_only";
+  case Error::HasDependents:
+    return "has_dependents";
+  case Error::HasActiveRuns:
+    return "has_active_runs";
+  case Error::SystemNotRunning:
+    return "system_not_running";
+  case Error::QueueFull:
+    return "queue_full";
+  case Error::InvalidUrl:
+    return "invalid_url";
+  case Error::ProcessForkFailed:
+    return "process_fork_failed";
+  case Error::ResourceExhausted:
+    return "resource_exhausted";
+  case Error::InvalidState:
+    return "invalid_state";
+  case Error::Incomplete:
+    return "incomplete";
+  case Error::ProtocolError:
+    return "protocol_error";
+  case Error::Unauthorized:
+    return "unauthorized";
+  case Error::RateLimited:
+    return "rate_limited";
+  case Error::Unsupported:
+    return "unsupported";
+  case Error::Unknown:
+    return "unknown";
+  }
+  return "unknown";
+}
+
 template <typename T>
 concept ResultValue = std::destructible<T> || std::is_void_v<T>;
 

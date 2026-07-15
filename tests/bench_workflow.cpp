@@ -41,7 +41,8 @@ public:
       outputs.emplace_back(output.clone(), std::string{"ok"});
     }
     if (sink.on_complete) {
-      sink.on_complete(request.instance_id, ok(std::move(outputs)));
+      sink.on_complete(request.instance_id,
+                       task_succeeded(std::move(outputs)));
     }
     return ok();
   }

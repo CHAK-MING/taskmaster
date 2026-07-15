@@ -133,7 +133,7 @@ private:
       -> spawn_task;
   auto complete_task(const WorkflowRunId &run_id, std::size_t task_index,
                      const AttemptId &attempt_id,
-                     Result<ExecutorOutputs> result)
+                     TaskExecutionResult result)
       -> void;
   auto finalize_run_if_ready(const WorkflowRunId &run_id) -> bool;
   auto update_dependents(const WorkflowRunId &run_id,
@@ -141,7 +141,9 @@ private:
   auto schedule_retry(const WorkflowRunId &run_id, std::size_t task_index)
       -> void;
   auto request_stop(const WorkflowRunId &run_id, StopIntent intent,
-                    std::string reason) -> Result<void>;
+                    std::string reason,
+                    std::optional<ExecutionFailure> failure = std::nullopt)
+      -> Result<void>;
   auto settle_control_state(const WorkflowRunId &run_id) -> void;
   [[nodiscard]] auto begin_attempt(ActiveRun &run, std::size_t task_index)
       -> AttemptId;
@@ -177,7 +179,7 @@ private:
                                   std::size_t task_index,
                                   AttemptId attempt_id, NodePlan node,
                                   ExecutorInputs inputs)
-      -> task<Result<ExecutorOutputs>>;
+      -> task<TaskExecutionResult>;
 
   Runtime &runtime_;
   ExecutorRegistry &executors_;

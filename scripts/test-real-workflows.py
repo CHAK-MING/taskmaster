@@ -694,7 +694,10 @@ def verify_missing_published_output(service: DagforgeService) -> None:
     _, snapshot = run_plan(service, "missing_published_output.json")
     require(snapshot["state"] == "failed", str(snapshot))
     require(task(snapshot, "publish")["state"] == "skipped", str(snapshot))
-    require("required workflow output is missing" in snapshot["error"], str(snapshot))
+    require(snapshot["failure"]["kind"] == "incomplete", str(snapshot))
+    require(snapshot["failure"]["code"] == "required_output_missing", str(snapshot))
+    require(snapshot["failure"]["details"]["node_id"] == "publish", str(snapshot))
+    require(snapshot["failure"]["details"]["port"] == "result", str(snapshot))
 
 
 def verify_http_pipeline(service: DagforgeService, target_port: int) -> None:
@@ -789,7 +792,8 @@ def verify_http_request_body_limit(
     )
     request_task = task(snapshot, "request")
     require(snapshot["state"] == "failed", str(snapshot))
-    require("resource exhausted" in request_task["last_error"], str(snapshot))
+    require(request_task["failure"]["kind"] == "resource_exhausted", str(snapshot))
+    require(request_task["failure"]["code"] == "executor_start_failed", str(snapshot))
 
 
 def verify_http_response_header_limit(
@@ -866,7 +870,8 @@ def verify_http_concurrency_limit(
     require(snapshot["state"] == "failed", str(snapshot))
     require(states == {"succeeded", "failed"}, str(snapshot))
     failed = next(item for item in snapshot["tasks"] if item["state"] == "failed")
-    require("queue full" in failed["last_error"], str(snapshot))
+    require(failed["failure"]["kind"] == "queue_full", str(snapshot))
+    require(failed["failure"]["code"] == "executor_start_failed", str(snapshot))
 
 
 def verify_http_header_limit(service: DagforgeService, target_port: int) -> None:
@@ -878,7 +883,8 @@ def verify_http_header_limit(service: DagforgeService, target_port: int) -> None
     request_task = task(snapshot, "request")
     require(snapshot["state"] == "failed", str(snapshot))
     require(request_task["attempt_count"] == 1, str(snapshot))
-    require("resource exhausted" in request_task["last_error"], str(snapshot))
+    require(request_task["failure"]["kind"] == "resource_exhausted", str(snapshot))
+    require(request_task["failure"]["code"] == "executor_start_failed", str(snapshot))
 
 
 def verify_http_tls(service: DagforgeService, target_port: int) -> None:

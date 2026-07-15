@@ -1,6 +1,7 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#include "dagforge/workflow/execution_failure.hpp"
 #include "dagforge/workflow/workflow_value.hpp"
 #include <chrono>
 #include <cstdint>
@@ -90,7 +91,7 @@ struct AttemptSnapshot {
   std::optional<TerminationReason> termination_reason;
   std::optional<FailureClass> failure_class;
   std::optional<int> exit_code;
-  std::string error;
+  std::optional<ExecutionFailure> failure;
   std::chrono::system_clock::time_point created_at{};
   std::chrono::system_clock::time_point started_at{};
   std::chrono::system_clock::time_point finished_at{};
@@ -103,7 +104,7 @@ struct TaskSnapshot {
   std::optional<AttemptId> active_attempt_id;
   std::optional<std::chrono::system_clock::time_point> next_attempt_at;
   std::optional<SkipReason> skip_reason;
-  std::string last_error;
+  std::optional<ExecutionFailure> failure;
   std::vector<AttemptSnapshot> attempts;
   std::chrono::system_clock::time_point started_at{};
   std::chrono::system_clock::time_point finished_at{};
@@ -120,7 +121,7 @@ struct RunSnapshot {
   std::chrono::system_clock::time_point created_at{};
   std::chrono::system_clock::time_point started_at{};
   std::chrono::system_clock::time_point finished_at{};
-  std::string error;
+  std::optional<ExecutionFailure> failure;
 };
 
 [[nodiscard]] constexpr auto to_string_view(RunState value) noexcept
