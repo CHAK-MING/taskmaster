@@ -95,4 +95,10 @@ to_unix_millis(std::chrono::system_clock::time_point tp) -> std::int64_t {
       .count();
 }
 
+[[nodiscard]] inline auto from_unix_millis(std::int64_t millis)
+    -> std::chrono::system_clock::time_point {
+  return std::chrono::system_clock::time_point{
+      std::chrono::milliseconds{millis}};
+}
+
 } // namespace dagforge::util

@@ -3,7 +3,8 @@
 #include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/util/log.hpp"
 
-#include <boost/algorithm/string/predicate.hpp>
+#include "detail/beast_bridge.hpp"
+
 #include <boost/asio/connect.hpp>
 #include <boost/asio/steady_timer.hpp>
 #include <boost/asio/ssl/host_name_verification.hpp>
@@ -29,66 +30,6 @@ namespace {
 namespace beast = boost::beast;
 namespace beast_http = beast::http;
 
-auto to_beast_method(HttpMethod method) noexcept -> beast_http::verb {
-  switch (method) {
-  case HttpMethod::GET:
-    return beast_http::verb::get;
-  case HttpMethod::POST:
-    return beast_http::verb::post;
-  case HttpMethod::PUT:
-    return beast_http::verb::put;
-  case HttpMethod::DELETE:
-    return beast_http::verb::delete_;
-  case HttpMethod::PATCH:
-    return beast_http::verb::patch;
-  case HttpMethod::OPTIONS:
-    return beast_http::verb::options;
-  case HttpMethod::HEAD:
-    return beast_http::verb::head;
-  }
-  return beast_http::verb::unknown;
-}
-
-[[nodiscard]] auto safe_http_token(std::string_view value) noexcept -> bool {
-  return !value.empty() && !value.contains('\r') && !value.contains('\n') &&
-         !value.contains('\0');
-}
-
-[[nodiscard]] auto make_beast_request(HttpRequest request,
-                                      const HttpClientConfig &config,
-                                      const std::string &host)
-    -> Result<beast_http::request<beast_http::vector_body<uint8_t>>> {
-  auto target = request.query_string.empty()
-                    ? request.path
-                    : std::format("{}?{}", request.path, request.query_string);
-  if (target.empty() || !target.starts_with('/') || !safe_http_token(target)) {
-    return fail(Error::InvalidArgument);
-  }
-
-  beast_http::request<beast_http::vector_body<uint8_t>> message{
-      to_beast_method(request.method), target, 11};
-  try {
-    for (const auto &field : request.headers) {
-      if (!safe_http_token(field.name) ||
-          (!field.value.empty() && !safe_http_token(field.value)) ||
-          boost::algorithm::iequals(field.name, "Content-Length") ||
-          boost::algorithm::iequals(field.name, "Transfer-Encoding")) {
-        return fail(Error::InvalidArgument);
-      }
-      message.insert(field.name, field.value);
-    }
-  } catch (const std::exception &) {
-    return fail(Error::InvalidArgument);
-  }
-  if (message.find(beast_http::field::host) == message.end()) {
-    message.set(beast_http::field::host, host);
-  }
-  message.keep_alive(config.keep_alive);
-  message.body() = std::move(request.body);
-  message.prepare_payload();
-  return ok(std::move(message));
-}
-
 [[nodiscard]] auto permitted_endpoints(
     const boost::asio::ip::tcp::resolver::results_type &resolved,
     const HttpClientConfig &config)
@@ -105,18 +46,6 @@ auto to_beast_method(HttpMethod method) noexcept -> beast_http::verb {
     return fail(Error::Unauthorized);
   }
   return ok(std::move(endpoints));
-}
-
-auto to_response(
-    const beast_http::response<beast_http::vector_body<uint8_t>> &msg)
-    -> HttpResponse {
-  HttpResponse out;
-  out.status = static_cast<HttpStatus>(msg.result_int());
-  for (const auto &field : msg.base()) {
-    out.headers.add(std::string(field.name_string()), std::string(field.value()));
-  }
-  out.body = msg.body();
-  return out;
 }
 
 struct StreamResponse {
@@ -247,7 +176,8 @@ auto request_over_stream(Stream &stream, HttpRequest req,
   const auto target = req.query_string.empty()
                           ? req.path
                           : std::format("{}?{}", req.path, req.query_string);
-  auto request_message = make_beast_request(std::move(req), config, host);
+  auto request_message = detail::to_beast_request(
+      std::move(req), host, config.keep_alive);
   if (!request_message) {
     co_return fail(request_message.error());
   }
@@ -325,7 +255,7 @@ auto request_over_stream(Stream &stream, HttpRequest req,
   if (!reusable) {
     close_stream(stream);
   }
-  co_return ok(StreamResponse{.response = to_response(message),
+  co_return ok(StreamResponse{.response = detail::from_beast_response(message),
                               .reusable = reusable});
 }
 

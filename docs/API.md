@@ -69,13 +69,12 @@ The response has status `201 Created`:
   "workflow_id": "example",
   "plan_id": "019...",
   "digest": "sha256...",
-  "nodes": 3
+  "nodes": 3,
+  "durability_deferred": false
 }
 ```
 
-Plans with the same canonical digest are deduplicated. When file storage is
-enabled, the immutable Plan catalog is restored before Run checkpoints. A
-stored `plan_id` cannot be overwritten with a different digest.
+Plans with the same canonical digest are deduplicated. When file storage is enabled, the immutable Plan catalog is restored before Run checkpoints. A stored `plan_id` cannot be overwritten with a different digest. `durability_deferred` is true only when the Plan rename committed and the Plan is immediately readable but the containing-directory `fsync` did not confirm crash durability; an idempotent registration of the same digest preserves that state until a later confirmed Plan-directory synchronization or process restart.
 
 ### `GET /api/v1/workflows/plans`
 
@@ -162,8 +161,11 @@ Attempt states:
 
 Run, task, retry, and attempt timestamps are returned as Unix epoch
 milliseconds with an `_at_ms` suffix when the timestamp exists.
-Failed attempts include `failure_class`; stopped attempts include
-`termination_reason`.
+Attempt `state` is the authoritative lifecycle outcome. `timed_out` and
+`cancelled` are not repeated in a separate classification field. The
+structured `failure.kind` is the authoritative cause used by retry policy.
+`termination_reason` is present only when Runtime terminated an Attempt because
+the Run was cancelled or failed.
 
 Failed Runs, Tasks, and Attempts expose the same structured `failure` object:
 
@@ -237,9 +239,10 @@ same structured object under `metadata.failure`.
 
 Returns an executor-neutral failure report for an active or completed Run. The
 report includes Run lineage, the Run failure, failed Task records, failed or
-timed-out Attempt records, failure classification, termination reason, and all
-diagnostic Artifact references. It does not interpret executor-owned fields
-inside `details`.
+timed-out Attempt records, termination reason, and all diagnostic Artifact
+references. Retry eligibility is not stored as a second classification; it is
+derived from each structured failure kind. The report does not interpret
+executor-owned fields inside `details`.
 
 ### `POST /api/v1/workflow-runs/{run_id}/repairs`
 
@@ -286,10 +289,7 @@ parent Run and revised Plan.
 
 ### `POST /api/v1/artifacts`
 
-Stores the raw request body as an Artifact. `Content-Type` becomes the stored
-media type and defaults to `application/octet-stream`. The response has status
-`201 Created` and contains `artifact_id`, `media_type`, `size_bytes`, and
-`digest`.
+Stores the raw request body as an Artifact. `Content-Type` becomes the stored media type and defaults to `application/octet-stream`. The response has status `201 Created` and contains `artifact_id`, `media_type`, `size_bytes`, `digest`, and `durability_deferred`. A deferred result still names a logically committed and immediately readable Artifact; clients that require confirmed crash durability should retain the ID and retry or reconcile instead of treating the operation as absent.
 
 ### `GET /api/v1/artifacts/{artifact_id}`
 
@@ -298,7 +298,7 @@ Returns the Artifact bytes with the stored `Content-Type` and digest in the
 
 ### `DELETE /api/v1/artifacts/{artifact_id}`
 
-Deletes the Artifact and returns `{"status":"deleted"}`.
+Deletes the Artifact and returns `status`, `logical_deleted`, `cleanup_deferred`, and `durability_deferred`. `logical_deleted` means metadata visibility has committed and subsequent reads return not found. `cleanup_deferred` means physical data remains for reconciliation. `durability_deferred` means the directory entry changed but a directory `fsync` did not confirm crash durability.
 
 ### `POST /api/v1/workflow-runs/{run_id}/cancel`
 
@@ -336,8 +336,7 @@ Every JSON error response contains `error.kind`, `error.code`,
 ## Current limitations
 
 - Evidence persistence is append-only JSON Lines rather than a query database.
-- Plan and Run storage are file-backed single-process stores; there is no
-  distributed ownership or database transaction layer.
+- Plan and Run storage are file-backed single-writer stores. DAGForge enforces one owning Application per state directory with a persistent `.dagforge.lock` file and an advisory exclusive process lock; there is no distributed ownership or database transaction layer.
 - an interrupted external process or request is not reattached after restart;
   its old Attempt is closed as infrastructure failure and the Task is started
   with a new Attempt.

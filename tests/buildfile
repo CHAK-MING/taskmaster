@@ -2,18 +2,10 @@ import foundation = ../src/lib{dagforge-foundation}
 import dagforge = ../src/lib{dagforge}
 
 ./: ../bin/exe{modules-foundation-smoke} \
-    ../bin/exe{core-unit-tests}          \
-    ../bin/exe{unit-runtime-tests}       \
-    ../bin/exe{unit-api-tests}           \
-    ../bin/exe{all-unit-tests}           \
-    ../bin/exe{bench-core}               \
-    exe{glaze-security-tests}
-
-exe{glaze-security-tests}: cxx{test_main glaze_security_test} $dagforge $foundation
-{
-  test = true
-  cxx.libs += -lgtest -pthread
-}
+    ../bin/exe{unit-tests}               \
+    ../bin/exe{component-tests}          \
+    ../bin/exe{integration-tests}        \
+    ../bin/exe{bench-core}
 
 exe{glaze-parser-fuzz}: cxx{glaze_parser_fuzz} $dagforge $foundation
 {

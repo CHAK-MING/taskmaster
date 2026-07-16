@@ -43,7 +43,9 @@ struct ExecutorCompileContext {
 
 struct TaskExecutionRequest {
   InstanceId instance_id;
-  JsonValue config{JsonValue::object_t{}};
+  Principal principal;
+  TraceContext trace;
+  CompiledExecutorConfig config;
   ExecutorInputs inputs;
   std::vector<WorkflowPortId> outputs;
   std::chrono::seconds timeout{std::chrono::minutes(5)};
@@ -60,9 +62,9 @@ public:
   virtual ~ITaskExecutor() = default;
 
   [[nodiscard]] virtual auto type() const noexcept -> std::string_view = 0;
-  [[nodiscard]] virtual auto compile(JsonValue config,
+  [[nodiscard]] virtual auto compile(JsonPayload config,
                                      ExecutorCompileContext context) const
-      -> Result<JsonValue> = 0;
+      -> Result<CompiledExecutorConfig> = 0;
   virtual auto start(TaskExecutionRequest request, TaskExecutionSink sink)
       -> Result<void> = 0;
   virtual auto cancel(const InstanceId &instance_id) -> void = 0;

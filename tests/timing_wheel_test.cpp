@@ -1,6 +1,8 @@
 #include "dagforge/io/timing_wheel.hpp"
 #include "dagforge/core/runtime.hpp"
 
+#include "test_utils.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <memory>
@@ -13,7 +15,6 @@ using namespace std::chrono_literals;
 
 namespace {
 
-constexpr auto kPollInterval = std::chrono::milliseconds(1);
 constexpr auto kWaitTimeout = std::chrono::seconds(1);
 
 auto race_timing_wheel_sleep(std::shared_ptr<std::atomic<bool>> completed)
@@ -39,13 +40,8 @@ TEST(TimingWheelTest, FiresDelayedCallback) {
 
   std::jthread runner([&] { (void)io.run(); });
 
-  const auto deadline = std::chrono::steady_clock::now() + kWaitTimeout;
-  while (!fired.load(std::memory_order_acquire) &&
-         std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(kPollInterval);
-  }
-
-  EXPECT_TRUE(fired.load(std::memory_order_acquire));
+  EXPECT_TRUE(test::wait_until(
+      [&] { return fired.load(std::memory_order_acquire); }, kWaitTimeout));
   io.stop();
 }
 
@@ -68,13 +64,9 @@ TEST(TimingWheelTest, CancelPreventsDelayedCallback) {
 
   std::jthread runner([&] { (void)io.run(); });
 
-  const auto deadline = std::chrono::steady_clock::now() + kWaitTimeout;
-  while (!stopper_fired.load(std::memory_order_acquire) &&
-         std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(kPollInterval);
-  }
-
-  EXPECT_TRUE(stopper_fired.load(std::memory_order_acquire));
+  EXPECT_TRUE(test::wait_until(
+      [&] { return stopper_fired.load(std::memory_order_acquire); },
+      kWaitTimeout));
   EXPECT_FALSE(cancelled_fired.load(std::memory_order_acquire));
   io.stop();
 }
@@ -87,12 +79,9 @@ TEST(TimingWheelTest, CancelsPendingSleepWhenRaceLoses) {
 
   runtime.spawn_on(shard_id{0}, race_timing_wheel_sleep(completed));
 
-  const auto deadline = std::chrono::steady_clock::now() + kWaitTimeout;
-  while (!completed->load(std::memory_order_acquire) &&
-         std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(kPollInterval);
-  }
-  ASSERT_TRUE(completed->load(std::memory_order_acquire));
+  ASSERT_TRUE(test::wait_until(
+      [&] { return completed->load(std::memory_order_acquire); },
+      kWaitTimeout));
 
   std::this_thread::sleep_for(20ms);
   EXPECT_EQ(runtime.timing_wheel_pending_count(0), 0U);
@@ -113,18 +102,14 @@ TEST(TimingWheelTest, ResumesAfterBecomingIdle) {
 
   std::jthread runner([&] { (void)io.run(); });
 
-  const auto deadline = std::chrono::steady_clock::now() + kWaitTimeout;
-  while (fired_count.load(std::memory_order_acquire) < 1 &&
-         std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(kPollInterval);
-  }
-  ASSERT_EQ(fired_count.load(std::memory_order_acquire), 1);
+  ASSERT_TRUE(test::wait_until(
+      [&] { return fired_count.load(std::memory_order_acquire) >= 1; },
+      kWaitTimeout));
 
   std::this_thread::sleep_for(20ms);
   EXPECT_EQ(wheel.pending_count(), 0U);
 
   std::atomic<bool> second_armed{false};
-  const auto resume_deadline = std::chrono::steady_clock::now() + kWaitTimeout;
   boost::asio::post(io, [&] {
     [[maybe_unused]] const auto second_handle = wheel.schedule_after(15ms, [&] {
       fired_count.fetch_add(1, std::memory_order_acq_rel);
@@ -134,16 +119,12 @@ TEST(TimingWheelTest, ResumesAfterBecomingIdle) {
     second_armed.store(true, std::memory_order_release);
   });
 
-  while (!second_armed.load(std::memory_order_acquire) &&
-         std::chrono::steady_clock::now() < resume_deadline) {
-    std::this_thread::sleep_for(kPollInterval);
-  }
-
-  while (fired_count.load(std::memory_order_acquire) < 2 &&
-         std::chrono::steady_clock::now() < resume_deadline) {
-    std::this_thread::sleep_for(kPollInterval);
-  }
-  EXPECT_EQ(fired_count.load(std::memory_order_acquire), 2);
+  ASSERT_TRUE(test::wait_until(
+      [&] { return second_armed.load(std::memory_order_acquire); },
+      kWaitTimeout));
+  EXPECT_TRUE(test::wait_until(
+      [&] { return fired_count.load(std::memory_order_acquire) >= 2; },
+      kWaitTimeout));
 
   io.stop();
 }

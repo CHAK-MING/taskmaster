@@ -7,13 +7,6 @@ cxx.features.modules = true
 
 config [bool] config.dagforge.coverage ?= false
 
-# build2 normally compiles the partially preprocessed translation unit when
-# modules are enabled. Clang then attributes source-based coverage to the
-# temporary .ii file. Reprocess the original source in coverage builds so the
-# report maps to repository files.
-if $config.dagforge.coverage
-  cc.reprocess = true
-
 using c
 using cxx
 
@@ -23,6 +16,15 @@ ixx{*}: extension = ixx
 txx{*}: extension = txx
 mxx{*}: extension = cppm
 cxx{*}: extension = cpp
+
+# build2 normally compiles partially preprocessed translation units when
+# modules are enabled. Reprocess ordinary sources so Clang coverage maps to
+# repository files, but do not reprocess shared-library BMI targets. A coverage
+# compiler wrapper retains the object-specific preprocessed dependency input
+# that build2 otherwise removes after a successful build.
+if $config.dagforge.coverage
+  cc.reprocess = true
+  bmis{*}: cc.reprocess = false
 
 cxx.poptions =+ "-I$src_root/include" \
                 "-I$src_root/third_party/CLI11/include" \

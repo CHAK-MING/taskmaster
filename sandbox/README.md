@@ -35,7 +35,8 @@ bash scripts/install-minijail.sh
 
 The default installation directory is
 `~/.local/libexec/dagforge/minijail`. Set `MINIJAIL_INSTALL_DIR` to use another
-location and update `[sandbox]` in `system_config.toml` accordingly.
+location and update `executors.command.minijail` in `system_config.json`
+accordingly.
 
 Production configuration keeps `allow_unlisted_programs` and
 `allow_unlisted_environment` false and `require_trusted_files` true. The

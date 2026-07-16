@@ -1,13 +1,17 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#include "dagforge/util/enum.hpp"
 #include "dagforge/workflow/execution_failure.hpp"
 #include "dagforge/workflow/workflow_value.hpp"
+#include <glaze/json/chrono_format.hpp>
 #include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
+#include <utility>
 #include <vector>
 #endif
 
@@ -50,14 +54,6 @@ enum class AttemptState : std::uint8_t {
   Cancelled,
 };
 
-enum class FailureClass : std::uint8_t {
-  Retryable,
-  Permanent,
-  Cancelled,
-  Timeout,
-  Infrastructure,
-};
-
 enum class SkipReason : std::uint8_t {
   ConditionFalse,
   UpstreamFailed,
@@ -68,8 +64,59 @@ enum class SkipReason : std::uint8_t {
 enum class TerminationReason : std::uint8_t {
   RunCancelled,
   RunFailed,
-  AttemptTimeout,
 };
+
+} // namespace dagforge::workflow
+
+namespace glz {
+
+template <> struct meta<dagforge::workflow::RunState> {
+  using E = dagforge::workflow::RunState;
+  static constexpr auto value = enumerate(
+      "running", E::Running, "pausing", E::Pausing, "paused", E::Paused,
+      "stopping", E::Stopping, "succeeded", E::Succeeded, "failed",
+      E::Failed, "cancelled", E::Cancelled);
+};
+
+template <> struct meta<dagforge::workflow::StopIntent> {
+  using E = dagforge::workflow::StopIntent;
+  static constexpr auto value = enumerate("succeed", E::Succeed, "fail",
+                                          E::Fail, "cancel", E::Cancel);
+};
+
+template <> struct meta<dagforge::workflow::TaskState> {
+  using E = dagforge::workflow::TaskState;
+  static constexpr auto value = enumerate(
+      "pending", E::Pending, "ready", E::Ready, "running", E::Running,
+      "retry_waiting", E::RetryWaiting, "succeeded", E::Succeeded, "failed",
+      E::Failed, "skipped", E::Skipped, "cancelled", E::Cancelled);
+};
+
+template <> struct meta<dagforge::workflow::AttemptState> {
+  using E = dagforge::workflow::AttemptState;
+  static constexpr auto value = enumerate(
+      "starting", E::Starting, "running", E::Running, "terminating",
+      E::Terminating, "succeeded", E::Succeeded, "failed", E::Failed,
+      "timed_out", E::TimedOut, "cancelled", E::Cancelled);
+};
+
+template <> struct meta<dagforge::workflow::SkipReason> {
+  using E = dagforge::workflow::SkipReason;
+  static constexpr auto value = enumerate(
+      "condition_false", E::ConditionFalse, "upstream_failed",
+      E::UpstreamFailed, "upstream_cancelled", E::UpstreamCancelled,
+      "branch_not_selected", E::BranchNotSelected);
+};
+
+template <> struct meta<dagforge::workflow::TerminationReason> {
+  using E = dagforge::workflow::TerminationReason;
+  static constexpr auto value = enumerate("run_cancelled", E::RunCancelled,
+                                          "run_failed", E::RunFailed);
+};
+
+} // namespace glz
+
+namespace dagforge::workflow {
 
 struct TriggerEnvelope {
   WorkflowTriggerId trigger_id;
@@ -89,7 +136,6 @@ struct AttemptSnapshot {
   std::uint32_t number{0};
   AttemptState state{AttemptState::Starting};
   std::optional<TerminationReason> termination_reason;
-  std::optional<FailureClass> failure_class;
   std::optional<int> exit_code;
   std::optional<ExecutionFailure> failure;
   std::chrono::system_clock::time_point created_at{};
@@ -131,125 +177,32 @@ struct RunSnapshot {
 
 [[nodiscard]] constexpr auto to_string_view(RunState value) noexcept
     -> std::string_view {
-  switch (value) {
-  case RunState::Running:
-    return "running";
-  case RunState::Pausing:
-    return "pausing";
-  case RunState::Paused:
-    return "paused";
-  case RunState::Stopping:
-    return "stopping";
-  case RunState::Succeeded:
-    return "succeeded";
-  case RunState::Failed:
-    return "failed";
-  case RunState::Cancelled:
-    return "cancelled";
-  }
-  return "unknown";
+  return util::enum_to_string_view(value);
 }
 
 [[nodiscard]] constexpr auto to_string_view(StopIntent value) noexcept
     -> std::string_view {
-  switch (value) {
-  case StopIntent::Succeed:
-    return "succeed";
-  case StopIntent::Fail:
-    return "fail";
-  case StopIntent::Cancel:
-    return "cancel";
-  }
-  return "unknown";
+  return util::enum_to_string_view(value);
 }
 
 [[nodiscard]] constexpr auto to_string_view(TaskState value) noexcept
     -> std::string_view {
-  switch (value) {
-  case TaskState::Pending:
-    return "pending";
-  case TaskState::Ready:
-    return "ready";
-  case TaskState::Running:
-    return "running";
-  case TaskState::RetryWaiting:
-    return "retry_waiting";
-  case TaskState::Succeeded:
-    return "succeeded";
-  case TaskState::Failed:
-    return "failed";
-  case TaskState::Skipped:
-    return "skipped";
-  case TaskState::Cancelled:
-    return "cancelled";
-  }
-  return "unknown";
+  return util::enum_to_string_view(value);
 }
 
 [[nodiscard]] constexpr auto to_string_view(AttemptState value) noexcept
     -> std::string_view {
-  switch (value) {
-  case AttemptState::Starting:
-    return "starting";
-  case AttemptState::Running:
-    return "running";
-  case AttemptState::Terminating:
-    return "terminating";
-  case AttemptState::Succeeded:
-    return "succeeded";
-  case AttemptState::Failed:
-    return "failed";
-  case AttemptState::TimedOut:
-    return "timed_out";
-  case AttemptState::Cancelled:
-    return "cancelled";
-  }
-  return "unknown";
+  return util::enum_to_string_view(value);
 }
 
 [[nodiscard]] constexpr auto to_string_view(SkipReason value) noexcept
     -> std::string_view {
-  switch (value) {
-  case SkipReason::ConditionFalse:
-    return "condition_false";
-  case SkipReason::UpstreamFailed:
-    return "upstream_failed";
-  case SkipReason::UpstreamCancelled:
-    return "upstream_cancelled";
-  case SkipReason::BranchNotSelected:
-    return "branch_not_selected";
-  }
-  return "unknown";
-}
-
-[[nodiscard]] constexpr auto to_string_view(FailureClass value) noexcept
-    -> std::string_view {
-  switch (value) {
-  case FailureClass::Retryable:
-    return "retryable";
-  case FailureClass::Permanent:
-    return "permanent";
-  case FailureClass::Cancelled:
-    return "cancelled";
-  case FailureClass::Timeout:
-    return "timeout";
-  case FailureClass::Infrastructure:
-    return "infrastructure";
-  }
-  return "unknown";
+  return util::enum_to_string_view(value);
 }
 
 [[nodiscard]] constexpr auto to_string_view(TerminationReason value) noexcept
     -> std::string_view {
-  switch (value) {
-  case TerminationReason::RunCancelled:
-    return "run_cancelled";
-  case TerminationReason::RunFailed:
-    return "run_failed";
-  case TerminationReason::AttemptTimeout:
-    return "attempt_timeout";
-  }
-  return "unknown";
+  return util::enum_to_string_view(value);
 }
 
 [[nodiscard]] constexpr auto is_terminal(RunState state) noexcept -> bool {
@@ -267,80 +220,137 @@ struct RunSnapshot {
          state == AttemptState::TimedOut || state == AttemptState::Cancelled;
 }
 
-[[nodiscard]] constexpr auto can_transition(RunState from,
-                                            RunState to) noexcept -> bool {
-  if (from == to) {
-    return true;
-  }
-  switch (from) {
-  case RunState::Running:
-    return to == RunState::Pausing || to == RunState::Stopping ||
-           to == RunState::Succeeded || to == RunState::Failed;
-  case RunState::Pausing:
-    return to == RunState::Paused || to == RunState::Stopping ||
-           to == RunState::Succeeded || to == RunState::Failed;
-  case RunState::Paused:
-    return to == RunState::Running || to == RunState::Stopping;
-  case RunState::Stopping:
-    return to == RunState::Succeeded || to == RunState::Failed ||
-           to == RunState::Cancelled;
-  case RunState::Succeeded:
-  case RunState::Failed:
-  case RunState::Cancelled:
-    return false;
-  }
-  return false;
-}
-
-[[nodiscard]] constexpr auto can_transition(TaskState from,
-                                            TaskState to) noexcept -> bool {
-  if (from == to) {
-    return true;
-  }
-  switch (from) {
-  case TaskState::Pending:
-    return to == TaskState::Ready || to == TaskState::Skipped ||
-           to == TaskState::Cancelled;
-  case TaskState::Ready:
-    return to == TaskState::Running || to == TaskState::Skipped ||
-           to == TaskState::Cancelled;
-  case TaskState::Running:
-    return to == TaskState::RetryWaiting || to == TaskState::Succeeded ||
-           to == TaskState::Failed || to == TaskState::Cancelled;
-  case TaskState::RetryWaiting:
-    return to == TaskState::Ready || to == TaskState::Cancelled;
-  case TaskState::Succeeded:
-  case TaskState::Failed:
-  case TaskState::Skipped:
-  case TaskState::Cancelled:
-    return false;
-  }
-  return false;
-}
-
-[[nodiscard]] constexpr auto can_transition(AttemptState from,
-                                            AttemptState to) noexcept -> bool {
-  if (from == to) {
-    return true;
-  }
-  switch (from) {
-  case AttemptState::Starting:
-    return to == AttemptState::Running || to == AttemptState::Failed ||
-           to == AttemptState::Terminating || to == AttemptState::Cancelled;
-  case AttemptState::Running:
-    return to == AttemptState::Terminating ||
-           to == AttemptState::Succeeded || to == AttemptState::Failed ||
-           to == AttemptState::TimedOut || to == AttemptState::Cancelled;
-  case AttemptState::Terminating:
-    return to == AttemptState::TimedOut || to == AttemptState::Cancelled ||
-           to == AttemptState::Failed;
-  case AttemptState::Succeeded:
-  case AttemptState::Failed:
-  case AttemptState::TimedOut:
-  case AttemptState::Cancelled:
-    return false;
-  }
-  return false;
-}
-
 } // namespace dagforge::workflow
+
+namespace glz {
+
+template <> struct meta<dagforge::workflow::TriggerEnvelope> {
+  using T = dagforge::workflow::TriggerEnvelope;
+  static constexpr auto rename_key(std::string_view key) -> std::string_view {
+    return key == "occurred_at" ? "occurred_at_ms" : key;
+  }
+  static constexpr auto modify = object(
+      "occurred_at_ms",
+      epoch_count<std::chrono::milliseconds>(&T::occurred_at));
+};
+
+template <> struct meta<dagforge::workflow::AttemptSnapshot> {
+  using T = dagforge::workflow::AttemptSnapshot;
+  static constexpr auto rename_key(std::string_view key) -> std::string_view {
+    if (key == "created_at") {
+      return "created_at_ms";
+    }
+    if (key == "started_at") {
+      return "started_at_ms";
+    }
+    return key == "finished_at" ? "finished_at_ms" : key;
+  }
+  static constexpr auto modify = object(
+      "created_at_ms", epoch_count<std::chrono::milliseconds>(&T::created_at),
+      "started_at_ms", epoch_count<std::chrono::milliseconds>(&T::started_at),
+      "finished_at_ms",
+      epoch_count<std::chrono::milliseconds>(&T::finished_at));
+
+  template <class V>
+  static constexpr auto skip_if(V &&field, std::string_view,
+                                const meta_context &) -> bool {
+    if constexpr (requires { field.val; }) {
+      using U = std::remove_cvref_t<decltype(field.val)>;
+      if constexpr (std::is_same_v<
+                        U, std::chrono::system_clock::time_point>) {
+        return field.val == U{};
+      }
+    }
+    return false;
+  }
+};
+
+template <> struct meta<dagforge::workflow::TaskSnapshot> {
+  using T = dagforge::workflow::TaskSnapshot;
+
+  static constexpr auto rename_key(std::string_view key) -> std::string_view {
+    if (key == "next_attempt_at") {
+      return "next_attempt_at_ms";
+    }
+    if (key == "started_at") {
+      return "started_at_ms";
+    }
+    return key == "finished_at" ? "finished_at_ms" : key;
+  }
+
+  static constexpr auto read_next_attempt =
+      [](T &task, std::optional<std::int64_t> epoch_millis) {
+    if (!epoch_millis) {
+      task.next_attempt_at.reset();
+      return;
+    }
+    task.next_attempt_at = std::chrono::system_clock::time_point{
+        std::chrono::duration_cast<std::chrono::system_clock::duration>(
+            std::chrono::milliseconds{*epoch_millis})};
+  };
+  static constexpr auto write_next_attempt =
+      [](const T &task) -> std::optional<std::int64_t> {
+    if (!task.next_attempt_at) {
+      return std::nullopt;
+    }
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               task.next_attempt_at->time_since_epoch())
+        .count();
+  };
+
+  static constexpr auto modify = object(
+      "next_attempt_at_ms", custom<read_next_attempt, write_next_attempt>,
+      "started_at_ms",
+      epoch_count<std::chrono::milliseconds>(&T::started_at), "finished_at_ms",
+      epoch_count<std::chrono::milliseconds>(&T::finished_at));
+
+  template <class V>
+  static constexpr auto skip_if(V &&field, std::string_view,
+                                const meta_context &) -> bool {
+    if constexpr (requires { field.val; }) {
+      using U = std::remove_cvref_t<decltype(field.val)>;
+      if constexpr (std::is_same_v<
+                        U, std::chrono::system_clock::time_point>) {
+        return field.val == U{};
+      }
+    }
+    return false;
+  }
+};
+
+template <> struct meta<dagforge::workflow::RunSnapshot> {
+  using T = dagforge::workflow::RunSnapshot;
+  static constexpr auto rename_key(std::string_view key) -> std::string_view {
+    if (key == "created_at") {
+      return "created_at_ms";
+    }
+    if (key == "started_at") {
+      return "started_at_ms";
+    }
+    return key == "finished_at" ? "finished_at_ms" : key;
+  }
+  static constexpr auto modify = object(
+      "created_at_ms", epoch_count<std::chrono::milliseconds>(&T::created_at),
+      "started_at_ms", epoch_count<std::chrono::milliseconds>(&T::started_at),
+      "finished_at_ms",
+      epoch_count<std::chrono::milliseconds>(&T::finished_at));
+
+  template <class V>
+  static constexpr auto skip_if(V &&field, std::string_view key,
+                                const meta_context &) -> bool {
+    using U = std::remove_cvref_t<V>;
+    if constexpr (std::is_same_v<U, std::string>) {
+      return key == "repair_reason" && field.empty();
+    }
+    if constexpr (requires { field.val; }) {
+      using Wrapped = std::remove_cvref_t<decltype(field.val)>;
+      if constexpr (std::is_same_v<
+                        Wrapped, std::chrono::system_clock::time_point>) {
+        return field.val == Wrapped{};
+      }
+    }
+    return false;
+  }
+};
+
+} // namespace glz

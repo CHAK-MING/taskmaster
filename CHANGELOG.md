@@ -12,7 +12,12 @@ All notable changes to DAGForge will be documented in this file.
   Task selects a registered executor and carries executor-owned JSON config;
   Workflow Runtime no longer interprets Command, HTTP, Python, Model, or Tool
   behavior.
-- Workflow Plans are now strict JSON only. System configuration remains TOML.
+- Workflow Plans and system configuration now use strict JSON only.
+- Reworked the CLI around a private CLI11 adapter. Core objects are positional,
+  `run` always waits for the terminal state, and the obsolete `--wait` and
+  trigger-only `--payload` options were removed. The new `api` command exposes
+  semantic Plan, Run, Artifact, health, status, and metrics operations while
+  retaining `api request` as a raw endpoint escape hatch.
 - Replaced the flat run/node lifecycle with explicit Run, Task, and Attempt
   state machines. Cancellation and fail-fast now remain `stopping` until every
   active attempt is reaped.
@@ -20,14 +25,18 @@ All notable changes to DAGForge will be documented in this file.
   no longer modeled as executors.
 - Removed XCom and XCom-based branching from the C++ runtime, including persistence, APIs, CLI, metrics, modules, tests, and examples.
 - Removed the retired 0.3 TaskConfig, DAG manager, scheduler, cron, sensor, MySQL persistence, management CLI, DAG REST routes, and Web UI stacks.
-- Replaced `[scheduler]`, `[database]`, and `[dag_source]` configuration with the 0.4 `[runtime]`, `[sandbox]`, `[workflow]`, and `[api]` contract.
+- Replaced the retired scheduler, database, and DAG-source configuration with
+  the 0.4 `SystemConfig` JSON contract.
 - Removed legacy DAG/task IDs and the DAG-specific Lua task context.
 - Replaced the Shell, Docker, Lua, Noop, and composite executor stack with a
   generic Task executor registry. The shipped `command` adapter remains
   sandboxed and has no direct-host fallback.
-- Unknown TOML fields are rejected instead of being silently ignored.
+- Unknown system configuration fields are rejected instead of being silently
+  ignored.
 
 ### Added
+- Added versioned v1 storage envelopes for Plan, Checkpoint, Evidence, and Artifact metadata that require the explicit current format and fail closed on unversioned or unknown future formats.
+- Added an exclusive persistent-state directory lock, committed-versus-durable mutation results, and API durability status for Plan registration and Artifact upload/delete.
 - Added a reproducible Clang source-coverage workflow with a 90% production
   source-line gate, scenario-driven coverage expansion, repository convention
   checks, and normal/module/sanitizer validation.
@@ -76,10 +85,10 @@ All notable changes to DAGForge will be documented in this file.
 - Added a pinned Google Minijail helper with user/PID/mount/network/IPC/UTS/cgroup namespaces, Landlock, seccomp, private tmpfs, resource limits, integration tests, and release packaging.
 
 ### Changed
-- Moved all TOML/environment-backed configuration DTOs into
-  `dagforge::config`, grouped concrete executors under
-  `executors/command` and `executors/http`, and kept existing `[sandbox]` and
-  `[http_executor]` TOML sections compatible through the loader.
+- System configuration now maps directly to `dagforge::config::SystemConfig`
+  JSON, with concrete executors grouped under `executors.command` and
+  `executors.http`; the legacy compatibility DTO and conversion layer were
+  removed.
 - Reduced the installed sandbox surface to `CommandSpec` and
   `ICommandRunner`; Minijail policy, launch, and process-management declarations
   are now private implementation headers, while single-use node schemas and
@@ -108,24 +117,24 @@ All notable changes to DAGForge will be documented in this file.
   metadata.
 - Removed the unused QueryParams helper and WebSocket stack; the optional API
   now contains only the HTTP control plane used by the runtime.
-- Enum metadata and JSON/TOML enum serialization now share Glaze `enumerate` definitions.
+- Enum metadata and JSON serialization share Glaze `enumerate` definitions.
 - HTTP headers use Boost.Beast fields, preserving case-insensitive lookup and duplicate fields.
 - HTTP requests are serialized through Boost.Beast messages instead of manual
   wire construction; unsupported inbound methods now return `405`.
 - Program, environment, executor, and private-network policy defaults are now
   deny-by-default. Permissive settings are explicit development overrides.
 - Renamed the Command sandbox directory model from workspace to execution root
-  and per-Attempt workdir. Legacy TOML keys and the legacy environment override
-  remain accepted by the loader.
+  and per-Attempt workdir.
 - Shard hashes use `ankerl::unordered_dense` hashing.
 - Removed the direct Boost.Filesystem dependency; Boost.Charconv remains linked because Boost.URL uses it in the current system build.
 - Runtime benchmarks now target the shipped 0.4 runtime primitives instead of the retired Airflow-style scheduler stack.
 
 ### Fixed
-- Workflow state notifications no longer save full checkpoints implicitly.
-  Checkpoints are persisted after explicitly marked nodes and at Run terminal
-  state, restoring the documented contract and removing quadratic state-copy
-  behavior from ordinary Task transitions.
+- Atomic file replacement and deletion no longer collapse post-rename or post-unlink directory synchronization failure into an ordinary pre-commit error. Store caches remain consistent with visible disk state, Plan idempotency preserves deferred durability, Workflow Artifact publication rejects uncertain objects, and later same-directory synchronization can confirm earlier mutations.
+- Workflow state notifications no longer save full checkpoints implicitly. Checkpoints are persisted at initial, explicit node, retry-waiting, paused, stopping, resume, and terminal recovery boundaries, removing quadratic state-copy behavior from ordinary Task transitions without weakening restart semantics.
+- Persistent storage now enforces configured byte ceilings before allocation, rejects committed Evidence corruption while repairing only a syntactically incomplete final crash fragment, verifies Plan digests against content, and treats disk rather than a stale process cache as authoritative for Plan and Checkpoint reads.
+- Evidence retention now uses durable append with bounded batched compaction instead of copying and rewriting the entire retained ledger on every append after capacity is reached.
+- Artifact deletion now reports logical commit separately from deferred physical cleanup and deferred directory-entry durability, normalizes retry failures to `persistence_error`, and provides deterministic non-destructive reconciliation for orphan, malformed, and mismatched file pairs.
 - Application shutdown now quiesces Workflow Runtime, drains active HTTP and
   Task coroutines through owner-shard barriers, and only then stops Runtime
   threads. HTTP server socket closure is executor-affine, eliminating the
@@ -198,7 +207,6 @@ All notable changes to DAGForge will be documented in this file.
 - **Core Architecture:**
   - High-performance DAG (Directed Acyclic Graph) workflow orchestrator built with C++23.
   - Seastar-inspired sharded async runtime minimizing lock contention.
-  - TOML-based DAG definitions with hot-reload support.
 - **Executors:**
   - `shell`: Native subprocess execution.
   - `docker`: Containerized task execution.

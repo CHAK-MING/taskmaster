@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <boost/asio/async_result.hpp>
 
@@ -54,6 +55,11 @@ struct CommandRunRequest {
   }
 };
 
+struct CommandPreparationRequest {
+  CommandSpec command;
+  std::vector<std::string> deferred_environment_keys;
+};
+
 struct CommandRunSink {
   CommandHeartbeatCallback on_heartbeat;
   std::move_only_function<void(const InstanceId &instance_id,
@@ -73,6 +79,9 @@ struct CommandRunSink {
 class ICommandRunner {
 public:
   virtual ~ICommandRunner() = default;
+
+  [[nodiscard]] virtual auto prepare(CommandPreparationRequest request) const
+      -> Result<CommandSpec> = 0;
 
   virtual auto start(CommandRunRequest request, CommandRunSink sink)
       -> Result<void> = 0;

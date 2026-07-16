@@ -2,6 +2,7 @@
 
 #include "dagforge/http/http_client.hpp"
 #include "dagforge/io/context.hpp"
+#include "dagforge/util/ascii.hpp"
 #include "dagforge/util/json.hpp"
 
 #include "detail/egress_policy.hpp"
@@ -14,7 +15,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <cctype>
 #include <charconv>
 #include <chrono>
 #include <compare>
@@ -57,30 +57,13 @@ struct NodeConfig {
   std::vector<std::uint16_t> accepted_statuses;
 };
 
+struct DiagnosticHeader {
+  std::string name;
+  std::string value;
+  bool redacted{false};
+};
+
 } // namespace dagforge::executors::http::detail
-
-namespace glz {
-
-template <> struct meta<dagforge::executors::http::detail::HeaderEntry> {
-  using T = dagforge::executors::http::detail::HeaderEntry;
-  static constexpr auto value = object("name", &T::name, "value", &T::value);
-};
-
-template <> struct meta<dagforge::executors::http::detail::InputHeaderBinding> {
-  using T = dagforge::executors::http::detail::InputHeaderBinding;
-  static constexpr auto value =
-      object("input", &T::input, "header", &T::header);
-};
-
-template <> struct meta<dagforge::executors::http::detail::NodeConfig> {
-  using T = dagforge::executors::http::detail::NodeConfig;
-  static constexpr auto value =
-      object("method", &T::method, "url", &T::url, "headers", &T::headers,
-             "input_headers", &T::input_headers, "body", &T::body, "body_input",
-             &T::body_input, "accepted_statuses", &T::accepted_statuses);
-};
-
-} // namespace glz
 
 namespace dagforge::executors::http {
 namespace {
@@ -89,26 +72,19 @@ namespace transport = ::dagforge::http;
 
 using executors::detail::add_output;
 using executors::detail::input_exists;
+using executors::detail::outputs_supported;
 
-[[nodiscard]] auto lowercase_ascii(std::string value) -> std::string {
-  std::ranges::transform(value, value.begin(), [](unsigned char ch) {
-    return static_cast<char>(std::tolower(ch));
-  });
-  return value;
-}
+inline constexpr std::array<std::string_view, 4> kSupportedOutputs{
+    "status", "body", "headers", "result"};
 
-[[nodiscard]] auto parse_node_config(const JsonValue &config)
+[[nodiscard]] auto parse_node_config(const JsonPayload &config)
     -> Result<detail::NodeConfig> {
-  return parse_json_as<detail::NodeConfig>(dump_json(config));
+  return parse_json_as<detail::NodeConfig>(config.encoded());
 }
 
 [[nodiscard]] auto encode_node_config(const detail::NodeConfig &config)
-    -> Result<JsonValue> {
-  auto encoded = serialize_json(config);
-  if (!encoded) {
-    return fail(encoded.error());
-  }
-  return parse_json(*encoded);
+    -> Result<JsonPayload> {
+  return JsonPayload::from(config);
 }
 
 [[nodiscard]] auto parse_method(std::string_view method)
@@ -153,18 +129,13 @@ using executors::detail::input_exists;
       "te",         "trailer",          "upgrade",
       "expect",
   };
-  const auto normalized = lowercase_ascii(std::string{name});
+  const auto normalized = util::ascii_lowercase(name);
   return std::ranges::find(kForbidden, normalized) != kForbidden.end();
 }
 
 [[nodiscard]] auto header_wire_bytes(std::string_view name,
                                      std::string_view value) -> std::uint64_t {
   return static_cast<std::uint64_t>(name.size() + value.size() + 4);
-}
-
-[[nodiscard]] auto output_supported(std::string_view output) -> bool {
-  return output == "status" || output == "body" || output == "headers" ||
-         output == "result";
 }
 
 struct HttpRequestState {
@@ -359,25 +330,11 @@ auto close_idle_clients(HttpShardState &state) -> void {
 
 [[nodiscard]] auto value_to_text(const workflow::WorkflowValue &value)
     -> Result<std::pair<std::string, bool>> {
-  if (std::holds_alternative<std::monostate>(value)) {
-    return ok(std::pair{std::string{}, false});
+  if (std::holds_alternative<workflow::ArtifactRef>(value)) {
+    return fail(Error::Unsupported);
   }
-  if (const auto *boolean = std::get_if<bool>(&value)) {
-    return ok(std::pair{std::format("{}", *boolean), false});
-  }
-  if (const auto *integer = std::get_if<std::int64_t>(&value)) {
-    return ok(std::pair{std::format("{}", *integer), false});
-  }
-  if (const auto *real = std::get_if<double>(&value)) {
-    return ok(std::pair{std::format("{}", *real), false});
-  }
-  if (const auto *text = std::get_if<std::string>(&value)) {
-    return ok(std::pair{*text, false});
-  }
-  if (const auto *json = std::get_if<JsonValue>(&value)) {
-    return ok(std::pair{dump_json(*json), true});
-  }
-  return fail(Error::Unsupported);
+  return ok(std::pair{workflow::workflow_value_text(value),
+                      std::holds_alternative<JsonPayload>(value)});
 }
 
 [[nodiscard]] auto valid_utf8(std::span<const std::uint8_t> bytes) -> bool {
@@ -419,16 +376,15 @@ auto close_idle_clients(HttpShardState &state) -> void {
   return Error::ProtocolError;
 }
 
-[[nodiscard]] auto response_headers_json(const transport::HttpHeaders &headers)
-    -> JsonValue {
-  JsonValue encoded = JsonValue::array_t{};
+[[nodiscard]] auto response_headers(const transport::HttpHeaders &headers)
+    -> Result<JsonPayload> {
+  std::vector<detail::HeaderEntry> encoded;
+  encoded.reserve(headers.size());
   for (const auto &field : headers) {
-    JsonValue item = JsonValue::object_t{};
-    item["name"] = field.name;
-    item["value"] = field.value;
-    encoded.get_array().push_back(std::move(item));
+    encoded.push_back(detail::HeaderEntry{.name = field.name,
+                                          .value = field.value});
   }
-  return encoded;
+  return JsonPayload::from(encoded);
 }
 
 [[nodiscard]] auto sensitive_response_header(std::string_view name) -> bool {
@@ -436,7 +392,7 @@ auto close_idle_clients(HttpShardState &state) -> void {
       "authorization", "proxy-authorization", "cookie",
       "set-cookie",    "www-authenticate",    "proxy-authenticate",
   };
-  const auto normalized = lowercase_ascii(std::string{name});
+  const auto normalized = util::ascii_lowercase(name);
   return std::ranges::find(kSensitiveHeaders, normalized) !=
              kSensitiveHeaders.end() ||
          normalized.ends_with("-api-key") ||
@@ -444,16 +400,17 @@ auto close_idle_clients(HttpShardState &state) -> void {
          normalized.ends_with("-token");
 }
 
-[[nodiscard]] auto diagnostic_response_headers_json(
-    const transport::HttpHeaders &headers) -> JsonValue {
-  JsonValue encoded = JsonValue::array_t{};
+[[nodiscard]] auto diagnostic_response_headers(
+    const transport::HttpHeaders &headers) -> std::vector<detail::DiagnosticHeader> {
+  std::vector<detail::DiagnosticHeader> encoded;
+  encoded.reserve(headers.size());
   for (const auto &field : headers) {
     const auto redacted = sensitive_response_header(field.name);
-    JsonValue item = JsonValue::object_t{};
-    item["name"] = field.name;
-    item["value"] = redacted ? "[redacted]" : field.value;
-    item["redacted"] = redacted;
-    encoded.get_array().push_back(std::move(item));
+    encoded.push_back(detail::DiagnosticHeader{
+        .name = field.name,
+        .value = redacted ? "[redacted]" : field.value,
+        .redacted = redacted,
+    });
   }
   return encoded;
 }
@@ -461,63 +418,79 @@ auto close_idle_clients(HttpShardState &state) -> void {
 [[nodiscard]] auto http_operation_failure(
     const std::shared_ptr<HttpRequestState> &state,
     std::error_code operation_error) -> workflow::ExecutionFailure {
-  JsonValue details = JsonValue::object_t{};
-  JsonValue cause = JsonValue::object_t{};
-  cause["category"] = std::string{operation_error.category().name()};
-  cause["value"] = static_cast<std::int64_t>(operation_error.value());
-  cause["message"] = operation_error.message();
-  details["cause"] = std::move(cause);
+  auto details = JsonPayload::from(
+      glz::obj{"cause", workflow::FailureCause{
+                            .category = operation_error.category().name(),
+                            .value = operation_error.value(),
+                            .message = operation_error.message(),
+                        }});
+  if (!details) {
+    return workflow::make_execution_failure(
+        Error::ProtocolError, "http_failure_details_encode_failed",
+        "HTTP failure diagnostics could not be encoded");
+  }
   if (state->timed_out) {
     return workflow::make_execution_failure(
         Error::Timeout, "http_timed_out", "HTTP request timed out",
-        std::move(details));
+        std::move(*details));
   }
   if (state->cancel_requested) {
     return workflow::make_execution_failure(
         Error::Cancelled, "http_cancelled",
-        "HTTP request was cancelled", std::move(details));
+        "HTTP request was cancelled", std::move(*details));
   }
   return workflow::make_execution_failure(
-      operation_error, "http_transport_failed", "HTTP transport failed",
-      std::move(details));
+      operation_error, "http_transport_failed", "HTTP transport failed");
 }
 
 [[nodiscard]] auto http_response_details(
     std::uint16_t status, const transport::HttpHeaders &headers,
-    std::span<const std::uint8_t> body) -> JsonValue {
-  JsonValue details = JsonValue::object_t{};
-  details["status"] = static_cast<std::int64_t>(status);
-  details["body_size_bytes"] = static_cast<std::int64_t>(body.size());
+    std::span<const std::uint8_t> body) -> Result<JsonPayload> {
   const auto headers_valid = valid_response_headers(headers);
   const auto body_valid = valid_utf8(body);
-  details["headers_valid_utf8"] = headers_valid;
-  details["body_valid_utf8"] = body_valid;
-  if (headers_valid) {
-    details["headers"] = diagnostic_response_headers_json(headers);
-  }
-  if (body_valid) {
-    details["body"] = std::string{
-        reinterpret_cast<const char *>(body.data()), body.size()};
-  }
-  return details;
+  const auto diagnostic_headers =
+      headers_valid
+          ? std::optional{diagnostic_response_headers(headers)}
+          : std::nullopt;
+  const auto diagnostic_body =
+      body_valid
+          ? std::optional{std::string{
+                reinterpret_cast<const char *>(body.data()), body.size()}}
+          : std::nullopt;
+  return JsonPayload::from(glz::obj{
+      "status", status, "body_size_bytes", body.size(),
+      "headers_valid_utf8", headers_valid, "body_valid_utf8", body_valid,
+      "headers", diagnostic_headers, "body", diagnostic_body});
 }
 
 [[nodiscard]] auto rejected_status_failure(
     std::uint16_t status, const transport::HttpHeaders &headers,
     std::span<const std::uint8_t> body) -> workflow::ExecutionFailure {
+  auto details = http_response_details(status, headers, body);
+  if (!details) {
+    return workflow::make_execution_failure(
+        Error::ProtocolError, "http_failure_details_encode_failed",
+        "HTTP response diagnostics could not be encoded");
+  }
   return workflow::make_execution_failure(
       error_for_status(status), "http_status_rejected",
       std::format("HTTP response status {} was not accepted", status),
-      http_response_details(status, headers, body));
+      std::move(*details));
 }
 
 [[nodiscard]] auto invalid_response_failure(
     std::uint16_t status, const transport::HttpHeaders &headers,
     std::span<const std::uint8_t> body) -> workflow::ExecutionFailure {
+  auto details = http_response_details(status, headers, body);
+  if (!details) {
+    return workflow::make_execution_failure(
+        Error::ProtocolError, "http_failure_details_encode_failed",
+        "HTTP response diagnostics could not be encoded");
+  }
   return workflow::make_execution_failure(
       Error::ProtocolError, "http_invalid_response",
       "HTTP response contains invalid UTF-8 data",
-      http_response_details(status, headers, body));
+      std::move(*details));
 }
 
 auto cancel_state(const std::shared_ptr<HttpRequestState> &state,
@@ -670,15 +643,22 @@ auto run_http_request(std::shared_ptr<HttpExecutorCore> core, shard_id shard,
     co_return;
   }
 
-  const std::string body{reinterpret_cast<const char *>(response->body.data()),
-                         response->body.size()};
+  const std::string body{response->body_as_string()};
+  auto headers = response_headers(response->headers);
+  if (!headers) {
+    complete_request(
+        core, shard, state,
+        workflow::task_failed(workflow::make_execution_failure(
+            headers.error(), "http_response_headers_encode_failed",
+            "HTTP response headers could not be encoded")));
+    co_return;
+  }
   workflow::ExecutorOutputs outputs;
   outputs.reserve(requested_outputs.size());
   add_output(outputs, requested_outputs, "status",
              static_cast<std::int64_t>(status));
   add_output(outputs, requested_outputs, "body", body);
-  add_output(outputs, requested_outputs, "headers",
-             response_headers_json(response->headers));
+  add_output(outputs, requested_outputs, "headers", std::move(*headers));
   add_output(outputs, requested_outputs, "result", body);
   complete_request(core, shard, state,
                    workflow::task_succeeded(std::move(outputs)));
@@ -694,8 +674,8 @@ public:
   }
 
   [[nodiscard]] auto compile(
-      JsonValue config, workflow::ExecutorCompileContext context) const
-      -> Result<JsonValue> override {
+      JsonPayload config, workflow::ExecutorCompileContext context) const
+      -> Result<workflow::CompiledExecutorConfig> override {
     auto parsed = parse_node_config(config);
     if (!parsed) {
       return fail(parsed.error());
@@ -731,11 +711,7 @@ public:
     std::unordered_set<std::string> header_names;
     std::uint64_t static_header_bytes = 0;
     for (const auto &header : parsed->headers) {
-      auto normalized = header.name;
-      std::ranges::transform(normalized, normalized.begin(),
-                             [](unsigned char ch) {
-                               return static_cast<char>(std::tolower(ch));
-                             });
+      auto normalized = util::ascii_lowercase(header.name);
       if (!valid_header_name(header.name) ||
           !safe_header_value(header.value) ||
           executor_owned_header(header.name) ||
@@ -746,11 +722,7 @@ public:
           header_wire_bytes(header.name, header.value);
     }
     for (const auto &binding : parsed->input_headers) {
-      auto normalized = binding.header;
-      std::ranges::transform(normalized, normalized.begin(),
-                             [](unsigned char ch) {
-                               return static_cast<char>(std::tolower(ch));
-                             });
+      auto normalized = util::ascii_lowercase(binding.header);
       if (binding.input.empty() || !input_exists(context, binding.input) ||
           !valid_header_name(binding.header) ||
           executor_owned_header(binding.header) ||
@@ -772,13 +744,16 @@ public:
     }
     std::ranges::sort(parsed->accepted_statuses);
 
-    for (const auto &output : context.outputs) {
-      if (!output_supported(output.str())) {
-        return fail(Error::InvalidArgument);
-      }
+    if (!outputs_supported(context.outputs, kSupportedOutputs)) {
+      return fail(Error::InvalidArgument);
     }
 
-    return encode_node_config(*parsed);
+    auto encoded = encode_node_config(*parsed);
+    if (!encoded) {
+      return fail(encoded.error());
+    }
+    return ok(workflow::CompiledExecutorConfig::from_encoded(
+        std::move(*encoded)));
   }
 
   auto start(workflow::TaskExecutionRequest request,
@@ -799,7 +774,7 @@ public:
       return fail(Error::AlreadyExists);
     }
 
-    auto parsed = parse_node_config(request.config);
+    auto parsed = parse_node_config(request.config.encoded());
     if (!parsed) {
       return fail(parsed.error());
     }

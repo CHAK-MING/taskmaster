@@ -1,7 +1,7 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include <ankerl/unordered_dense.h>
+#include "dagforge/util/hash.hpp"
 
 #include <functional>
 #include <string>
@@ -15,8 +15,7 @@ struct StringHash {
 
   [[nodiscard]] auto operator()(std::string_view value) const noexcept
       -> std::size_t {
-    return static_cast<std::size_t>(
-        ankerl::unordered_dense::hash<std::string_view>{}(value));
+    return util::hash_value(value);
   }
 
   [[nodiscard]] auto operator()(const std::string &value) const noexcept

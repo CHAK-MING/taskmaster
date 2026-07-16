@@ -4,11 +4,16 @@
 #include "dagforge/config/system_config_loader.hpp"
 #include "dagforge/executors/command/executor.hpp"
 #include "dagforge/executors/http/executor.hpp"
+#include "dagforge/workflow/artifact_store.hpp"
+#include "dagforge/workflow/checkpoint_store.hpp"
+#include "dagforge/workflow/evidence_ledger.hpp"
 #include "dagforge/workflow/executor_registry.hpp"
 #include "dagforge/workflow/plan_store.hpp"
 #include "dagforge/workflow/workflow_control_plane.hpp"
 #include "dagforge/workflow/workflow_runtime.hpp"
 #include "dagforge/util/log.hpp"
+
+#include "../workflow/storage/detail/storage_directory_lock.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -18,6 +23,113 @@
 #include <utility>
 
 namespace dagforge {
+namespace {
+
+struct WorkflowStores {
+  std::shared_ptr<workflow::IArtifactStore> artifacts;
+  std::shared_ptr<workflow::EvidenceLedger> evidence;
+  std::shared_ptr<workflow::CheckpointStore> checkpoints;
+  std::shared_ptr<workflow::PlanStore> plans;
+};
+
+[[nodiscard]] auto make_workflow_stores(const config::SystemConfig &config)
+    -> Result<WorkflowStores> {
+  if (config.storage.enabled) {
+    const auto root = std::filesystem::path(config.storage.directory);
+    auto artifacts = std::make_shared<workflow::FileArtifactStore>(
+        root / "artifacts", config.storage.max_artifact_metadata_bytes,
+        config.storage.max_artifact_bytes);
+    auto reconciliation = artifacts->reconcile();
+    if (!reconciliation) {
+      return fail(reconciliation.error());
+    }
+    if (!reconciliation->clean()) {
+      using State = workflow::ArtifactReconciliationState;
+      log::warn(
+          "Artifact reconciliation found cleanup debt: orphan_data={} "
+          "orphan_metadata={} malformed_metadata={} content_mismatch={} "
+          "invalid_entries={}",
+          reconciliation->count(State::OrphanData),
+          reconciliation->count(State::OrphanMetadata),
+          reconciliation->count(State::MalformedMetadata),
+          reconciliation->count(State::ContentMismatch),
+          reconciliation->count(State::InvalidEntry));
+    }
+    auto evidence = workflow::EvidenceLedger::open(
+        root / "evidence.jsonl", config.storage.max_evidence_records,
+        config.storage.max_evidence_file_bytes,
+        config.storage.max_evidence_record_bytes);
+    if (!evidence) {
+      return fail(evidence.error());
+    }
+    return ok(WorkflowStores{
+        .artifacts = std::move(artifacts),
+        .evidence = std::move(*evidence),
+        .checkpoints = std::make_shared<workflow::CheckpointStore>(
+            root / "runs", config.storage.max_checkpoint_bytes),
+        .plans = std::make_shared<workflow::PlanStore>(
+            root / "plans", config.storage.max_plan_bytes),
+    });
+  }
+  return ok(WorkflowStores{
+      .artifacts = std::make_shared<workflow::InMemoryArtifactStore>(),
+      .evidence = std::make_shared<workflow::EvidenceLedger>(
+          config.storage.max_evidence_records),
+      .checkpoints = std::make_shared<workflow::CheckpointStore>(),
+      .plans = std::make_shared<workflow::PlanStore>(),
+  });
+}
+
+auto restore_workflow_state(workflow::WorkflowControlPlane &control,
+                            workflow::WorkflowRuntime &runtime,
+                            workflow::PlanStore &plans,
+                            workflow::CheckpointStore &checkpoints)
+    -> Result<void> {
+  auto stored_plans = plans.list();
+  if (!stored_plans) {
+    return fail(stored_plans.error());
+  }
+  for (auto &stored : *stored_plans) {
+    auto restored = control.restore_plan(std::move(stored.plan), stored.plan_id,
+                                         stored.digest);
+    if (!restored) {
+      return fail(restored.error());
+    }
+  }
+
+  auto stored_runs = checkpoints.list();
+  if (!stored_runs) {
+    return fail(stored_runs.error());
+  }
+  for (auto &checkpoint : *stored_runs) {
+    auto plan = control.get_plan(checkpoint.snapshot.plan_id);
+    if (!plan) {
+      plan = control.restore_plan(checkpoint.plan,
+                                  checkpoint.snapshot.plan_id);
+      if (plan) {
+        auto persisted = plans.save(**plan);
+        if (!persisted) {
+          return fail(persisted.error());
+        }
+        if (persisted->durability_deferred) {
+          log::warn(
+              "Restored Plan {} is visible but directory durability is deferred",
+              (*plan)->plan_id);
+        }
+      }
+    }
+    if (!plan) {
+      return fail(plan.error());
+    }
+    auto restored = runtime.restore(*plan, std::move(checkpoint));
+    if (!restored) {
+      return fail(restored.error());
+    }
+  }
+  return ok();
+}
+
+} // namespace
 
 Application::Application() : Application(config::SystemConfig{}) {}
 
@@ -32,18 +144,30 @@ Application::Application(config::SystemConfig config)
 Application::~Application() { stop(); }
 
 auto Application::load_config(std::string_view path) -> Result<void> {
-  if (is_running()) {
-    return fail(Error::InvalidState);
-  }
   auto loaded = config::SystemConfigLoader::load_from_file(path);
   if (!loaded) {
     return fail(loaded.error());
   }
-  config_ = std::move(*loaded);
+  return apply_config(std::move(*loaded));
+}
+
+auto Application::apply_config(config::SystemConfig config) -> Result<void> {
+  if (is_running()) {
+    return fail(Error::InvalidState);
+  }
+  auto previous = config_;
+  config_ = std::move(config);
   auto rebuilt = rebuild_components();
   if (!rebuilt) {
-    initialization_error_ = rebuilt.error();
-    return fail(rebuilt.error());
+    const auto configuration_error = rebuilt.error();
+    config_ = std::move(previous);
+    auto restored = rebuild_components();
+    if (!restored) {
+      initialization_error_ = restored.error();
+      return fail(restored.error());
+    }
+    initialization_error_.reset();
+    return fail(configuration_error);
   }
   initialization_error_.reset();
   return ok();
@@ -53,14 +177,8 @@ auto Application::config() const noexcept -> const config::SystemConfig & {
   return config_;
 }
 
-auto Application::config() noexcept -> config::SystemConfig & { return config_; }
-
 auto Application::rebuild_components() -> Result<void> {
-  api_.reset();
-  workflow_runtime_.reset();
-  workflow_control_plane_.reset();
-  executor_registry_.reset();
-  runtime_.reset();
+  shutdown_components();
 
   const auto shard_count =
       config_.runtime.shards > 0
@@ -95,72 +213,35 @@ auto Application::rebuild_components() -> Result<void> {
   }
 
   if (config_.workflow.enabled) {
-    std::shared_ptr<workflow::IArtifactStore> artifact_store;
-    std::shared_ptr<workflow::EvidenceLedger> evidence_ledger;
-    std::shared_ptr<workflow::CheckpointStore> checkpoint_store;
-    std::shared_ptr<workflow::PlanStore> plan_store;
+    std::unique_ptr<workflow::StorageDirectoryLock> storage_lock;
     if (config_.storage.enabled) {
-      const auto root = std::filesystem::path(config_.storage.directory);
-      artifact_store =
-          std::make_shared<workflow::FileArtifactStore>(root / "artifacts");
-      evidence_ledger = std::make_shared<workflow::EvidenceLedger>(
-          root / "evidence.jsonl", config_.storage.max_evidence_records);
-      checkpoint_store =
-          std::make_shared<workflow::CheckpointStore>(root / "runs");
-      plan_store = std::make_shared<workflow::PlanStore>(root / "plans");
-    } else {
-      artifact_store = std::make_shared<workflow::InMemoryArtifactStore>();
-      evidence_ledger = std::make_shared<workflow::EvidenceLedger>(
-          config_.storage.max_evidence_records);
-      checkpoint_store = std::make_shared<workflow::CheckpointStore>();
-      plan_store = std::make_shared<workflow::PlanStore>();
+      auto acquired = workflow::StorageDirectoryLock::acquire(
+          std::filesystem::path{config_.storage.directory});
+      if (!acquired) {
+        return fail(acquired.error());
+      }
+      storage_lock = std::move(*acquired);
+    }
+    auto stores = make_workflow_stores(config_);
+    if (!stores) {
+      return fail(stores.error());
     }
 
     workflow_control_plane_ = std::make_unique<workflow::WorkflowControlPlane>(
         *executor_registry_,
-        workflow::AdmissionPolicy{config_.admission}, plan_store);
+        workflow::PlanValidator{config_.admission}, stores->plans);
     workflow_runtime_ = std::make_unique<workflow::WorkflowRuntime>(
-        *runtime_, *executor_registry_, std::move(artifact_store),
-        std::move(evidence_ledger), checkpoint_store,
+        *runtime_, *executor_registry_, std::move(stores->artifacts),
+        std::move(stores->evidence), stores->checkpoints,
         config_.storage.max_completed_runs);
 
-    auto plans = plan_store->list();
-    if (!plans) {
-      return fail(plans.error());
+    auto restored = restore_workflow_state(
+        *workflow_control_plane_, *workflow_runtime_, *stores->plans,
+        *stores->checkpoints);
+    if (!restored) {
+      return restored;
     }
-    for (auto &stored : *plans) {
-      auto restored = workflow_control_plane_->restore_plan(
-          std::move(stored.plan), stored.plan_id, stored.digest);
-      if (!restored) {
-        return fail(restored.error());
-      }
-    }
-
-    auto checkpoints = checkpoint_store->list();
-    if (!checkpoints) {
-      return fail(checkpoints.error());
-    }
-    for (auto &checkpoint : *checkpoints) {
-      auto plan = workflow_control_plane_->get_plan(checkpoint.snapshot.plan_id);
-      if (!plan) {
-        plan = workflow_control_plane_->restore_plan(
-            checkpoint.plan, checkpoint.snapshot.plan_id);
-        if (plan) {
-          auto persisted = plan_store->save(**plan);
-          if (!persisted) {
-            return fail(persisted.error());
-          }
-        }
-      }
-      if (!plan) {
-        return fail(plan.error());
-      }
-      auto restored =
-          workflow_runtime_->restore(*plan, std::move(checkpoint));
-      if (!restored) {
-        return fail(restored.error());
-      }
-    }
+    storage_lock_ = std::move(storage_lock);
   }
   if (config_.api.enabled) {
     api_ = std::make_unique<ApiServer>(*this);
@@ -169,17 +250,7 @@ auto Application::rebuild_components() -> Result<void> {
 }
 
 auto Application::init() -> Result<void> {
-  const auto api_configuration_changed =
-      config_.api.enabled != static_cast<bool>(api_);
-  const auto workflow_configuration_changed =
-      config_.workflow.enabled != static_cast<bool>(workflow_runtime_) ||
-      config_.workflow.enabled != static_cast<bool>(workflow_control_plane_);
-  const auto http_executor_configuration_changed =
-      executor_registry_ != nullptr &&
-      config_.executors.http.enabled != executor_registry_->contains("http");
-  if (initialization_error_ || !runtime_ || !executor_registry_ ||
-      api_configuration_changed || workflow_configuration_changed ||
-      http_executor_configuration_changed) {
+  if (initialization_error_ || !runtime_ || !executor_registry_) {
     auto rebuilt = rebuild_components();
     if (!rebuilt) {
       initialization_error_ = rebuilt.error();
@@ -191,38 +262,24 @@ auto Application::init() -> Result<void> {
 }
 
 auto Application::start() -> Result<void> {
-  if (running_.exchange(true, std::memory_order_acq_rel)) {
+  if (running_.load(std::memory_order_acquire)) {
     return ok();
   }
-  const auto api_configuration_changed =
-      config_.api.enabled != static_cast<bool>(api_);
-  const auto workflow_configuration_changed =
-      config_.workflow.enabled != static_cast<bool>(workflow_runtime_) ||
-      config_.workflow.enabled != static_cast<bool>(workflow_control_plane_);
-  const auto http_executor_configuration_changed =
-      executor_registry_ != nullptr &&
-      config_.executors.http.enabled != executor_registry_->contains("http");
-  if (initialization_error_ || !runtime_ || !executor_registry_ ||
-      api_configuration_changed || workflow_configuration_changed ||
-      http_executor_configuration_changed) {
-    auto initialized = init();
-    if (!initialized) {
-      running_.store(false, std::memory_order_release);
-      return fail(initialized.error());
-    }
+  auto initialized = init();
+  if (!initialized) {
+    return fail(initialized.error());
   }
 
   auto runtime_started = runtime_->start();
   if (!runtime_started) {
-    running_.store(false, std::memory_order_release);
+    shutdown_components();
     return fail(runtime_started.error());
   }
 
   if (workflow_runtime_) {
     auto activated = workflow_runtime_->activate_restored();
     if (!activated) {
-      runtime_->stop();
-      running_.store(false, std::memory_order_release);
+      shutdown_components();
       return fail(activated.error());
     }
   }
@@ -230,41 +287,47 @@ auto Application::start() -> Result<void> {
   if (config_.api.enabled && api_) {
     auto api_started = api_->start();
     if (!api_started) {
-      runtime_->stop();
-      running_.store(false, std::memory_order_release);
+      shutdown_components();
       return fail(api_started.error());
     }
   }
+  running_.store(true, std::memory_order_release);
   return ok();
 }
 
-auto Application::stop() noexcept -> void {
-  if (!running_.exchange(false, std::memory_order_acq_rel)) {
-    return;
-  }
+auto Application::shutdown_components() noexcept -> void {
+  running_.store(false, std::memory_order_release);
   if (api_) {
     api_->stop();
+    api_.reset();
   }
-  if (workflow_runtime_ && runtime_ && runtime_->is_running()) {
+  const bool runtime_running = runtime_ && runtime_->is_running();
+  if (workflow_runtime_ && runtime_running) {
     auto quiesced = workflow_runtime_->quiesce(std::chrono::seconds(10));
     if (!quiesced) {
       log::error("Workflow runtime shutdown did not quiesce: {}",
                  quiesced.error().message());
     }
   }
-  if (executor_registry_) {
+  if (executor_registry_ && runtime_running) {
     auto quiesced = executor_registry_->quiesce(std::chrono::seconds(10));
     if (!quiesced) {
       log::error("Task executors did not quiesce: {}",
                  quiesced.error().message());
     }
   }
-  workflow_runtime_.reset();
-  workflow_control_plane_.reset();
-  executor_registry_.reset();
   if (runtime_) {
     runtime_->stop();
   }
+  workflow_runtime_.reset();
+  workflow_control_plane_.reset();
+  executor_registry_.reset();
+  runtime_.reset();
+  storage_lock_.reset();
+}
+
+auto Application::stop() noexcept -> void {
+  shutdown_components();
 }
 
 auto Application::is_running() const noexcept -> bool {

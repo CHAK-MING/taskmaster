@@ -14,7 +14,7 @@ namespace dagforge::io {
 
 TimingWheel::TimingWheel(IoContext &io, std::chrono::nanoseconds tick,
                          std::size_t slot_count)
-    : io_(io), timer_(io),
+    : timer_(io),
       tick_(std::max(tick, std::chrono::nanoseconds(std::chrono::milliseconds(1)))),
       buckets_(std::max<std::size_t>(slot_count, 1)) {}
 

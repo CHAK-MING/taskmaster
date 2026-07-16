@@ -27,25 +27,34 @@ mxx{modules/*}:
 lib{dagforge}:                                                   \
   cxx{dagforge/core/shard                                         \
       dagforge/core/runtime                                       \
-      dagforge/workflow/admission_policy                          \
-      dagforge/workflow/artifact_store                            \
-      dagforge/workflow/checkpoint_store                          \
-      dagforge/workflow/detail/storage_codec                      \
+      dagforge/workflow/storage/artifact_store                    \
+      dagforge/workflow/storage/checkpoint_store                  \
+      dagforge/workflow/storage/detail/checkpoint_validator      \
+      dagforge/workflow/storage/detail/durable_file              \
+      dagforge/workflow/storage/detail/json_file_catalog         \
+      dagforge/workflow/storage/detail/storage_directory_lock    \
+      dagforge/workflow/storage/detail/storage_codec              \
+      dagforge/workflow/detail/sha256                            \
       dagforge/workflow/detail/repair_planner                     \
-      dagforge/workflow/detail/recovery_state                     \
-      dagforge/workflow/evidence_ledger                           \
-      dagforge/workflow/execution_failure                         \
-      dagforge/workflow/executor_registry                         \
-      dagforge/workflow/plan_compiler                             \
-      dagforge/workflow/plan_store                                \
-      dagforge/workflow/run_value_store                           \
-      dagforge/workflow/workflow_runtime                          \
-      dagforge/workflow/workflow_control_plane                    \
-      dagforge/workflow/workflow_plan_loader                     \
+      dagforge/workflow/detail/retry_policy                       \
+      dagforge/workflow/detail/state_machine                      \
+      dagforge/workflow/model/workflow_value                     \
+      dagforge/workflow/storage/evidence_ledger                   \
+      dagforge/workflow/runtime/execution_failure                 \
+      dagforge/workflow/runtime/executor_registry                 \
+      dagforge/workflow/planning/plan_compiler                    \
+      dagforge/workflow/storage/plan_store                        \
+      dagforge/workflow/planning/plan_validator                   \
+      dagforge/workflow/runtime/run_value_store                   \
+      dagforge/workflow/runtime/workflow_runtime                  \
+      dagforge/workflow/runtime/workflow_runtime_bootstrap        \
+      dagforge/workflow/planning/workflow_control_plane           \
+      dagforge/workflow/planning/workflow_plan_loader            \
       dagforge/io/context                                         \
       dagforge/io/timing_wheel                                    \
       dagforge/app/metrics_exporter                               \
       dagforge/sandbox/detail/command_policy                      \
+      dagforge/sandbox/detail/policy_command_runner               \
       dagforge/sandbox/minijail_command_runner                    \
       dagforge/executors/command/executor                         \
       dagforge/executors/http/egress_policy                       \
@@ -54,8 +63,9 @@ lib{dagforge}:                                                   \
       dagforge/app/api/api_server                                 \
       dagforge/app/api/detail/http_metrics_registry               \
       dagforge/app/api/detail/routes/system                       \
+      dagforge/app/api/detail/routes/workflow_http_adapter        \
       dagforge/app/api/detail/routes/workflows                    \
-      dagforge/http/http_parser                                   \
+      dagforge/http/detail/beast_bridge                           \
       dagforge/http/router                                        \
       dagforge/http/http_server                                   \
       dagforge/http/http_client                                   \

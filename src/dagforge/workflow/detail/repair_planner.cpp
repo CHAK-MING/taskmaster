@@ -16,10 +16,6 @@
 namespace dagforge::workflow::detail {
 namespace {
 
-[[nodiscard]] auto output_key(const OutputRef &output) -> std::string {
-  return std::format("{}\x1f{}", output.node_id, output.port);
-}
-
 [[nodiscard]] auto same_inputs(std::span<const InputBinding> left,
                                std::span<const InputBinding> right) -> bool {
   if (left.size() != right.size()) {
@@ -42,7 +38,7 @@ namespace {
 [[nodiscard]] auto same_execution_contract(const NodePlan &left,
                                             const NodePlan &right) -> bool {
   return left.executor == right.executor &&
-         dump_json(left.config) == dump_json(right.config) &&
+         left.config == right.config &&
          same_inputs(left.inputs, right.inputs) &&
          same_outputs(left.outputs, right.outputs) &&
          left.timeout == right.timeout;
@@ -68,20 +64,6 @@ namespace {
   return edges;
 }
 
-[[nodiscard]] auto revised_source_plan(const ExecutionPlan &execution)
-    -> WorkflowPlan {
-  WorkflowPlan plan;
-  plan.workflow_id = execution.workflow_id.clone();
-  plan.nodes.reserve(execution.nodes.size());
-  for (const auto &node : execution.nodes) {
-    plan.nodes.push_back(node.plan);
-  }
-  plan.edges = execution.edges;
-  plan.outputs = execution.outputs;
-  plan.policy = execution.policy;
-  return plan;
-}
-
 } // namespace
 
 auto plan_repair(const ExecutionPlan &revised,
@@ -100,14 +82,13 @@ auto plan_repair(const ExecutionPlan &revised,
   for (const auto &task : parent.snapshot.tasks) {
     parent_tasks.emplace(task.node_id.str(), std::addressof(task));
   }
-  std::unordered_map<std::string,
-                     const std::pair<OutputRef, WorkflowValue> *>
+  std::unordered_map<OutputRef, const WorkflowValue *, OutputRefHash>
       parent_values;
   for (const auto &value : parent.values) {
-    parent_values.emplace(output_key(value.first), std::addressof(value));
+    parent_values.emplace(value.output, std::addressof(value.value));
   }
 
-  const auto target_plan = revised_source_plan(revised);
+  const auto target_plan = source_plan(revised);
   RepairPlan result;
   result.decisions.reserve(revised.nodes.size());
 
@@ -138,14 +119,12 @@ auto plan_repair(const ExecutionPlan &revised,
       for (const auto &port : compiled.plan.outputs) {
         OutputRef output{.node_id = compiled.plan.node_id.clone(),
                          .port = port.clone()};
-        const auto key = output_key(output);
-        const auto retained = parent_values.find(key);
+        const auto retained = parent_values.find(output);
         if (retained == parent_values.end()) {
           missing_required_output = true;
           break;
         }
-        if (const auto *artifact =
-                std::get_if<ArtifactRef>(&retained->second->second);
+        if (const auto *artifact = std::get_if<ArtifactRef>(retained->second);
             artifact != nullptr && !artifacts.get(artifact->artifact_id)) {
           missing_required_output = true;
           break;
@@ -158,9 +137,9 @@ auto plan_repair(const ExecutionPlan &revised,
         decision.reason = "reused";
         reusable[node_index] = true;
         result.reused_nodes.emplace(node_key);
-        for (const auto &[output, value] : parent.values) {
-          if (output.node_id == compiled.plan.node_id) {
-            result.values.emplace_back(output, value);
+        for (const auto &entry : parent.values) {
+          if (entry.output.node_id == compiled.plan.node_id) {
+            result.values.push_back(entry);
           }
         }
       }

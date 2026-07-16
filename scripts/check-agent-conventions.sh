@@ -48,10 +48,9 @@ report_matches \
   --glob '!include/dagforge/workflow/task_executor.hpp'
 
 report_matches \
-  "Glaze read/write calls must stay behind DAGForge JSON/TOML wrappers:" \
+  "Glaze read/write calls must stay behind DAGForge JSON wrappers:" \
   '\bglz::(read|write)[A-Za-z0-9_]*\b' \
   --glob '!include/dagforge/util/json.hpp' \
-  --glob '!include/dagforge/config/toml_util.hpp' \
   --glob '!tests/**' \
   --glob '!bench/**'
 

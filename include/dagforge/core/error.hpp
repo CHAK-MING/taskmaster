@@ -47,6 +47,43 @@ enum class Error : std::uint8_t {
   Unknown,
 };
 
+inline constexpr std::array<std::string_view, 29> kErrorNames = {
+    "success",
+    "file_not_found",
+    "file_open_failed",
+    "parse_error",
+    "database_error",
+    "database_open_failed",
+    "database_query_failed",
+    "invalid_argument",
+    "not_found",
+    "already_exists",
+    "timeout",
+    "cancelled",
+    "cycle_detected",
+    "read_only",
+    "has_dependents",
+    "has_active_runs",
+    "system_not_running",
+    "queue_full",
+    "invalid_url",
+    "process_fork_failed",
+    "resource_exhausted",
+    "invalid_state",
+    "incomplete",
+    "protocol_error",
+    "unauthorized",
+    "rate_limited",
+    "unsupported",
+    "persistence_error",
+    "unknown",
+};
+
+static_assert(std::to_underlying(Error::Success) == 0,
+              "dagforge::Error names require a zero-based enum.");
+static_assert(kErrorNames.size() == std::to_underlying(Error::Unknown) + 1,
+              "Update kErrorNames when adding dagforge::Error values.");
+
 class ErrorCategory : public std::error_category {
   static constexpr std::array<std::string_view, 29> messages = {
       "success",
@@ -112,65 +149,9 @@ inline auto make_error_code(Error e) -> std::error_code {
 
 [[nodiscard]] constexpr auto to_string_view(Error error) noexcept
     -> std::string_view {
-  switch (error) {
-  case Error::Success:
-    return "success";
-  case Error::FileNotFound:
-    return "file_not_found";
-  case Error::FileOpenFailed:
-    return "file_open_failed";
-  case Error::ParseError:
-    return "parse_error";
-  case Error::DatabaseError:
-    return "database_error";
-  case Error::DatabaseOpenFailed:
-    return "database_open_failed";
-  case Error::DatabaseQueryFailed:
-    return "database_query_failed";
-  case Error::InvalidArgument:
-    return "invalid_argument";
-  case Error::NotFound:
-    return "not_found";
-  case Error::AlreadyExists:
-    return "already_exists";
-  case Error::Timeout:
-    return "timeout";
-  case Error::Cancelled:
-    return "cancelled";
-  case Error::CycleDetected:
-    return "cycle_detected";
-  case Error::ReadOnly:
-    return "read_only";
-  case Error::HasDependents:
-    return "has_dependents";
-  case Error::HasActiveRuns:
-    return "has_active_runs";
-  case Error::SystemNotRunning:
-    return "system_not_running";
-  case Error::QueueFull:
-    return "queue_full";
-  case Error::InvalidUrl:
-    return "invalid_url";
-  case Error::ProcessForkFailed:
-    return "process_fork_failed";
-  case Error::ResourceExhausted:
-    return "resource_exhausted";
-  case Error::InvalidState:
-    return "invalid_state";
-  case Error::Incomplete:
-    return "incomplete";
-  case Error::ProtocolError:
-    return "protocol_error";
-  case Error::Unauthorized:
-    return "unauthorized";
-  case Error::RateLimited:
-    return "rate_limited";
-  case Error::Unsupported:
-    return "unsupported";
-  case Error::PersistenceError:
-    return "persistence_error";
-  case Error::Unknown:
-    return "unknown";
+  const auto index = static_cast<std::size_t>(std::to_underlying(error));
+  if (index < kErrorNames.size()) {
+    return kErrorNames[index];
   }
   return "unknown";
 }

@@ -6,6 +6,7 @@
 #include <arpa/inet.h>
 #include <chrono>
 #include <exception>
+#include <functional>
 #include <netinet/in.h>
 #include <optional>
 #include <stdexcept>
@@ -117,6 +118,23 @@ inline auto busy_wait_for(std::chrono::milliseconds duration) -> void {
   const auto start = std::chrono::steady_clock::now();
   while (std::chrono::steady_clock::now() - start < duration) {
     std::this_thread::yield();
+  }
+}
+
+template <typename Predicate>
+[[nodiscard]] inline auto wait_until(
+    Predicate &&predicate, std::chrono::milliseconds timeout,
+    std::chrono::milliseconds poll_interval = std::chrono::milliseconds(1))
+    -> bool {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (true) {
+    if (std::invoke(predicate)) {
+      return true;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      return false;
+    }
+    std::this_thread::sleep_for(poll_interval);
   }
 }
 

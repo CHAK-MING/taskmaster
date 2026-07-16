@@ -49,11 +49,20 @@ run_build2_config() {
   local jobs="${BUILD2_JOBS:-$(nproc)}"
   local quiet="${BUILD2_QUIET:-0}"
 
+  # All scripted builds are out-of-source and persistent. Each profile owns a
+  # separate build2 configuration, so repeated normal/sanitizer/coverage runs
+  # only rebuild translation units affected by the current diff.
+  export BUILD2_CONFIG_DEFAULT="${BUILD2_CONFIG_DEFAULT:-0}"
+  export BUILD2_CONFIG_FORWARD="${BUILD2_CONFIG_FORWARD:-0}"
+
   if [[ "${DAGFORGE_SKIP_MODULE_GRAPH_CHECK:-0}" != "1" ]]; then
     bash "${repo_root}/scripts/check-module-graph.sh"
   fi
   if [[ "${DAGFORGE_SKIP_AGENT_CONVENTION_CHECK:-0}" != "1" ]]; then
     bash "${repo_root}/scripts/check-agent-conventions.sh"
+  fi
+  if [[ "${DAGFORGE_SKIP_TEST_LAYOUT_CHECK:-0}" != "1" ]]; then
+    python3 "${repo_root}/scripts/check-test-layout.py"
   fi
 
   acquire_build2_lock "build-${config_name}"

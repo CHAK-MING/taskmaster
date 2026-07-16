@@ -32,93 +32,41 @@ The build script prints the selected build2 configuration and binary path.
 
 ## 2. System configuration
 
-DAGForge uses strict TOML. Unknown fields are rejected.
+DAGForge uses strict JSON. Unknown fields are rejected. The checked-in
+`system_config.json` contains the complete development configuration. The
+configuration maps directly to `SystemConfig`; there are no compatibility
+sections or conversion DTOs.
 
-```toml
-[runtime]
-shards = 0
-pin_shards_to_cores = false
-cpu_affinity_offset = 0
-
-[sandbox]
-minijail_path = "~/.local/libexec/dagforge/minijail/minijail0"
-seccomp_bpf_path = "~/.local/libexec/dagforge/minijail/dagforge_command.bpf"
-execution_root = "./executions"
-max_memory_bytes = 1073741824
-max_file_bytes = 67108864
-tmp_bytes = 67108864
-max_stdout_bytes = 10485760
-max_stderr_bytes = 10485760
-max_stream_line_bytes = 65536
-max_processes = 128
-max_open_files = 256
-allow_unlisted_programs = false
-allow_unlisted_environment = false
-require_trusted_files = true
-retain_workdirs = false
-programs = [
-  { name = "echo", path = "/bin/echo" },
-  { name = "sh", path = "/bin/sh" },
-  { name = "python3", path = "/usr/bin/python3" },
-]
-allowed_programs = []
-allowed_environment = ["DAGFORGE_INPUT"]
-inherited_environment = ["LANG", "LC_ALL", "LC_CTYPE", "TERM"]
-
-[workflow]
-enabled = true
-
-[http_executor]
-enabled = false
-allow_plaintext = false
-deny_private_networks = true
-allowed_origins = []
-allowed_ip_cidrs = []
-max_request_headers = 64
-max_request_header_bytes = 65536
-max_request_body_bytes = 1048576
-max_response_headers = 128
-max_response_header_bytes = 65536
-max_response_body_bytes = 10485760
-max_concurrent_requests_per_shard = 32
-max_concurrent_requests = 256
-dns_timeout_ms = 5000
-connect_timeout_ms = 10000
-tls_handshake_timeout_ms = 10000
-write_timeout_ms = 30000
-first_byte_timeout_ms = 30000
-read_timeout_ms = 30000
-idle_connection_timeout_ms = 30000
-max_idle_connections_per_origin = 4
-max_idle_connections_per_shard = 32
-tls_min_version = "1.2"
-tls_ca_file = ""
-tls_client_cert_file = ""
-tls_client_key_file = ""
-
-[admission]
-allow_unlisted_executors = false
-allowed_executors = ["command"]
-max_nodes = 256
-max_parallel_nodes = 32
-max_total_output_bytes = 67108864
-max_run_duration_sec = 3600
-
-[api]
-enabled = false
-host = "127.0.0.1"
-port = 8888
-reuse_port = false
-tls_enabled = false
-tls_cert_file = ""
-tls_key_file = ""
-tls_min_version = "1.2"
-max_request_header_bytes = 65536
-max_request_body_bytes = 1048576
-connection_idle_timeout_ms = 30000
-max_connections = 1024
-max_requests_per_connection = 100
-max_concurrent_requests = 128
+```json
+{
+  "workflow": {"enabled": true},
+  "executors": {
+    "command": {
+      "policy": {
+        "allow_unlisted_programs": false,
+        "programs": [{"name": "echo", "path": "/bin/echo"}],
+        "allowed_environment": ["DAGFORGE_INPUT"]
+      },
+      "minijail": {
+        "executable": "~/.local/libexec/dagforge/minijail/minijail0",
+        "seccomp_bpf_path": "~/.local/libexec/dagforge/minijail/dagforge_command.bpf",
+        "execution_root": "./executions"
+      }
+    },
+    "http": {
+      "enabled": false,
+      "egress": {
+        "allow_plaintext": false,
+        "deny_private_networks": true,
+        "allowed_origins": []
+      }
+    }
+  },
+  "runtime": {"shards": 0},
+  "admission": {"allowed_executors": ["command"]},
+  "storage": {"enabled": false, "directory": "./state"},
+  "api": {"enabled": false, "host": "127.0.0.1", "port": 8888}
+}
 ```
 
 ### 2.1 Runtime
@@ -175,8 +123,8 @@ sandbox mounts a private tmpfs over `/tmp`. Environment overrides are:
 - `DAGFORGE_SANDBOX_MAX_PROCESSES`
 - `DAGFORGE_SANDBOX_MAX_OPEN_FILES`
 
-Command-specific program registration and environment policy also live in
-`[sandbox]`. A slash-free name such as `python3` resolves only through
+Command-specific program registration and environment policy live under
+`executors.command.policy`. A slash-free name such as `python3` resolves only through
 `programs`; DAGForge never searches PATH. Registered and legacy absolute paths
 are canonicalized and checked both while compiling the node config and
 immediately before process launch.
@@ -189,8 +137,6 @@ credential-like names are rejected from inheritance. Workflow `env` and
 `allow_unlisted_*` is a development override; production configuration should
 keep both switches false and `require_trusted_files` true. Per-Attempt workdirs
 are owner-only and removed after completion unless `retain_workdirs` is enabled.
-The legacy `workspace_root`, `retain_workspaces`, and
-`DAGFORGE_SANDBOX_WORKSPACE_ROOT` names remain accepted for compatibility.
 
 Output-limit overflow kills the whole process group and reports resource
 exhaustion. Application shutdown rejects new starts, kills active process
@@ -201,34 +147,41 @@ groups, and waits for reaping before Runtime threads stop.
 The HTTP executor is disabled by default. Enable it only with an exact list of
 trusted origins:
 
-```toml
-[http_executor]
-enabled = true
-allow_plaintext = false
-deny_private_networks = true
-allowed_origins = ["https://api.example.com"]
-allowed_ip_cidrs = []
-max_request_headers = 64
-max_request_header_bytes = 65536
-max_request_body_bytes = 1048576
-max_response_headers = 128
-max_response_header_bytes = 65536
-max_response_body_bytes = 10485760
-max_concurrent_requests_per_shard = 32
-max_concurrent_requests = 256
-dns_timeout_ms = 5000
-connect_timeout_ms = 10000
-tls_handshake_timeout_ms = 10000
-write_timeout_ms = 30000
-first_byte_timeout_ms = 30000
-read_timeout_ms = 30000
-idle_connection_timeout_ms = 30000
-max_idle_connections_per_origin = 4
-max_idle_connections_per_shard = 32
-tls_min_version = "1.2"
-tls_ca_file = ""
-tls_client_cert_file = ""
-tls_client_key_file = ""
+```json
+{
+  "executors": {
+    "http": {
+      "enabled": true,
+      "egress": {
+        "allow_plaintext": false,
+        "deny_private_networks": true,
+        "allowed_origins": ["https://api.example.com"],
+        "allowed_ip_cidrs": [],
+        "max_request_headers": 64,
+        "max_request_header_bytes": 65536,
+        "max_request_body_bytes": 1048576,
+        "max_response_headers": 128,
+        "max_response_header_bytes": 65536,
+        "max_response_body_bytes": 10485760,
+        "max_concurrent_requests_per_shard": 32,
+        "max_concurrent_requests": 256,
+        "dns_timeout_ms": 5000,
+        "connect_timeout_ms": 10000,
+        "tls_handshake_timeout_ms": 10000,
+        "write_timeout_ms": 30000,
+        "first_byte_timeout_ms": 30000,
+        "read_timeout_ms": 30000,
+        "idle_connection_timeout_ms": 30000,
+        "max_idle_connections_per_origin": 4,
+        "max_idle_connections_per_shard": 32,
+        "tls_min_version": "1.2",
+        "tls_ca_file": "",
+        "tls_client_cert_file": "",
+        "tls_client_key_file": ""
+      }
+    }
+  }
+}
 ```
 
 An origin consists of scheme, host, and effective port. Matching is exact and
@@ -299,14 +252,17 @@ keep them in the auditable system configuration.
 
 Admission is owned by the server, not by the Workflow Plan:
 
-```toml
-[admission]
-allow_unlisted_executors = false
-allowed_executors = ["command", "http"]
-max_nodes = 256
-max_parallel_nodes = 32
-max_total_output_bytes = 67108864
-max_run_duration_sec = 3600
+```json
+{
+  "admission": {
+    "allow_unlisted_executors": false,
+    "allowed_executors": ["command", "http"],
+    "max_nodes": 256,
+    "max_parallel_nodes": 32,
+    "max_total_output_bytes": 67108864,
+    "max_run_duration_sec": 3600
+  }
+}
 ```
 
 When `allow_unlisted_executors` is false, the executor allowlist is exact.
@@ -318,18 +274,34 @@ generic Workflow Runtime.
 
 The default stores are in-memory. Enable file persistence explicitly:
 
-```toml
-[storage]
-enabled = true
-directory = "./state"
-max_completed_runs = 10000
-max_evidence_records = 100000
+```json
+{
+  "storage": {
+    "enabled": true,
+    "directory": "./state",
+    "max_completed_runs": 10000,
+    "max_evidence_records": 100000,
+    "max_plan_bytes": 8388608,
+    "max_checkpoint_bytes": 67108864,
+    "max_evidence_file_bytes": 268435456,
+    "max_evidence_record_bytes": 1048576,
+    "max_artifact_metadata_bytes": 1048576,
+    "max_artifact_bytes": 268435456
+  }
+}
 ```
 
-The directory contains an independent immutable Plan catalog, atomic Run
-checkpoint files, an append-only Evidence log, and Artifact data plus metadata.
-An initial checkpoint is written before a Run ID is accepted. Stable Run and
-Task transitions refresh the checkpoint.
+The directory contains an independent immutable Plan catalog, durable Run checkpoint files, an append-only Evidence log, and Artifact data plus metadata. DAGForge owns the directory through a persistent `.dagforge.lock` file and an exclusive advisory process lock; a second Application using the same directory is rejected before Store recovery. Every configured byte limit is enforced before an unbounded allocation and while a file is being read or appended.
+
+New Plan, Checkpoint, Evidence, and Artifact metadata writes use a private versioned storage envelope with a format identifier, storage format version, and typed payload. Readers require the explicit current envelope and reject unversioned development files. Because 0.4 is pre-release, a storage-format change requires deleting stale local state rather than carrying a migration layer. An unknown format or future storage version is rejected instead of being guessed from domain fields.
+
+Atomic replacement writes a unique temporary file, synchronizes its contents, renames it, and synchronizes the containing directory. The storage primitive distinguishes a pre-commit failure from a rename that committed but whose directory durability could not be confirmed. Plan registration and direct Artifact upload expose `durability_deferred`; Workflow-owned Artifact externalization rejects deferred objects and performs compensating cleanup rather than publishing an uncertain reference.
+
+Evidence append synchronizes each appended record. Retention maintains an exact in-memory window while allowing a bounded stale prefix in the durable log; the ledger compacts atomically in batches or before the file-size ceiling would be exceeded. Startup rejects unreadable files, committed malformed records, and oversized records. Only a final unterminated JSON fragment classified as incomplete is repaired as a crash tail.
+
+Artifact bytes are committed before metadata, and metadata is the read-visibility marker. Direct upload returns `durability_deferred` when both files are visible but directory durability is not confirmed. Deleting metadata commits logical deletion; a later data cleanup failure is reported as `cleanup_deferred`, while a post-unlink directory synchronization failure is reported as `durability_deferred`. Reconciliation is non-destructive and classifies complete pairs, orphan data, orphan metadata, malformed metadata, content mismatches, and invalid entries.
+
+An initial checkpoint is written before a Run ID is accepted. Further checkpoints are written at explicit node checkpoint boundaries, retry-waiting, paused, stopping, resume, and terminal boundaries. Ordinary Running, Ready, Task, and Attempt notifications do not rewrite the complete checkpoint.
 
 Completed Runs and outputs are restored on startup. Non-terminal Runs continue
 from their checkpoint. A process or request that was active when the process
@@ -338,8 +310,7 @@ failure code `runtime_restarted`, while the Task becomes ready for a new
 Attempt. Succeeded Tasks and retained outputs are not rerun. Paused Runs remain
 paused and retry-waiting Tasks preserve their retry deadline.
 
-When a retention limit is exceeded, the oldest completed Run or Evidence
-record is removed. Evicted durable Run checkpoints are deleted as well.
+When a retention limit is exceeded, the oldest completed Run or in-memory Evidence record is removed. Evicted durable Run checkpoints are deleted as well, while stale Evidence prefixes are removed by bounded atomic compaction.
 
 ### 2.7 API
 
@@ -347,22 +318,25 @@ Set `api.enabled = true` to start the HTTP control plane. TLS requires both a
 certificate chain and private key path. When TLS is enabled the listener is
 TLS-only; plaintext is never detected and routed on the same port.
 
-```toml
-[api]
-enabled = true
-host = "127.0.0.1"
-port = 8888
-tls_enabled = true
-tls_cert_file = "/etc/dagforge/api-chain.pem"
-tls_key_file = "/etc/dagforge/api-key.pem"
-tls_min_version = "1.2"
-bearer_token_env = "DAGFORGE_API_TOKEN"
-max_request_header_bytes = 65536
-max_request_body_bytes = 1048576
-connection_idle_timeout_ms = 30000
-max_connections = 1024
-max_requests_per_connection = 100
-max_concurrent_requests = 128
+```json
+{
+  "api": {
+    "enabled": true,
+    "host": "127.0.0.1",
+    "port": 8888,
+    "tls_enabled": true,
+    "tls_cert_file": "/etc/dagforge/api-chain.pem",
+    "tls_key_file": "/etc/dagforge/api-key.pem",
+    "tls_min_version": "1.2",
+    "bearer_token_env": "DAGFORGE_API_TOKEN",
+    "max_request_header_bytes": 65536,
+    "max_request_body_bytes": 1048576,
+    "connection_idle_timeout_ms": 30000,
+    "max_connections": 1024,
+    "max_requests_per_connection": 100,
+    "max_concurrent_requests": 128
+  }
+}
 ```
 
 When `bearer_token_env` is set, the named environment variable must contain a
@@ -431,18 +405,24 @@ Plans are accepted as strict JSON. `schema_version` must be `1`.
 - `inputs`: named bindings to an upstream node output.
 - `outputs`: output port names. The default is `result`.
 - `max_retries`: retries after the first attempt.
-- `retry_initial_delay_ms`: delay before the first retry.
-- `retry_max_delay_ms`: maximum exponential retry delay.
+- `retry_initial_delay_ms`: full-jitter cap for the first retry. The actual
+  delay is sampled from zero through this cap.
+- `retry_max_delay_ms`: maximum saturated exponential cap. Concurrent Runs use
+  Run/node/Attempt identity to avoid synchronized retry storms.
 - `timeout_sec`: node deadline.
-- `checkpoint`: emit an explicit Checkpoint Evidence record after successful
-  completion. Durable recovery no longer depends on this flag because stable
-  Runtime transitions are persisted automatically.
+- `checkpoint`: persist a recovery boundary after successful completion and emit the corresponding Checkpoint Evidence record. Nodes without this flag are recovered from the latest initial, lifecycle, explicit, or terminal checkpoint rather than from every observed Task transition.
 
 An input binding is:
 
 ```json
 {"input":"source","node":"upstream","port":"result"}
 ```
+
+`port` is mandatory in every input binding. `source_port` is mandatory on a
+conditional edge, and `port` is mandatory in every published Workflow output.
+Only a node's own `outputs` list has a default: when that list is empty, the
+compiler declares one output named `result`. Graph references never infer that
+default, so a misspelled or omitted port cannot silently bind to another value.
 
 ### 3.2 Command configuration
 
@@ -589,7 +569,7 @@ executor-specific permissions are checked by the selected executor.
 ### Validate
 
 ```bash
-dagforge validate --file workflow.json
+dagforge validate workflow.json
 ```
 
 Validation loads the plan, rejects unknown fields, compiles the graph, and
@@ -598,29 +578,88 @@ prints the workflow ID, generated plan ID, digest, and node count.
 HTTP Plan validation must load the server policy:
 
 ```bash
-dagforge validate --config system_config.toml --file http-workflow.json
+dagforge validate http-workflow.json --config system_config.json
 ```
 
 ### Local run
 
 ```bash
-dagforge run \
-  --config system_config.toml \
-  --file workflow.json \
-  --payload '{"request":"hello"}' \
-  --wait
+dagforge run workflow.json
 ```
 
-Without `--wait`, the local process exits immediately after accepting the run.
-Because current stores are in-memory, use `--wait` when the result matters.
+`run` uses `system_config.json` by default, disables the API listener for the
+local process, and always waits for a terminal Run state. It prints the Run ID
+and final state, returning zero only for `succeeded`.
+
+Override the local configuration only when needed:
+
+```bash
+dagforge run workflow.json --config production-like.json
+```
 
 ### Service
 
 ```bash
-dagforge serve --config system_config.toml
+dagforge serve
 ```
 
-Use `SIGINT` or `SIGTERM` for graceful shutdown.
+The optional positional argument selects another configuration:
+
+```bash
+dagforge serve production.json
+```
+
+`DAGFORGE_CONFIG` overrides the default configuration path for `serve` and
+`run`. Use `SIGINT` or `SIGTERM` for graceful shutdown.
+
+### Remote API client
+
+The `api` command controls a running `serve` process. It defaults to
+`http://127.0.0.1:8888`; set `DAGFORGE_ENDPOINT` or pass `--endpoint` on the
+leaf command.
+
+```bash
+dagforge api health
+dagforge api status
+dagforge api metrics
+
+dagforge api plan add workflow.json
+dagforge api plan list
+dagforge api plan get PLAN_ID
+
+dagforge api run start WORKFLOW_ID
+dagforge api run get RUN_ID
+dagforge api run failures RUN_ID
+dagforge api run output RUN_ID NODE_ID PORT
+dagforge api run evidence RUN_ID
+dagforge api run pause RUN_ID
+dagforge api run resume RUN_ID
+dagforge api run cancel RUN_ID
+
+dagforge api artifact put report.json --type application/json
+dagforge api artifact get ARTIFACT_ID --output report.json
+dagforge api artifact delete ARTIFACT_ID
+```
+
+Artifact deletion returns `logical_deleted`, `cleanup_deferred`, and `durability_deferred`. A successful logical deletion makes subsequent reads return not found even when physical data cleanup must be retried or reconciled later; `durability_deferred` additionally reports that the directory entry changed but its directory `fsync` did not confirm crash durability.
+
+`api run start` optionally accepts a `StartRunRequest` JSON value, `@file`, or
+`-` for standard input:
+
+```bash
+dagforge api run start hello-world @start-run.json
+```
+
+Use `DAGFORGE_API_TOKEN` or `--token` for bearer authentication. TLS commands
+support `--ca-file`, paired `--client-cert` / `--client-key`, and
+`--tls-min-version`. Repeated `-H 'Name: value'` options add request headers.
+
+For an endpoint without a semantic command, use the raw escape hatch:
+
+```bash
+dagforge api request GET /api/status
+dagforge api request POST /api/v1/workflows/plans @workflow.json
+```
 
 ## 5. Runtime semantics
 
@@ -637,7 +676,9 @@ Use `SIGINT` or `SIGTERM` for graceful shutdown.
 - Pause stops dispatching new tasks but lets active attempts finish; it never
   freezes sandbox processes.
 - Retryable failures enter `retry_waiting` and use bounded exponential
-  backoff. Permanent configuration and authorization failures do not retry.
+  backoff with full jitter. Permanent configuration and authorization failures
+  do not retry. Retry eligibility is derived from structured `failure.kind`;
+  it is not persisted as a second failure classification.
 - Executor completion failures are structured. Every failed Attempt, Task, and
   Run can expose a normalized `kind`, stable `code`, human `message`, and
   executor-owned bounded `details` object. Command diagnostics retain exit
@@ -688,9 +729,7 @@ incoming conditions, dependencies, retained outputs, and referenced Artifacts
 remain valid. Invalidity propagates through descendants; independent successful
 branches remain reusable.
 
-The storage model is single-process and file-backed. Evidence remains an audit
-log rather than a replay database, and an external executor operation cannot be
-reattached across process loss.
+The storage model is single-process and file-backed. In persistent mode, Plan and Checkpoint reads treat disk as authoritative and fail closed on managed-path corruption instead of returning a stale in-memory cache entry. Evidence remains an audit log rather than a replay database, and an external executor operation cannot be reattached across process loss.
 
 The target multi-executor acceptance graph is recorded in
 [`NORTH_STAR_WORKFLOW.md`](NORTH_STAR_WORKFLOW.md).
@@ -720,13 +759,15 @@ still receive the inner DAGForge seccomp and Landlock policy.
 ## 9. Verification
 
 ```bash
-bash scripts/check-module-graph.sh
-bash scripts/check-agent-conventions.sh
-bash scripts/install-minijail.sh
-BUILD2_CONFIG_NAME=gcc ./scripts/build.sh
-~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/all-unit-tests
-python3 scripts/test-real-workflows.py \
-  --binary ~/.local/share/build2-configs/dagforge-gcc/dagforge/bin/dagforge
+# Does not require Minijail: module smoke, unit, and component tests.
+bash scripts/test.sh quick
+
+# Requires the installed Minijail helper and OpenSSL.
+bash scripts/test.sh all
+
+# Dedicated dynamic-analysis and coverage gates.
+bash scripts/test-runtime-audit.sh
+bash scripts/test-coverage.sh
 ```
 
 Run `bench-core` for Runtime dispatch, Plan processing, Workflow execution,

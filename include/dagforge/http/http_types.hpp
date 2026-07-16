@@ -246,6 +246,10 @@ struct HttpResponse {
     return *this;
   }
 
+  [[nodiscard]] auto body_as_string() const -> std::string_view {
+    return {reinterpret_cast<const char *>(body.data()), body.size()};
+  }
+
   [[nodiscard]] auto serialize() const -> std::vector<std::uint8_t> {
     std::vector<std::uint8_t> result;
 

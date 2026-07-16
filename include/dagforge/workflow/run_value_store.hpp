@@ -8,7 +8,7 @@
 
 #include <cstddef>
 #include <memory>
-#include <string>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -30,8 +30,7 @@ public:
   [[nodiscard]] auto get(const OutputRef &output) const
       -> Result<std::shared_ptr<const WorkflowValue>>;
   [[nodiscard]] auto contains(const OutputRef &output) const -> bool;
-  [[nodiscard]] auto snapshot() const
-      -> Result<std::vector<std::pair<OutputRef, WorkflowValue>>>;
+  [[nodiscard]] auto snapshot() const -> Result<std::vector<OutputValue>>;
   auto erase_node(const WorkflowNodeId &node_id) -> Result<void>;
 
   [[nodiscard]] auto total_output_bytes() const noexcept -> std::uint64_t {
@@ -39,16 +38,22 @@ public:
   }
 
 private:
+  struct PreparedValue {
+    WorkflowValue value;
+    std::optional<ArtifactId> owned_artifact_id;
+  };
+
   struct Entry {
-    OutputRef output;
     std::shared_ptr<const WorkflowValue> value;
     std::uint64_t accounted_bytes{0};
+    std::optional<ArtifactId> owned_artifact_id;
   };
 
   [[nodiscard]] auto ensure_owner() const -> Result<void>;
-  [[nodiscard]] static auto key(const OutputRef &output) -> std::string;
   [[nodiscard]] auto maybe_externalize(WorkflowValue value)
-      -> Result<std::pair<WorkflowValue, std::uint64_t>>;
+      -> Result<PreparedValue>;
+  auto erase_owned_artifact(const std::optional<ArtifactId> &artifact_id)
+      -> Result<void>;
 
   Runtime &runtime_;
   shard_id owner_;
@@ -56,7 +61,7 @@ private:
   std::uint64_t max_total_output_bytes_;
   std::size_t artifact_threshold_bytes_;
   std::uint64_t total_output_bytes_{0};
-  std::unordered_map<std::string, Entry> values_;
+  std::unordered_map<OutputRef, Entry, OutputRefHash> values_;
 };
 
 } // namespace dagforge::workflow

@@ -7,7 +7,7 @@ jobs="${BUILD2_JOBS:-$(nproc)}"
 parallel_configs="${BUILD2_AUDIT_PARALLEL:-1}"
 audit_targets="${BUILD2_AUDIT_TARGETS:-}"
 if [[ -z "$audit_targets" ]]; then
-  audit_targets='bin/exe{modules-foundation-smoke} bin/exe{unit-runtime-tests}'
+  audit_targets='bin/exe{modules-foundation-smoke} bin/exe{component-tests}'
 fi
 runtime_filter="${RUNTIME_TEST_FILTER:-WorkflowRuntimeTest.PauseDrainsActiveAttemptBeforeResume:WorkflowRuntimeTest.CancelStaysStoppingUntilAttemptIsReaped:WorkflowRuntimeTest.SynchronousCancelCompletionIsReentrantSafe:WorkflowRuntimeTest.RetryWaitingCreatesDistinctAttempts}"
 
@@ -59,8 +59,8 @@ fi
 ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:strict_string_checks=1" \
   run_binary asan-clang modules-foundation-smoke
 ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:strict_string_checks=1" \
-  run_binary asan-clang unit-runtime-tests --gtest_filter="$runtime_filter"
+  run_binary asan-clang component-tests --gtest_filter="$runtime_filter"
 TSAN_OPTIONS="halt_on_error=1:history_size=7" \
-  run_binary tsan-clang unit-runtime-tests --gtest_filter="$runtime_filter"
+  run_binary tsan-clang component-tests --gtest_filter="$runtime_filter"
 UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
-  run_binary ubsan-clang unit-runtime-tests --gtest_filter="$runtime_filter"
+  run_binary ubsan-clang component-tests --gtest_filter="$runtime_filter"

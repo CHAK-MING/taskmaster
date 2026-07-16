@@ -3,11 +3,10 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 revision="$(tr -d '[:space:]' < "${repo_root}/sandbox/MINIJAIL_REVISION")"
-repository_url="${MINIJAIL_REPOSITORY_URL:-https://android.googlesource.com/platform/external/minijail}"
 install_dir="${MINIJAIL_INSTALL_DIR:-${HOME}/.local/libexec/dagforge/minijail}"
 jobs="${BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')}"
 
-for tool in git make python3 tar; do
+for tool in git make python3 tar timeout; do
   if ! command -v "${tool}" >/dev/null 2>&1; then
     printf 'missing required tool: %s\n' "${tool}" >&2
     exit 1
@@ -34,8 +33,34 @@ if [[ -n "${MINIJAIL_SOURCE_DIR:-}" ]]; then
   git -C "${MINIJAIL_SOURCE_DIR}" archive "${revision}" | tar -x -C "${source_dir}"
 else
   git -C "${source_dir}" init -q
-  git -C "${source_dir}" remote add origin "${repository_url}"
-  git -C "${source_dir}" fetch -q --depth=1 origin "${revision}"
+  git -C "${source_dir}" remote add origin invalid
+  if [[ -n "${MINIJAIL_REPOSITORY_URL:-}" ]]; then
+    repository_urls=("${MINIJAIL_REPOSITORY_URL}")
+  else
+    repository_urls=(
+      "https://android.googlesource.com/platform/external/minijail"
+      "https://github.com/google/minijail.git"
+    )
+  fi
+  fetched=0
+  for repository_url in "${repository_urls[@]}"; do
+    git -C "${source_dir}" remote set-url origin "${repository_url}"
+    for attempt in 1 2 3; do
+      if timeout 45s git -C "${source_dir}" fetch -q --depth=1 origin \
+          "${revision}"; then
+        fetched=1
+        break 2
+      fi
+      printf 'Minijail fetch failed from %s (attempt %s/3)\n' \
+        "${repository_url}" "${attempt}" >&2
+      sleep "${attempt}"
+    done
+  done
+  if [[ "${fetched}" != "1" ]]; then
+    printf 'unable to fetch pinned Minijail revision %s from configured sources\n' \
+      "${revision}" >&2
+    exit 1
+  fi
   git -C "${source_dir}" checkout -q --detach FETCH_HEAD
 fi
 

@@ -64,7 +64,8 @@ TEST(DaemonTest, PidFileGuardCreatesParentAndExcludesSecondOwner) {
     assigned = std::move(moved);
     EXPECT_TRUE(std::filesystem::exists(path));
 
-    assigned = std::move(assigned);
+    auto *self = &assigned;
+    assigned = std::move(*self);
   }
   EXPECT_FALSE(std::filesystem::exists(path));
   std::filesystem::remove_all(root);

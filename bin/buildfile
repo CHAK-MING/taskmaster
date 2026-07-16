@@ -3,13 +3,15 @@ import dagforge = ../src/lib{dagforge}
 
 ./: exe{dagforge}                  \
     exe{modules-foundation-smoke} \
-    exe{core-unit-tests}          \
-    exe{unit-runtime-tests}       \
-    exe{unit-api-tests}           \
-    exe{all-unit-tests}           \
+    exe{unit-tests}               \
+    exe{component-tests}          \
+    exe{integration-tests}        \
     exe{bench-core}
 
-exe{dagforge}: ../src/cxx{main} $dagforge $foundation
+exe{dagforge}: ../src/cxx{main                              \
+                         dagforge/app/cli/command_line      \
+                         dagforge/app/cli/commands}         \
+               $dagforge $foundation
 {
   cxx.poptions += "-DBOOST_ASIO_HAS_IO_URING=0" \
                   "-DDAGFORGE_USE_MIMALLOC=0"
@@ -17,32 +19,29 @@ exe{dagforge}: ../src/cxx{main} $dagforge $foundation
 
 exe{modules-foundation-smoke}: ../tests/cxx{modules-foundation-smoke} $foundation
 
-core_tests = ../tests/cxx{test_main runtime_test workflow_test coroutine_test \
-    shard_test shard_affinity_test timing_wheel_test config_test \
-    http_client_test http_executor_test http_server_test http_parser_test router_test \
-    process_management_test io_bridge_test metrics_registry_test \
-    metrics_exporter_test daemon_test log_test command_runner_test api_test}
+unit_test_sources = ../tests/cxx{test_main coroutine_test shard_test config_test \
+    router_test io_bridge_test metrics_registry_test glaze_security_test}
 
-exe{core-unit-tests}: $core_tests $dagforge $foundation
+component_test_sources = ../tests/cxx{test_main runtime_test workflow_test \
+    shard_affinity_test timing_wheel_test http_client_test http_executor_test \
+    http_server_test process_management_test metrics_exporter_test daemon_test \
+    log_test api_test}
+
+integration_test_sources = ../tests/cxx{test_main command_runner_test}
+
+exe{unit-tests}: $unit_test_sources $dagforge $foundation
 {
   test = true
   cxx.libs += -lgtest -pthread
 }
 
-exe{unit-runtime-tests}: $core_tests $dagforge $foundation
+exe{component-tests}: $component_test_sources $dagforge $foundation
 {
   test = true
   cxx.libs += -lgtest -pthread
 }
 
-exe{unit-api-tests}: ../tests/cxx{test_main api_test workflow_test} \
-  $dagforge $foundation
-{
-  test = true
-  cxx.libs += -lgtest -pthread
-}
-
-exe{all-unit-tests}: $core_tests $dagforge $foundation
+exe{integration-tests}: $integration_test_sources $dagforge $foundation
 {
   test = true
   cxx.libs += -lgtest -pthread

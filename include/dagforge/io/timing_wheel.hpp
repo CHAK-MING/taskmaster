@@ -71,7 +71,6 @@ private:
   auto arm_next_tick() -> void;
   auto handle_tick(const boost::system::error_code &ec) -> void;
 
-  IoContext &io_;
   boost::asio::steady_timer timer_;
   std::chrono::nanoseconds tick_;
   std::vector<Bucket> buckets_;

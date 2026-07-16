@@ -19,6 +19,7 @@ namespace workflow {
 class ExecutorRegistry;
 class WorkflowControlPlane;
 class WorkflowRuntime;
+class StorageDirectoryLock;
 } // namespace workflow
 
 class Application {
@@ -31,8 +32,8 @@ public:
   auto operator=(const Application &) -> Application & = delete;
 
   [[nodiscard]] auto load_config(std::string_view path) -> Result<void>;
+  [[nodiscard]] auto apply_config(config::SystemConfig config) -> Result<void>;
   [[nodiscard]] auto config() const noexcept -> const config::SystemConfig &;
-  [[nodiscard]] auto config() noexcept -> config::SystemConfig &;
 
   [[nodiscard]] auto init() -> Result<void>;
   [[nodiscard]] auto start() -> Result<void>;
@@ -53,6 +54,7 @@ public:
 
 private:
   auto rebuild_components() -> Result<void>;
+  auto shutdown_components() noexcept -> void;
 
   std::atomic<bool> running_{false};
   config::SystemConfig config_;
@@ -62,6 +64,7 @@ private:
   std::unique_ptr<workflow::WorkflowControlPlane> workflow_control_plane_;
   std::unique_ptr<workflow::WorkflowRuntime> workflow_runtime_;
   std::unique_ptr<ApiServer> api_;
+  std::unique_ptr<workflow::StorageDirectoryLock> storage_lock_;
 };
 
 } // namespace dagforge

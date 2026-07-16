@@ -14,7 +14,8 @@ auto register_system_routes(ApiContext &ctx) -> void {
              ctx.make_instrumented_route(
                  http::HttpMethod::GET, "/api/health",
                  [](http::HttpRequest) -> task<http::HttpResponse> {
-                   co_return json_response({{"status", "healthy"}});
+                   co_return typed_json_response(
+                       glz::obj{"status", "healthy"});
                  }));
 
   router.get("/api/status",
@@ -22,14 +23,14 @@ auto register_system_routes(ApiContext &ctx) -> void {
                  http::HttpMethod::GET, "/api/status",
                  [&ctx](http::HttpRequest) -> task<http::HttpResponse> {
                    const auto *workflow = ctx.app.workflow_runtime();
-                   co_return json_response({
-                       {"runtime", ctx.app.is_running() ? "running" : "stopped"},
-                       {"workflow_enabled", workflow != nullptr},
-                       {"active_workflow_runs",
-                        workflow != nullptr ? workflow->active_run_count() : 0},
-                       {"shards", ctx.app.runtime().shard_count()},
-                       {"timestamp", util::format_timestamp()},
-                   });
+                   co_return typed_json_response(glz::obj{
+                       "runtime",
+                       ctx.app.is_running() ? "running" : "stopped",
+                       "workflow_enabled", workflow != nullptr,
+                       "active_workflow_runs",
+                       workflow != nullptr ? workflow->active_run_count() : 0,
+                       "shards", ctx.app.runtime().shard_count(), "timestamp",
+                       util::format_timestamp()});
                  }));
 
   router.get(

@@ -1,11 +1,14 @@
 #include "detail/egress_policy.hpp"
 
+#include "dagforge/util/ascii.hpp"
+
+#include "../../config/detail/executor_config_validation.hpp"
+
 #include <boost/system/system_error.hpp>
 #include <boost/url/url.hpp>
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <charconv>
 #include <format>
 #include <ranges>
@@ -15,13 +18,6 @@
 
 namespace dagforge::executors::http::detail {
 namespace {
-
-[[nodiscard]] auto lowercase_ascii(std::string value) -> std::string {
-  std::ranges::transform(value, value.begin(), [](unsigned char ch) {
-    return static_cast<char>(std::tolower(ch));
-  });
-  return value;
-}
 
 [[nodiscard]] auto prefix_matches(std::span<const unsigned char> address,
                                   std::span<const unsigned char> network,
@@ -50,7 +46,7 @@ namespace {
   } catch (const boost::system::system_error &) {
     return fail(Error::InvalidUrl);
   }
-  const auto scheme = lowercase_ascii(std::string{uri.scheme()});
+  const auto scheme = util::ascii_lowercase(uri.scheme());
   if (scheme != "http" && scheme != "https") {
     return fail(Error::InvalidUrl);
   }
@@ -58,7 +54,7 @@ namespace {
     return fail(Error::InvalidUrl);
   }
 
-  auto host = lowercase_ascii(std::string{uri.host()});
+  auto host = util::ascii_lowercase(uri.host());
   if (host.empty()) {
     return fail(Error::InvalidUrl);
   }
@@ -182,15 +178,7 @@ namespace {
 
 auto HttpEgressPolicy::create(config::HttpEgressConfig config)
     -> Result<HttpEgressPolicy> {
-  if (config.max_request_headers == 0 || config.max_request_header_bytes == 0 ||
-      config.max_request_body_bytes == 0 || config.max_response_headers == 0 ||
-      config.max_response_header_bytes == 0 ||
-      config.max_response_body_bytes == 0 ||
-      config.max_concurrent_requests_per_shard == 0 ||
-      config.max_concurrent_requests == 0 ||
-      (config.tls_min_version != "1.2" && config.tls_min_version != "1.3") ||
-      (config.tls_client_cert_file.empty() !=
-       config.tls_client_key_file.empty())) {
+  if (!config::detail::http_egress_config_valid(config)) {
     return fail(Error::InvalidArgument);
   }
 

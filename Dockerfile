@@ -64,8 +64,8 @@ COPY src ./src
 COPY tests ./tests
 COPY third_party ./third_party
 COPY dags ./dags
-COPY system_config.toml ./system_config.toml
-COPY docker_config.toml ./docker_config.toml
+COPY system_config.json ./system_config.json
+COPY docker_config.json ./docker_config.json
 
 RUN bash scripts/check-module-graph.sh
 
@@ -87,7 +87,7 @@ RUN set -eux; \
       "${BUILD2_CONFIG_DIR}/dagforge/bin/dagforge" \
       /release/bin/dagforge; \
     cp -a dags/. /release/dags/; \
-    install -m 0644 docker_config.toml /release/system_config.toml; \
+    install -m 0644 docker_config.json /release/system_config.json; \
     install -m 0644 README.md /release/README.md; \
     install -m 0644 README_CN.md /release/README_CN.md; \
     install -m 0644 LICENSE /release/LICENSE; \
@@ -111,6 +111,34 @@ RUN set -eux; \
       echo 'release binary depends on build-tree libdagforge.so' >&2; \
       exit 1; \
     fi
+
+FROM builder AS test
+
+ENV DAGFORGE_TEST_MINIJAIL=/release/libexec/dagforge/minijail/minijail0
+ENV DAGFORGE_TEST_SECCOMP_BPF=/release/libexec/dagforge/minijail/dagforge_command.bpf
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgtest-dev \
+    openssl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN bash scripts/verify-vendored-deps.sh
+RUN bash scripts/test.sh all
+
+FROM test AS audit
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang \
+    libclang-rt-dev \
+    llvm \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV CC=clang
+ENV CXX=clang++
+
+RUN BUILD2_AUDIT_PARALLEL=0 bash scripts/test-runtime-audit.sh
+RUN bash scripts/test-coverage.sh
+RUN FUZZ_RUNS=10000 bash scripts/run-glaze-fuzz.sh
 
 FROM ubuntu:${UBUNTU_VERSION} AS release-verify
 
@@ -149,4 +177,4 @@ FROM release-verify AS runtime
 
 EXPOSE 8888
 
-CMD ["/opt/dagforge/bin/dagforge", "serve", "-c", "/opt/dagforge/system_config.toml"]
+CMD ["/opt/dagforge/bin/dagforge", "serve", "/opt/dagforge/system_config.json"]

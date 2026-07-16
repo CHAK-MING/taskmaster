@@ -1,7 +1,9 @@
 #include "dagforge/sandbox/command_runner.hpp"
 
+#include "../config/detail/executor_config_validation.hpp"
 #include "detail/command_policy.hpp"
 #include "detail/command_validation.hpp"
+#include "detail/policy_command_runner.hpp"
 #include "detail/minijail_command_runner.hpp"
 #include "detail/process_management.hpp"
 #include "dagforge/io/context.hpp"
@@ -342,15 +344,11 @@ auto add_existing_path(std::vector<std::string> &args,
   if (!program) {
     return fail(program.error());
   }
-  if (std::ranges::any_of(command.arguments, [](const auto &argument) {
-        return argument.contains('\0');
-      })) {
+  if (!detail::command_arguments_are_safe(command)) {
     return fail(Error::InvalidArgument);
   }
   for (const auto &[key, value] : command.environment) {
-    if (!detail::is_valid_environment_key(key) ||
-        value.contains('\0') ||
-        detail::is_reserved_environment_key(key)) {
+    if (!detail::environment_entry_is_safe(key, value)) {
       return fail(Error::InvalidArgument);
     }
   }
@@ -666,13 +664,10 @@ auto execute_command(fs::path minijail, std::vector<std::string> arguments,
 
 class MinijailCommandRunner final : public ICommandRunner {
 public:
-  MinijailCommandRunner(Runtime &runtime,
-                        config::MinijailConfig config,
-                        std::shared_ptr<const detail::CommandPolicy> policy,
+  MinijailCommandRunner(Runtime &runtime, config::MinijailConfig config,
                         fs::path minijail, fs::path seccomp_bpf,
                         fs::path execution_root)
       : runtime_(&runtime), config_(std::move(config)),
-        policy_(std::move(policy)),
         minijail_(std::move(minijail)), seccomp_bpf_(std::move(seccomp_bpf)),
         execution_root_(std::move(execution_root)),
         registry_(std::make_shared<SandboxProcessRegistry>()) {}
@@ -681,14 +676,17 @@ public:
     (void)quiesce(std::chrono::seconds(5));
   }
 
+  auto prepare(CommandPreparationRequest request) const
+      -> Result<CommandSpec> override {
+    return request.deferred_environment_keys.empty()
+               ? ok(std::move(request.command))
+               : fail(Error::InvalidState);
+  }
+
   auto start(CommandRunRequest request, CommandRunSink sink)
       -> Result<void> override {
     if (registry_->shutting_down.load(std::memory_order_acquire)) {
       return fail(Error::InvalidState);
-    }
-    auto validated = policy_->validate(request.command);
-    if (!validated) {
-      return validated;
     }
     auto workdir = resolve_workdir(execution_root_, request.instance_id);
     if (!workdir) {
@@ -707,8 +705,7 @@ public:
     if (!arguments) {
       return fail(arguments.error());
     }
-    auto environment = build_sandbox_environment(
-        *workdir, request.command, policy_->inherited_environment());
+    auto environment = build_sandbox_environment(*workdir, request.command, {});
 
     log::debug("CommandExecutor start instance_id={} program='{}'",
                request.instance_id, request.command.program);
@@ -745,7 +742,6 @@ public:
 private:
   Runtime *runtime_;
   config::MinijailConfig config_;
-  std::shared_ptr<const detail::CommandPolicy> policy_;
   fs::path minijail_;
   fs::path seccomp_bpf_;
   fs::path execution_root_;
@@ -757,18 +753,12 @@ private:
 namespace detail {
 auto create_minijail_command_runner(
     Runtime &runtime, config::MinijailConfig sandbox,
-    std::shared_ptr<const CommandPolicy> policy)
+    config::CommandPolicyConfig policy)
     -> Result<std::unique_ptr<ICommandRunner>> {
-  if (!policy) {
-    return fail(Error::InvalidArgument);
-  }
   if (!landlock_available()) {
     return fail(Error::Unsupported);
   }
-  if (sandbox.max_memory_bytes == 0 || sandbox.max_file_bytes == 0 ||
-      sandbox.tmp_bytes == 0 || sandbox.max_stdout_bytes == 0 ||
-      sandbox.max_stderr_bytes == 0 || sandbox.max_stream_line_bytes == 0 ||
-      sandbox.max_processes == 0 || sandbox.max_open_files == 0) {
+  if (!config::detail::minijail_resource_limits_valid(sandbox)) {
     return fail(Error::InvalidArgument);
   }
   auto minijail = resolve_regular_file(sandbox.executable, true,
@@ -785,11 +775,11 @@ auto create_minijail_command_runner(
   if (!execution_root) {
     return fail(execution_root.error());
   }
-  return ok(std::unique_ptr<ICommandRunner>{
+  auto runner = std::unique_ptr<ICommandRunner>{
       std::make_unique<MinijailCommandRunner>(
-          runtime, std::move(sandbox), std::move(policy),
-          std::move(*minijail),
-          std::move(*seccomp), std::move(*execution_root))});
+          runtime, std::move(sandbox), std::move(*minijail),
+          std::move(*seccomp), std::move(*execution_root))};
+  return create_policy_command_runner(std::move(runner), std::move(policy));
 }
 
 } // namespace detail

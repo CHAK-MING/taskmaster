@@ -10,12 +10,8 @@ config_alias="@${config_name#@}"
 cfg_root="${BUILD2_CONFIG_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/build2-configs}"
 cfg_dir="${BUILD2_CONFIG_DIR:-${cfg_root}/dagforge-${config_name#@}}"
 compiler="${CXX:-g++}"
-default_default=0
-if [[ "$config_alias" == "@gcc" ]]; then
-  default_default=1
-fi
-config_default="${BUILD2_CONFIG_DEFAULT:-$default_default}"
-config_forward="${BUILD2_CONFIG_FORWARD:-1}"
+config_default="${BUILD2_CONFIG_DEFAULT:-0}"
+config_forward="${BUILD2_CONFIG_FORWARD:-0}"
 cc_coptions="${BUILD2_CC_COPTIONS:-}"
 cxx_poptions="${BUILD2_CXX_POPTIONS:-}"
 cc_loptions="${BUILD2_CC_LOPTIONS:-}"

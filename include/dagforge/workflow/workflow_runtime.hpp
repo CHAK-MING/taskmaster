@@ -130,8 +130,7 @@ private:
     std::unordered_map<std::string, ActiveRun> active_runs;
     std::unordered_map<std::string, std::shared_ptr<const RunSnapshot>>
         completed_runs;
-    std::unordered_map<std::string,
-                       std::vector<std::pair<OutputRef, WorkflowValue>>>
+    std::unordered_map<std::string, std::vector<OutputValue>>
         completed_values;
     std::deque<std::string> completed_order;
   };
@@ -148,12 +147,25 @@ private:
     std::optional<WorkflowRunId> parent_run_id;
   };
 
+  struct RunActivation;
+  struct RunBootstrapRequest;
+
+  struct RunBootstrapResult {
+    WorkflowRunId run_id;
+    bool existing{false};
+  };
+
+  struct InitializationTracker {
+    std::atomic<std::uint64_t> pending{0};
+    std::mutex mutex;
+    std::condition_variable changed;
+  };
+
   [[nodiscard]] auto owner_shard(const WorkflowRunId &run_id) const noexcept
       -> shard_id;
-  auto initialize_run(WorkflowRunId run_id,
-                      std::shared_ptr<const ExecutionPlan> plan,
-                      TriggerEnvelope trigger, WorkflowCallbacks callbacks)
-      -> void;
+  [[nodiscard]] auto bootstrap_run(RunBootstrapRequest request)
+      -> Result<RunBootstrapResult>;
+  auto schedule_activation(RunActivation activation) -> void;
   auto initialize_checkpoint_run(
       std::shared_ptr<const ExecutionPlan> plan,
       WorkflowCheckpoint restored_checkpoint, WorkflowCallbacks callbacks,
@@ -192,8 +204,7 @@ private:
                        TaskState state) -> Result<void>;
   auto transition_attempt(AttemptSnapshot &attempt, AttemptState state)
       -> Result<void>;
-  [[nodiscard]] auto invariants_hold(const ActiveRun &run) const noexcept
-      -> bool;
+  [[nodiscard]] auto invariants_hold(const ActiveRun &run) const -> bool;
   [[nodiscard]] auto conditions_pass(const ActiveRun &run,
                                      std::size_t node_index) const
       -> Result<bool>;
@@ -205,10 +216,15 @@ private:
   auto enforce_completed_retention(ShardState &state) -> void;
   auto emit_run_state(ActiveRun &run) -> void;
   auto emit_task_state(ActiveRun &run, std::size_t task_index) -> void;
-  auto append_evidence(const ActiveRun &run, std::size_t node_index,
-                       EvidenceType type, JsonValue metadata = {}) -> void;
+  auto append_evidence(ActiveRun &run, std::size_t node_index,
+                       EvidenceType type, JsonPayload metadata = {})
+      -> void;
+  template <typename Metadata>
+  auto append_typed_evidence(ActiveRun &run, std::size_t node_index,
+                             EvidenceType type, const Metadata &metadata)
+      -> void;
   auto checkpoint(ActiveRun &run) -> void;
-  auto record_persistence_failure(ActiveRun &run, std::error_code cause)
+  auto record_persistence_failure(ActiveRun &run, ExecutionFailure failure)
       -> void;
   auto handle_persistence_failure(const WorkflowRunId &run_id) -> void;
   [[nodiscard]] auto retain_failure_details(ExecutionFailure failure)
@@ -219,7 +235,9 @@ private:
   [[nodiscard]] auto execute_task(WorkflowRunId run_id,
                                   std::size_t task_index,
                                   AttemptId attempt_id, NodePlan node,
-                                  ExecutorInputs inputs)
+                                  CompiledExecutorConfig executor_config,
+                                  ExecutorInputs inputs, Principal principal,
+                                  TraceContext trace)
       -> task<TaskExecutionResult>;
 
   Runtime &runtime_;
@@ -234,7 +252,8 @@ private:
   mutable std::mutex idempotency_mutex_;
   std::unordered_map<std::string, IdempotencyBinding> idempotency_runs_;
   std::atomic<std::uint64_t> active_run_count_{0};
-  std::atomic<std::uint64_t> pending_initializations_{0};
+  std::shared_ptr<InitializationTracker> initialization_tracker_{
+      std::make_shared<InitializationTracker>()};
   std::atomic<std::uint64_t> active_task_coroutines_{0};
   std::atomic_bool quiescing_{false};
   mutable std::mutex lifecycle_mutex_;

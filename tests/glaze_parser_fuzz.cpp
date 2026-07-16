@@ -1,29 +1,11 @@
-#include "dagforge/config/toml_util.hpp"
+#include "dagforge/config/system_config_loader.hpp"
 #include "dagforge/util/json.hpp"
+
+#include "../src/dagforge/workflow/storage/detail/storage_codec.hpp"
 
 #include <cstddef>
 #include <cstdint>
-#include <string>
 #include <string_view>
-#include <vector>
-
-namespace dagforge::test {
-
-struct FuzzToml {
-  std::string name;
-  std::vector<std::int64_t> values;
-};
-
-} // namespace dagforge::test
-
-namespace glz {
-
-template <> struct meta<dagforge::test::FuzzToml> {
-  using T = dagforge::test::FuzzToml;
-  static constexpr auto value = object("name", &T::name, "values", &T::values);
-};
-
-} // namespace glz
 
 extern "C" auto LLVMFuzzerTestOneInput(const std::uint8_t *data,
                                        std::size_t size) -> int {
@@ -33,13 +15,11 @@ extern "C" auto LLVMFuzzerTestOneInput(const std::uint8_t *data,
 
   (void)dagforge::parse_json(input);
   (void)dagforge::is_valid_json(input);
-
-  dagforge::test::FuzzToml toml{};
-  constexpr auto kTomlOpts =
-      glz::opts{.format = glz::TOML,
-                .null_terminated = false,
-                .error_on_unknown_keys = false};
-  (void)glz::read<kTomlOpts>(toml, input);
+  (void)dagforge::config::SystemConfigLoader::load_from_string(input);
+  (void)dagforge::workflow::storage_detail::decode_artifact_metadata(input);
+  (void)dagforge::workflow::storage_detail::decode_checkpoint(input);
+  (void)dagforge::workflow::storage_detail::decode_evidence(input);
+  (void)dagforge::workflow::storage_detail::decode_stored_plan(input);
 
   return 0;
 }

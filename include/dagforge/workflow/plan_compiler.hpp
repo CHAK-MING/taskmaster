@@ -3,6 +3,7 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/workflow/executor_registry.hpp"
+#include "dagforge/workflow/plan_validator.hpp"
 #include "dagforge/workflow/workflow_plan.hpp"
 
 #include <memory>
@@ -12,16 +13,10 @@
 
 namespace dagforge::workflow {
 
-class PolicyEngine {
-public:
-  [[nodiscard]] auto validate(const WorkflowPlan &plan) const
-      -> Result<void>;
-};
-
 class PlanCompiler {
 public:
   explicit PlanCompiler(const ExecutorRegistry &executors,
-                        PolicyEngine policy_engine = {});
+                        PlanValidator validator = {});
 
   [[nodiscard]] auto compile(WorkflowPlan plan) const
       -> Result<std::shared_ptr<const ExecutionPlan>>;
@@ -34,7 +29,7 @@ public:
 
 private:
   const ExecutorRegistry *executors_;
-  PolicyEngine policy_engine_;
+  PlanValidator validator_;
 };
 
 } // namespace dagforge::workflow

@@ -43,10 +43,6 @@ def reserve_port() -> int:
         return int(listener.getsockname()[1])
 
 
-def toml_string(value: Path | str) -> str:
-    return json.dumps(str(value))
-
-
 def generate_tls_certificate(state_root: Path) -> tuple[Path, Path]:
     certificate = state_root / "localhost.crt"
     private_key = state_root / "localhost.key"
@@ -92,100 +88,123 @@ def write_config(
 ) -> None:
     minijail_root = Path.home() / ".local/libexec/dagforge/minijail"
     api_tls_enabled = api_tls_certificate is not None and api_tls_key is not None
-    api_tls_enabled_toml = "true" if api_tls_enabled else "false"
-    api_tls_certificate_toml = toml_string(api_tls_certificate or "")
-    api_tls_key_toml = toml_string(api_tls_key or "")
-    config = f"""[runtime]
-shards = 2
-pin_shards_to_cores = false
-cpu_affinity_offset = 0
-
-[sandbox]
-minijail_path = {toml_string(minijail_root / "minijail0")}
-seccomp_bpf_path = {toml_string(minijail_root / "dagforge_command.bpf")}
-workspace_root = {toml_string(state_root / "workspaces")}
-max_memory_bytes = 1073741824
-max_file_bytes = 67108864
-tmp_bytes = 67108864
-max_stdout_bytes = 10485760
-max_stderr_bytes = 10485760
-max_stream_line_bytes = 1048576
-max_processes = 128
-max_open_files = 256
-allow_unlisted_programs = false
-allow_unlisted_environment = false
-require_trusted_files = true
-retain_workspaces = false
-allowed_programs = ["/bin/echo", "/bin/printf", "/bin/sh", "/bin/cat", "/bin/true", "/usr/bin/python3"]
-allowed_environment = ["CUSTOM_VALUE", "DAGFORGE_INPUT", "FINAL_VALUE", "HTTP_RESPONSE", "LEFT_VALUE", "RIGHT_VALUE", "ROOT_VALUE"]
-
-[workflow]
-enabled = true
-
-[http_executor]
-enabled = true
-allow_plaintext = true
-deny_private_networks = true
-allowed_origins = [
-  "http://127.0.0.1:{http_target_port}",
-  "https://localhost:{https_target_port}",
-  "https://localhost:{tls_silent_port}"
-]
-allowed_ip_cidrs = ["127.0.0.0/8", "::1/128"]
-max_request_headers = 64
-max_request_header_bytes = 65536
-max_request_body_bytes = 1024
-max_response_headers = 64
-max_response_header_bytes = 4096
-max_response_body_bytes = 4096
-max_concurrent_requests_per_shard = 1
-max_concurrent_requests = 2
-dns_timeout_ms = 1000
-connect_timeout_ms = 1000
-tls_handshake_timeout_ms = 1000
-write_timeout_ms = 1000
-first_byte_timeout_ms = 500
-read_timeout_ms = 1000
-idle_connection_timeout_ms = 30000
-max_idle_connections_per_origin = 2
-max_idle_connections_per_shard = 4
-tls_min_version = "1.2"
-tls_ca_file = ""
-tls_client_cert_file = ""
-tls_client_key_file = ""
-
-[admission]
-allow_unlisted_executors = false
-allowed_executors = ["command", "http"]
-max_nodes = 256
-max_parallel_nodes = 32
-max_total_output_bytes = 67108864
-max_run_duration_sec = 3600
-
-[storage]
-enabled = false
-directory = {toml_string(state_root / "state")}
-max_completed_runs = 10000
-max_evidence_records = 100000
-
-[api]
-enabled = true
-host = "127.0.0.1"
-port = {port}
-reuse_port = false
-tls_enabled = {api_tls_enabled_toml}
-tls_cert_file = {api_tls_certificate_toml}
-tls_key_file = {api_tls_key_toml}
-tls_min_version = "1.2"
-bearer_token_env = ""
-max_request_header_bytes = 65536
-max_request_body_bytes = 1048576
-connection_idle_timeout_ms = 30000
-max_connections = 128
-max_requests_per_connection = 100
-max_concurrent_requests = 128
-"""
-    path.write_text(config, encoding="utf-8")
+    config = {
+        "workflow": {"enabled": True},
+        "executors": {
+            "command": {
+                "policy": {
+                    "allow_unlisted_programs": False,
+                    "allow_unlisted_environment": False,
+                    "require_trusted_programs": True,
+                    "programs": [],
+                    "allowed_programs": [
+                        "/bin/echo",
+                        "/bin/printf",
+                        "/bin/sh",
+                        "/bin/cat",
+                        "/bin/true",
+                        "/usr/bin/python3",
+                    ],
+                    "allowed_environment": [
+                        "CUSTOM_VALUE",
+                        "DAGFORGE_INPUT",
+                        "FINAL_VALUE",
+                        "HTTP_RESPONSE",
+                        "LEFT_VALUE",
+                        "RIGHT_VALUE",
+                        "ROOT_VALUE",
+                    ],
+                    "inherited_environment": ["LANG", "LC_ALL", "LC_CTYPE", "TERM"],
+                },
+                "minijail": {
+                    "executable": str(minijail_root / "minijail0"),
+                    "seccomp_bpf_path": str(minijail_root / "dagforge_command.bpf"),
+                    "execution_root": str(state_root / "workspaces"),
+                    "max_memory_bytes": 1073741824,
+                    "max_file_bytes": 67108864,
+                    "tmp_bytes": 67108864,
+                    "max_stdout_bytes": 10485760,
+                    "max_stderr_bytes": 10485760,
+                    "max_stream_line_bytes": 1048576,
+                    "max_processes": 128,
+                    "max_open_files": 256,
+                    "require_trusted_files": True,
+                    "retain_workdirs": False,
+                },
+            },
+            "http": {
+                "enabled": True,
+                "egress": {
+                    "allow_plaintext": True,
+                    "deny_private_networks": True,
+                    "allowed_origins": [
+                        f"http://127.0.0.1:{http_target_port}",
+                        f"https://localhost:{https_target_port}",
+                        f"https://localhost:{tls_silent_port}",
+                    ],
+                    "allowed_ip_cidrs": ["127.0.0.0/8", "::1/128"],
+                    "max_request_headers": 64,
+                    "max_request_header_bytes": 65536,
+                    "max_request_body_bytes": 1024,
+                    "max_response_headers": 64,
+                    "max_response_header_bytes": 4096,
+                    "max_response_body_bytes": 4096,
+                    "max_concurrent_requests_per_shard": 1,
+                    "max_concurrent_requests": 2,
+                    "dns_timeout_ms": 1000,
+                    "connect_timeout_ms": 1000,
+                    "tls_handshake_timeout_ms": 1000,
+                    "write_timeout_ms": 1000,
+                    "first_byte_timeout_ms": 500,
+                    "read_timeout_ms": 1000,
+                    "idle_connection_timeout_ms": 30000,
+                    "max_idle_connections_per_origin": 2,
+                    "max_idle_connections_per_shard": 4,
+                    "tls_min_version": "1.2",
+                    "tls_ca_file": "",
+                    "tls_client_cert_file": "",
+                    "tls_client_key_file": "",
+                },
+            },
+        },
+        "admission": {
+            "allow_unlisted_executors": False,
+            "allowed_executors": ["command", "http"],
+            "max_nodes": 256,
+            "max_parallel_nodes": 32,
+            "max_total_output_bytes": 67108864,
+            "max_run_duration_sec": 3600,
+        },
+        "storage": {
+            "enabled": False,
+            "directory": str(state_root / "state"),
+            "max_completed_runs": 10000,
+            "max_evidence_records": 100000,
+        },
+        "runtime": {
+            "shards": 2,
+            "pin_shards_to_cores": False,
+            "cpu_affinity_offset": 0,
+        },
+        "api": {
+            "enabled": True,
+            "host": "127.0.0.1",
+            "port": port,
+            "reuse_port": False,
+            "tls_enabled": api_tls_enabled,
+            "tls_cert_file": str(api_tls_certificate or ""),
+            "tls_key_file": str(api_tls_key or ""),
+            "tls_min_version": "1.2",
+            "bearer_token_env": "",
+            "max_request_header_bytes": 65536,
+            "max_request_body_bytes": 1048576,
+            "connection_idle_timeout_ms": 30000,
+            "max_connections": 128,
+            "max_requests_per_connection": 100,
+            "max_concurrent_requests": 128,
+        },
+    }
+    path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
 
 class DagforgeService:
@@ -206,7 +225,7 @@ class DagforgeService:
             else None
         )
         self._process = subprocess.Popen(
-            [str(binary), "serve", "--config", str(config)],
+            [str(binary), "serve", str(config)],
             cwd=REPOSITORY_ROOT,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -486,7 +505,7 @@ def load_plan(
 def validate_plan(binary: Path, name: str) -> None:
     path = REPOSITORY_ROOT / "dags" / name
     result = subprocess.run(
-        [str(binary), "validate", "--file", str(path)],
+        [str(binary), "validate", str(path)],
         cwd=REPOSITORY_ROOT,
         text=True,
         capture_output=True,
@@ -513,10 +532,9 @@ def validate_materialized_plan(
         [
             str(binary),
             "validate",
+            str(materialized),
             "--config",
             str(config),
-            "--file",
-            str(materialized),
         ],
         cwd=REPOSITORY_ROOT,
         text=True,
@@ -827,7 +845,9 @@ def verify_http_invalid_utf8(service: DagforgeService, target_port: int) -> None
     )
     request_attempt = task(snapshot, "request")["attempts"][0]
     require(snapshot["state"] == "failed", str(snapshot))
-    require(request_attempt["failure_class"] == "permanent", str(snapshot))
+    require(request_attempt["state"] == "failed", str(snapshot))
+    require(request_attempt["failure"]["kind"] == "protocol_error", str(snapshot))
+    require(request_attempt["failure"]["code"] == "http_invalid_response", str(snapshot))
 
 
 def verify_http_invalid_header_utf8(
@@ -840,7 +860,9 @@ def verify_http_invalid_header_utf8(
     )
     request_attempt = task(snapshot, "request")["attempts"][0]
     require(snapshot["state"] == "failed", str(snapshot))
-    require(request_attempt["failure_class"] == "permanent", str(snapshot))
+    require(request_attempt["state"] == "failed", str(snapshot))
+    require(request_attempt["failure"]["kind"] == "protocol_error", str(snapshot))
+    require(request_attempt["failure"]["code"] == "http_invalid_response", str(snapshot))
 
 
 def verify_http_forbidden(service: DagforgeService, target_port: int) -> None:
@@ -852,10 +874,10 @@ def verify_http_forbidden(service: DagforgeService, target_port: int) -> None:
     request_task = task(snapshot, "request")
     require(snapshot["state"] == "failed", str(snapshot))
     require(request_task["attempt_count"] == 1, str(snapshot))
-    require(
-        request_task["attempts"][0]["failure_class"] == "permanent",
-        str(snapshot),
-    )
+    request_attempt = request_task["attempts"][0]
+    require(request_attempt["state"] == "failed", str(snapshot))
+    require(request_attempt["failure"]["kind"] == "unauthorized", str(snapshot))
+    require(request_attempt["failure"]["code"] == "http_status_rejected", str(snapshot))
 
 
 def verify_http_concurrency_limit(
@@ -1056,7 +1078,7 @@ def main() -> int:
 
     state_root = Path.home() / ".cache/dagforge-real-e2e" / uuid.uuid4().hex
     state_root.mkdir(parents=True)
-    config_path = state_root / "system_config.toml"
+    config_path = state_root / "system_config.json"
     port = reserve_port()
     target_port = reserve_port()
     tls_target_port = reserve_port()
@@ -1208,7 +1230,7 @@ def main() -> int:
         print("PASS HTTP service shutdown")
 
         tls_api_port = reserve_port()
-        tls_api_config = state_root / "tls_api_config.toml"
+        tls_api_config = state_root / "tls_api_config.json"
         write_config(
             tls_api_config,
             state_root,

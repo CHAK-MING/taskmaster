@@ -3,7 +3,6 @@
 #include "dagforge/core/sync_wait.hpp"
 #include "dagforge/sandbox/command_runner.hpp"
 
-#include "../src/dagforge/sandbox/detail/command_policy.hpp"
 #include "../src/dagforge/sandbox/detail/minijail_command_runner.hpp"
 
 #include <gtest/gtest.h>
@@ -106,12 +105,8 @@ protected:
       (void)runner_->quiesce(std::chrono::seconds(5));
       runner_.reset();
     }
-    auto policy = sandbox::detail::CommandPolicy::create(config_.policy);
-    if (!policy) {
-      return fail(policy.error());
-    }
     auto created = sandbox::detail::create_minijail_command_runner(
-        runtime_, config_.minijail, std::move(*policy));
+        runtime_, config_.minijail, config_.policy);
     if (!created) {
       return fail(created.error());
     }
@@ -484,30 +479,30 @@ TEST_F(CommandRunnerTest, RejectsInvalidRunnerConfigurationAndTempRoot) {
     GTEST_SKIP() << "Minijail helper is not installed or unsupported";
   }
 
+  auto invalid_policy = config_.policy;
+  invalid_policy.allowed_environment = {"BAD=KEY"};
   EXPECT_EQ(sandbox::detail::create_minijail_command_runner(
-                runtime_, config_.minijail, {})
+                runtime_, config_.minijail, invalid_policy)
                 .error(),
             make_error_code(Error::InvalidArgument));
 
-  auto policy = sandbox::detail::CommandPolicy::create(config_.policy);
-  ASSERT_TRUE(policy.has_value()) << policy.error().message();
   auto invalid_limits = config_.minijail;
   invalid_limits.max_memory_bytes = 0;
   EXPECT_EQ(sandbox::detail::create_minijail_command_runner(
-                runtime_, invalid_limits, *policy)
+                runtime_, invalid_limits, config_.policy)
                 .error(),
             make_error_code(Error::InvalidArgument));
 
   auto missing_helper = config_.minijail;
   missing_helper.executable = "/definitely/missing/minijail";
   EXPECT_FALSE(sandbox::detail::create_minijail_command_runner(
-                   runtime_, missing_helper, *policy)
+                   runtime_, missing_helper, config_.policy)
                    .has_value());
 
   auto missing_policy = config_.minijail;
   missing_policy.seccomp_bpf_path = "/definitely/missing/seccomp.bpf";
   EXPECT_FALSE(sandbox::detail::create_minijail_command_runner(
-                   runtime_, missing_policy, *policy)
+                   runtime_, missing_policy, config_.policy)
                    .has_value());
 
   auto temp_root = config_.minijail;
@@ -516,7 +511,7 @@ TEST_F(CommandRunnerTest, RejectsInvalidRunnerConfigurationAndTempRoot) {
        std::format("dagforge-invalid-root-{}", ::getpid()))
           .string();
   EXPECT_EQ(sandbox::detail::create_minijail_command_runner(
-                runtime_, temp_root, *policy)
+                runtime_, temp_root, config_.policy)
                 .error(),
             make_error_code(Error::InvalidArgument));
 
@@ -534,7 +529,7 @@ TEST_F(CommandRunnerTest, RejectsInvalidRunnerConfigurationAndTempRoot) {
   auto symlink_config = config_.minijail;
   symlink_config.execution_root = symlink_root.string();
   EXPECT_EQ(sandbox::detail::create_minijail_command_runner(
-                runtime_, symlink_config, *policy)
+                runtime_, symlink_config, config_.policy)
                 .error(),
             make_error_code(Error::Unauthorized));
   fs::remove(symlink_root, error);
@@ -565,10 +560,8 @@ TEST_F(CommandRunnerTest, RejectsGroupWritableSeccompProgram) {
       (fs::path(config_.minijail.execution_root).parent_path() /
        "unsafe-policy-work")
           .string();
-  auto policy = sandbox::detail::CommandPolicy::create(config.policy);
-  ASSERT_TRUE(policy.has_value()) << policy.error().message();
   auto created = sandbox::detail::create_minijail_command_runner(
-      runtime_, config.minijail, std::move(*policy));
+      runtime_, config.minijail, config.policy);
   ASSERT_FALSE(created.has_value());
   EXPECT_EQ(created.error(), make_error_code(Error::Unauthorized));
   fs::remove(unsafe_policy, error);

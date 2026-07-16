@@ -16,7 +16,6 @@ struct AttemptFailureReport {
   AttemptId attempt_id;
   std::uint32_t number{0};
   AttemptState state{AttemptState::Failed};
-  std::optional<FailureClass> failure_class;
   std::optional<TerminationReason> termination_reason;
   ExecutionFailure failure;
 };

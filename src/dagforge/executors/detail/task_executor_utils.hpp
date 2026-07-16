@@ -26,6 +26,14 @@ namespace dagforge::executors::detail {
       });
 }
 
+[[nodiscard]] inline auto outputs_supported(
+    std::span<const WorkflowPortId> outputs,
+    std::span<const std::string_view> supported) -> bool {
+  return std::ranges::all_of(outputs, [&](const WorkflowPortId &output) {
+    return std::ranges::find(supported, output.str()) != supported.end();
+  });
+}
+
 inline auto add_output(workflow::ExecutorOutputs &outputs,
                        std::span<const WorkflowPortId> requested,
                        std::string_view preferred,

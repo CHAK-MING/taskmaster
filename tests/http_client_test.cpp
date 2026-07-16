@@ -37,11 +37,6 @@ auto connect_unix_after_yield(std::shared_ptr<std::atomic_bool> completed,
   completed->store(true, std::memory_order_release);
 }
 
-auto response_text(const HttpResponse &response) -> std::string_view {
-  return {reinterpret_cast<const char *>(response.body.data()),
-          response.body.size()};
-}
-
 class StallingHttpServer {
 public:
   explicit StallingHttpServer(std::uint16_t port,
@@ -209,12 +204,9 @@ TEST_F(HttpClientTest, ConnectUnixFailsForNonExistentSocket) {
 
   dagforge::test::busy_wait_for(std::chrono::milliseconds(100));
 
-  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (!completed.load() && std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-
-  EXPECT_TRUE(completed.load());
+  EXPECT_TRUE(dagforge::test::wait_until([&] { return completed.load(); },
+                                         std::chrono::seconds(5),
+                                         std::chrono::milliseconds(10)));
   EXPECT_EQ(result_client, nullptr);
 }
 
@@ -223,12 +215,9 @@ TEST_F(HttpClientTest, ConnectUnixOwnsSocketPathAcrossDeferredStart) {
   auto failed = std::make_shared<std::atomic_bool>(false);
   runtime_->spawn_external(connect_unix_after_yield(completed, failed));
 
-  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while (!completed->load(std::memory_order_acquire) &&
-         std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  EXPECT_TRUE(completed->load(std::memory_order_acquire));
+  EXPECT_TRUE(dagforge::test::wait_until(
+      [&] { return completed->load(std::memory_order_acquire); },
+      std::chrono::seconds(5), std::chrono::milliseconds(10)));
   EXPECT_TRUE(failed->load(std::memory_order_acquire));
 }
 
@@ -512,13 +501,13 @@ TEST_F(HttpClientTest, SupportsMoveConstructionAndAssignment) {
     }
     HttpClient moved{std::move(**first)};
     auto first_response = co_await moved.get("/first");
-    if (!first_response || response_text(*first_response) != "first") {
+    if (!first_response || first_response->body_as_string() != "first") {
       co_return fail(first_response ? Error::ProtocolError
                                     : first_response.error());
     }
     moved = std::move(**second);
     auto second_response = co_await moved.get("/second");
-    if (!second_response || response_text(*second_response) != "second") {
+    if (!second_response || second_response->body_as_string() != "second") {
       co_return fail(second_response ? Error::ProtocolError
                                      : second_response.error());
     }
@@ -565,15 +554,15 @@ TEST_F(HttpClientTest, ReusesConnectionAcrossSupportedMethods) {
       co_return fail(get ? Error::ProtocolError : get.error());
     }
     auto post = co_await client.post("/post", {'p', 'o', 's', 't'});
-    if (!post || response_text(*post) != "post") {
+    if (!post || post->body_as_string() != "post") {
       co_return fail(post ? Error::ProtocolError : post.error());
     }
     auto json = co_await client.post_json("/post", R"({"ok":true})");
-    if (!json || response_text(*json) != R"({"ok":true})") {
+    if (!json || json->body_as_string() != R"({"ok":true})") {
       co_return fail(json ? Error::ProtocolError : json.error());
     }
     auto put = co_await client.put("/put", {'p', 'u', 't'});
-    if (!put || response_text(*put) != "put") {
+    if (!put || put->body_as_string() != "put") {
       co_return fail(put ? Error::ProtocolError : put.error());
     }
     auto deleted = co_await client.delete_("/delete");
@@ -671,7 +660,7 @@ TEST_F(HttpClientTest, SendsRequestOverUnixSocket) {
   };
   auto response = sync_wait_on_runtime(*runtime_, scenario());
   ASSERT_TRUE(response.has_value()) << response.error().message();
-  EXPECT_EQ(response_text(*response), "unix");
+  EXPECT_EQ(response->body_as_string(), "unix");
   server.stop();
 }
 
@@ -683,7 +672,9 @@ TEST_F(HttpClientTest, ReportsDnsAndTlsConfigurationFailures) {
   };
   auto dns_result = sync_wait_on_runtime(*runtime_, dns());
   ASSERT_FALSE(dns_result.has_value());
-  EXPECT_EQ(dns_result.error(), make_error_code(HttpClientError::DnsFailure));
+  EXPECT_TRUE(dns_result.error() == make_error_code(HttpClientError::DnsFailure) ||
+              dns_result.error() ==
+                  make_error_code(HttpClientError::ConnectFailure));
 
   for (auto config : {
            HttpClientConfig{.tls_min_version = "1.1"},

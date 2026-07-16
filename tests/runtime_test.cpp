@@ -1,11 +1,11 @@
 #include "dagforge/core/runtime.hpp"
 
+#include "test_utils.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <memory>
-#include <mutex>
 #include <thread>
-#include <vector>
 
 #include "gtest/gtest.h"
 
@@ -13,7 +13,6 @@ using namespace dagforge;
 
 namespace {
 
-constexpr auto kPollInterval = std::chrono::milliseconds(1);
 constexpr auto kTaskTimeout = std::chrono::seconds(1);
 constexpr auto kRunningCheckDelay = std::chrono::milliseconds(50);
 
@@ -113,11 +112,8 @@ TEST(RuntimeTest, GetShardIdValid) {
   };
   rt.spawn_on(0, check());
 
-  auto deadline = std::chrono::steady_clock::now() + kTaskTimeout;
-  while (observed.load() == kInvalidShard &&
-         std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(kPollInterval);
-  }
+  EXPECT_TRUE(test::wait_until(
+      [&] { return observed.load() != kInvalidShard; }, kTaskTimeout));
   EXPECT_EQ(observed.load(), 0U);
 
   rt.stop();
@@ -131,10 +127,7 @@ TEST(RuntimeTest, ScheduleExternalRunsTask) {
   auto t = increment_counter(&count);
   rt.spawn_external(std::move(t));
 
-  auto deadline = std::chrono::steady_clock::now() + kTaskTimeout;
-  while (count.load() == 0 && std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(kPollInterval);
-  }
+  EXPECT_TRUE(test::wait_until([&] { return count.load() != 0; }, kTaskTimeout));
   EXPECT_EQ(count.load(), 1);
 
   rt.stop();
@@ -182,11 +175,11 @@ TEST(RuntimeTest, SpawnOnTargetShard_FromExternalContext) {
 
   rt.spawn_on(1, on_target());
 
-  auto deadline = std::chrono::steady_clock::now() + kTaskTimeout;
-  while (target_observed.load(std::memory_order_relaxed) == kInvalidShard &&
-         std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(kPollInterval);
-  }
+  EXPECT_TRUE(test::wait_until(
+      [&] {
+        return target_observed.load(std::memory_order_relaxed) != kInvalidShard;
+      },
+      kTaskTimeout));
 
   EXPECT_EQ(target_observed.load(std::memory_order_relaxed), 1U);
 
@@ -214,12 +207,9 @@ TEST(RuntimeTest, CrossShardQueueOverflowPreservesTargetOwnership) {
     }
   });
 
-  auto deadline = std::chrono::steady_clock::now() + kTaskTimeout;
-  while (!target_blocked.load(std::memory_order_acquire) &&
-         std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(kPollInterval);
-  }
-  ASSERT_TRUE(target_blocked.load(std::memory_order_acquire));
+  ASSERT_TRUE(test::wait_until(
+      [&] { return target_blocked.load(std::memory_order_acquire); },
+      kTaskTimeout));
 
   rt.post_to(kSourceShard, [&] {
     for (int i = 0; i < kPostedTasks; ++i) {
@@ -235,12 +225,12 @@ TEST(RuntimeTest, CrossShardQueueOverflowPreservesTargetOwnership) {
     release_target.store(true, std::memory_order_release);
   });
 
-  deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-  while ((!producer_done.load(std::memory_order_acquire) ||
-          completed.load(std::memory_order_acquire) != kPostedTasks) &&
-         std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(kPollInterval);
-  }
+  EXPECT_TRUE(test::wait_until(
+      [&] {
+        return producer_done.load(std::memory_order_acquire) &&
+               completed.load(std::memory_order_acquire) == kPostedTasks;
+      },
+      std::chrono::seconds(5)));
 
   EXPECT_TRUE(producer_done.load(std::memory_order_acquire));
   EXPECT_EQ(completed.load(std::memory_order_acquire), kPostedTasks);
@@ -304,14 +294,14 @@ TEST(RuntimeTest, MetricsTimersAndBroadcastReflectARealDispatchScenario) {
     cancellation_armed.store(true, std::memory_order_release);
   });
 
-  const auto deadline = std::chrono::steady_clock::now() + kTaskTimeout;
-  while ((broadcasts.load(std::memory_order_acquire) != 2 ||
-          !cross_shard_done.load(std::memory_order_acquire) ||
-          !delayed_fired.load(std::memory_order_acquire) ||
-          !cancellation_armed.load(std::memory_order_acquire)) &&
-         std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(kPollInterval);
-  }
+  EXPECT_TRUE(test::wait_until(
+      [&] {
+        return broadcasts.load(std::memory_order_acquire) == 2 &&
+               cross_shard_done.load(std::memory_order_acquire) &&
+               delayed_fired.load(std::memory_order_acquire) &&
+               cancellation_armed.load(std::memory_order_acquire);
+      },
+      kTaskTimeout));
 
   EXPECT_EQ(broadcasts.load(std::memory_order_acquire), 2U);
   EXPECT_TRUE(cross_shard_done.load(std::memory_order_acquire));

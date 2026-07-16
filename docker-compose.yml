@@ -16,7 +16,7 @@ services:
     security_opt:
       - seccomp=unconfined
     volumes:
-      - ./docker_config.toml:/opt/dagforge/system_config.toml:ro
+      - ./docker_config.json:/opt/dagforge/system_config.json:ro
       - dagforge_workspaces:/var/lib/dagforge/workspaces
 
 volumes:

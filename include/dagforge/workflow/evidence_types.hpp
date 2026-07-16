@@ -1,6 +1,7 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#include "dagforge/util/enum.hpp"
 #include <cstdint>
 #include <string_view>
 #endif
@@ -31,53 +32,34 @@ enum class EvidenceType : std::uint8_t {
   TaskInvalidated,
 };
 
+} // namespace dagforge::workflow
+
+namespace glz {
+
+template <> struct meta<dagforge::workflow::EvidenceType> {
+  using E = dagforge::workflow::EvidenceType;
+  static constexpr auto value = enumerate(
+      "trigger_received", E::TriggerReceived, "plan_compiled",
+      E::PlanCompiled, "policy_accepted", E::PolicyAccepted,
+      "policy_rejected", E::PolicyRejected, "task_started", E::TaskStarted,
+      "task_completed", E::TaskCompleted, "task_failed", E::TaskFailed,
+      "run_pause_requested", E::RunPauseRequested, "run_paused",
+      E::RunPaused, "run_resumed", E::RunResumed, "run_stop_requested",
+      E::RunStopRequested, "attempt_started", E::AttemptStarted,
+      "attempt_completed", E::AttemptCompleted, "checkpoint", E::Checkpoint,
+      "run_completed", E::RunCompleted, "run_failed", E::RunFailed,
+      "run_cancelled", E::RunCancelled, "run_recovery_resumed",
+      E::RunRecoveryResumed, "repair_run_started", E::RepairRunStarted,
+      "task_reused", E::TaskReused, "task_invalidated", E::TaskInvalidated);
+};
+
+} // namespace glz
+
+namespace dagforge::workflow {
+
 [[nodiscard]] constexpr auto to_string_view(EvidenceType value) noexcept
     -> std::string_view {
-  switch (value) {
-  case EvidenceType::TriggerReceived:
-    return "trigger_received";
-  case EvidenceType::PlanCompiled:
-    return "plan_compiled";
-  case EvidenceType::PolicyAccepted:
-    return "policy_accepted";
-  case EvidenceType::PolicyRejected:
-    return "policy_rejected";
-  case EvidenceType::TaskStarted:
-    return "task_started";
-  case EvidenceType::TaskCompleted:
-    return "task_completed";
-  case EvidenceType::TaskFailed:
-    return "task_failed";
-  case EvidenceType::RunPauseRequested:
-    return "run_pause_requested";
-  case EvidenceType::RunPaused:
-    return "run_paused";
-  case EvidenceType::RunResumed:
-    return "run_resumed";
-  case EvidenceType::RunStopRequested:
-    return "run_stop_requested";
-  case EvidenceType::AttemptStarted:
-    return "attempt_started";
-  case EvidenceType::AttemptCompleted:
-    return "attempt_completed";
-  case EvidenceType::Checkpoint:
-    return "checkpoint";
-  case EvidenceType::RunCompleted:
-    return "run_completed";
-  case EvidenceType::RunFailed:
-    return "run_failed";
-  case EvidenceType::RunCancelled:
-    return "run_cancelled";
-  case EvidenceType::RunRecoveryResumed:
-    return "run_recovery_resumed";
-  case EvidenceType::RepairRunStarted:
-    return "repair_run_started";
-  case EvidenceType::TaskReused:
-    return "task_reused";
-  case EvidenceType::TaskInvalidated:
-    return "task_invalidated";
-  }
-  return "unknown";
+  return util::enum_to_string_view(value);
 }
 
 } // namespace dagforge::workflow

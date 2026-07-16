@@ -25,9 +25,9 @@ public:
     return "bench";
   }
 
-  [[nodiscard]] auto compile(JsonValue config, ExecutorCompileContext) const
-      -> Result<JsonValue> override {
-    return ok(std::move(config));
+  [[nodiscard]] auto compile(JsonPayload config, ExecutorCompileContext) const
+      -> Result<CompiledExecutorConfig> override {
+    return ok(CompiledExecutorConfig::from_encoded(std::move(config)));
   }
 
   auto start(TaskExecutionRequest request, TaskExecutionSink sink)
@@ -72,7 +72,6 @@ auto register_executor(ExecutorRegistry &registry) -> void {
     plan.nodes.push_back(NodePlan{
         .node_id = WorkflowNodeId{std::format("node-{}", index)},
         .executor = "bench",
-        .config = JsonValue::object_t{},
         .outputs = {WorkflowPortId{"result"}},
         .checkpoint = checkpoint_each_node,
     });

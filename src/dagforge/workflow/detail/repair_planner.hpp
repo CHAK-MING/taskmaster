@@ -16,7 +16,7 @@ namespace dagforge::workflow::detail {
 struct RepairPlan {
   std::vector<RepairNodeDecision> decisions;
   std::unordered_set<std::string> reused_nodes;
-  std::vector<std::pair<OutputRef, WorkflowValue>> values;
+  std::vector<OutputValue> values;
 };
 
 [[nodiscard]] auto plan_repair(const ExecutionPlan &revised,

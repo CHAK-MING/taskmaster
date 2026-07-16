@@ -74,7 +74,8 @@ void BM_CheckpointFileSave(benchmark::State &state) {
       std::format("dagforge-bench-checkpoint-{}-{}", ::getpid(), node_count);
   std::error_code error;
   std::filesystem::remove_all(directory, error);
-  CheckpointStore store(directory);
+  CheckpointStore store(directory,
+                        config::StorageConfig{}.max_checkpoint_bytes);
   for (auto _ : state) {
     auto saved = store.save(checkpoint);
     if (!saved) {

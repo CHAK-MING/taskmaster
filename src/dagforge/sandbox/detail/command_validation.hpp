@@ -2,10 +2,11 @@
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
+#include "dagforge/sandbox/command_spec.hpp"
+#include "dagforge/util/ascii.hpp"
 
 #include <algorithm>
 #include <array>
-#include <cctype>
 #include <cerrno>
 #include <filesystem>
 #include <string>
@@ -25,11 +26,10 @@ inline constexpr std::array<std::string_view, 3> kReservedEnvironment{
     -> bool {
   if (key.empty())
     return false;
-  if (!std::isalpha(static_cast<unsigned char>(key[0])) && key[0] != '_')
+  if (!util::ascii_is_alpha(key[0]) && key[0] != '_')
     return false;
   return std::ranges::all_of(key, [](char c) {
-    const auto uc = static_cast<unsigned char>(c);
-    return std::isalnum(uc) != 0 || c == '_';
+    return util::ascii_is_alnum(c) || c == '_';
   });
 }
 
@@ -39,8 +39,7 @@ inline constexpr std::array<std::string_view, 3> kReservedEnvironment{
     return false;
   }
   return std::ranges::all_of(name, [](char c) {
-    const auto value = static_cast<unsigned char>(c);
-    return std::isalnum(value) != 0 || c == '_' || c == '-' || c == '.' ||
+    return util::ascii_is_alnum(c) || c == '_' || c == '-' || c == '.' ||
            c == '+';
   });
 }
@@ -51,13 +50,32 @@ inline constexpr std::array<std::string_view, 3> kReservedEnvironment{
          kReservedEnvironment.end();
 }
 
+[[nodiscard]] inline auto environment_key_is_safe(std::string_view key)
+    -> bool {
+  return is_valid_environment_key(key) && !is_reserved_environment_key(key);
+}
+
+[[nodiscard]] inline auto environment_value_is_safe(std::string_view value)
+    -> bool {
+  return !value.contains('\0');
+}
+
+[[nodiscard]] inline auto environment_entry_is_safe(std::string_view key,
+                                                     std::string_view value)
+    -> bool {
+  return environment_key_is_safe(key) && environment_value_is_safe(value);
+}
+
+[[nodiscard]] inline auto command_arguments_are_safe(
+    const CommandSpec &command) -> bool {
+  return std::ranges::none_of(command.arguments, [](const auto &argument) {
+    return argument.contains('\0');
+  });
+}
+
 [[nodiscard]] inline auto is_sensitive_environment_key(std::string_view key)
     -> bool {
-  std::string upper;
-  upper.reserve(key.size());
-  std::ranges::transform(key, std::back_inserter(upper), [](char value) {
-    return static_cast<char>(std::toupper(static_cast<unsigned char>(value)));
-  });
+  const auto upper = util::ascii_uppercase(key);
 
   static constexpr std::array<std::string_view, 5> kSensitiveWords{
       "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "PRIVATE_KEY"};

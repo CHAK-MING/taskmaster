@@ -21,8 +21,8 @@ namespace dagforge::workflow::detail {
           return sizeof(T);
         } else if constexpr (std::is_same_v<T, std::string>) {
           return typed.size();
-        } else if constexpr (std::is_same_v<T, JsonValue>) {
-          return dump_json(typed).size();
+        } else if constexpr (std::is_same_v<T, JsonPayload>) {
+          return typed.size();
         } else if constexpr (std::is_same_v<T, ArtifactRef>) {
           return typed.size_bytes;
         }

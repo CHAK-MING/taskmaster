@@ -4,11 +4,7 @@
 #include "dagforge/http/router.hpp"
 
 #include "bench_utils.hpp"
-
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
+#include "test_utils.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -18,29 +14,6 @@
 
 namespace dagforge::http {
 namespace {
-
-[[nodiscard]] auto reserve_loopback_port() -> std::uint16_t {
-  const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
-    return 0;
-  }
-  sockaddr_in address{};
-  address.sin_family = AF_INET;
-  address.sin_port = 0;
-  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  if (::bind(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) !=
-      0) {
-    ::close(fd);
-    return 0;
-  }
-  socklen_t size = sizeof(address);
-  if (::getsockname(fd, reinterpret_cast<sockaddr *>(&address), &size) != 0) {
-    ::close(fd);
-    return 0;
-  }
-  ::close(fd);
-  return ntohs(address.sin_port);
-}
 
 [[nodiscard]] auto connect_client(std::uint16_t port, bool keep_alive)
     -> task<Result<std::unique_ptr<HttpClient>>> {
@@ -52,7 +25,7 @@ namespace {
 struct LocalHttpScenario {
   bench::RuntimeGuard runtime{2};
   HttpServer server{runtime.runtime};
-  std::uint16_t port{reserve_loopback_port()};
+  std::uint16_t port{test::pick_unused_tcp_port_or_zero()};
 
   explicit LocalHttpScenario(std::size_t response_bytes) {
     if (port == 0) {

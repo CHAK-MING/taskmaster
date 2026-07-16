@@ -8,6 +8,7 @@
 #include "dagforge/workflow/task_executor.hpp"
 
 #include "test_utils.hpp"
+#include "json_test_utils.hpp"
 
 #include <gtest/gtest.h>
 
@@ -25,6 +26,10 @@
 namespace dagforge::executors::http::test {
 namespace {
 
+using dagforge::test::make_payload;
+using dagforge::test::materialize;
+using dagforge::test::parse_payload;
+
 auto base_config() -> config::HttpEgressConfig {
   config::HttpEgressConfig config;
   config.allowed_origins = {"https://example.com"};
@@ -41,12 +46,6 @@ auto executor_config() -> config::HttpEgressConfig {
   config.deny_private_networks = false;
   config.allowed_origins = {"http://127.0.0.1:8080"};
   return config;
-}
-
-auto json(std::string_view text) -> JsonValue {
-  auto parsed = parse_json(text);
-  EXPECT_TRUE(parsed.has_value()) << parsed.error().message();
-  return parsed ? std::move(*parsed) : JsonValue{};
 }
 
 auto compile_context(std::span<const workflow::InputBinding> inputs,
@@ -225,6 +224,31 @@ TEST(HttpEgressPolicyTest, CanPermitPrivateNetworksGlobally) {
   EXPECT_TRUE(policy->address_allowed(make_address("::1")));
 }
 
+TEST(HttpEgressPolicyTest, RejectsInvalidOperationalLimits) {
+  const auto expect_invalid = [](config::HttpEgressConfig config) {
+    auto policy = detail::HttpEgressPolicy::create(std::move(config));
+    ASSERT_FALSE(policy.has_value());
+    EXPECT_EQ(policy.error(), make_error_code(Error::InvalidArgument));
+  };
+
+  auto timeout = base_config();
+  timeout.first_byte_timeout_ms = 0;
+  expect_invalid(std::move(timeout));
+
+  auto idle_pool = base_config();
+  idle_pool.max_idle_connections_per_origin = 5;
+  idle_pool.max_idle_connections_per_shard = 4;
+  expect_invalid(std::move(idle_pool));
+
+  auto tls_version = base_config();
+  tls_version.tls_min_version = "1.1";
+  expect_invalid(std::move(tls_version));
+
+  auto tls_identity = base_config();
+  tls_identity.tls_client_cert_file = "/tmp/client.pem";
+  expect_invalid(std::move(tls_identity));
+}
+
 TEST(HttpTaskExecutorTest, CompilesSupportedMethodsAndCanonicalizesStatusList) {
   Runtime runtime(1);
   auto executor = create_task_executor(runtime, executor_config());
@@ -253,17 +277,18 @@ TEST(HttpTaskExecutorTest, CompilesSupportedMethodsAndCanonicalizesStatusList) {
 
   for (std::string_view method : {"GET", "POST", "PUT", "PATCH", "DELETE",
                                   "OPTIONS", "HEAD"}) {
-    auto config = json(std::format(
+    auto config = materialize(parse_payload(std::format(
         R"({{"method":"{}","url":"http://127.0.0.1:8080/path?x=1","headers":[{{"name":"X-Static","value":"value"}}],"input_headers":[{{"input":"trace","header":"X-Trace"}}],"accepted_statuses":[204,200]}})",
-        method));
+        method)));
     if (method != "GET" && method != "HEAD") {
       config["body_input"] = "payload";
     }
     auto compiled = (*executor)->compile(
-        std::move(config), compile_context(inputs, outputs));
+        make_payload(config), compile_context(inputs, outputs));
     ASSERT_TRUE(compiled.has_value())
         << method << ": " << compiled.error().message();
-    const auto &statuses = (*compiled)["accepted_statuses"].get_array();
+    const auto compiled_json = materialize(compiled->encoded());
+    const auto &statuses = compiled_json["accepted_statuses"].get_array();
     ASSERT_EQ(statuses.size(), 2U);
     EXPECT_EQ(statuses[0].as<std::int64_t>(), 200);
     EXPECT_EQ(statuses[1].as<std::int64_t>(), 204);
@@ -293,7 +318,7 @@ TEST(HttpTaskExecutorTest, RejectsInvalidNodeContractsAndResourceOverruns) {
 
   const auto expect_error = [&](std::string_view text, Error expected,
                                 workflow::ExecutorCompileContext ctx) {
-    auto compiled = (*executor)->compile(json(text), ctx);
+    auto compiled = (*executor)->compile(parse_payload(text), ctx);
     ASSERT_FALSE(compiled.has_value()) << text;
     EXPECT_EQ(compiled.error(), make_error_code(expected)) << text;
   };
@@ -374,8 +399,8 @@ TEST(HttpTaskExecutorTest, EnforcesStartAndQuiesceLifecycleBoundaries) {
 
   workflow::TaskExecutionRequest request{
       .instance_id = InstanceId{"outside-shard"},
-      .config = json(
-          R"({"method":"GET","url":"http://127.0.0.1:8080/","headers":[],"input_headers":[],"accepted_statuses":[]})"),
+      .config = workflow::CompiledExecutorConfig::from_encoded(parse_payload(
+          R"({"method":"GET","url":"http://127.0.0.1:8080/","headers":[],"input_headers":[],"accepted_statuses":[]})")),
       .outputs = {WorkflowPortId{"result"}},
   };
   auto outside = (*executor)->start(std::move(request), {});
@@ -389,8 +414,8 @@ TEST(HttpTaskExecutorTest, EnforcesStartAndQuiesceLifecycleBoundaries) {
   runtime.post_to(0, [executor = *executor, &result]() mutable {
     workflow::TaskExecutionRequest request{
         .instance_id = InstanceId{"after-quiesce"},
-        .config = json(
-            R"({"method":"GET","url":"http://127.0.0.1:8080/","headers":[],"input_headers":[],"accepted_statuses":[]})"),
+        .config = workflow::CompiledExecutorConfig::from_encoded(parse_payload(
+            R"({"method":"GET","url":"http://127.0.0.1:8080/","headers":[],"input_headers":[],"accepted_statuses":[]})")),
         .outputs = {WorkflowPortId{"result"}},
     };
     result.set_value(executor->start(std::move(request), {}));
@@ -450,7 +475,7 @@ TEST(HttpTaskExecutorTest, ExecutesLocalRequestsMapsOutputsAndReusesClients) {
       WorkflowPortId{"status"}, WorkflowPortId{"body"},
       WorkflowPortId{"headers"}, WorkflowPortId{"result"}};
   auto compiled = (*executor)->compile(
-      json(std::format(
+      parse_payload(std::format(
           R"({{"method":"POST","url":"http://127.0.0.1:{}/echo","headers":[],"input_headers":[{{"input":"trace","header":"X-Trace"}}],"body_input":"payload","accepted_statuses":[201]}})",
           port)),
       compile_context(inputs, outputs));
@@ -462,7 +487,7 @@ TEST(HttpTaskExecutorTest, ExecutesLocalRequestsMapsOutputsAndReusesClients) {
       .instance_id = InstanceId{"http-success-1"},
       .config = *compiled,
       .inputs = {{"payload", std::make_shared<const workflow::WorkflowValue>(
-                                 std::move(object))},
+                                 make_payload(object))},
                  {"trace", std::make_shared<const workflow::WorkflowValue>(
                                std::int64_t{42})}},
       .outputs =
@@ -482,7 +507,7 @@ TEST(HttpTaskExecutorTest, ExecutesLocalRequestsMapsOutputsAndReusesClients) {
   EXPECT_EQ(std::get<std::int64_t>(*status), 201);
   EXPECT_EQ(std::get<std::string>(*body), R"({"message":"hello"})");
   EXPECT_EQ(std::get<std::string>(*result), R"({"message":"hello"})");
-  EXPECT_TRUE(std::holds_alternative<JsonValue>(*headers));
+  EXPECT_TRUE(std::holds_alternative<JsonPayload>(*headers));
 
   workflow::TaskExecutionRequest second{
       .instance_id = InstanceId{"http-success-2"},
@@ -568,7 +593,7 @@ TEST(HttpTaskExecutorTest, MapsHttpStatusAndProtocolFailures) {
     config["headers"] = JsonValue::array_t{};
     config["input_headers"] = JsonValue::array_t{};
     config["accepted_statuses"] = std::move(statuses);
-    auto compiled = (*executor)->compile(std::move(config),
+    auto compiled = (*executor)->compile(make_payload(config),
                                          compile_context(inputs, outputs));
     EXPECT_TRUE(compiled.has_value())
         << (compiled ? "" : compiled.error().message());
@@ -593,15 +618,15 @@ TEST(HttpTaskExecutorTest, MapsHttpStatusAndProtocolFailures) {
   ASSERT_FALSE(unauthorized.has_value());
   EXPECT_EQ(unauthorized.error().kind, Error::Unauthorized);
   EXPECT_EQ(unauthorized.error().code, "http_status_rejected");
-  ASSERT_TRUE(unauthorized.error().details["status"].is_number());
-  EXPECT_EQ(unauthorized.error().details["status"].as<std::int64_t>(), 401);
-  ASSERT_TRUE(unauthorized.error().details["body"].is_string());
-  EXPECT_EQ(unauthorized.error().details["body"].as<std::string>(), "status");
-  ASSERT_TRUE(unauthorized.error().details["headers"].is_array());
+  const auto unauthorized_details = materialize(unauthorized.error().details);
+  ASSERT_TRUE(unauthorized_details["status"].is_number());
+  EXPECT_EQ(unauthorized_details["status"].as<std::int64_t>(), 401);
+  ASSERT_TRUE(unauthorized_details["body"].is_string());
+  EXPECT_EQ(unauthorized_details["body"].as<std::string>(), "status");
+  ASSERT_TRUE(unauthorized_details["headers"].is_array());
   const JsonValue *set_cookie = nullptr;
   const JsonValue *trace = nullptr;
-  for (const auto &header :
-       unauthorized.error().details["headers"].get_array()) {
+  for (const auto &header : unauthorized_details["headers"].get_array()) {
     const auto name = header["name"].as<std::string>();
     if (name == "Set-Cookie") {
       set_cookie = &header;
@@ -634,10 +659,9 @@ TEST(HttpTaskExecutorTest, MapsHttpStatusAndProtocolFailures) {
   ASSERT_FALSE(invalid_utf8.has_value());
   EXPECT_EQ(invalid_utf8.error().kind, Error::ProtocolError);
   EXPECT_EQ(invalid_utf8.error().code, "http_invalid_response");
-  ASSERT_TRUE(
-      invalid_utf8.error().details["body_valid_utf8"].is_boolean());
-  EXPECT_FALSE(
-      invalid_utf8.error().details["body_valid_utf8"].get<bool>());
+  const auto invalid_utf8_details = materialize(invalid_utf8.error().details);
+  ASSERT_TRUE(invalid_utf8_details["body_valid_utf8"].is_boolean());
+  EXPECT_FALSE(invalid_utf8_details["body_valid_utf8"].get<bool>());
   auto accepted_missing = execute_path("/missing", {404});
   ASSERT_TRUE(accepted_missing.has_value())
       << accepted_missing.error().message;
@@ -681,7 +705,7 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
   const std::array<workflow::InputBinding, 0> no_inputs{};
   const std::array result_output{WorkflowPortId{"result"}};
   auto slow_config = (*executor)->compile(
-      json(std::format(
+      parse_payload(std::format(
           R"({{"method":"GET","url":"http://127.0.0.1:{}/slow","headers":[],"input_headers":[],"accepted_statuses":[]}})",
           port)),
       compile_context(no_inputs, result_output));
@@ -758,7 +782,7 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
       workflow::InputBinding{.input = WorkflowPortId{"trace"}},
   };
   auto body_config = (*executor)->compile(
-      json(std::format(
+      parse_payload(std::format(
           R"({{"method":"POST","url":"http://127.0.0.1:{}/body","headers":[],"input_headers":[{{"input":"trace","header":"X-Trace"}}],"body_input":"payload","accepted_statuses":[]}})",
           port)),
       compile_context(body_inputs, result_output));
@@ -880,7 +904,7 @@ TEST(HttpTaskExecutorTest, MapsAllSupportedInputValueTypesAtStart) {
   };
   const std::array outputs{WorkflowPortId{"result"}};
   auto compiled = (*executor)->compile(
-      json(R"({"method":"POST","url":"http://127.0.0.1:8080/","headers":[],"input_headers":[],"body_input":"payload","accepted_statuses":[]})"),
+      parse_payload(R"({"method":"POST","url":"http://127.0.0.1:8080/","headers":[],"input_headers":[],"body_input":"payload","accepted_statuses":[]})"),
       compile_context(inputs, outputs));
   ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
 
@@ -912,7 +936,7 @@ TEST(HttpTaskExecutorTest, MapsAllSupportedInputValueTypesAtStart) {
   EXPECT_TRUE(start_value("text", std::string{"payload"}).has_value());
   JsonValue object = JsonValue::object_t{};
   object["value"] = 42;
-  EXPECT_TRUE(start_value("json", std::move(object)).has_value());
+  EXPECT_TRUE(start_value("json", make_payload(object)).has_value());
 
   auto artifact = start_value(
       "artifact",

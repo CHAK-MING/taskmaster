@@ -59,13 +59,6 @@ public:
     return value_.c_str();
   }
 
-  [[nodiscard]] explicit operator const std::string &() const noexcept {
-    return value_;
-  }
-  [[nodiscard]] explicit operator std::string_view() const noexcept {
-    return value_;
-  }
-
   [[nodiscard]] friend auto operator<=>(const TypedId &lhs,
                                         const TypedId &rhs) = default;
   [[nodiscard]] friend auto operator==(const TypedId &lhs, const TypedId &rhs)

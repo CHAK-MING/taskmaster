@@ -2,7 +2,13 @@
 
 #include "gtest/gtest.h"
 
+#include <array>
 #include <cstdlib>
+#include <filesystem>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 using namespace dagforge;
 using namespace dagforge::config;
@@ -68,91 +74,113 @@ TEST(ConfigTest, HttpExecutorDefaultsAreDenyByDefault) {
   EXPECT_EQ(cfg.egress.tls_min_version, "1.2");
 }
 
-TEST(ConfigTest, LoadFromTomlString) {
-  std::string toml = R"(
-[runtime]
-shards = 2
-pin_shards_to_cores = true
-cpu_affinity_offset = 1
+TEST(ConfigTest, LoadsDefaultsFromEmptyJsonObject) {
+  auto result = SystemConfigLoader::load_from_string("{}");
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_EQ(*result, SystemConfig{});
+}
 
-[sandbox]
-minijail_path = "/opt/dagforge/minijail0"
-seccomp_bpf_path = "/opt/dagforge/dagforge_command.bpf"
-execution_root = "/var/lib/dagforge/executions"
-max_memory_bytes = 536870912
-max_file_bytes = 33554432
-tmp_bytes = 16777216
-max_stdout_bytes = 1048576
-max_stderr_bytes = 2097152
-max_stream_line_bytes = 4096
-max_processes = 64
-max_open_files = 128
-allow_unlisted_programs = false
-allow_unlisted_environment = false
-require_trusted_files = true
-retain_workdirs = true
-programs = [{ name = "echo", path = "/bin/echo" }]
-allowed_programs = ["/bin/echo"]
-allowed_environment = ["DAGFORGE_INPUT"]
-inherited_environment = ["LANG", "TERM"]
+TEST(ConfigTest, LoadFromJsonString) {
+  constexpr std::string_view kJson = R"({
+    "runtime": {
+      "shards": 2,
+      "pin_shards_to_cores": true,
+      "cpu_affinity_offset": 1
+    },
+    "executors": {
+      "command": {
+        "policy": {
+          "allow_unlisted_programs": false,
+          "allow_unlisted_environment": false,
+          "require_trusted_programs": true,
+          "programs": [{"name": "echo", "path": "/bin/echo"}],
+          "allowed_programs": ["/bin/echo"],
+          "allowed_environment": ["DAGFORGE_INPUT"],
+          "inherited_environment": ["LANG", "TERM"]
+        },
+        "minijail": {
+          "executable": "/opt/dagforge/minijail0",
+          "seccomp_bpf_path": "/opt/dagforge/dagforge_command.bpf",
+          "execution_root": "/var/lib/dagforge/executions",
+          "max_memory_bytes": 536870912,
+          "max_file_bytes": 33554432,
+          "tmp_bytes": 16777216,
+          "max_stdout_bytes": 1048576,
+          "max_stderr_bytes": 2097152,
+          "max_stream_line_bytes": 4096,
+          "max_processes": 64,
+          "max_open_files": 128,
+          "require_trusted_files": true,
+          "retain_workdirs": true
+        }
+      },
+      "http": {
+        "enabled": true,
+        "egress": {
+          "allow_plaintext": true,
+          "deny_private_networks": true,
+          "allowed_origins": ["http://127.0.0.1:8081", "https://example.com"],
+          "allowed_ip_cidrs": ["127.0.0.0/8"],
+          "max_request_headers": 12,
+          "max_request_header_bytes": 1024,
+          "max_request_body_bytes": 2048,
+          "max_response_headers": 10,
+          "max_response_header_bytes": 4096,
+          "max_response_body_bytes": 8192,
+          "max_concurrent_requests_per_shard": 3,
+          "max_concurrent_requests": 5,
+          "dns_timeout_ms": 101,
+          "connect_timeout_ms": 102,
+          "tls_handshake_timeout_ms": 103,
+          "write_timeout_ms": 104,
+          "first_byte_timeout_ms": 105,
+          "read_timeout_ms": 106,
+          "idle_connection_timeout_ms": 107,
+          "max_idle_connections_per_origin": 2,
+          "max_idle_connections_per_shard": 6,
+          "tls_min_version": "1.3",
+          "tls_ca_file": "/opt/dagforge/ca.pem",
+          "tls_client_cert_file": "/opt/dagforge/client.pem",
+          "tls_client_key_file": "/opt/dagforge/client.key"
+        }
+      }
+    },
+    "admission": {
+      "allow_unlisted_executors": false,
+      "allowed_executors": ["command"],
+      "max_nodes": 64,
+      "max_parallel_nodes": 8,
+      "max_total_output_bytes": 1048576,
+      "max_run_duration_sec": 60
+    },
+    "storage": {
+      "enabled": true,
+      "directory": "/tmp/dagforge-test-state",
+      "max_completed_runs": 20,
+      "max_evidence_records": 200,
+      "max_plan_bytes": 300,
+      "max_checkpoint_bytes": 400,
+      "max_evidence_file_bytes": 500,
+      "max_evidence_record_bytes": 50,
+      "max_artifact_metadata_bytes": 60,
+      "max_artifact_bytes": 700
+    },
+    "api": {
+      "enabled": true,
+      "port": 9999,
+      "host": "0.0.0.0",
+      "tls_min_version": "1.3",
+      "bearer_token_env": "DAGFORGE_TEST_TOKEN",
+      "max_request_header_bytes": 2048,
+      "max_request_body_bytes": 4096,
+      "connection_idle_timeout_ms": 1500,
+      "max_connections": 9,
+      "max_requests_per_connection": 4,
+      "max_concurrent_requests": 7
+    }
+  })";
 
-[http_executor]
-enabled = true
-allow_plaintext = true
-deny_private_networks = true
-allowed_origins = ["http://127.0.0.1:8081", "https://example.com"]
-allowed_ip_cidrs = ["127.0.0.0/8"]
-max_request_headers = 12
-max_request_header_bytes = 1024
-max_request_body_bytes = 2048
-max_response_headers = 10
-max_response_header_bytes = 4096
-max_response_body_bytes = 8192
-max_concurrent_requests_per_shard = 3
-max_concurrent_requests = 5
-dns_timeout_ms = 101
-connect_timeout_ms = 102
-tls_handshake_timeout_ms = 103
-write_timeout_ms = 104
-first_byte_timeout_ms = 105
-read_timeout_ms = 106
-idle_connection_timeout_ms = 107
-max_idle_connections_per_origin = 2
-max_idle_connections_per_shard = 6
-tls_min_version = "1.3"
-tls_ca_file = "/opt/dagforge/ca.pem"
-tls_client_cert_file = "/opt/dagforge/client.pem"
-tls_client_key_file = "/opt/dagforge/client.key"
-
-[admission]
-allow_unlisted_executors = false
-allowed_executors = ["command"]
-max_nodes = 64
-max_parallel_nodes = 8
-max_total_output_bytes = 1048576
-max_run_duration_sec = 60
-
-[storage]
-enabled = true
-directory = "/tmp/dagforge-test-state"
-max_completed_runs = 20
-max_evidence_records = 200
-
-[api]
-enabled = true
-port = 9999
-host = "0.0.0.0"
-tls_min_version = "1.3"
-bearer_token_env = "DAGFORGE_TEST_TOKEN"
-max_request_header_bytes = 2048
-max_request_body_bytes = 4096
-connection_idle_timeout_ms = 1500
-max_connections = 9
-max_requests_per_connection = 4
-max_concurrent_requests = 7
-)";
-
-  auto result = SystemConfigLoader::load_from_string(toml);
+  auto result = SystemConfigLoader::load_from_string(kJson);
   ASSERT_TRUE(result.has_value()) << result.error().message();
 
   EXPECT_TRUE(result->workflow.enabled);
@@ -210,6 +238,12 @@ max_concurrent_requests = 7
   EXPECT_EQ(result->storage.directory, "/tmp/dagforge-test-state");
   EXPECT_EQ(result->storage.max_completed_runs, 20U);
   EXPECT_EQ(result->storage.max_evidence_records, 200U);
+  EXPECT_EQ(result->storage.max_plan_bytes, 300U);
+  EXPECT_EQ(result->storage.max_checkpoint_bytes, 400U);
+  EXPECT_EQ(result->storage.max_evidence_file_bytes, 500U);
+  EXPECT_EQ(result->storage.max_evidence_record_bytes, 50U);
+  EXPECT_EQ(result->storage.max_artifact_metadata_bytes, 60U);
+  EXPECT_EQ(result->storage.max_artifact_bytes, 700U);
   EXPECT_TRUE(result->api.enabled);
   EXPECT_EQ(result->api.port, 9999);
   EXPECT_EQ(result->api.bearer_token_env, "DAGFORGE_TEST_TOKEN");
@@ -222,90 +256,68 @@ max_concurrent_requests = 7
 }
 
 TEST(ConfigTest, RejectsInvalidCommandExecutorConfiguration) {
-  auto missing_helper = SystemConfigLoader::load_from_string(R"(
-[sandbox]
-minijail_path = ""
-)");
+  auto missing_helper = SystemConfigLoader::load_from_string(
+      R"({"executors":{"command":{"minijail":{"executable":""}}}})");
   ASSERT_FALSE(missing_helper.has_value());
   EXPECT_EQ(missing_helper.error(), make_error_code(Error::ParseError));
 
-  auto empty_limit = SystemConfigLoader::load_from_string(R"(
-[sandbox]
-max_memory_bytes = 0
-)");
+  auto empty_limit = SystemConfigLoader::load_from_string(
+      R"({"executors":{"command":{"minijail":{"max_memory_bytes":0}}}})");
   ASSERT_FALSE(empty_limit.has_value());
   EXPECT_EQ(empty_limit.error(), make_error_code(Error::ParseError));
 }
 
-TEST(ConfigTest, LegacyWorkspaceKeysRemainSupported) {
-  auto result = SystemConfigLoader::load_from_string(R"(
-[sandbox]
-workspace_root = "/var/lib/dagforge/legacy-workspaces"
-retain_workspaces = true
-)");
-  ASSERT_TRUE(result.has_value()) << result.error().message();
-  EXPECT_EQ(result->executors.command.minijail.execution_root,
-            "/var/lib/dagforge/legacy-workspaces");
-  EXPECT_TRUE(result->executors.command.minijail.retain_workdirs);
+TEST(ConfigTest, RejectsTomlAndLegacyFlatConfig) {
+  EXPECT_FALSE(SystemConfigLoader::load_from_string(
+                   "[api]\nenabled = true\n")
+                   .has_value());
+  EXPECT_FALSE(SystemConfigLoader::load_from_string(
+                   R"({"sandbox":{"execution_root":"/tmp/legacy"}})")
+                   .has_value());
+  EXPECT_FALSE(SystemConfigLoader::load_from_string(
+                   R"({"http_executor":{"enabled":true}})")
+                   .has_value());
 }
 
 TEST(ConfigTest, RejectsInvalidHttpExecutorLimits) {
-  auto result = SystemConfigLoader::load_from_string(R"(
-[http_executor]
-max_response_body_bytes = 0
-)");
+  auto result = SystemConfigLoader::load_from_string(
+      R"({"executors":{"http":{"egress":{"max_response_body_bytes":0}}}})");
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error(), make_error_code(Error::ParseError));
 
-  auto invalid_timeout = SystemConfigLoader::load_from_string(R"(
-[http_executor]
-first_byte_timeout_ms = 0
-)" );
-  ASSERT_FALSE(invalid_timeout.has_value());
+  auto invalid_timeout = SystemConfigLoader::load_from_string(
+      R"({"executors":{"http":{"egress":{"first_byte_timeout_ms":0}}}})");
+  EXPECT_FALSE(invalid_timeout.has_value());
 
-  auto invalid_pool = SystemConfigLoader::load_from_string(R"(
-[http_executor]
-max_idle_connections_per_origin = 8
-max_idle_connections_per_shard = 4
-)" );
-  ASSERT_FALSE(invalid_pool.has_value());
+  auto invalid_pool = SystemConfigLoader::load_from_string(
+      R"({"executors":{"http":{"egress":{"max_idle_connections_per_origin":8,"max_idle_connections_per_shard":4}}}})");
+  EXPECT_FALSE(invalid_pool.has_value());
 }
 
 TEST(ConfigTest, RejectsIncompleteTlsIdentityAndInvalidTlsVersion) {
-  auto incomplete_identity = SystemConfigLoader::load_from_string(R"(
-[http_executor]
-tls_client_cert_file = "/tmp/client.pem"
-)" );
-  ASSERT_FALSE(incomplete_identity.has_value());
+  auto incomplete_identity = SystemConfigLoader::load_from_string(
+      R"({"executors":{"http":{"egress":{"tls_client_cert_file":"/tmp/client.pem"}}}})");
+  EXPECT_FALSE(incomplete_identity.has_value());
 
-  auto invalid_version = SystemConfigLoader::load_from_string(R"(
-[api]
-tls_min_version = "1.1"
-)" );
-  ASSERT_FALSE(invalid_version.has_value());
+  auto invalid_version = SystemConfigLoader::load_from_string(
+      R"({"api":{"tls_min_version":"1.1"}})");
+  EXPECT_FALSE(invalid_version.has_value());
 }
 
 TEST(ConfigTest, EnvironmentOverridesTakePrecedence) {
   constexpr auto *kApiPort = "DAGFORGE_API_PORT";
   constexpr auto *kRuntimeShards = "DAGFORGE_RUNTIME_SHARDS";
-  constexpr auto *kLegacySandboxRoot = "DAGFORGE_SANDBOX_WORKSPACE_ROOT";
   constexpr auto *kSandboxRoot = "DAGFORGE_SANDBOX_EXECUTION_ROOT";
 
   ::setenv(kApiPort, "7777", 1);
   ::setenv(kRuntimeShards, "3", 1);
-  ::setenv(kLegacySandboxRoot, "/tmp/dagforge-legacy-executions", 1);
   ::setenv(kSandboxRoot, "/tmp/dagforge-test-executions", 1);
 
-  std::string toml = R"(
-[api]
-port = 8080
-)";
-
-  auto result = SystemConfigLoader::load_from_string(toml);
+  auto result =
+      SystemConfigLoader::load_from_string(R"({"api":{"port":8080}})");
 
   ::unsetenv(kApiPort);
   ::unsetenv(kRuntimeShards);
-  ::unsetenv(kLegacySandboxRoot);
   ::unsetenv(kSandboxRoot);
 
   ASSERT_TRUE(result.has_value()) << result.error().message();
@@ -313,4 +325,88 @@ port = 8080
   EXPECT_EQ(result->runtime.shards, 3);
   EXPECT_EQ(result->executors.command.minijail.execution_root,
             "/tmp/dagforge-test-executions");
+}
+
+TEST(ConfigTest, ValidatesEveryConfigurationDomain) {
+  constexpr std::array<std::string_view, 17> invalid_documents{
+      R"({"runtime":{"cpu_affinity_offset":-1}})",
+      R"({"executors":{"command":{"minijail":{"seccomp_bpf_path":""}}}})",
+      R"({"executors":{"command":{"minijail":{"execution_root":""}}}})",
+      R"({"executors":{"http":{"egress":{"max_concurrent_requests":0}}}})",
+      R"({"executors":{"http":{"egress":{"tls_min_version":"1.1"}}}})",
+      R"({"admission":{"max_nodes":0}})",
+      R"({"admission":{"max_nodes":1,"max_parallel_nodes":2}})",
+      R"({"admission":{"max_total_output_bytes":0}})",
+      R"({"admission":{"max_run_duration_sec":0}})",
+      R"({"storage":{"enabled":true,"directory":""}})",
+      R"({"storage":{"max_completed_runs":0}})",
+      R"({"storage":{"max_evidence_records":0}})",
+      R"({"storage":{"max_plan_bytes":0}})",
+      R"({"storage":{"max_evidence_file_bytes":10,"max_evidence_record_bytes":11}})",
+      R"({"api":{"max_request_body_bytes":0}})",
+      R"({"api":{"connection_idle_timeout_ms":0}})",
+      R"({"api":{"tls_enabled":true,"tls_cert_file":"","tls_key_file":""}})",
+  };
+
+  for (const auto document : invalid_documents) {
+    auto result = SystemConfigLoader::load_from_string(document);
+    EXPECT_FALSE(result.has_value()) << document;
+    if (!result) {
+      EXPECT_EQ(result.error(), make_error_code(Error::ParseError));
+    }
+  }
+}
+
+TEST(ConfigTest, AppliesBooleanAndUnsignedEnvironmentOverrides) {
+  constexpr std::array overrides{
+      std::pair{"DAGFORGE_API_ENABLED", "true"},
+      std::pair{"DAGFORGE_API_REUSEPORT", "1"},
+      std::pair{"DAGFORGE_WORKFLOW_ENABLED", "false"},
+      std::pair{"DAGFORGE_HTTP_EXECUTOR_ENABLED", "true"},
+      std::pair{"DAGFORGE_HTTP_EXECUTOR_ALLOW_PLAINTEXT", "true"},
+      std::pair{"DAGFORGE_HTTP_EXECUTOR_DENY_PRIVATE_NETWORKS", "false"},
+      std::pair{"DAGFORGE_HTTP_EXECUTOR_MAX_REQUEST_HEADERS", "17"},
+      std::pair{"DAGFORGE_API_MAX_REQUEST_BODY_BYTES", "12345"},
+      std::pair{"DAGFORGE_RUNTIME_PIN_SHARDS", "true"},
+      std::pair{"DAGFORGE_SANDBOX_MAX_PROCESSES", "33"},
+  };
+  for (const auto &[name, value] : overrides) {
+    ASSERT_EQ(::setenv(name, value, 1), 0);
+  }
+
+  auto result = SystemConfigLoader::load_from_string(
+      R"({"workflow":{"enabled":true}})");
+
+  for (const auto &[name, _] : overrides) {
+    ::unsetenv(name);
+  }
+
+  ASSERT_TRUE(result.has_value()) << result.error().message();
+  EXPECT_TRUE(result->api.enabled);
+  EXPECT_TRUE(result->api.reuse_port);
+  EXPECT_FALSE(result->workflow.enabled);
+  EXPECT_TRUE(result->executors.http.enabled);
+  EXPECT_TRUE(result->executors.http.egress.allow_plaintext);
+  EXPECT_FALSE(result->executors.http.egress.deny_private_networks);
+  EXPECT_EQ(result->executors.http.egress.max_request_headers, 17U);
+  EXPECT_EQ(result->api.max_request_body_bytes, 12345U);
+  EXPECT_TRUE(result->runtime.pin_shards_to_cores);
+  EXPECT_EQ(result->executors.command.minijail.max_processes, 33U);
+}
+
+TEST(ConfigTest, ReportsEnvironmentConversionAndFileReadFailures) {
+  constexpr auto *kInvalidPort = "DAGFORGE_API_PORT";
+  ASSERT_EQ(::setenv(kInvalidPort, "not-a-number", 1), 0);
+  auto invalid_override = SystemConfigLoader::load_from_string("{}");
+  ::unsetenv(kInvalidPort);
+  ASSERT_FALSE(invalid_override.has_value());
+  EXPECT_EQ(invalid_override.error(), make_error_code(Error::ParseError));
+
+  const auto missing = std::filesystem::temp_directory_path() /
+                       "dagforge-config-does-not-exist.json";
+  std::error_code error;
+  std::filesystem::remove(missing, error);
+  auto missing_file = SystemConfigLoader::load_from_file(missing.string());
+  ASSERT_FALSE(missing_file.has_value());
+  EXPECT_EQ(missing_file.error(), make_error_code(Error::FileNotFound));
 }

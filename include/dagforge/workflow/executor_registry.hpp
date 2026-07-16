@@ -24,9 +24,9 @@ class ExecutorRegistry {
 public:
   [[nodiscard]] auto register_executor(std::shared_ptr<ITaskExecutor> executor)
       -> Result<void>;
-  [[nodiscard]] auto compile(std::string_view type, JsonValue config,
+  [[nodiscard]] auto compile(std::string_view type, JsonPayload config,
                              ExecutorCompileContext context) const
-      -> Result<JsonValue>;
+      -> Result<CompiledExecutorConfig>;
   auto start(std::string_view type, TaskExecutionRequest request,
              TaskExecutionSink sink) -> Result<void>;
   auto cancel(std::string_view type, const InstanceId &instance_id) -> void;
@@ -82,12 +82,9 @@ inline auto execute_task_async(
         auto started = registry.start(executor_type, std::move(request),
                                       std::move(sink));
         if (!started) {
-          JsonValue details = JsonValue::object_t{};
-          details["executor"] = executor_type;
           complete(task_failed(make_execution_failure(
               started.error(), "executor_start_failed",
-              "Task executor rejected the start request",
-              std::move(details))));
+              "Task executor rejected the start request")));
         }
       },
       boost::asio::use_awaitable);

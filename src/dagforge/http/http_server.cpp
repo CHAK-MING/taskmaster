@@ -4,6 +4,8 @@
 #include "dagforge/core/runtime.hpp"
 #include "dagforge/util/log.hpp"
 
+#include "detail/beast_bridge.hpp"
+
 #include <boost/asio/buffer.hpp>
 #include <boost/asio/cancel_after.hpp>
 #include <boost/asio/connect.hpp>
@@ -16,7 +18,6 @@
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
 #include <boost/system/error_code.hpp>
-#include <boost/url/parse.hpp>
 
 #include <openssl/ssl.h>
 
@@ -39,70 +40,6 @@ namespace dagforge::http {
 namespace {
 namespace beast = boost::beast;
 namespace beast_http = beast::http;
-
-auto to_method(beast_http::verb verb) noexcept -> std::optional<HttpMethod> {
-  switch (verb) {
-  case beast_http::verb::get:
-    return std::optional{HttpMethod::GET};
-  case beast_http::verb::post:
-    return std::optional{HttpMethod::POST};
-  case beast_http::verb::put:
-    return std::optional{HttpMethod::PUT};
-  case beast_http::verb::delete_:
-    return std::optional{HttpMethod::DELETE};
-  case beast_http::verb::patch:
-    return std::optional{HttpMethod::PATCH};
-  case beast_http::verb::options:
-    return std::optional{HttpMethod::OPTIONS};
-  case beast_http::verb::head:
-    return std::optional{HttpMethod::HEAD};
-  default:
-    return std::nullopt;
-  }
-}
-
-auto to_request(
-    const beast_http::request<beast_http::vector_body<uint8_t>> &msg)
-    -> Result<HttpRequest> {
-  auto method = to_method(msg.method());
-  if (!method) {
-    return fail(Error::Unsupported);
-  }
-  HttpRequest out;
-  out.method = *method;
-  out.version_major = msg.version() / 10;
-  out.version_minor = msg.version() % 10;
-
-  std::string target(msg.target());
-  if (auto parsed = boost::urls::parse_origin_form(target); parsed) {
-    out.path = std::string(parsed->encoded_path());
-    if (auto query = parsed->encoded_query(); !query.empty()) {
-      out.query_string.assign(query.data(), query.size());
-    }
-  } else {
-    out.path = std::move(target);
-  }
-
-  for (const auto &field : msg.base()) {
-    out.headers.add(std::string(field.name_string()), std::string(field.value()));
-  }
-  out.body = msg.body();
-  return ok(std::move(out));
-}
-
-auto to_beast_response(const HttpResponse &resp, unsigned version,
-                       bool keep_alive)
-    -> beast_http::response<beast_http::vector_body<uint8_t>> {
-  beast_http::response<beast_http::vector_body<uint8_t>> out{
-      static_cast<beast_http::status>(resp.status), version};
-  out.keep_alive(keep_alive);
-  for (const auto &field : resp.headers) {
-    out.insert(field.name, field.value);
-  }
-  out.body() = resp.body;
-  out.prepare_payload();
-  return out;
-}
 } // namespace
 
 struct HttpServer::Impl {
@@ -215,20 +152,25 @@ struct HttpServer::Impl {
             request_count < self->config.max_requests_per_connection;
 
         HttpResponse response;
-        auto request = to_request(beast_req);
+        auto request = detail::from_beast_request(beast_req);
         if (!request) {
-          response.status = HttpStatus::MethodNotAllowed;
-          response.headers.set("Allow",
-                               "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD");
-          response.set_body("Unsupported HTTP method");
+          if (request.error() == make_error_code(Error::Unsupported)) {
+            response.status = HttpStatus::MethodNotAllowed;
+            response.headers.set(
+                "Allow", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD");
+            response.set_body("Unsupported HTTP method");
+          } else {
+            response.status = HttpStatus::BadRequest;
+            response.set_body("Invalid HTTP request target");
+          }
         } else {
           log::debug("HTTP request: {} {} (fd={})", request->method,
                      request->path, fd_num);
           response = co_await self->router_.route(*request);
         }
 
-        auto beast_resp =
-            to_beast_response(response, beast_req.version(), keep_alive);
+        auto beast_resp = detail::to_beast_response(
+            response, beast_req.version(), keep_alive);
         auto write_res = co_await co_as_result(beast_http::async_write(
             stream, beast_resp,
             boost::asio::cancel_after(self->config.connection_idle_timeout,

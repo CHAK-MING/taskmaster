@@ -11,9 +11,11 @@
 
 #include "../src/dagforge/app/api/detail/api_context.hpp"
 #include "../src/dagforge/app/api/detail/routes/system.hpp"
+#include "../src/dagforge/app/api/detail/routes/workflow_http_contract.hpp"
 #include "../src/dagforge/app/api/detail/routes/workflows.hpp"
 
 #include "gtest/gtest.h"
+#include "json_test_utils.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -23,15 +25,36 @@
 
 using namespace dagforge;
 using namespace dagforge::config;
+using dagforge::test::make_payload;
 
 namespace {
 
 [[nodiscard]] auto response_text(const http::HttpResponse &response)
     -> std::string {
-  return std::string(response.body.begin(), response.body.end());
+  return std::string{response.body_as_string()};
 }
 
 } // namespace
+
+TEST(ApiTest, WorkflowContractProjectsArtifactValues) {
+  const workflow::WorkflowValue value = workflow::ArtifactRef{
+      .artifact_id = ArtifactId{"artifact-a"},
+      .media_type = "text/plain",
+      .size_bytes = 7,
+      .digest = "digest-a",
+  };
+  const auto projected =
+      api_detail::workflow_contract::workflow_value_response(value);
+  auto encoded = serialize_json(glz::obj{"value", projected});
+  ASSERT_TRUE(encoded.has_value()) << encoded.error().message();
+
+  auto parsed = parse_json(*encoded);
+  ASSERT_TRUE(parsed.has_value()) << parsed.error().message();
+  const auto &artifact = parsed->get_object().at("value").get_object();
+  EXPECT_EQ(artifact.at("type").as<std::string>(), "artifact");
+  EXPECT_EQ(artifact.at("artifact_id").as<std::string>(), "artifact-a");
+  EXPECT_EQ(artifact.at("size_bytes").as<std::int64_t>(), 7);
+}
 
 TEST(ApiTest, ApiServerConstructs) {
   SystemConfig cfg;
@@ -59,6 +82,11 @@ TEST(ApiTest, ApplicationRestoresPersistentCheckpointOnStart) {
       "outputs":["result"]}]
   })");
   ASSERT_TRUE(plan.has_value()) << plan.error().message();
+  auto command_config = plan->nodes.front().config.materialize();
+  ASSERT_TRUE(command_config.has_value()) << command_config.error().message();
+  (*command_config)["program"] =
+      std::filesystem::canonical("/bin/true").string();
+  plan->nodes.front().config = make_payload(*command_config);
   workflow::WorkflowCheckpoint checkpoint;
   checkpoint.plan = std::move(*plan);
   checkpoint.trigger.trigger_id = WorkflowTriggerId{"persisted-trigger"};
@@ -76,7 +104,8 @@ TEST(ApiTest, ApplicationRestoresPersistentCheckpointOnStart) {
       workflow::OutputRef{.node_id = WorkflowNodeId{"command"},
                           .port = WorkflowPortId{"result"}},
       std::string{"restored-value"});
-  workflow::CheckpointStore store(root / "runs");
+  workflow::CheckpointStore store(root / "runs",
+                                  config::StorageConfig{}.max_checkpoint_bytes);
   auto saved = store.save(std::move(checkpoint));
   ASSERT_TRUE(saved.has_value()) << saved.error().message();
 
@@ -88,7 +117,8 @@ TEST(ApiTest, ApplicationRestoresPersistentCheckpointOnStart) {
   config.admission.allowed_executors = {"command"};
   config.executors.command.policy.allowed_programs = {"/bin/true"};
   Application app(std::move(config));
-  ASSERT_TRUE(app.start().has_value());
+  auto started = app.start();
+  ASSERT_TRUE(started.has_value()) << started.error().message();
 
   const Application &const_app = app;
   EXPECT_EQ(const_app.config().storage.directory, root.string());
@@ -147,11 +177,7 @@ TEST(ApiTest, ApplicationRestoresPlanCatalogWithoutRunCheckpoint) {
 
   EXPECT_TRUE(std::filesystem::exists(root / "plans" /
                                       (plan_id.str() + ".json")));
-  bool has_run_checkpoint = false;
-  for (const auto &entry : std::filesystem::directory_iterator(root / "runs")) {
-    has_run_checkpoint = has_run_checkpoint || entry.is_regular_file();
-  }
-  EXPECT_FALSE(has_run_checkpoint);
+  EXPECT_FALSE(std::filesystem::exists(root / "runs"));
 
   Application restored(make_config());
   ASSERT_TRUE(restored.start().has_value());
@@ -191,6 +217,173 @@ TEST(ApiTest, ApplicationRejectsCorruptPersistentCheckpoint) {
   std::filesystem::remove_all(root, error);
 }
 
+TEST(ApiTest, ApplicationRejectsCorruptOrOversizedStorageAtStartup) {
+  const auto root = std::filesystem::temp_directory_path() /
+                    std::format("dagforge-app-storage-limits-{}", ::getpid());
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+  std::filesystem::create_directories(root, error);
+  ASSERT_FALSE(error);
+
+  SystemConfig config;
+  config.api.enabled = false;
+  config.storage.enabled = true;
+  config.storage.directory = root.string();
+  config.storage.max_plan_bytes = 64;
+
+  {
+    std::ofstream evidence(root / "evidence.jsonl",
+                           std::ios::binary | std::ios::trunc);
+    evidence << "not-json\n";
+  }
+  Application corrupt_evidence(config);
+  auto evidence_start = corrupt_evidence.start();
+  ASSERT_FALSE(evidence_start.has_value());
+  EXPECT_EQ(evidence_start.error(), make_error_code(Error::ParseError));
+
+  std::filesystem::remove(root / "evidence.jsonl", error);
+  ASSERT_FALSE(error);
+  std::filesystem::create_directories(root / "plans", error);
+  ASSERT_FALSE(error);
+  {
+    std::ofstream oversized(root / "plans" / "oversized.json",
+                            std::ios::binary | std::ios::trunc);
+    oversized << std::string(65, 'x');
+  }
+  Application oversized_plan(std::move(config));
+  auto plan_start = oversized_plan.start();
+  ASSERT_FALSE(plan_start.has_value());
+  EXPECT_EQ(plan_start.error(), make_error_code(Error::ResourceExhausted));
+  EXPECT_FALSE(oversized_plan.is_running());
+
+  std::filesystem::remove_all(root, error);
+}
+
+TEST(ApiTest, ApplicationReconcilesArtifactDebtAndRejectsInvalidRoot) {
+  const auto root = std::filesystem::temp_directory_path() /
+                    std::format("dagforge-app-artifact-reconcile-{}",
+                                ::getpid());
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+  std::filesystem::create_directories(root / "artifacts", error);
+  ASSERT_FALSE(error);
+  {
+    std::ofstream orphan(root / "artifacts" / "orphan.bin",
+                         std::ios::binary | std::ios::trunc);
+    orphan << "cleanup-debt";
+  }
+
+  SystemConfig config;
+  config.api.enabled = false;
+  config.storage.enabled = true;
+  config.storage.directory = root.string();
+  Application debt(config);
+  auto debt_start = debt.start();
+  ASSERT_TRUE(debt_start.has_value()) << debt_start.error().message();
+  debt.stop();
+
+  std::filesystem::remove_all(root, error);
+  std::filesystem::create_directories(root, error);
+  ASSERT_FALSE(error);
+  {
+    std::ofstream invalid_artifacts(root / "artifacts",
+                                    std::ios::binary | std::ios::trunc);
+    invalid_artifacts << "not-a-directory";
+  }
+  Application invalid_root(std::move(config));
+  auto invalid_start = invalid_root.start();
+  ASSERT_FALSE(invalid_start.has_value());
+  EXPECT_EQ(invalid_start.error(), make_error_code(Error::InvalidState));
+  EXPECT_FALSE(invalid_root.is_running());
+
+  std::filesystem::remove_all(root, error);
+}
+
+TEST(ApiTest, PersistentStorageEnforcesOneApplicationOwner) {
+  const auto root = std::filesystem::temp_directory_path() /
+                    std::format("dagforge-app-storage-owner-{}", ::getpid());
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+
+  const auto make_config = [&] {
+    SystemConfig config;
+    config.api.enabled = false;
+    config.storage.enabled = true;
+    config.storage.directory = root.string();
+    return config;
+  };
+
+  Application first(make_config());
+  ASSERT_TRUE(first.init().has_value());
+  const auto lock_path = root / ".dagforge.lock";
+  ASSERT_TRUE(std::filesystem::is_regular_file(lock_path));
+
+  Application second(make_config());
+  auto rejected = second.init();
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(rejected.error(), make_error_code(Error::AlreadyExists));
+  EXPECT_EQ(second.workflow_runtime(), nullptr);
+
+  first.stop();
+  ASSERT_TRUE(std::filesystem::is_regular_file(lock_path));
+  auto reacquired = second.init();
+  ASSERT_TRUE(reacquired.has_value()) << reacquired.error().message();
+  EXPECT_NE(second.workflow_runtime(), nullptr);
+  second.stop();
+
+  std::filesystem::remove_all(root, error);
+}
+
+TEST(ApiTest, PersistentStorageRejectsUntrustedRootAndLockPermissions) {
+  const auto root = std::filesystem::temp_directory_path() /
+                    std::format("dagforge-app-storage-trust-{}", ::getpid());
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+
+  const auto make_config = [&] {
+    SystemConfig config;
+    config.api.enabled = false;
+    config.storage.enabled = true;
+    config.storage.directory = root.string();
+    return config;
+  };
+
+  std::filesystem::create_directories(root, error);
+  ASSERT_FALSE(error);
+  std::filesystem::permissions(
+      root,
+      std::filesystem::perms::owner_all |
+          std::filesystem::perms::group_write,
+      std::filesystem::perm_options::replace, error);
+  ASSERT_FALSE(error);
+  Application unsafe_root(make_config());
+  auto root_result = unsafe_root.init();
+  ASSERT_FALSE(root_result.has_value());
+  EXPECT_EQ(root_result.error(), make_error_code(Error::Unauthorized));
+
+  std::filesystem::permissions(root, std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace, error);
+  ASSERT_FALSE(error);
+  const auto lock_path = root / ".dagforge.lock";
+  {
+    std::ofstream lock(lock_path);
+    lock << "stale\n";
+  }
+  std::filesystem::permissions(
+      lock_path,
+      std::filesystem::perms::owner_read |
+          std::filesystem::perms::owner_write |
+          std::filesystem::perms::group_write,
+      std::filesystem::perm_options::replace, error);
+  ASSERT_FALSE(error);
+  Application unsafe_lock(make_config());
+  auto lock_result = unsafe_lock.init();
+  ASSERT_FALSE(lock_result.has_value());
+  EXPECT_EQ(lock_result.error(), make_error_code(Error::Unauthorized));
+
+  std::filesystem::remove_all(root, error);
+}
+
 TEST(ApiTest, InitCreatesApiServerInstance) {
   SystemConfig cfg;
   cfg.api.enabled = true;
@@ -205,38 +398,42 @@ TEST(ApiTest, DisabledApiDoesNotAllocateServer) {
   EXPECT_EQ(app.api_server(), nullptr);
 }
 
-TEST(ApiTest, InitReconcilesApiConfigurationChanges) {
+TEST(ApiTest, ApplyConfigRebuildsApiComponents) {
   SystemConfig cfg;
   cfg.api.enabled = true;
   Application app(std::move(cfg));
   ASSERT_NE(app.api_server(), nullptr);
 
-  app.config().api.enabled = false;
-  ASSERT_TRUE(app.init().has_value());
+  auto disabled = app.config();
+  disabled.api.enabled = false;
+  ASSERT_TRUE(app.apply_config(std::move(disabled)).has_value());
   EXPECT_EQ(app.api_server(), nullptr);
 
-  app.config().api.enabled = true;
-  ASSERT_TRUE(app.init().has_value());
+  auto enabled = app.config();
+  enabled.api.enabled = true;
+  ASSERT_TRUE(app.apply_config(std::move(enabled)).has_value());
   EXPECT_NE(app.api_server(), nullptr);
 }
 
-TEST(ApiTest, InitReconcilesWorkflowConfigurationChanges) {
+TEST(ApiTest, ApplyConfigRebuildsWorkflowComponents) {
   Application app;
   ASSERT_NE(app.workflow_runtime(), nullptr);
   ASSERT_NE(app.workflow_control_plane(), nullptr);
 
-  app.config().workflow.enabled = false;
-  ASSERT_TRUE(app.init().has_value());
+  auto disabled = app.config();
+  disabled.workflow.enabled = false;
+  ASSERT_TRUE(app.apply_config(std::move(disabled)).has_value());
   EXPECT_EQ(app.workflow_runtime(), nullptr);
   EXPECT_EQ(app.workflow_control_plane(), nullptr);
 
-  app.config().workflow.enabled = true;
-  ASSERT_TRUE(app.init().has_value());
+  auto enabled = app.config();
+  enabled.workflow.enabled = true;
+  ASSERT_TRUE(app.apply_config(std::move(enabled)).has_value());
   EXPECT_NE(app.workflow_runtime(), nullptr);
   EXPECT_NE(app.workflow_control_plane(), nullptr);
 }
 
-TEST(ApiTest, InitReconcilesHttpExecutorEnablement) {
+TEST(ApiTest, ApplyConfigRebuildsHttpExecutorEnablement) {
   SystemConfig config;
   config.admission.allowed_executors = {"http"};
   Application app(std::move(config));
@@ -266,24 +463,64 @@ TEST(ApiTest, InitReconcilesHttpExecutorEnablement) {
   ASSERT_FALSE(disabled.has_value());
   EXPECT_EQ(disabled.error(), make_error_code(Error::Unsupported));
 
-  app.config().executors.http.enabled = true;
-  app.config().executors.http.egress.allowed_origins = {
+  auto enabled_config = app.config();
+  enabled_config.executors.http.enabled = true;
+  enabled_config.executors.http.egress.allowed_origins = {
       "https://example.com"};
-  ASSERT_TRUE(app.init().has_value());
+  ASSERT_TRUE(app.apply_config(std::move(enabled_config)).has_value());
   auto enabled_plan = make_plan();
   ASSERT_TRUE(enabled_plan.has_value());
   auto enabled =
       app.workflow_control_plane()->register_plan(std::move(*enabled_plan));
   ASSERT_TRUE(enabled.has_value()) << enabled.error().message();
 
-  app.config().executors.http.enabled = false;
-  ASSERT_TRUE(app.init().has_value());
+  auto disabled_config = app.config();
+  disabled_config.executors.http.enabled = false;
+  ASSERT_TRUE(app.apply_config(std::move(disabled_config)).has_value());
   auto disabled_again_plan = make_plan();
   ASSERT_TRUE(disabled_again_plan.has_value());
   auto disabled_again = app.workflow_control_plane()->register_plan(
       std::move(*disabled_again_plan));
   ASSERT_FALSE(disabled_again.has_value());
   EXPECT_EQ(disabled_again.error(), make_error_code(Error::Unsupported));
+}
+
+TEST(ApiTest, ApplyConfigRestoresPreviousGraphWhenRebuildFails) {
+  SystemConfig original;
+  original.api.enabled = false;
+  Application app(original);
+  ASSERT_NE(app.workflow_runtime(), nullptr);
+  ASSERT_NE(app.workflow_control_plane(), nullptr);
+
+  auto invalid = original;
+  invalid.executors.command.minijail.max_memory_bytes = 0;
+  auto applied = app.apply_config(std::move(invalid));
+  ASSERT_FALSE(applied.has_value());
+  EXPECT_EQ(applied.error(), make_error_code(Error::InvalidArgument));
+  EXPECT_EQ(app.config(), original);
+  EXPECT_NE(app.workflow_runtime(), nullptr);
+  EXPECT_NE(app.workflow_control_plane(), nullptr);
+  EXPECT_TRUE(app.start().has_value());
+  app.stop();
+}
+
+TEST(ApiTest, RunningApplicationRejectsReconfigurationAndStartIsIdempotent) {
+  SystemConfig original;
+  original.api.enabled = false;
+  Application app(original);
+  ASSERT_TRUE(app.start().has_value());
+  ASSERT_TRUE(app.start().has_value());
+
+  auto changed = original;
+  changed.workflow.enabled = false;
+  auto applied = app.apply_config(std::move(changed));
+  ASSERT_FALSE(applied.has_value());
+  EXPECT_EQ(applied.error(), make_error_code(Error::InvalidState));
+  EXPECT_EQ(app.config(), original);
+  EXPECT_NE(app.workflow_runtime(), nullptr);
+  EXPECT_NE(app.workflow_control_plane(), nullptr);
+  EXPECT_TRUE(app.is_running());
+  app.stop();
 }
 
 TEST(ApiTest, RestartRebuildsQuiescedWorkflowComponents) {
@@ -378,6 +615,74 @@ TEST(ApiTest, MissingConfiguredBearerTokenPreventsStart) {
   ASSERT_FALSE(started.has_value());
   EXPECT_EQ(started.error(), make_error_code(Error::InvalidArgument));
   app.runtime().stop();
+}
+
+TEST(ApiTest, ApplicationRollsBackRestoredWorkflowWhenApiStartFails) {
+  constexpr auto *kTokenEnvironment =
+      "DAGFORGE_TEST_PARTIAL_START_TOKEN";
+  ::unsetenv(kTokenEnvironment);
+  const auto root = std::filesystem::temp_directory_path() /
+                    std::format("dagforge-partial-start-{}", ::getpid());
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+
+  auto plan = workflow::WorkflowPlanLoader::from_json(R"({
+    "workflow_id":"partial-start","schema_version":1,
+    "nodes":[{"id":"command","executor":"command",
+      "config":{"program":"/bin/true","arguments":[],"env":[],"input_env":[]},
+      "outputs":["result"]}]
+  })");
+  ASSERT_TRUE(plan.has_value()) << plan.error().message();
+
+  SystemConfig base_config;
+  base_config.api.enabled = false;
+  base_config.storage.enabled = true;
+  base_config.storage.directory = root.string();
+  base_config.admission.allowed_executors = {"command"};
+  base_config.executors.command.policy.allowed_programs = {"/bin/true"};
+  Application setup(base_config);
+  auto compiled =
+      setup.workflow_control_plane()->register_plan(std::move(*plan));
+  ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
+
+  workflow::WorkflowCheckpoint checkpoint;
+  checkpoint.plan = workflow::source_plan(**compiled);
+  checkpoint.trigger.trigger_id = WorkflowTriggerId{"partial-start-trigger"};
+  checkpoint.trigger.workflow_id = WorkflowId{"partial-start"};
+  checkpoint.snapshot.run_id = WorkflowRunId{"partial-start-run"};
+  checkpoint.snapshot.workflow_id = WorkflowId{"partial-start"};
+  checkpoint.snapshot.plan_id = (*compiled)->plan_id.clone();
+  checkpoint.snapshot.state = workflow::RunState::Running;
+  checkpoint.snapshot.tasks.push_back(workflow::TaskSnapshot{
+      .node_id = WorkflowNodeId{"command"},
+      .state = workflow::TaskState::Ready,
+  });
+  workflow::CheckpointStore store(root / "runs",
+                                  config::StorageConfig{}.max_checkpoint_bytes);
+  ASSERT_TRUE(store.save(std::move(checkpoint)).has_value());
+
+  setup.stop();
+
+  auto config = base_config;
+  config.api.enabled = true;
+  config.api.port = 0;
+  config.api.bearer_token_env = kTokenEnvironment;
+  Application app(std::move(config));
+
+  auto failed = app.start();
+  ASSERT_FALSE(failed.has_value());
+  EXPECT_EQ(failed.error(), make_error_code(Error::InvalidArgument));
+  EXPECT_FALSE(app.is_running());
+  EXPECT_EQ(app.api_server(), nullptr);
+  EXPECT_EQ(app.workflow_runtime(), nullptr);
+  EXPECT_EQ(app.workflow_control_plane(), nullptr);
+
+  ASSERT_EQ(::setenv(kTokenEnvironment, "test-token", 1), 0);
+  ASSERT_TRUE(app.start().has_value());
+  EXPECT_TRUE(app.is_running());
+  app.stop();
+  ::unsetenv(kTokenEnvironment);
+  std::filesystem::remove_all(root, error);
 }
 
 TEST(ApiTest, SystemRoutesReportHealthStatusAndMetrics) {
@@ -480,6 +785,12 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
     if (!parsed || !parsed->is_object()) {
       return fail(Error::ParseError);
     }
+    const auto durability =
+        parsed->get_object().find("durability_deferred");
+    if (durability == parsed->get_object().end() ||
+        !durability->second.is_boolean() || durability->second.get<bool>()) {
+      return fail(Error::ParseError);
+    }
     const auto it = parsed->get_object().find("plan_id");
     if (it == parsed->get_object().end() || !it->second.is_string()) {
       return fail(Error::ParseError);
@@ -545,6 +856,10 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
   ASSERT_EQ(uploaded->status, http::HttpStatus::Created);
   auto upload_body = parse_json(response_text(*uploaded));
   ASSERT_TRUE(upload_body.has_value());
+  ASSERT_TRUE(
+      upload_body->get_object().at("durability_deferred").is_boolean());
+  EXPECT_FALSE(
+      upload_body->get_object().at("durability_deferred").get<bool>());
   const auto artifact_id =
       upload_body->get_object().at("artifact_id").as<std::string>();
 
@@ -563,6 +878,12 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
   auto erased = sync_wait_on_runtime(app.runtime(), invoke(std::move(erase)));
   ASSERT_TRUE(erased.has_value());
   EXPECT_EQ(erased->status, http::HttpStatus::Ok);
+  auto erase_body = parse_json(response_text(*erased));
+  ASSERT_TRUE(erase_body.has_value());
+  EXPECT_TRUE(erase_body->get_object().at("logical_deleted").get<bool>());
+  EXPECT_FALSE(erase_body->get_object().at("cleanup_deferred").get<bool>());
+  EXPECT_FALSE(
+      erase_body->get_object().at("durability_deferred").get<bool>());
   app.stop();
 }
 
@@ -791,10 +1112,17 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
                  std::format(R"({{"plan_id":"{}"}})", true_plan_id)))
           .status,
       http::HttpStatus::BadRequest);
+  EXPECT_EQ(
+      invoke(request(
+                 http::HttpMethod::POST,
+                 "/api/v1/workflows/route-echo/runs",
+                 R"({"principal":{"subject":"tester","roles":["admin",7]}})"))
+          .status,
+      http::HttpStatus::BadRequest);
 
   auto start_request = request(
       http::HttpMethod::POST, "/api/v1/workflows/route-echo/runs",
-      R"({"source":"api-test","event_type":"manual","payload":{"key":"value"},"principal":{"subject":"tester","roles":["admin",7]},"idempotency_key":"route-key"})");
+      R"({"source":"api-test","event_type":"manual","payload":{"key":"value"},"principal":{"subject":"tester","roles":["admin"]},"idempotency_key":"route-key"})");
   start_request.headers.set("Idempotency-Key", "header-fallback");
   auto started = invoke(std::move(start_request));
   ASSERT_EQ(started.status, http::HttpStatus::Accepted)
@@ -926,6 +1254,7 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
       failed_task.at("attempts").get_array().front().get_object();
   ASSERT_TRUE(failed_attempt.contains("failure"));
   EXPECT_FALSE(failed_attempt.contains("error"));
+  EXPECT_FALSE(failed_attempt.contains("failure_class"));
   const auto &failure_details =
       failed_attempt.at("failure").get_object().at("details").get_object();
   EXPECT_EQ(failure_details.at("exit_code").as<std::int64_t>(), 7);

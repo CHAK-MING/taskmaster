@@ -44,15 +44,6 @@ private:
   return input;
 }
 
-[[nodiscard]] auto make_deep_toml(std::size_t depth) -> std::string {
-  std::string input{"ignored = "};
-  input.append(depth, '[');
-  input.push_back('0');
-  input.append(depth, ']');
-  input.push_back('\n');
-  return input;
-}
-
 } // namespace
 
 TEST(GlazeSecurityTest, ParsesExactJsonBufferWithoutNullTerminator) {
@@ -135,52 +126,56 @@ TEST(GlazeSecurityTest, AdversarialValidJsonNeverCrashes) {
   }
 }
 
-TEST(GlazeSecurityTest, ParsesExactTomlBufferWithoutNullTerminator) {
-  ExactBuffer input{"[api]\nenabled = true\nport = 9001\n"};
+TEST(GlazeSecurityTest, ParsesExactSystemConfigBufferWithoutNullTerminator) {
+  ExactBuffer input{R"({"api":{"enabled":true,"port":9001}})"};
 
-  auto parsed = SystemConfigLoader::load_from_string(input.view());
+  auto parsed = config::SystemConfigLoader::load_from_string(input.view());
 
   ASSERT_TRUE(parsed.has_value()) << parsed.error().message();
   EXPECT_TRUE(parsed->api.enabled);
   EXPECT_EQ(parsed->api.port, 9001);
 }
 
-TEST(GlazeSecurityTest, TomlViewDoesNotConsumePoisonSuffix) {
-  constexpr std::string_view kToml = "[api]\nenabled = true\nport = 9002\n";
-  std::string storage{kToml};
-  storage.push_back('[');
-  const std::string_view bounded{storage.data(), kToml.size()};
+TEST(GlazeSecurityTest, SystemConfigViewDoesNotConsumePoisonSuffix) {
+  constexpr std::string_view kJson =
+      R"({"api":{"enabled":true,"port":9002}})";
+  std::string storage{kJson};
+  storage.push_back('X');
+  const std::string_view bounded{storage.data(), kJson.size()};
 
-  auto parsed = SystemConfigLoader::load_from_string(bounded);
+  auto parsed = config::SystemConfigLoader::load_from_string(bounded);
 
   ASSERT_TRUE(parsed.has_value()) << parsed.error().message();
   EXPECT_EQ(parsed->api.port, 9002);
 }
 
-TEST(GlazeSecurityTest, RejectsMaliciousTomlWithoutReadingPastInput) {
+TEST(GlazeSecurityTest, RejectsMaliciousSystemConfigWithoutReadingPastInput) {
   std::vector<std::string> corpus = {
-      "[api]\nhost = \"unterminated",
-      "[api]\nhost = \"escape\\",
-      "[api]\nport = [1, 2, 3",
-      "[database\nhost = \"localhost\"\n",
-      "[api]\nport = 999999999999999999999999999999999999\n",
-      std::string{"[api]\nhost = \""} + std::string(1, '\0') + "\"\n",
+      R"({"api":{"host":"unterminated})",
+      R"({"api":{"host":"escape\})",
+      R"({"api":{"port":[1,2,3}})",
+      R"({"api":{"port":999999999999999999999999999999999999}})",
+      R"({"unknown":{"value":1}})",
+      std::string{"{\"api\":{\"host\":\""} +
+          std::string(1, '\0') + "\"}}",
   };
 
   for (std::size_t index = 0; index < corpus.size(); ++index) {
     const auto &sample = corpus[index];
     ExactBuffer input{sample};
     Result<config::SystemConfig> parsed;
-    EXPECT_NO_THROW(parsed = SystemConfigLoader::load_from_string(input.view()));
+    EXPECT_NO_THROW(
+        parsed = config::SystemConfigLoader::load_from_string(input.view()));
     EXPECT_FALSE(parsed.has_value()) << "sample " << index << " unexpectedly accepted "
                                      << sample.size() << " bytes";
   }
 }
 
-TEST(GlazeSecurityTest, AdversarialValidTomlNeverCrashes) {
-  ExactBuffer input{make_deep_toml(300)};
+TEST(GlazeSecurityTest, AdversarialSystemConfigJsonNeverCrashes) {
+  ExactBuffer input{make_deep_json(300)};
 
-  EXPECT_NO_THROW((void)SystemConfigLoader::load_from_string(input.view()));
+  EXPECT_NO_THROW(
+      (void)config::SystemConfigLoader::load_from_string(input.view()));
 }
 
 } // namespace dagforge::test

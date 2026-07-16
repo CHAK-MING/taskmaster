@@ -11,8 +11,6 @@
 
 namespace dagforge::api_detail {
 
-using json = JsonValue;
-
 inline auto status_from_error(const std::error_code &ec) -> http::HttpStatus {
   if (ec.category() == io::io_error_category()) {
     switch (static_cast<io::IoError>(ec.value())) {
@@ -70,13 +68,23 @@ inline auto text_response(std::string body, http::HttpStatus status,
   return response;
 }
 
-inline auto json_response(const json &value,
-                          http::HttpStatus status = http::HttpStatus::Ok)
+inline auto error_response(int code, std::string_view message)
+    -> http::HttpResponse;
+
+template <typename T>
+inline auto typed_json_response(
+    const T &value, http::HttpStatus status = http::HttpStatus::Ok)
     -> http::HttpResponse {
+  auto serialized = serialize_json(value);
+  if (!serialized) {
+    log::error("JSON serialization failed for API response: {}",
+               serialized.error().message());
+    return error_response(500, "JSON serialization failed");
+  }
   http::HttpResponse response;
   response.status = status;
   response.set_header("Content-Type", "application/json");
-  response.set_body(dump_json(value));
+  response.set_body(std::move(*serialized));
   return response;
 }
 
@@ -122,34 +130,16 @@ inline auto error_response(int code, std::string_view message)
   }
   auto failure = workflow::make_execution_failure(
       kind, std::move(stable_code), std::string{message});
-  return json_response(json{{"error", workflow::execution_failure_json(failure)}},
-                       static_cast<http::HttpStatus>(code));
+  return typed_json_response(glz::obj{"error", failure},
+                             static_cast<http::HttpStatus>(code));
 }
 
-template <typename T>
-inline auto typed_json_response(
-    const T &value, http::HttpStatus status = http::HttpStatus::Ok)
+inline auto result_error_response(const std::error_code &error)
     -> http::HttpResponse {
-  auto serialized = serialize_json(value);
-  if (!serialized) {
-    log::error("JSON serialization failed for API response: {}",
-               serialized.error().message());
-    return error_response(500, "JSON serialization failed");
-  }
-  http::HttpResponse response;
-  response.status = status;
-  response.set_header("Content-Type", "application/json");
-  response.set_body(std::move(*serialized));
-  return response;
-}
-
-inline auto to_result_response(const std::error_code &error)
-    -> Result<http::HttpResponse> {
   auto failure = workflow::make_execution_failure(
       error, {}, error.message());
-  return ok(json_response(
-      json{{"error", workflow::execution_failure_json(failure)}},
-      status_from_error(error)));
+  return typed_json_response(glz::obj{"error", failure},
+                             status_from_error(error));
 }
 
 } // namespace dagforge::api_detail

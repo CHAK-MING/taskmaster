@@ -58,7 +58,7 @@ for required in \
   libexec/dagforge/minijail/dagforge_command.bpf \
   libexec/dagforge/minijail/LICENSE.minijail \
   libexec/dagforge/minijail/REVISION \
-  system_config.toml \
+  system_config.json \
   LICENSE \
   README.md \
   README_CN.md \

@@ -2,7 +2,6 @@
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
-#include "dagforge/workflow/admission_policy.hpp"
 #include "dagforge/workflow/plan_compiler.hpp"
 #include "dagforge/workflow/plan_store.hpp"
 #include "dagforge/workflow/workflow_plan.hpp"
@@ -17,14 +16,31 @@
 
 namespace dagforge::workflow {
 
+struct PlanRegistration {
+  std::shared_ptr<const ExecutionPlan> plan;
+  bool durability_deferred{false};
+
+  [[nodiscard]] auto operator->() const noexcept -> const ExecutionPlan * {
+    return plan.get();
+  }
+  [[nodiscard]] auto operator*() const noexcept -> const ExecutionPlan & {
+    return *plan;
+  }
+  [[nodiscard]] operator const std::shared_ptr<const ExecutionPlan> &() const
+      noexcept {
+    return plan;
+  }
+};
+
 class WorkflowControlPlane {
 public:
   explicit WorkflowControlPlane(const ExecutorRegistry &executors,
-                                AdmissionPolicy admission = {},
+                                PlanValidator validator = PlanValidator{
+                                    config::AdmissionConfig{}},
                                 std::shared_ptr<PlanStore> plan_store = {});
 
   [[nodiscard]] auto register_plan(WorkflowPlan plan)
-      -> Result<std::shared_ptr<const ExecutionPlan>>;
+      -> Result<PlanRegistration>;
   [[nodiscard]] auto restore_plan(WorkflowPlan plan,
                                   const WorkflowPlanId &plan_id,
                                   std::string_view expected_digest = {})
@@ -38,13 +54,13 @@ public:
 
 private:
   PlanCompiler compiler_;
-  AdmissionPolicy admission_;
   std::shared_ptr<PlanStore> plan_store_;
   mutable std::mutex mutex_;
   std::unordered_map<std::string, std::shared_ptr<const ExecutionPlan>>
       plans_by_id_;
   std::unordered_map<std::string, std::shared_ptr<const ExecutionPlan>>
       plans_by_digest_;
+  std::unordered_map<std::string, bool> durability_deferred_by_plan_id_;
   std::unordered_map<std::string, std::shared_ptr<const ExecutionPlan>>
       latest_by_workflow_;
 };

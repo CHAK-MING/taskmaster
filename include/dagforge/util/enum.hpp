@@ -1,9 +1,10 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#include "dagforge/util/ascii.hpp"
+
 #include <glaze/core/common.hpp>
 
-#include <cctype>
 #include <concepts>
 #include <string>
 #include <string_view>
@@ -27,9 +28,8 @@ namespace util {
   std::string out;
   out.reserve(token.size());
   for (char c : token) {
-    const auto uch = static_cast<unsigned char>(c);
-    if (std::isalnum(uch) != 0) {
-      out.push_back(static_cast<char>(std::tolower(uch)));
+    if (ascii_is_alnum(c)) {
+      out.push_back(ascii_lower(c));
     }
   }
   return out;
@@ -54,7 +54,7 @@ template <std::size_t I, typename E>
 
 template <typename E>
   requires std::is_enum_v<E>
-[[nodiscard]] inline auto
+[[nodiscard]] constexpr auto
 enum_to_string_view(E value, std::string_view fallback = "unknown") noexcept
     -> std::string_view {
   std::string_view out = fallback;

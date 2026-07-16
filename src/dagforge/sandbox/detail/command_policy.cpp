@@ -100,8 +100,7 @@ auto CommandPolicy::canonical_program(std::string_view program) const
 
 auto CommandPolicy::validate_environment_key(std::string_view key) const
     -> Result<void> {
-  if (!detail::is_valid_environment_key(key) ||
-      detail::is_reserved_environment_key(key)) {
+  if (!detail::environment_key_is_safe(key)) {
     return fail(Error::InvalidArgument);
   }
   if (!config_.allow_unlisted_environment &&
@@ -118,7 +117,10 @@ auto CommandPolicy::validate_environment(std::string_view key,
   if (!valid_key) {
     return valid_key;
   }
-  return value.contains('\0') ? fail(Error::InvalidArgument) : ok();
+  if (!detail::environment_value_is_safe(value)) {
+    return fail(Error::InvalidArgument);
+  }
+  return ok();
 }
 
 auto CommandPolicy::validate(CommandSpec &command) const -> Result<void> {
@@ -127,9 +129,7 @@ auto CommandPolicy::validate(CommandSpec &command) const -> Result<void> {
     return fail(canonical.error());
   }
   command.program = std::move(*canonical);
-  if (std::ranges::any_of(command.arguments, [](const auto &argument) {
-        return argument.contains('\0');
-      })) {
+  if (!detail::command_arguments_are_safe(command)) {
     return fail(Error::InvalidArgument);
   }
   for (const auto &[key, value] : command.environment) {

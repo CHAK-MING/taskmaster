@@ -31,8 +31,12 @@ temporary_corpus=$(mktemp -d)
 trap 'rm -rf "$temporary_corpus"' EXIT
 mkdir -p "$artifact_dir"
 
-for seed in valid_json valid_toml truncated_json_escape truncated_toml_array; do
+for seed in valid_json valid_system_config truncated_json_escape; do
   cp "${seed_corpus}/${seed}" "${temporary_corpus}/${seed}"
+done
+for seed in artifact-metadata checkpoint evidence stored-plan; do
+  cp "${repo_root}/tests/fixtures/storage/${seed}-envelope-v1.json" \
+    "${temporary_corpus}/${seed}-envelope-v1.json"
 done
 
 "$fuzzer" \

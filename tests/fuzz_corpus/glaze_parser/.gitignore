@@ -1,6 +1,5 @@
 *
 !.gitignore
 !valid_json
-!valid_toml
+!valid_system_config
 !truncated_json_escape
-!truncated_toml_array
