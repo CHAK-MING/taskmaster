@@ -46,34 +46,44 @@ enum class HttpClientError : std::uint8_t {
   ReadTimeout,
 };
 
-class HttpClientErrorCategory final : public std::error_category {
+inline constexpr ErrorDomainEntry kUnknownHttpClientErrorEntry{
+    "unknown", "unknown HTTP client error"};
+
+inline constexpr std::array<ErrorDomainEntry, 13> kHttpClientErrorDomain = {{
+    {"success", "success"},
+    {"dns_failure", "HTTP DNS resolution failed"},
+    {"dns_timeout", "HTTP DNS resolution timed out"},
+    {"connect_failure", "HTTP connection failed"},
+    {"connect_timeout", "HTTP connection timed out"},
+    {"tls_handshake_failure", "HTTP TLS handshake failed"},
+    {"tls_handshake_timeout", "HTTP TLS handshake timed out"},
+    {"write_failure", "HTTP request write failed"},
+    {"write_timeout", "HTTP request write timed out"},
+    {"first_byte_failure", "HTTP response first byte failed"},
+    {"first_byte_timeout", "HTTP response first byte timed out"},
+    {"read_failure", "HTTP response read failed"},
+    {"read_timeout", "HTTP response read timed out"},
+}};
+
+static_assert(std::to_underlying(HttpClientError::Success) == 0,
+              "HttpClientError domain requires a zero-based enum.");
+static_assert(
+    kHttpClientErrorDomain.size() ==
+        std::to_underlying(HttpClientError::ReadTimeout) + 1,
+    "Update kHttpClientErrorDomain when adding HttpClientError values.");
+
+class HttpClientErrorCategory final
+    : public StaticErrorCategory<HttpClientError,
+                                 kHttpClientErrorDomain.size()> {
+  using Base =
+      StaticErrorCategory<HttpClientError, kHttpClientErrorDomain.size()>;
+
 public:
-  [[nodiscard]] auto name() const noexcept -> const char * override {
-    return "dagforge.http.client";
-  }
+  HttpClientErrorCategory() noexcept
+      : Base("dagforge.http.client", kHttpClientErrorDomain,
+             kUnknownHttpClientErrorEntry) {}
 
-  [[nodiscard]] auto message(int value) const -> std::string override {
-    static constexpr std::array<std::string_view, 13> messages{
-        "success",
-        "HTTP DNS resolution failed",
-        "HTTP DNS resolution timed out",
-        "HTTP connection failed",
-        "HTTP connection timed out",
-        "HTTP TLS handshake failed",
-        "HTTP TLS handshake timed out",
-        "HTTP request write failed",
-        "HTTP request write timed out",
-        "HTTP response first byte failed",
-        "HTTP response first byte timed out",
-        "HTTP response read failed",
-        "HTTP response read timed out",
-    };
-    const auto index = static_cast<std::size_t>(value);
-    return index < messages.size() ? std::string{messages[index]}
-                                   : std::string{"unknown HTTP client error"};
-  }
-
-  using std::error_category::equivalent;
+  using Base::equivalent;
 
   [[nodiscard]] auto
   equivalent(int code, const std::error_condition &condition) const noexcept

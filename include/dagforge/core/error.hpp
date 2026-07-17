@@ -1,5 +1,7 @@
 #pragma once
 
+#include "dagforge/core/error_domain.hpp"
+
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <array>
 #include <cerrno>
@@ -47,113 +49,71 @@ enum class Error : std::uint8_t {
   Unknown,
 };
 
-inline constexpr std::array<std::string_view, 29> kErrorNames = {
-    "success",
-    "file_not_found",
-    "file_open_failed",
-    "parse_error",
-    "database_error",
-    "database_open_failed",
-    "database_query_failed",
-    "invalid_argument",
-    "not_found",
-    "already_exists",
-    "timeout",
-    "cancelled",
-    "cycle_detected",
-    "read_only",
-    "has_dependents",
-    "has_active_runs",
-    "system_not_running",
-    "queue_full",
-    "invalid_url",
-    "process_fork_failed",
-    "resource_exhausted",
-    "invalid_state",
-    "incomplete",
-    "protocol_error",
-    "unauthorized",
-    "rate_limited",
-    "unsupported",
-    "persistence_error",
-    "unknown",
-};
+inline constexpr ErrorDomainEntry kUnknownErrorEntry{"unknown",
+                                                     "unknown error"};
+
+inline constexpr std::array<ErrorDomainEntry, 29> kErrorDomain = {{
+    {"success", "success"},
+    {"file_not_found", "file not found"},
+    {"file_open_failed", "failed to open file"},
+    {"parse_error", "parse error"},
+    {"database_error", "database error"},
+    {"database_open_failed", "failed to open database"},
+    {"database_query_failed", "database query failed"},
+    {"invalid_argument", "invalid argument"},
+    {"not_found", "not found"},
+    {"already_exists", "already exists"},
+    {"timeout", "timeout"},
+    {"cancelled", "cancelled"},
+    {"cycle_detected", "cycle detected in DAG"},
+    {"read_only", "resource is read-only"},
+    {"has_dependents", "resource has dependents"},
+    {"has_active_runs", "DAG has active runs"},
+    {"system_not_running", "system not running"},
+    {"queue_full", "queue full"},
+    {"invalid_url", "invalid URL"},
+    {"process_fork_failed", "failed to fork process"},
+    {"resource_exhausted", "resource exhausted"},
+    {"invalid_state", "invalid state transition"},
+    {"incomplete", "incomplete data"},
+    {"protocol_error", "protocol error"},
+    {"unauthorized", "unauthorized"},
+    {"rate_limited", "rate limited"},
+    {"unsupported", "unsupported operation"},
+    {"persistence_error", "persistence error"},
+    {"unknown", "unknown error"},
+}};
+
+// Compatibility view for enum metadata. kErrorDomain remains the single
+// source of truth for both symbolic codes and human-readable messages.
+inline constexpr auto kErrorNames = detail::error_domain_codes(kErrorDomain);
 
 static_assert(std::to_underlying(Error::Success) == 0,
-              "dagforge::Error names require a zero-based enum.");
-static_assert(kErrorNames.size() == std::to_underlying(Error::Unknown) + 1,
-              "Update kErrorNames when adding dagforge::Error values.");
+              "dagforge::Error domain requires a zero-based enum.");
+static_assert(kErrorDomain.size() == std::to_underlying(Error::Unknown) + 1,
+              "Update kErrorDomain when adding dagforge::Error values.");
 
-class ErrorCategory : public std::error_category {
-  static constexpr std::array<std::string_view, 29> messages = {
-      "success",
-      "file not found",
-      "failed to open file",
-      "parse error",
-      "database error",
-      "failed to open database",
-      "database query failed",
-      "invalid argument",
-      "not found",
-      "already exists",
-      "timeout",
-      "cancelled",
-      "cycle detected in DAG",
-      "resource is read-only",
-      "resource has dependents",
-      "DAG has active runs",
-      "system not running",
-      "queue full",
-      "invalid URL",
-      "failed to fork process",
-      "resource exhausted",
-      "invalid state transition",
-      "incomplete data",
-      "protocol error",
-      "unauthorized",
-      "rate limited",
-      "unsupported operation",
-      "persistence error",
-      "unknown error",
-  };
-
-  static_assert(std::to_underlying(Error::Success) == 0,
-                "dagforge::Error must stay zero-based for table lookup.");
-  static_assert(messages.size() == std::to_underlying(Error::Unknown) + 1,
-                "Update ErrorCategory::messages when adding dagforge::Error values.");
-
+class ErrorCategory final
+    : public StaticErrorCategory<Error, kErrorDomain.size()> {
 public:
-  ~ErrorCategory() override = default;
-
-  [[nodiscard]] auto name() const noexcept -> const char * override {
-    return "dagforge";
-  }
-
-  [[nodiscard]] auto message(int ev) const -> std::string override {
-    auto idx = static_cast<std::size_t>(ev);
-    if (idx >= std::size(messages)) {
-      std::unreachable();
-    }
-    return std::string{messages.at(idx)};
-  }
+  ErrorCategory() noexcept
+      : StaticErrorCategory("dagforge", kErrorDomain, kUnknownErrorEntry) {}
 };
 
-inline auto error_category() -> const ErrorCategory & {
+[[nodiscard]] inline auto error_category() noexcept -> const ErrorCategory & {
   static const ErrorCategory instance;
   return instance;
 }
 
-inline auto make_error_code(Error e) -> std::error_code {
+[[nodiscard]] inline auto make_error_code(Error e) noexcept -> std::error_code {
   return {std::to_underlying(e), error_category()};
 }
 
 [[nodiscard]] constexpr auto to_string_view(Error error) noexcept
     -> std::string_view {
-  const auto index = static_cast<std::size_t>(std::to_underlying(error));
-  if (index < kErrorNames.size()) {
-    return kErrorNames[index];
-  }
-  return "unknown";
+  return detail::lookup_error_domain_entry(error, kErrorDomain,
+                                           kUnknownErrorEntry)
+      .code;
 }
 
 template <typename T>
@@ -173,19 +133,9 @@ template <typename T>
   return std::unexpected{make_error_code(e)};
 }
 
-[[nodiscard]] inline auto fail(Error e, std::string_view /*message*/)
-    -> std::unexpected<std::error_code> {
-  return fail(e);
-}
-
 [[nodiscard]] inline auto fail(std::error_code ec)
     -> std::unexpected<std::error_code> {
   return std::unexpected{ec};
-}
-
-[[nodiscard]] inline auto fail(std::error_code ec, std::string_view /*message*/)
-    -> std::unexpected<std::error_code> {
-  return fail(ec);
 }
 
 template <typename T> [[nodiscard]] auto sys_check(T val) -> Result<T> {

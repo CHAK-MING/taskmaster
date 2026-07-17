@@ -8,6 +8,8 @@ module;
 
 export module dagforge.io;
 
+export import dagforge.base;
+
 #define DAGFORGE_BUILDING_MODULE_INTERFACE 1
 export {
 #include "dagforge/io/result.hpp"

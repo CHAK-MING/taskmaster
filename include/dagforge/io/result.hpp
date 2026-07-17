@@ -1,8 +1,12 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
+#include "dagforge/core/error_domain.hpp"
+
+#include <array>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <type_traits>
 #include <utility>
@@ -28,51 +32,41 @@ enum class IoError : std::uint8_t {
   Unknown,
 };
 
-class IoErrorCategory : public std::error_category {
+inline constexpr ErrorDomainEntry kUnknownIoErrorEntry{"unknown",
+                                                       "unknown error"};
+
+inline constexpr std::array<ErrorDomainEntry, 15> kIoErrorDomain = {{
+    {"success", "success"},
+    {"cancelled", "operation cancelled"},
+    {"timed_out", "operation timed out"},
+    {"end_of_file", "end of file"},
+    {"connection_reset", "connection reset"},
+    {"connection_refused", "connection refused"},
+    {"broken_pipe", "broken pipe"},
+    {"would_block", "operation would block"},
+    {"invalid_argument", "invalid argument"},
+    {"bad_descriptor", "bad file descriptor"},
+    {"no_buffer_space", "no buffer space"},
+    {"operation_in_progress", "operation in progress"},
+    {"not_connected", "not connected"},
+    {"already_connected", "already connected"},
+    {"unknown", "unknown error"},
+}};
+
+static_assert(std::to_underlying(IoError::Success) == 0,
+              "dagforge::io::IoError domain requires a zero-based enum.");
+static_assert(kIoErrorDomain.size() == std::to_underlying(IoError::Unknown) + 1,
+              "Update kIoErrorDomain when adding IoError values.");
+
+class IoErrorCategory final
+    : public StaticErrorCategory<IoError, kIoErrorDomain.size()> {
+  using Base = StaticErrorCategory<IoError, kIoErrorDomain.size()>;
+
 public:
-  ~IoErrorCategory() override = default;
+  IoErrorCategory() noexcept
+      : Base("dagforge.io", kIoErrorDomain, kUnknownIoErrorEntry) {}
 
-  [[nodiscard]] auto name() const noexcept -> const char * override {
-    return "dagforge.io";
-  }
-
-  [[nodiscard]] auto message(int ev) const -> std::string override {
-    switch (static_cast<IoError>(ev)) {
-    case IoError::Success:
-      return "success";
-    case IoError::Cancelled:
-      return "operation cancelled";
-    case IoError::TimedOut:
-      return "operation timed out";
-    case IoError::EndOfFile:
-      return "end of file";
-    case IoError::ConnectionReset:
-      return "connection reset";
-    case IoError::ConnectionRefused:
-      return "connection refused";
-    case IoError::BrokenPipe:
-      return "broken pipe";
-    case IoError::WouldBlock:
-      return "operation would block";
-    case IoError::InvalidArgument:
-      return "invalid argument";
-    case IoError::BadDescriptor:
-      return "bad file descriptor";
-    case IoError::NoBufferSpace:
-      return "no buffer space";
-    case IoError::OperationInProgress:
-      return "operation in progress";
-    case IoError::NotConnected:
-      return "not connected";
-    case IoError::AlreadyConnected:
-      return "already connected";
-    case IoError::Unknown:
-      return "unknown error";
-    }
-    std::unreachable();
-  }
-
-  using std::error_category::equivalent;
+  using Base::equivalent;
 
   [[nodiscard]] auto equivalent(int code,
                                 const std::error_condition &cond) const noexcept
