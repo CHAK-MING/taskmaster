@@ -288,8 +288,8 @@ inline thread_local Runtime *current_runtime = nullptr;
 
 [[nodiscard]] inline auto current_memory_resource() noexcept
     -> pmr::memory_resource * {
-  if (detail::override_memory_resource != nullptr) {
-    return detail::override_memory_resource;
+  if (detail::thread_memory_resource_override != nullptr) {
+    return detail::thread_memory_resource_override;
   }
   assert(detail::current_runtime != nullptr);
   assert(detail::current_shard_id != kInvalidShard);
@@ -299,8 +299,8 @@ inline thread_local Runtime *current_runtime = nullptr;
 
 [[nodiscard]] inline auto current_memory_resource_or_default() noexcept
     -> pmr::memory_resource * {
-  if (detail::override_memory_resource != nullptr) {
-    return detail::override_memory_resource;
+  if (detail::thread_memory_resource_override != nullptr) {
+    return detail::thread_memory_resource_override;
   }
   if (detail::current_runtime == nullptr ||
       detail::current_shard_id == kInvalidShard) {

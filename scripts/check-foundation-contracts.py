@@ -218,6 +218,17 @@ def run_static_checks() -> None:
     if "operator native_type" in io_context or "operator boost::asio::io_context" in io_context:
         fail("IoContext must not provide an implicit native-context conversion")
 
+    repository_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for root in ("include", "src", "tests")
+        for path in (REPOSITORY_ROOT / root).rglob("*")
+        if path.suffix in {".hpp", ".cpp", ".cppm", ".inc"}
+    )
+    if "ScopedMemoryResourceOverride" in repository_sources:
+        fail("memory overrides must use the explicit thread-bound guard")
+    if "override_memory_resource" in repository_sources:
+        fail("the legacy unqualified memory-resource override must not return")
+
 
 def run_compile_checks(compiler: str, jobs: int) -> None:
     feature_result = compile_source(compiler, FEATURE_PROBE)
