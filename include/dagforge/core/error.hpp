@@ -1,8 +1,8 @@
 #pragma once
 
+#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error_domain.hpp"
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <array>
 #include <cerrno>
 #include <concepts>

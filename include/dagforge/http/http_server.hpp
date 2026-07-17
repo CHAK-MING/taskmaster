@@ -1,16 +1,15 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include "dagforge/http/http_types.hpp"
 #include "dagforge/core/error.hpp"
-#endif
+#include "dagforge/http/http_types.hpp"
 
-#include <cstdint>
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
-
+#endif
 
 namespace dagforge {
 class Runtime;
@@ -23,8 +22,7 @@ class Router;
 struct HttpServerConfig {
   std::uint64_t max_request_header_bytes{64ULL * 1024ULL};
   std::uint64_t max_request_body_bytes{1024ULL * 1024ULL};
-  std::chrono::milliseconds connection_idle_timeout{
-      std::chrono::seconds(30)};
+  std::chrono::milliseconds connection_idle_timeout{std::chrono::seconds(30)};
   std::size_t max_connections{1024};
   std::size_t max_requests_per_connection{100};
 };

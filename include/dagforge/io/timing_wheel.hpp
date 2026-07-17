@@ -3,7 +3,6 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/coroutine.hpp"
 #include "dagforge/io/context.hpp"
-#endif
 
 #include <boost/asio/steady_timer.hpp>
 
@@ -15,6 +14,7 @@
 #include <list>
 #include <unordered_map>
 #include <vector>
+#endif
 
 namespace dagforge {
 
@@ -34,10 +34,10 @@ public:
 
   using Callback = std::move_only_function<void()>;
 
-  explicit TimingWheel(IoContext &io,
-                       std::chrono::nanoseconds tick =
-                           std::chrono::milliseconds(10),
-                       std::size_t slot_count = 512);
+  explicit TimingWheel(
+      IoContext &io,
+      std::chrono::nanoseconds tick = std::chrono::milliseconds(10),
+      std::size_t slot_count = 512);
   ~TimingWheel() = default;
 
   TimingWheel(const TimingWheel &) = delete;
@@ -84,8 +84,8 @@ private:
 
 } // namespace io
 
-[[nodiscard]] auto async_sleep_on_timing_wheel(std::chrono::nanoseconds duration)
-    -> spawn_task;
+[[nodiscard]] auto
+async_sleep_on_timing_wheel(std::chrono::nanoseconds duration) -> spawn_task;
 
 template <typename Rep, typename Period>
 [[nodiscard]] inline auto

@@ -5,7 +5,6 @@
 #include "dagforge/core/runtime.hpp"
 #include "dagforge/sandbox/command_spec.hpp"
 #include "dagforge/util/id.hpp"
-#endif
 
 #include <chrono>
 #include <functional>
@@ -16,6 +15,7 @@
 #include <vector>
 
 #include <boost/asio/async_result.hpp>
+#endif
 
 namespace dagforge::sandbox {
 

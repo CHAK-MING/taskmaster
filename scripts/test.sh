@@ -139,6 +139,13 @@ e2e)
   ;;
 esac
 
+case "$mode" in
+unit|quick|all)
+  python3 "${repo_root}/scripts/check-foundation-contracts.py" \
+    --compiler "${CXX:-g++}"
+  ;;
+esac
+
 BUILD2_TARGETS="$build_targets" "${repo_root}/scripts/build.sh"
 
 case "$mode" in

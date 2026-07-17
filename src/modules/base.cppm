@@ -17,6 +17,7 @@ export module dagforge.base;
 
 #define DAGFORGE_BUILDING_MODULE_INTERFACE 1
 export {
+#include "dagforge/core/error_domain.hpp"
 #include "dagforge/core/error.hpp"
 }
 #undef DAGFORGE_BUILDING_MODULE_INTERFACE

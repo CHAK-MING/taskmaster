@@ -64,6 +64,9 @@ run_build2_config() {
   if [[ "${DAGFORGE_SKIP_TEST_LAYOUT_CHECK:-0}" != "1" ]]; then
     python3 "${repo_root}/scripts/check-test-layout.py"
   fi
+  if [[ "${DAGFORGE_SKIP_FOUNDATION_CONTRACT_CHECK:-0}" != "1" ]]; then
+    python3 "${repo_root}/scripts/check-foundation-contracts.py" --static-only
+  fi
 
   acquire_build2_lock "build-${config_name}"
 

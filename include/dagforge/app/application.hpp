@@ -4,13 +4,13 @@
 #include "dagforge/config/system_config.hpp"
 #include "dagforge/core/error.hpp"
 #include "dagforge/core/runtime.hpp"
-#endif
 
 #include <atomic>
 #include <memory>
 #include <optional>
 #include <string_view>
 #include <system_error>
+#endif
 
 namespace dagforge {
 

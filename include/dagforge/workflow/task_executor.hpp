@@ -23,12 +23,11 @@ namespace dagforge::workflow {
 using ExecutorInputs =
     std::unordered_map<std::string, std::shared_ptr<const WorkflowValue>>;
 using ExecutorOutputs = std::vector<std::pair<WorkflowPortId, WorkflowValue>>;
-using TaskExecutionResult =
-    std::expected<ExecutorOutputs, ExecutionFailure>;
+using TaskExecutionResult = std::expected<ExecutorOutputs, ExecutionFailure>;
 
 [[nodiscard]] inline auto task_succeeded(ExecutorOutputs outputs)
     -> TaskExecutionResult {
-  return std::move(outputs);
+  return outputs;
 }
 
 [[nodiscard]] inline auto task_failed(ExecutionFailure failure)

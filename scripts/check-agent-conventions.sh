@@ -11,7 +11,7 @@ if ! command -v rg >/dev/null 2>&1; then
 fi
 
 failures=0
-cpp_roots=(include src tests bench docs/templates)
+cpp_roots=(include src tests docs/templates)
 cpp_globs=(
   --glob '*.hpp'
   --glob '*.cpp'

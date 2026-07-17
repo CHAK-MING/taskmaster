@@ -2,9 +2,7 @@
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
-#endif
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <charconv>
 #include <concepts>
 #include <string_view>

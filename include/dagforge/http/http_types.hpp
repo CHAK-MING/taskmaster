@@ -3,9 +3,7 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/util/string_hash.hpp"
-#endif
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/beast/http/status.hpp>
 
@@ -273,7 +271,8 @@ struct HttpResponse {
         "X-Frame-Options: DENY\r\n"
         "X-Content-Type-Options: nosniff\r\n"
         "Cache-Control: no-store\r\n";
-    result.insert(result.end(), kSecurityHeaders.begin(), kSecurityHeaders.end());
+    result.insert(result.end(), kSecurityHeaders.begin(),
+                  kSecurityHeaders.end());
 
     result.emplace_back('\r');
     result.emplace_back('\n');

@@ -23,15 +23,15 @@ declare -A expected_module=(
 declare -A module_rank=(
   [dagforge.base]=0
   [dagforge.domain]=0
-  [dagforge.io]=0
+  [dagforge.io]=1
   [dagforge.core]=1
   [dagforge.util]=1
   [dagforge.config]=1
   [dagforge.sandbox]=2
   [dagforge.http]=2
-  [dagforge.workflow]=3
-  [dagforge.executors]=4
-  [dagforge.foundation]=6
+  [dagforge.workflow]=2
+  [dagforge.executors]=2
+  [dagforge.foundation]=3
 )
 
 declare -A seen_file=()
