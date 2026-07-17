@@ -39,13 +39,16 @@ report_matches \
 report_matches \
   "construct Result failures with fail(...), not std::unexpected:" \
   'std::unexpected' \
-  --glob '!include/dagforge/core/error.hpp'
+  --glob '!include/dagforge/core/error.hpp' \
+  --glob '!include/dagforge/util/parse.hpp' \
+  --glob '!include/dagforge/util/json.hpp'
 
 report_matches \
   "construct Result values with ok(...)/fail(...), not std::expected directly:" \
   'std::expected[[:space:]]*[<{]' \
   --glob '!include/dagforge/core/error.hpp' \
-  --glob '!include/dagforge/workflow/task_executor.hpp'
+  --glob '!include/dagforge/workflow/task_executor.hpp' \
+  --glob '!include/dagforge/util/parse.hpp'
 
 report_matches \
   "Glaze read/write calls must stay behind DAGForge JSON wrappers:" \

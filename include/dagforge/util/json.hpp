@@ -1,14 +1,15 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#if !defined(DAGFORGE_CONSUME_NAMED_MODULES) ||                                \
-    !DAGFORGE_CONSUME_NAMED_MODULES
+#if !defined(DAGFORGE_CONSUME_NAMED_MODULES) || !DAGFORGE_CONSUME_NAMED_MODULES
 #include "dagforge/core/error.hpp"
 #endif
 #include "dagforge/util/id.hpp"
+#include "dagforge/util/parse.hpp"
 
 #include <glaze/json.hpp>
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -42,6 +43,8 @@ enum class JsonInputState : std::uint8_t {
 
 namespace detail {
 
+enum class JsonRootKind : std::uint8_t { Other, Object, Null };
+
 struct StrictJsonOpts : glz::opts {
   bool validate_skipped = true;
   bool validate_trailing_whitespace = true;
@@ -61,33 +64,85 @@ inline constexpr auto kAllowUnknownJsonOpts = [] {
 
 [[nodiscard]] inline auto classify_json_input_impl(std::string_view input)
     -> JsonInputState {
-  glz::context context{};
   glz::skip value{};
-  if (!static_cast<bool>(
-          glz::read<kStrictJsonOpts>(value, input, context))) {
+  const auto error = glz::read<kStrictJsonOpts>(value, input);
+  if (!error) {
     return JsonInputState::Valid;
   }
-  return context.error == glz::error_code::unexpected_end
+  return error.ec == glz::error_code::unexpected_end ||
+                 error.ec == glz::error_code::end_reached
              ? JsonInputState::Incomplete
              : JsonInputState::Invalid;
 }
 
+[[nodiscard]] inline auto json_parse_error(std::string_view input,
+                                           glz::error_ctx error,
+                                           bool schema_error)
+    -> util::ParseError {
+  auto kind = util::ParseErrorKind::InvalidSyntax;
+  if (input.empty()) {
+    kind = util::ParseErrorKind::EmptyInput;
+  } else if (error.ec == glz::error_code::unexpected_end ||
+             error.ec == glz::error_code::end_reached) {
+    kind = util::ParseErrorKind::IncompleteInput;
+  } else if (schema_error) {
+    kind = util::ParseErrorKind::SchemaMismatch;
+  }
+  return util::make_parse_error(kind, input, error.count);
+}
+
+[[nodiscard]] inline auto validate_json_input_detailed(std::string_view input)
+    -> util::ParseResult<void> {
+  glz::skip value{};
+  if (const auto error = glz::read<kStrictJsonOpts>(value, input); error) {
+    return std::unexpected{json_parse_error(input, error, false)};
+  }
+  return {};
+}
+
 [[nodiscard]] inline auto validate_json_input(std::string_view input) -> bool {
-  return classify_json_input_impl(input) == JsonInputState::Valid;
+  return validate_json_input_detailed(input).has_value();
+}
+
+[[nodiscard]] inline auto classify_json_root(std::string_view input) noexcept
+    -> JsonRootKind {
+  const auto first = input.find_first_not_of(" \t\r\n");
+  if (first == std::string_view::npos) {
+    return JsonRootKind::Other;
+  }
+  if (input[first] == '{') {
+    return JsonRootKind::Object;
+  }
+  const auto last = input.find_last_not_of(" \t\r\n");
+  if (last >= first && input.substr(first, last - first + 1) == "null") {
+    return JsonRootKind::Null;
+  }
+  return JsonRootKind::Other;
+}
+
+template <typename T, auto Opts>
+[[nodiscard]] inline auto
+parse_json_as_with_options_detailed(std::string_view input)
+    -> util::ParseResult<T> {
+  if (auto syntax = validate_json_input_detailed(input); !syntax) {
+    return std::unexpected{syntax.error()};
+  }
+
+  T value{};
+  if (const auto error = glz::read<Opts>(value, input); error) {
+    return std::unexpected{json_parse_error(input, error, true)};
+  }
+  return value;
 }
 
 template <typename T, auto Opts>
 [[nodiscard]] inline auto parse_json_as_with_options(std::string_view input)
     -> Result<T> {
-  if (!validate_json_input(input)) {
+  auto value = parse_json_as_with_options_detailed<T, Opts>(input);
+  if (!value) {
     return fail(Error::ParseError);
   }
-
-  T value{};
-  if (auto ec = glz::read<Opts>(value, input); ec) {
-    return fail(Error::ParseError);
-  }
-  return ok(std::move(value));
+  return ok(std::move(*value));
 }
 
 } // namespace detail
@@ -98,7 +153,8 @@ template <typename T, auto Opts>
 }
 
 template <typename T>
-[[nodiscard]] inline auto serialize_json(const T &value) -> Result<std::string> {
+[[nodiscard]] inline auto serialize_json(const T &value)
+    -> Result<std::string> {
   auto out = glz::write_json(value);
   if (!out) {
     return fail(Error::ProtocolError);
@@ -112,8 +168,24 @@ template <typename T>
 }
 
 template <typename T>
+[[nodiscard]] inline auto parse_json_as_detailed(std::string_view input)
+    -> util::ParseResult<T> {
+  return detail::parse_json_as_with_options_detailed<T,
+                                                     detail::kStrictJsonOpts>(
+      input);
+}
+
+template <typename T>
 [[nodiscard]] inline auto parse_json_as(std::string_view input) -> Result<T> {
   return detail::parse_json_as_with_options<T, detail::kStrictJsonOpts>(input);
+}
+
+template <typename T>
+[[nodiscard]] inline auto
+parse_json_as_allow_unknown_detailed(std::string_view input)
+    -> util::ParseResult<T> {
+  return detail::parse_json_as_with_options_detailed<
+      T, detail::kAllowUnknownJsonOpts>(input);
 }
 
 template <typename T>
@@ -128,6 +200,11 @@ template <typename T>
   return parse_json_as<JsonValue>(input);
 }
 
+[[nodiscard]] inline auto parse_json_detailed(std::string_view input)
+    -> util::ParseResult<JsonValue> {
+  return parse_json_as_detailed<JsonValue>(input);
+}
+
 [[nodiscard]] inline auto is_valid_json(std::string_view input) -> bool {
   return detail::validate_json_input(input);
 }
@@ -136,14 +213,25 @@ class JsonPayload {
 public:
   JsonPayload() = default;
 
-  [[nodiscard]] static auto from_serialized(std::string encoded)
-      -> Result<JsonPayload> {
+  [[nodiscard]] static auto from_serialized_detailed(std::string encoded)
+      -> util::ParseResult<JsonPayload> {
+    if (auto validated = detail::validate_json_input_detailed(encoded);
+        !validated) {
+      return std::unexpected{validated.error()};
+    }
     JsonPayload payload;
     payload.encoded_ = std::move(encoded);
-    if (!payload.valid()) {
+    payload.root_kind_ = detail::classify_json_root(payload.encoded_);
+    return payload;
+  }
+
+  [[nodiscard]] static auto from_serialized(std::string encoded)
+      -> Result<JsonPayload> {
+    auto payload = from_serialized_detailed(std::move(encoded));
+    if (!payload) {
       return fail(Error::ParseError);
     }
-    return ok(std::move(payload));
+    return ok(std::move(*payload));
   }
 
   template <typename T>
@@ -163,31 +251,33 @@ public:
     return encoded_.size();
   }
 
-  [[nodiscard]] auto valid() const -> bool {
-    return is_valid_json(encoded_);
+  [[nodiscard]] auto valid() const noexcept -> bool { return true; }
+
+  [[nodiscard]] auto is_object() const noexcept -> bool {
+    return root_kind_ == detail::JsonRootKind::Object;
   }
 
-  [[nodiscard]] auto is_object() const -> bool {
-    const auto first = encoded_.find_first_not_of(" \t\r\n");
-    return first != std::string::npos && encoded_[first] == '{';
+  [[nodiscard]] auto is_null() const noexcept -> bool {
+    return root_kind_ == detail::JsonRootKind::Null;
   }
 
-  [[nodiscard]] auto is_null() const -> bool {
-    const auto first = encoded_.find_first_not_of(" \t\r\n");
-    const auto last = encoded_.find_last_not_of(" \t\r\n");
-    return first != std::string::npos && last >= first &&
-           std::string_view{encoded_}.substr(first, last - first + 1) ==
-               "null";
+  [[nodiscard]] auto materialize_detailed() const
+      -> util::ParseResult<JsonValue> {
+    return parse_json_detailed(encoded_);
   }
 
   [[nodiscard]] auto materialize() const -> Result<JsonValue> {
     return parse_json(encoded_);
   }
 
-  auto operator==(const JsonPayload &) const -> bool = default;
+  [[nodiscard]] auto operator==(const JsonPayload &other) const noexcept
+      -> bool {
+    return encoded_ == other.encoded_;
+  }
 
 private:
   std::string encoded_{"{}"};
+  detail::JsonRootKind root_kind_{detail::JsonRootKind::Object};
 
   friend struct glz::meta<JsonPayload>;
 };
@@ -201,6 +291,7 @@ template <> struct meta<dagforge::JsonPayload> {
 
   static constexpr auto read = [](T &value, raw_json encoded) {
     value.encoded_ = std::move(encoded.str);
+    value.root_kind_ = dagforge::detail::classify_json_root(value.encoded_);
   };
   static constexpr auto write = [](const T &value) -> raw_json_view {
     return raw_json_view{value.encoded_};

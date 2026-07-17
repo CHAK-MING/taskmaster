@@ -12,6 +12,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <ctime>
+#include <expected>
 #include <format>
 #include <functional>
 #include <memory>
@@ -30,8 +31,12 @@ export {
 #include "dagforge/util/ascii.hpp"
 #include "dagforge/util/enum.hpp"
 #include "dagforge/util/hash.hpp"
+// conv.hpp projects the detailed parse contract into the legacy Result API.
+// clang-format off
+#include "dagforge/util/parse.hpp"
 #include "dagforge/util/conv.hpp"
-#include "dagforge/util/time.hpp"
+// clang-format on
 #include "dagforge/util/string_hash.hpp"
+#include "dagforge/util/time.hpp"
 }
 #undef DAGFORGE_BUILDING_MODULE_INTERFACE
