@@ -1,8 +1,9 @@
 module;
 
 #include <ankerl/unordered_dense.h>
-#include <time.h>
 
+#include <algorithm>
+#include <array>
 #include <bit>
 #include <cctype>
 #include <charconv>
@@ -16,6 +17,8 @@ module;
 #include <functional>
 #include <memory>
 #include <optional>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>

@@ -54,6 +54,11 @@ struct ParseError {
 
 template <typename T> using ParseResult = std::expected<T, ParseError>;
 
+[[nodiscard]] constexpr auto parse_failure(ParseError error) noexcept
+    -> std::unexpected<ParseError> {
+  return std::unexpected{error};
+}
+
 [[nodiscard]] constexpr auto make_parse_error(ParseErrorKind kind,
                                               std::string_view input,
                                               std::size_t offset) noexcept
@@ -78,12 +83,12 @@ template <std::integral T>
 [[nodiscard]] auto parse_integer(std::string_view input, int base = 10)
     -> ParseResult<T> {
   if (base < 2 || base > 36) {
-    return std::unexpected{
-        make_parse_error(ParseErrorKind::InvalidBase, input, 0)};
+    return parse_failure(
+        make_parse_error(ParseErrorKind::InvalidBase, input, 0));
   }
   if (input.empty()) {
-    return std::unexpected{
-        make_parse_error(ParseErrorKind::EmptyInput, input, 0)};
+    return parse_failure(
+        make_parse_error(ParseErrorKind::EmptyInput, input, 0));
   }
 
   T value{};
@@ -92,16 +97,16 @@ template <std::integral T>
   const auto [position, error] = std::from_chars(begin, end, value, base);
   const auto offset = static_cast<std::size_t>(position - begin);
   if (error == std::errc::invalid_argument) {
-    return std::unexpected{
-        make_parse_error(ParseErrorKind::InvalidSyntax, input, offset)};
+    return parse_failure(
+        make_parse_error(ParseErrorKind::InvalidSyntax, input, offset));
   }
   if (error == std::errc::result_out_of_range) {
-    return std::unexpected{
-        make_parse_error(ParseErrorKind::OutOfRange, input, offset)};
+    return parse_failure(
+        make_parse_error(ParseErrorKind::OutOfRange, input, offset));
   }
   if (position != end) {
-    return std::unexpected{
-        make_parse_error(ParseErrorKind::TrailingCharacters, input, offset)};
+    return parse_failure(
+        make_parse_error(ParseErrorKind::TrailingCharacters, input, offset));
   }
   return value;
 }

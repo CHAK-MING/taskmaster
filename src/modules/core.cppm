@@ -9,6 +9,7 @@ module;
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
+#include <limits>
 #include <memory_resource>
 #include <span>
 #include <string>

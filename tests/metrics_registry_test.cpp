@@ -3,6 +3,7 @@
 #include "gtest/gtest.h"
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <string_view>
 #include <tuple>
@@ -15,9 +16,8 @@ namespace {
 constexpr std::array<std::uint64_t, 3> kBucketsNs{10, 100, 1000};
 
 auto find_http_count(
-    const std::vector<
-        std::tuple<std::string, std::string, std::string, std::uint64_t>>
-        &counts,
+    const std::vector<std::tuple<std::string, std::string, std::string,
+                                 std::uint64_t>> &counts,
     std::string_view method, std::string_view endpoint, std::string_view status)
     -> std::uint64_t {
   for (const auto &[actual_method, actual_endpoint, actual_status, count] :
@@ -46,8 +46,8 @@ auto find_http_duration_snapshot(
 
 TEST(MetricsRegistryTest, HttpRegistryRecordsRouteCountsAndDurations) {
   api_detail::HttpMetricsRegistry registry;
-  const auto health = registry.register_route(HttpMethod::GET, "/api/health",
-                                              kBucketsNs);
+  const auto health =
+      registry.register_route(HttpMethod::GET, "/api/health", kBucketsNs);
   const auto metrics =
       registry.register_route(HttpMethod::GET, "/metrics", kBucketsNs);
 
@@ -93,4 +93,20 @@ TEST(MetricsRegistryTest, HttpRegistrySharesEndpointHistogramAcrossMethods) {
   const auto counts = registry.request_counts();
   EXPECT_EQ(find_http_count(counts, "GET", "/api/dags", "200"), 1U);
   EXPECT_EQ(find_http_count(counts, "POST", "/api/dags", "201"), 1U);
+}
+
+TEST(MetricsRegistryTest, HistogramValidatesBucketsAndAcceptsDurations) {
+  metrics::Histogram histogram{kBucketsNs};
+  histogram.observe(std::chrono::nanoseconds{10});
+  histogram.observe(std::chrono::nanoseconds{-1});
+  const auto snapshot = histogram.snapshot();
+  EXPECT_EQ(snapshot.count, 2U);
+  EXPECT_EQ(snapshot.sum_ns, 10U);
+  EXPECT_EQ(snapshot.bucket_counts,
+            (std::vector<std::uint64_t>{2U, 0U, 0U, 0U}));
+
+  EXPECT_DEATH((metrics::Histogram{100, 10}),
+               "histogram bucket bounds must be strictly increasing");
+  EXPECT_DEATH((metrics::Histogram{10, 10}),
+               "histogram bucket bounds must be strictly increasing");
 }

@@ -1,6 +1,10 @@
 module;
 
+#include <algorithm>
 #include <cerrno>
+#include <climits>
+#include <cstdio>
+#include <cstdlib>
 
 #include <array>
 #include <concepts>
