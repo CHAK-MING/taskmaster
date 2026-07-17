@@ -30,6 +30,14 @@ SCOPE_EXIT_SEAM_FILES = {
     "include/dagforge/core/scope_exit.hpp",
     "src/modules/base.cppm",
 }
+FORBIDDEN_PUBLIC_FOUNDATION_TOKENS = {
+    "<absl/": "Abseil headers must not enter DAGForge public interfaces",
+    '"absl/': "Abseil headers must not enter DAGForge public interfaces",
+    "absl::": "Abseil types must not enter DAGForge public interfaces",
+    "function_ref": "function_ref requires a measured caller and a separate decision",
+    "<stacktrace>": "stacktrace belongs behind a dedicated diagnostics seam",
+    "std::stacktrace": "stacktrace belongs behind a dedicated diagnostics seam",
+}
 
 
 FEATURE_PROBE = r"""
@@ -211,6 +219,16 @@ def run_static_checks() -> None:
             + ", ".join(sorted(forbidden_scope_uses))
         )
 
+    forbidden_public_uses: list[str] = []
+    for path in PUBLIC_HEADERS:
+        relative = path.relative_to(REPOSITORY_ROOT).as_posix()
+        text = path.read_text(encoding="utf-8")
+        for token, reason in FORBIDDEN_PUBLIC_FOUNDATION_TOKENS.items():
+            if token in text:
+                forbidden_public_uses.append(f"{relative}: {reason} ({token})")
+    if forbidden_public_uses:
+        fail("\n" + "\n".join(sorted(forbidden_public_uses)))
+
     io_context = (
         REPOSITORY_ROOT / "include" / "dagforge" / "core" / "detail" /
         "io_context.inc"
@@ -228,6 +246,18 @@ def run_static_checks() -> None:
         fail("memory overrides must use the explicit thread-bound guard")
     if "override_memory_resource" in repository_sources:
         fail("the legacy unqualified memory-resource override must not return")
+    if "dump_json(" in repository_sources:
+        fail("JSON serialization failures must not be hidden behind dump_json")
+    if "from_validated(" in repository_sources:
+        fail("typed IDs must use parse() or the explicit from_trusted() entry")
+
+    json_contract = (
+        REPOSITORY_ROOT / "include" / "dagforge" / "util" / "json.hpp"
+    ).read_text(encoding="utf-8")
+    if "Id::parse" not in json_contract:
+        fail("the TypedId JSON adapter must validate input through Id::parse")
+    if "id = Id{" in json_contract:
+        fail("the TypedId JSON adapter must not bypass validation")
 
 
 def run_compile_checks(compiler: str, jobs: int) -> None:
