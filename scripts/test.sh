@@ -47,21 +47,27 @@ EOF
 case "$mode" in
 unit)
   build_targets='bin/exe{modules-foundation-smoke} bin/exe{unit-tests}'
+  verify_targets=(unit-tests)
   ;;
 component)
   build_targets='bin/exe{component-tests}'
+  verify_targets=(component-tests)
   ;;
 quick)
   build_targets='bin/exe{modules-foundation-smoke} bin/exe{unit-tests} bin/exe{component-tests}'
+  verify_targets=(unit-tests component-tests)
   ;;
 integration)
   build_targets='bin/exe{integration-tests} bin/exe{dagforge}'
+  verify_targets=(integration-tests)
   ;;
 e2e)
   build_targets='bin/exe{dagforge}'
+  verify_targets=()
   ;;
 all)
   build_targets='bin/exe{modules-foundation-smoke} bin/exe{unit-tests} bin/exe{component-tests} bin/exe{integration-tests} bin/exe{dagforge}'
+  verify_targets=(unit-tests component-tests integration-tests)
   ;;
 -h|--help|help)
   usage
@@ -146,7 +152,40 @@ unit|quick|all)
   ;;
 esac
 
+if ((${#verify_targets[@]} > 0)); then
+  python3 "${repo_root}/scripts/check-test-layout.py" \
+    --prepare-build "$build_dir" \
+    --targets "${verify_targets[@]}"
+fi
+
 BUILD2_TARGETS="$build_targets" "${repo_root}/scripts/build.sh"
+
+verify_test_binaries() {
+  if ((${#verify_targets[@]} == 0)); then
+    return 0
+  fi
+  local status
+  set +e
+  python3 "${repo_root}/scripts/check-test-layout.py" \
+    --verify-binaries "$bin_dir" \
+    --repair-build-dir "$build_dir" \
+    --record-build-dir "$build_dir" \
+    --targets "${verify_targets[@]}"
+  status=$?
+  set -e
+  if ((status == 2)); then
+    echo "rebuilding stale test target artifacts" >&2
+    BUILD2_TARGETS="$build_targets" "${repo_root}/scripts/build.sh"
+    python3 "${repo_root}/scripts/check-test-layout.py" \
+      --verify-binaries "$bin_dir" \
+      --record-build-dir "$build_dir" \
+      --targets "${verify_targets[@]}"
+    return
+  fi
+  return "$status"
+}
+
+verify_test_binaries
 
 case "$mode" in
 unit)
