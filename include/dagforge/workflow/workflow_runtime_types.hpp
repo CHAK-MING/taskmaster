@@ -68,50 +68,119 @@ enum class TerminationReason : std::uint8_t {
 
 } // namespace dagforge::workflow
 
+namespace dagforge::util {
+
+template <> struct EnumTraits<workflow::RunState> {
+  using E = workflow::RunState;
+  inline static constexpr std::array<EnumEntry<E>, 7> entries{{
+      {"running", E::Running},
+      {"pausing", E::Pausing},
+      {"paused", E::Paused},
+      {"stopping", E::Stopping},
+      {"succeeded", E::Succeeded},
+      {"failed", E::Failed},
+      {"cancelled", E::Cancelled},
+  }};
+  static_assert(enum_entries_are_valid(entries));
+};
+
+template <> struct EnumTraits<workflow::StopIntent> {
+  using E = workflow::StopIntent;
+  inline static constexpr std::array<EnumEntry<E>, 3> entries{{
+      {"succeed", E::Succeed},
+      {"fail", E::Fail},
+      {"cancel", E::Cancel},
+  }};
+  static_assert(enum_entries_are_valid(entries));
+};
+
+template <> struct EnumTraits<workflow::TaskState> {
+  using E = workflow::TaskState;
+  inline static constexpr std::array<EnumEntry<E>, 8> entries{{
+      {"pending", E::Pending},
+      {"ready", E::Ready},
+      {"running", E::Running},
+      {"retry_waiting", E::RetryWaiting},
+      {"succeeded", E::Succeeded},
+      {"failed", E::Failed},
+      {"skipped", E::Skipped},
+      {"cancelled", E::Cancelled},
+  }};
+  static_assert(enum_entries_are_valid(entries));
+};
+
+template <> struct EnumTraits<workflow::AttemptState> {
+  using E = workflow::AttemptState;
+  inline static constexpr std::array<EnumEntry<E>, 7> entries{{
+      {"starting", E::Starting},
+      {"running", E::Running},
+      {"terminating", E::Terminating},
+      {"succeeded", E::Succeeded},
+      {"failed", E::Failed},
+      {"timed_out", E::TimedOut},
+      {"cancelled", E::Cancelled},
+  }};
+  static_assert(enum_entries_are_valid(entries));
+};
+
+template <> struct EnumTraits<workflow::SkipReason> {
+  using E = workflow::SkipReason;
+  inline static constexpr std::array<EnumEntry<E>, 4> entries{{
+      {"condition_false", E::ConditionFalse},
+      {"upstream_failed", E::UpstreamFailed},
+      {"upstream_cancelled", E::UpstreamCancelled},
+      {"branch_not_selected", E::BranchNotSelected},
+  }};
+  static_assert(enum_entries_are_valid(entries));
+};
+
+template <> struct EnumTraits<workflow::TerminationReason> {
+  using E = workflow::TerminationReason;
+  inline static constexpr std::array<EnumEntry<E>, 2> entries{{
+      {"run_cancelled", E::RunCancelled},
+      {"run_failed", E::RunFailed},
+  }};
+  static_assert(enum_entries_are_valid(entries));
+};
+
+} // namespace dagforge::util
+
 namespace glz {
 
 template <> struct meta<dagforge::workflow::RunState> {
   using E = dagforge::workflow::RunState;
-  static constexpr auto value = enumerate(
-      "running", E::Running, "pausing", E::Pausing, "paused", E::Paused,
-      "stopping", E::Stopping, "succeeded", E::Succeeded, "failed",
-      E::Failed, "cancelled", E::Cancelled);
+  static constexpr auto keys = dagforge::util::enum_names<E>();
+  static constexpr auto value = dagforge::util::enum_values<E>();
 };
 
 template <> struct meta<dagforge::workflow::StopIntent> {
   using E = dagforge::workflow::StopIntent;
-  static constexpr auto value = enumerate("succeed", E::Succeed, "fail",
-                                          E::Fail, "cancel", E::Cancel);
+  static constexpr auto keys = dagforge::util::enum_names<E>();
+  static constexpr auto value = dagforge::util::enum_values<E>();
 };
 
 template <> struct meta<dagforge::workflow::TaskState> {
   using E = dagforge::workflow::TaskState;
-  static constexpr auto value = enumerate(
-      "pending", E::Pending, "ready", E::Ready, "running", E::Running,
-      "retry_waiting", E::RetryWaiting, "succeeded", E::Succeeded, "failed",
-      E::Failed, "skipped", E::Skipped, "cancelled", E::Cancelled);
+  static constexpr auto keys = dagforge::util::enum_names<E>();
+  static constexpr auto value = dagforge::util::enum_values<E>();
 };
 
 template <> struct meta<dagforge::workflow::AttemptState> {
   using E = dagforge::workflow::AttemptState;
-  static constexpr auto value = enumerate(
-      "starting", E::Starting, "running", E::Running, "terminating",
-      E::Terminating, "succeeded", E::Succeeded, "failed", E::Failed,
-      "timed_out", E::TimedOut, "cancelled", E::Cancelled);
+  static constexpr auto keys = dagforge::util::enum_names<E>();
+  static constexpr auto value = dagforge::util::enum_values<E>();
 };
 
 template <> struct meta<dagforge::workflow::SkipReason> {
   using E = dagforge::workflow::SkipReason;
-  static constexpr auto value = enumerate(
-      "condition_false", E::ConditionFalse, "upstream_failed",
-      E::UpstreamFailed, "upstream_cancelled", E::UpstreamCancelled,
-      "branch_not_selected", E::BranchNotSelected);
+  static constexpr auto keys = dagforge::util::enum_names<E>();
+  static constexpr auto value = dagforge::util::enum_values<E>();
 };
 
 template <> struct meta<dagforge::workflow::TerminationReason> {
   using E = dagforge::workflow::TerminationReason;
-  static constexpr auto value = enumerate("run_cancelled", E::RunCancelled,
-                                          "run_failed", E::RunFailed);
+  static constexpr auto keys = dagforge::util::enum_names<E>();
+  static constexpr auto value = dagforge::util::enum_values<E>();
 };
 
 } // namespace glz

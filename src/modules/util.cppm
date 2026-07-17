@@ -1,7 +1,6 @@
 module;
 
 #include <ankerl/unordered_dense.h>
-#include <glaze/core/common.hpp>
 #include <time.h>
 
 #include <bit>
@@ -16,6 +15,7 @@ module;
 #include <format>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>

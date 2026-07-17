@@ -32,19 +32,41 @@ enum class ConditionKind : std::uint8_t {
 
 } // namespace dagforge::workflow
 
+namespace dagforge::util {
+
+template <> struct EnumTraits<workflow::FailurePolicy> {
+  using E = workflow::FailurePolicy;
+  inline static constexpr std::array<EnumEntry<E>, 2> entries{{
+      {"continue_independent", E::ContinueIndependent},
+      {"fail_fast", E::FailFast},
+  }};
+  static_assert(enum_entries_are_valid(entries));
+};
+
+template <> struct EnumTraits<workflow::ConditionKind> {
+  using E = workflow::ConditionKind;
+  inline static constexpr std::array<EnumEntry<E>, 3> entries{{
+      {"always", E::Always},
+      {"bool_equals", E::BoolEquals},
+      {"string_equals", E::StringEquals},
+  }};
+  static_assert(enum_entries_are_valid(entries));
+};
+
+} // namespace dagforge::util
+
 namespace glz {
 
 template <> struct meta<dagforge::workflow::FailurePolicy> {
   using E = dagforge::workflow::FailurePolicy;
-  static constexpr auto value = enumerate(
-      "continue_independent", E::ContinueIndependent, "fail_fast", E::FailFast);
+  static constexpr auto keys = dagforge::util::enum_names<E>();
+  static constexpr auto value = dagforge::util::enum_values<E>();
 };
 
 template <> struct meta<dagforge::workflow::ConditionKind> {
   using E = dagforge::workflow::ConditionKind;
-  static constexpr auto value =
-      enumerate("always", E::Always, "bool_equals", E::BoolEquals,
-                "string_equals", E::StringEquals);
+  static constexpr auto keys = dagforge::util::enum_names<E>();
+  static constexpr auto value = dagforge::util::enum_values<E>();
 };
 
 } // namespace glz

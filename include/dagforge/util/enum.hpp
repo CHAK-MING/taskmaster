@@ -3,12 +3,15 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/ascii.hpp"
 
-#include <glaze/core/common.hpp>
-
+#include <array>
 #include <concepts>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #endif
 
 namespace dagforge {
@@ -23,84 +26,153 @@ template <typename E>
 
 namespace util {
 
-[[nodiscard]] inline auto normalize_enum_token(std::string_view token)
-    -> std::string {
-  std::string out;
-  out.reserve(token.size());
-  for (char c : token) {
-    if (ascii_is_alnum(c)) {
-      out.push_back(ascii_lower(c));
+enum class EnumParsePolicy : std::uint8_t {
+  Exact,
+  CaseInsensitive,
+  Relaxed,
+};
+
+template <typename E>
+  requires std::is_enum_v<E>
+struct EnumEntry {
+  std::string_view name;
+  E value;
+};
+
+template <typename E> struct EnumTraits;
+
+template <typename E>
+concept RegisteredEnum =
+    std::is_enum_v<E> && requires { EnumTraits<E>::entries; };
+
+[[nodiscard]] constexpr auto
+enum_token_equal(std::string_view lhs, std::string_view rhs,
+                 EnumParsePolicy policy = EnumParsePolicy::Exact) noexcept
+    -> bool {
+  if (policy == EnumParsePolicy::Exact) {
+    return lhs == rhs;
+  }
+  if (policy == EnumParsePolicy::CaseInsensitive) {
+    if (lhs.size() != rhs.size()) {
+      return false;
+    }
+    for (std::size_t index = 0; index < lhs.size(); ++index) {
+      if (ascii_lower(lhs[index]) != ascii_lower(rhs[index])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  std::size_t lhs_index = 0;
+  std::size_t rhs_index = 0;
+  while (true) {
+    while (lhs_index < lhs.size() && !ascii_is_alnum(lhs[lhs_index])) {
+      ++lhs_index;
+    }
+    while (rhs_index < rhs.size() && !ascii_is_alnum(rhs[rhs_index])) {
+      ++rhs_index;
+    }
+    const bool lhs_done = lhs_index == lhs.size();
+    const bool rhs_done = rhs_index == rhs.size();
+    if (lhs_done || rhs_done) {
+      return lhs_done && rhs_done;
+    }
+    if (ascii_lower(lhs[lhs_index]) != ascii_lower(rhs[rhs_index])) {
+      return false;
+    }
+    ++lhs_index;
+    ++rhs_index;
+  }
+}
+
+template <typename E, std::size_t Size>
+  requires std::is_enum_v<E>
+[[nodiscard]] consteval auto
+enum_entries_are_valid(const std::array<EnumEntry<E>, Size> &entries) -> bool {
+  for (std::size_t lhs = 0; lhs < entries.size(); ++lhs) {
+    if (entries[lhs].name.empty()) {
+      return false;
+    }
+    for (std::size_t rhs = lhs + 1; rhs < entries.size(); ++rhs) {
+      if (entries[lhs].value == entries[rhs].value ||
+          enum_token_equal(entries[lhs].name, entries[rhs].name,
+                           EnumParsePolicy::Relaxed)) {
+        return false;
+      }
     }
   }
-  return out;
+  return true;
 }
 
-template <typename E>
-  requires std::is_enum_v<E>
-inline constexpr std::size_t enum_entry_count =
-    glz::tuple_size_v<decltype(glz::meta<E>::value.value)> / 2;
+template <RegisteredEnum E>
+inline constexpr auto enum_entry_count = EnumTraits<E>::entries.size();
 
-template <std::size_t I, typename E>
-  requires std::is_enum_v<E>
-[[nodiscard]] constexpr auto enum_entry_name() noexcept -> std::string_view {
-  return glz::get<I * 2>(glz::meta<E>::value.value);
+template <RegisteredEnum E>
+[[nodiscard]] consteval auto enum_names()
+    -> std::array<std::string_view, enum_entry_count<E>> {
+  std::array<std::string_view, enum_entry_count<E>> names{};
+  for (std::size_t index = 0; index < names.size(); ++index) {
+    names[index] = EnumTraits<E>::entries[index].name;
+  }
+  return names;
 }
 
-template <std::size_t I, typename E>
-  requires std::is_enum_v<E>
-[[nodiscard]] constexpr auto enum_entry_value() noexcept -> E {
-  return glz::get<I * 2 + 1>(glz::meta<E>::value.value);
+template <RegisteredEnum E>
+[[nodiscard]] consteval auto enum_values()
+    -> std::array<E, enum_entry_count<E>> {
+  std::array<E, enum_entry_count<E>> values{};
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    values[index] = EnumTraits<E>::entries[index].value;
+  }
+  return values;
 }
 
-template <typename E>
-  requires std::is_enum_v<E>
+template <RegisteredEnum E>
 [[nodiscard]] constexpr auto
 enum_to_string_view(E value, std::string_view fallback = "unknown") noexcept
     -> std::string_view {
-  std::string_view out = fallback;
-  glz::for_each<enum_entry_count<E>>([&]<std::size_t I>() {
-    if (enum_entry_value<I, E>() == value) {
-      out = enum_entry_name<I, E>();
+  for (const auto &entry : EnumTraits<E>::entries) {
+    if (entry.value == value) {
+      return entry.name;
     }
-  });
-  return out;
+  }
+  return fallback;
 }
 
-template <typename E>
-  requires std::is_enum_v<E>
-[[nodiscard]] inline auto parse_enum(std::string_view input,
-                                     E default_value) noexcept -> E {
-  const auto normalized_input = normalize_enum_token(input);
-  E out = default_value;
-  glz::for_each<enum_entry_count<E>>([&]<std::size_t I>() {
-    if (normalize_enum_token(enum_entry_name<I, E>()) == normalized_input) {
-      out = enum_entry_value<I, E>();
+template <RegisteredEnum E>
+[[nodiscard]] constexpr auto
+try_parse_enum(std::string_view input,
+               EnumParsePolicy policy = EnumParsePolicy::Exact) noexcept
+    -> std::optional<E> {
+  for (const auto &entry : EnumTraits<E>::entries) {
+    if (enum_token_equal(entry.name, input, policy)) {
+      return entry.value;
     }
-  });
-  return out;
+  }
+  return std::nullopt;
 }
 
-template <typename E>
-  requires std::is_enum_v<E>
+template <RegisteredEnum E>
 [[nodiscard]] constexpr auto enum_to_code(E value) noexcept
     -> std::underlying_type_t<E> {
   return static_cast<std::underlying_type_t<E>>(value);
 }
 
-template <typename E, typename I>
-  requires(std::is_enum_v<E> && std::is_integral_v<I>)
-[[nodiscard]] inline auto parse_enum_code(I code, E default_value) noexcept
-    -> E {
-  using U = std::underlying_type_t<E>;
-  const auto raw = static_cast<U>(code);
-  E out = default_value;
-  glz::for_each<enum_entry_count<E>>([&]<std::size_t Index>() {
-    const auto value = enum_entry_value<Index, E>();
-    if (static_cast<U>(value) == raw) {
-      out = value;
+template <RegisteredEnum E, std::integral I>
+[[nodiscard]] constexpr auto try_parse_enum_code(I code) noexcept
+    -> std::optional<E> {
+  using Underlying = std::underlying_type_t<E>;
+  if (!std::in_range<Underlying>(code)) {
+    return std::nullopt;
+  }
+  const auto raw = static_cast<Underlying>(code);
+  for (const auto &entry : EnumTraits<E>::entries) {
+    if (static_cast<Underlying>(entry.value) == raw) {
+      return entry.value;
     }
-  });
-  return out;
+  }
+  return std::nullopt;
 }
 
 } // namespace util
