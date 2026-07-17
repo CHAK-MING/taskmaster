@@ -19,6 +19,76 @@ struct ArtifactTag {};
 struct EvidenceTag {};
 struct AttemptTag {};
 
+template <> struct TypedIdTraits<InstanceTag> {
+  static constexpr IdTextRules rules{
+      .policy = IdTextPolicy::AllowEmptyNoControl,
+      .max_bytes = 512,
+  };
+};
+
+template <> struct TypedIdTraits<WorkflowTag> {
+  static constexpr IdTextRules rules{
+      .policy = IdTextPolicy::AllowEmptyNoControl,
+      .max_bytes = 128,
+  };
+};
+
+template <> struct TypedIdTraits<WorkflowRunTag> {
+  static constexpr IdTextRules rules{
+      .policy = IdTextPolicy::AllowEmptyNoControl,
+      .max_bytes = 192,
+  };
+};
+
+template <> struct TypedIdTraits<WorkflowNodeTag> {
+  static constexpr IdTextRules rules{
+      .policy = IdTextPolicy::AllowEmptyNoControl,
+      .max_bytes = 128,
+  };
+};
+
+template <> struct TypedIdTraits<WorkflowPlanTag> {
+  static constexpr IdTextRules rules{
+      .policy = IdTextPolicy::AllowEmptyNoControl,
+      .max_bytes = 128,
+  };
+};
+
+template <> struct TypedIdTraits<WorkflowPortTag> {
+  static constexpr IdTextRules rules{
+      .policy = IdTextPolicy::AllowEmptyNoControl,
+      .max_bytes = 128,
+  };
+};
+
+template <> struct TypedIdTraits<WorkflowTriggerTag> {
+  static constexpr IdTextRules rules{
+      .policy = IdTextPolicy::AllowEmptyNoControl,
+      .max_bytes = 128,
+  };
+};
+
+template <> struct TypedIdTraits<ArtifactTag> {
+  static constexpr IdTextRules rules{
+      .policy = IdTextPolicy::AllowEmptyNoControl,
+      .max_bytes = 128,
+  };
+};
+
+template <> struct TypedIdTraits<EvidenceTag> {
+  static constexpr IdTextRules rules{
+      .policy = IdTextPolicy::AllowEmptyNoControl,
+      .max_bytes = 128,
+  };
+};
+
+template <> struct TypedIdTraits<AttemptTag> {
+  static constexpr IdTextRules rules{
+      .policy = IdTextPolicy::AllowEmptyNoControl,
+      .max_bytes = 128,
+  };
+};
+
 using InstanceId = TypedId<InstanceTag>;
 using WorkflowId = TypedId<WorkflowTag>;
 using WorkflowRunId = TypedId<WorkflowRunTag>;

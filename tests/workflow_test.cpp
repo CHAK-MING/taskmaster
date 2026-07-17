@@ -107,7 +107,7 @@ const StorageConfig kStorageDefaults{};
   if (payload == parsed->get_object().end()) {
     return fail(Error::ParseError);
   }
-  return ok(dump_json(payload->second));
+  return serialize_json(payload->second);
 }
 
 class ManualTaskExecutor final : public ITaskExecutor {
@@ -4229,7 +4229,7 @@ TEST(WorkflowStorageTest, StorageEnvelopeGoldenFilesRequireCurrentVersion) {
   ASSERT_TRUE(artifact_future.has_value()) << artifact_future.error().message();
   artifact_future->get_object()["version"] = std::int64_t{2};
   EXPECT_EQ(workflow::storage_detail::decode_artifact_metadata(
-                dump_json(*artifact_future))
+                serialize_json(*artifact_future).value())
                 .error(),
             make_error_code(Error::Unsupported));
 
@@ -4237,7 +4237,8 @@ TEST(WorkflowStorageTest, StorageEnvelopeGoldenFilesRequireCurrentVersion) {
   ASSERT_TRUE(evidence_future.has_value()) << evidence_future.error().message();
   evidence_future->get_object()["version"] = std::int64_t{2};
   EXPECT_EQ(
-      workflow::storage_detail::decode_evidence(dump_json(*evidence_future))
+      workflow::storage_detail::decode_evidence(
+          serialize_json(*evidence_future).value())
           .error(),
       make_error_code(Error::Unsupported));
 
@@ -4246,7 +4247,8 @@ TEST(WorkflowStorageTest, StorageEnvelopeGoldenFilesRequireCurrentVersion) {
       << checkpoint_future.error().message();
   checkpoint_future->get_object()["version"] = std::int64_t{2};
   EXPECT_EQ(
-      workflow::storage_detail::decode_checkpoint(dump_json(*checkpoint_future))
+      workflow::storage_detail::decode_checkpoint(
+          serialize_json(*checkpoint_future).value())
           .error(),
       make_error_code(Error::Unsupported));
 
@@ -4254,14 +4256,16 @@ TEST(WorkflowStorageTest, StorageEnvelopeGoldenFilesRequireCurrentVersion) {
   ASSERT_TRUE(plan_future.has_value()) << plan_future.error().message();
   plan_future->get_object()["version"] = std::int64_t{2};
   EXPECT_EQ(
-      workflow::storage_detail::decode_stored_plan(dump_json(*plan_future))
+      workflow::storage_detail::decode_stored_plan(
+          serialize_json(*plan_future).value())
           .error(),
       make_error_code(Error::Unsupported));
 
   auto wrong_format = parse_json(evidence_v1);
   ASSERT_TRUE(wrong_format.has_value()) << wrong_format.error().message();
   wrong_format->get_object()["format"] = "dagforge.checkpoint";
-  EXPECT_EQ(workflow::storage_detail::decode_evidence(dump_json(*wrong_format))
+  EXPECT_EQ(workflow::storage_detail::decode_evidence(
+                serialize_json(*wrong_format).value())
                 .error(),
             make_error_code(Error::ParseError));
 
@@ -4270,7 +4274,7 @@ TEST(WorkflowStorageTest, StorageEnvelopeGoldenFilesRequireCurrentVersion) {
       << invalid_old_version.error().message();
   invalid_old_version->get_object()["version"] = std::int64_t{0};
   EXPECT_EQ(workflow::storage_detail::decode_stored_plan(
-                dump_json(*invalid_old_version))
+                serialize_json(*invalid_old_version).value())
                 .error(),
             make_error_code(Error::ParseError));
 }
@@ -4582,7 +4586,8 @@ TEST(WorkflowStorageTest, RejectsInconsistentAttemptOutcomes) {
       .at("attempts")
       .get_array()
       .front()["failure_class"] = std::int64_t{0};
-  EXPECT_EQ(workflow::storage_detail::decode_checkpoint(dump_json(*envelope))
+  EXPECT_EQ(workflow::storage_detail::decode_checkpoint(
+                serialize_json(*envelope).value())
                 .error(),
             make_error_code(Error::ParseError));
 

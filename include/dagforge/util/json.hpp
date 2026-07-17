@@ -20,10 +20,22 @@ namespace glz {
 template <typename Tag> struct meta<dagforge::TypedId<Tag>> {
   using Id = dagforge::TypedId<Tag>;
 
-  static constexpr auto read = [](Id &id, std::string value) {
-    id = Id{std::move(value)};
+  static constexpr auto read = [](Id &id, std::string value,
+                                  glz::context &context) {
+    auto parsed = Id::parse(std::move(value));
+    if (!parsed) {
+      context.error = glz::error_code::constraint_violated;
+      context.custom_error_message = "invalid DAGForge typed ID";
+      return;
+    }
+    id = std::move(*parsed);
   };
-  static constexpr auto write = [](const Id &id) -> std::string_view {
+  static constexpr auto write = [](const Id &id,
+                                   glz::context &context) -> std::string_view {
+    if (!id.valid()) {
+      context.error = glz::error_code::constraint_violated;
+      context.custom_error_message = "invalid DAGForge typed ID";
+    }
     return id.value();
   };
   static constexpr auto value = custom<read, write>;
@@ -160,11 +172,6 @@ template <typename T>
     return fail(Error::ProtocolError);
   }
   return ok(std::move(*out));
-}
-
-[[nodiscard]] inline auto dump_json(const JsonValue &value) -> std::string {
-  auto out = serialize_json(value);
-  return out ? std::move(*out) : "null";
 }
 
 template <typename T>

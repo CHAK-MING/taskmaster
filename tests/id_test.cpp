@@ -1,4 +1,5 @@
 #include "dagforge/util/id.hpp"
+#include "dagforge/util/json.hpp"
 #include "dagforge/util/typed_id.hpp"
 
 #include <gtest/gtest.h>
@@ -18,10 +19,30 @@ TEST(IdTest, MakesValidationPolicyExplicit) {
   EXPECT_FALSE(is_valid_id_text("bad\nvalue"));
   EXPECT_TRUE(is_valid_id_text("", IdTextPolicy::AllowEmptyNoControl));
 
-  auto valid = TestId::from_validated("validated");
+  auto valid = TestId::parse("validated");
   ASSERT_TRUE(valid.has_value());
   EXPECT_TRUE(valid->valid());
-  EXPECT_FALSE(TestId::from_validated("bad\tvalue").has_value());
+  EXPECT_FALSE(TestId::parse("bad\tvalue").has_value());
+
+  const std::string at_limit(TestId::rules().max_bytes, 'x');
+  const std::string over_limit(TestId::rules().max_bytes + 1, 'x');
+  EXPECT_TRUE(TestId::parse(at_limit).has_value());
+  EXPECT_FALSE(TestId::parse(over_limit).has_value());
+  EXPECT_EQ(TestId::from_trusted("trusted").value(), "trusted");
+}
+
+TEST(IdTest, JsonRejectsInvalidTypedIdsAtTheSerdeSeam) {
+  auto valid = parse_json_as<TestId>(R"("valid")");
+  ASSERT_TRUE(valid.has_value());
+  EXPECT_EQ(valid->value(), "valid");
+
+  EXPECT_FALSE(parse_json_as<TestId>(R"("")").has_value());
+  EXPECT_FALSE(parse_json_as<TestId>(R"("bad\nvalue")").has_value());
+
+  const std::string over_limit(TestId::rules().max_bytes + 1, 'x');
+  EXPECT_FALSE(
+      parse_json_as<TestId>(std::format("\"{}\"", over_limit)).has_value());
+  EXPECT_FALSE(serialize_json(TestId{}).has_value());
 }
 
 TEST(IdTest, KeepsDomainIdsStronglyTypedAndStable) {

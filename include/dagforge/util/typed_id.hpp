@@ -21,6 +21,17 @@ enum class IdTextPolicy : std::uint8_t {
   AllowEmptyNoControl,
 };
 
+inline constexpr std::size_t kDefaultIdTextMaxBytes = 256;
+
+struct IdTextRules {
+  IdTextPolicy policy{IdTextPolicy::NonEmptyNoControl};
+  std::size_t max_bytes{kDefaultIdTextMaxBytes};
+};
+
+template <typename Tag> struct TypedIdTraits {
+  static constexpr IdTextRules rules{};
+};
+
 [[nodiscard]] constexpr auto has_control_chars(std::string_view value) noexcept
     -> bool {
   for (const unsigned char character : value) {
@@ -31,30 +42,61 @@ enum class IdTextPolicy : std::uint8_t {
   return false;
 }
 
-[[nodiscard]] constexpr auto
-is_valid_id_text(std::string_view value,
-                 IdTextPolicy policy = IdTextPolicy::NonEmptyNoControl) noexcept
+[[nodiscard]] constexpr auto is_valid_id_text(std::string_view value,
+                                              IdTextRules rules = {}) noexcept
     -> bool {
-  return (policy == IdTextPolicy::AllowEmptyNoControl || !value.empty()) &&
+  return rules.max_bytes > 0 && value.size() <= rules.max_bytes &&
+         (rules.policy == IdTextPolicy::AllowEmptyNoControl ||
+          !value.empty()) &&
          !has_control_chars(value);
+}
+
+[[nodiscard]] constexpr auto is_valid_id_text(std::string_view value,
+                                              IdTextPolicy policy) noexcept
+    -> bool {
+  return is_valid_id_text(value, IdTextRules{.policy = policy});
 }
 
 template <typename Tag> class TypedId {
 public:
+  // Direct construction is the compatibility path for trusted internal text.
+  // External or serialized text must enter through parse().
   explicit TypedId(std::string value) : value_(std::move(value)) {}
   explicit TypedId(std::string_view value) : value_(value) {}
   explicit TypedId(const char *value) : value_(value ? value : "") {}
 
   TypedId() = default;
 
-  [[nodiscard]] static auto
-  from_validated(std::string value,
-                 IdTextPolicy policy = IdTextPolicy::NonEmptyNoControl)
-      -> std::optional<TypedId> {
-    if (!is_valid_id_text(value, policy)) {
+  [[nodiscard]] static constexpr auto rules() noexcept -> IdTextRules {
+    return TypedIdTraits<Tag>::rules;
+  }
+
+  [[nodiscard]] static auto parse(std::string value) -> std::optional<TypedId> {
+    if (!is_valid_id_text(value, rules())) {
       return std::nullopt;
     }
+    return from_trusted(std::move(value));
+  }
+
+  [[nodiscard]] static auto parse(std::string_view value)
+      -> std::optional<TypedId> {
+    return parse(std::string{value});
+  }
+
+  [[nodiscard]] static auto parse(const char *value) -> std::optional<TypedId> {
+    return parse(std::string_view{value ? value : ""});
+  }
+
+  [[nodiscard]] static auto from_trusted(std::string value) -> TypedId {
     return TypedId{std::move(value)};
+  }
+
+  [[nodiscard]] static auto from_trusted(std::string_view value) -> TypedId {
+    return TypedId{value};
+  }
+
+  [[nodiscard]] static auto from_trusted(const char *value) -> TypedId {
+    return TypedId{value};
   }
 
   [[nodiscard]] auto value() const noexcept -> std::string_view {
@@ -95,10 +137,8 @@ public:
   [[nodiscard]] auto size() const noexcept -> std::size_t {
     return value_.size();
   }
-  [[nodiscard]] auto
-  valid(IdTextPolicy policy = IdTextPolicy::NonEmptyNoControl) const noexcept
-      -> bool {
-    return is_valid_id_text(value_, policy);
+  [[nodiscard]] auto valid() const noexcept -> bool {
+    return is_valid_id_text(value_, rules());
   }
 
 private:
