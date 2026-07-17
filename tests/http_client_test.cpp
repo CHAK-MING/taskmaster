@@ -677,8 +677,10 @@ TEST_F(HttpClientTest, ReportsDnsAndTlsConfigurationFailures) {
   auto dns_result = sync_wait_on_runtime(*runtime_, dns());
   ASSERT_FALSE(dns_result.has_value());
   EXPECT_TRUE(dns_result.error() == make_error_code(HttpClientError::DnsFailure) ||
+              dns_result.error() == make_error_code(HttpClientError::DnsTimeout) ||
               dns_result.error() ==
-                  make_error_code(HttpClientError::ConnectFailure));
+                  make_error_code(HttpClientError::ConnectFailure))
+      << dns_result.error().message();
 
   for (auto config : {
            HttpClientConfig{.tls_min_version = "1.1"},

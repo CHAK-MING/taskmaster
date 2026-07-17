@@ -13,6 +13,7 @@
 #include "../src/dagforge/app/api/detail/routes/system.hpp"
 #include "../src/dagforge/app/api/detail/routes/workflow_http_contract.hpp"
 #include "../src/dagforge/app/api/detail/routes/workflows.hpp"
+#include "../src/dagforge/workflow/storage/detail/storage_directory_lock.hpp"
 
 #include "gtest/gtest.h"
 #include "json_test_utils.hpp"
@@ -380,6 +381,33 @@ TEST(ApiTest, PersistentStorageRejectsUntrustedRootAndLockPermissions) {
   auto lock_result = unsafe_lock.init();
   ASSERT_FALSE(lock_result.has_value());
   EXPECT_EQ(lock_result.error(), make_error_code(Error::Unauthorized));
+
+  std::filesystem::remove_all(root, error);
+}
+
+TEST(ApiTest, StorageDirectoryLockRejectsInvalidAndBlockedPaths) {
+  EXPECT_EQ(workflow::StorageDirectoryLock::acquire({}).error(),
+            make_error_code(Error::InvalidArgument));
+
+  const auto root = std::filesystem::temp_directory_path() /
+                    std::format("dagforge-storage-lock-errors-{}", ::getpid());
+  std::error_code error;
+  std::filesystem::remove_all(root, error);
+  {
+    std::ofstream blocker(root);
+    blocker << "not-a-directory";
+  }
+  auto blocked = workflow::StorageDirectoryLock::acquire(root / "state");
+  ASSERT_FALSE(blocked.has_value());
+  EXPECT_EQ(blocked.error(),
+            std::make_error_code(std::errc::not_a_directory));
+
+  std::filesystem::remove(root, error);
+  ASSERT_FALSE(error);
+  std::filesystem::create_directories(root / ".dagforge.lock", error);
+  ASSERT_FALSE(error);
+  auto lock_directory = workflow::StorageDirectoryLock::acquire(root);
+  EXPECT_FALSE(lock_directory.has_value());
 
   std::filesystem::remove_all(root, error);
 }
