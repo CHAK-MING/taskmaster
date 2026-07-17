@@ -26,6 +26,10 @@ FORBIDDEN_LAYER_ZERO_INCLUDES = (
     '"dagforge/workflow/',
     "<filesystem>",
 )
+SCOPE_EXIT_SEAM_FILES = {
+    "include/dagforge/core/scope_exit.hpp",
+    "src/modules/base.cppm",
+}
 
 
 FEATURE_PROBE = r"""
@@ -189,6 +193,23 @@ def run_static_checks() -> None:
     ]
     if failures:
         fail("\n" + "\n".join(failures))
+
+    forbidden_scope_uses: list[str] = []
+    for root in ("include", "src", "tests"):
+        for path in (REPOSITORY_ROOT / root).rglob("*"):
+            if path.suffix not in {".hpp", ".cpp", ".cppm", ".inc"}:
+                continue
+            relative = path.relative_to(REPOSITORY_ROOT).as_posix()
+            if relative in SCOPE_EXIT_SEAM_FILES:
+                continue
+            text = path.read_text(encoding="utf-8")
+            if "<experimental/scope>" in text or "std::experimental::scope_exit" in text:
+                forbidden_scope_uses.append(relative)
+    if forbidden_scope_uses:
+        fail(
+            "experimental scope guards must stay behind core/scope_exit.hpp: "
+            + ", ".join(sorted(forbidden_scope_uses))
+        )
 
 
 def run_compile_checks(compiler: str, jobs: int) -> None:

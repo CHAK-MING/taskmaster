@@ -2,6 +2,7 @@
 #include "dagforge/http/router.hpp"
 #include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/core/runtime.hpp"
+#include "dagforge/core/scope_exit.hpp"
 #include "dagforge/util/log.hpp"
 
 #include "detail/beast_bridge.hpp"
@@ -26,7 +27,6 @@
 #include <chrono>
 #include <cstdint>
 #include <condition_variable>
-#include <experimental/scope>
 #include <functional>
 #include <limits>
 #include <mutex>
@@ -202,7 +202,7 @@ struct HttpServer::Impl {
         socket->close(ignored);
       });
     });
-    const auto release = std::experimental::scope_exit(
+    const auto release = dagforge::scope_exit(
         [self, connection_id] {
           self->untrack_connection(connection_id);
           self->release_connection();
@@ -238,7 +238,7 @@ struct HttpServer::Impl {
         stream->next_layer().close(ignored);
       });
     });
-    const auto release = std::experimental::scope_exit(
+    const auto release = dagforge::scope_exit(
         [self, connection_id] {
           self->untrack_connection(connection_id);
           self->release_connection();

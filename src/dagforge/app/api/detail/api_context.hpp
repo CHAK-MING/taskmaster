@@ -1,6 +1,7 @@
 #pragma once
 
 #include "dagforge/app/application.hpp"
+#include "dagforge/core/scope_exit.hpp"
 #include "dagforge/http/http_server.hpp"
 #include "dagforge/http/router.hpp"
 #include "http_metrics_registry.hpp"
@@ -9,7 +10,6 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
-#include <experimental/scope>
 #include <format>
 #include <span>
 #include <string>
@@ -98,7 +98,7 @@ struct ApiContext {
         record(response);
         co_return response;
       }
-      const auto guard = std::experimental::scope_exit([this] {
+      const auto guard = dagforge::scope_exit([this] {
         http_active_requests.fetch_sub(1, std::memory_order_acq_rel);
       });
       auto response = co_await handler(std::move(req));

@@ -1,12 +1,12 @@
 #include "dagforge/io/context.hpp"
 #include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/core/runtime.hpp"
+#include "dagforge/core/scope_exit.hpp"
 
 #include <boost/asio/steady_timer.hpp>
 #include <boost/system/system_error.hpp>
 
 #include <chrono>
-#include <experimental/scope>
 
 namespace dagforge::io {
 
@@ -26,7 +26,7 @@ auto async_sleep(IoContext &ctx, std::chrono::duration<Rep, Period> duration)
     shard = detail::current_shard_id;
     runtime->note_timer_started(shard);
   }
-  const auto timer_depth_guard = std::experimental::scope_exit([runtime, shard] {
+  const auto timer_depth_guard = dagforge::scope_exit([runtime, shard] {
     if (runtime && shard != kInvalidShard) {
       runtime->note_timer_finished(shard);
     }

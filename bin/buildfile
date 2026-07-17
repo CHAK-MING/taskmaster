@@ -20,8 +20,8 @@ exe{dagforge}: ../src/cxx{main                              \
 exe{modules-foundation-smoke}: ../tests/cxx{modules-foundation-smoke} $foundation
 
 unit_test_sources = ../tests/cxx{test_main coroutine_test shard_test config_test \
-    router_test io_bridge_test error_domain_test metrics_registry_test         \
-    glaze_security_test}
+    router_test io_bridge_test error_domain_test foundation_contract_test      \
+    metrics_registry_test glaze_security_test}
 
 component_test_sources = ../tests/cxx{test_main runtime_test workflow_test \
     shard_affinity_test timing_wheel_test http_client_test http_executor_test \

@@ -1,13 +1,13 @@
 #include "dagforge/io/timing_wheel.hpp"
 #include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/core/runtime.hpp"
+#include "dagforge/core/scope_exit.hpp"
 
 #include <boost/asio/experimental/channel.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/system/system_error.hpp>
 
 #include <algorithm>
-#include <experimental/scope>
 #include <utility>
 
 namespace dagforge::io {
@@ -172,7 +172,7 @@ auto async_sleep_on_timing_wheel(std::chrono::nanoseconds duration)
     (void)gate->try_send(boost::system::error_code{});
   });
   const auto cancel_on_exit =
-      std::experimental::scope_exit([runtime, shard, handle] {
+      dagforge::scope_exit([runtime, shard, handle] {
         runtime->cancel_after_on(shard, handle);
       });
 

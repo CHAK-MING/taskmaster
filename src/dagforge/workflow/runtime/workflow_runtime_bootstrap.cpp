@@ -1,5 +1,6 @@
 #include "dagforge/workflow/workflow_runtime.hpp"
 
+#include "dagforge/core/scope_exit.hpp"
 #include "dagforge/util/log.hpp"
 
 #include "dagforge/workflow/plan_compiler.hpp"
@@ -10,7 +11,6 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
-#include <experimental/scope>
 #include <memory>
 #include <ranges>
 #include <string>
@@ -169,7 +169,7 @@ auto WorkflowRuntime::schedule_activation(RunActivation activation) -> void {
        tracker, activation = std::move(activation)]() mutable {
         auto lifetime = weak_lifetime.lock();
         const bool runtime_alive = static_cast<bool>(lifetime);
-        const auto initialization_finished = std::experimental::scope_exit(
+        const auto initialization_finished = dagforge::scope_exit(
             [this, tracker, lifetime = std::move(lifetime)] {
               tracker->pending.fetch_sub(1, std::memory_order_acq_rel);
               tracker->changed.notify_all();

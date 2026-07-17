@@ -3,6 +3,14 @@
 import dagforge.foundation;
 
 auto main() -> int {
+  bool cleaned = false;
+  {
+    auto cleanup = dagforge::scope_exit([&cleaned] { cleaned = true; });
+    (void)cleanup;
+  }
+  if (!cleaned) {
+    return 30;
+  }
   auto result = dagforge::ok(42);
 
   if (!result || *result != 42) {

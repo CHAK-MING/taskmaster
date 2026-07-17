@@ -1,5 +1,6 @@
 #include "dagforge/workflow/workflow_runtime.hpp"
 
+#include "dagforge/core/scope_exit.hpp"
 #include "dagforge/util/json.hpp"
 #include "dagforge/util/log.hpp"
 
@@ -14,7 +15,6 @@
 #include <cassert>
 #include <chrono>
 #include <cstdint>
-#include <experimental/scope>
 #include <format>
 #include <memory>
 #include <ranges>
@@ -760,7 +760,7 @@ auto WorkflowRuntime::start_task(const WorkflowRunId &run_id,
 auto WorkflowRuntime::start_async_task(WorkflowRunId run_id,
                                        std::size_t task_index,
                                        AttemptId attempt_id) -> spawn_task {
-  const auto task_finished = std::experimental::scope_exit([this] {
+  const auto task_finished = dagforge::scope_exit([this] {
     active_task_coroutines_.fetch_sub(1, std::memory_order_acq_rel);
     notify_lifecycle_changed();
   });

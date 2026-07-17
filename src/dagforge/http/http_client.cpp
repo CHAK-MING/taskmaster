@@ -1,6 +1,7 @@
 #include "dagforge/http/http_client.hpp"
 
 #include "dagforge/core/asio_awaitable.hpp"
+#include "dagforge/core/scope_exit.hpp"
 #include "dagforge/util/log.hpp"
 
 #include "detail/beast_bridge.hpp"
@@ -17,7 +18,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <experimental/scope>
 #include <iterator>
 #include <memory>
 #include <string>
@@ -166,7 +166,7 @@ auto request_over_stream(Stream &stream, HttpRequest req,
         });
   }
   const auto clear_cancellation =
-      std::experimental::scope_exit([cancellation]() mutable {
+      dagforge::scope_exit([cancellation]() mutable {
         if (cancellation.is_connected()) {
           cancellation.clear();
         }
@@ -303,7 +303,7 @@ auto HttpClient::connect_tcp(io::IoContext &ctx, std::string host,
         });
   }
   const auto clear_cancellation =
-      std::experimental::scope_exit([cancellation]() mutable {
+      dagforge::scope_exit([cancellation]() mutable {
         if (cancellation.is_connected()) {
           cancellation.clear();
         }
@@ -386,7 +386,7 @@ auto HttpClient::connect_tls(io::IoContext &ctx, std::string host,
         });
   }
   const auto clear_cancellation =
-      std::experimental::scope_exit([cancellation]() mutable {
+      dagforge::scope_exit([cancellation]() mutable {
         if (cancellation.is_connected()) {
           cancellation.clear();
         }
@@ -526,7 +526,7 @@ auto HttpClient::connect_unix(io::IoContext &ctx, std::string socket_path,
         });
   }
   const auto clear_cancellation =
-      std::experimental::scope_exit([cancellation]() mutable {
+      dagforge::scope_exit([cancellation]() mutable {
         if (cancellation.is_connected()) {
           cancellation.clear();
         }

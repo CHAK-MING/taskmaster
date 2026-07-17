@@ -6,6 +6,7 @@
 #include "detail/policy_command_runner.hpp"
 #include "detail/minijail_command_runner.hpp"
 #include "detail/process_management.hpp"
+#include "dagforge/core/scope_exit.hpp"
 #include "dagforge/io/context.hpp"
 #include "dagforge/util/log.hpp"
 
@@ -30,7 +31,6 @@
 #include <condition_variable>
 #include <cctype>
 #include <cstdlib>
-#include <experimental/scope>
 #include <filesystem>
 #include <format>
 #include <memory>
@@ -560,10 +560,10 @@ auto execute_command(fs::path minijail, std::vector<std::string> arguments,
     fs::remove_all(workdir, ignored);
   };
   const auto cleanup_workdir =
-      std::experimental::scope_exit([&cleanup_now] { cleanup_now(); });
+      dagforge::scope_exit([&cleanup_now] { cleanup_now(); });
 
   auto heartbeat_stop = std::make_shared<std::atomic_bool>(false);
-  const auto stop_heartbeat = std::experimental::scope_exit([heartbeat_stop] {
+  const auto stop_heartbeat = dagforge::scope_exit([heartbeat_stop] {
     heartbeat_stop->store(true, std::memory_order_release);
   });
   emit_heartbeat(heartbeat, instance_id);
@@ -693,7 +693,7 @@ public:
       return fail(workdir.error());
     }
     bool cleanup_on_failure = !config_.retain_workdirs;
-    const auto cleanup_workdir = std::experimental::scope_exit([&] {
+    const auto cleanup_workdir = dagforge::scope_exit([&] {
       if (cleanup_on_failure) {
         std::error_code ignored;
         fs::remove_all(*workdir, ignored);

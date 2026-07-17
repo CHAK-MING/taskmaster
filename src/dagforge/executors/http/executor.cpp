@@ -1,5 +1,6 @@
 #include "dagforge/executors/http/executor.hpp"
 
+#include "dagforge/core/scope_exit.hpp"
 #include "dagforge/http/http_client.hpp"
 #include "dagforge/io/context.hpp"
 #include "dagforge/util/ascii.hpp"
@@ -20,7 +21,6 @@
 #include <compare>
 #include <condition_variable>
 #include <cstdint>
-#include <experimental/scope>
 #include <format>
 #include <memory>
 #include <mutex>
@@ -838,7 +838,7 @@ public:
       return fail(Error::ResourceExhausted);
     }
     bool release_global_slot = true;
-    const auto release_on_failure = std::experimental::scope_exit([&] {
+    const auto release_on_failure = dagforge::scope_exit([&] {
       if (release_global_slot) {
         core_->active_requests.fetch_sub(1, std::memory_order_acq_rel);
       }

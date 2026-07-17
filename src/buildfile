@@ -5,6 +5,7 @@ import foundation = lib{dagforge-foundation}
 intf_libs = -lboost_url
 
 ./: lib{dagforge-foundation}: libul{dagforge-foundation}: \
+  cxx{dagforge/core/contract}                                  \
   mxx{modules/base modules/core modules/util modules/domain modules/io \
       modules/config modules/http modules/sandbox modules/workflow \
       modules/executors                                            \

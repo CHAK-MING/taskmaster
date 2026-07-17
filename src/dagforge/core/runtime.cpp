@@ -1,5 +1,6 @@
 #include "dagforge/core/runtime.hpp"
 
+#include "dagforge/core/scope_exit.hpp"
 #include "dagforge/util/log.hpp"
 
 #include <boost/asio/executor_work_guard.hpp>
@@ -12,7 +13,6 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
-#include <experimental/scope>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -225,7 +225,7 @@ auto Runtime::run_shard(shard_id id) -> void {
   bind_shard_thread_to_cpu(id);
   detail::current_shard_id = id;
   detail::current_runtime = this;
-  std::experimental::scope_exit reset_thread_locals{
+  dagforge::scope_exit reset_thread_locals{
       [] {
         detail::current_shard_id = kInvalidShard;
         detail::current_runtime = nullptr;
