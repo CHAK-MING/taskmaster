@@ -334,6 +334,26 @@ auto Application::is_running() const noexcept -> bool {
   return running_.load(std::memory_order_acquire);
 }
 
+auto Application::readiness() const noexcept -> ApplicationReadiness {
+  const auto running = is_running();
+  const auto runtime_ready =
+      running && runtime_ != nullptr && runtime_->is_running();
+  const auto workflow_ready =
+      !config_.workflow.enabled ||
+      (workflow_runtime_ != nullptr && workflow_runtime_->accepting_runs());
+  const auto storage_ready =
+      !config_.storage.enabled || storage_lock_ != nullptr;
+  const auto api_ready =
+      !config_.api.enabled || (api_ != nullptr && api_->is_running());
+  return ApplicationReadiness{
+      .ready = runtime_ready && workflow_ready && storage_ready && api_ready,
+      .runtime = runtime_ready,
+      .workflow = workflow_ready,
+      .storage = storage_ready,
+      .api = api_ready,
+  };
+}
+
 auto Application::api_server() -> ApiServer * { return api_.get(); }
 
 auto Application::api_server() const -> const ApiServer * { return api_.get(); }

@@ -345,6 +345,11 @@ auto configure_api_system(CLI::App &api, ApiOptions &options,
     select_api_command(options, selection, "GET", "/api/health");
   });
 
+  auto *ready = api.add_subcommand("ready", "Check service readiness");
+  configure_api_leaf(*ready, options, "");
+  ready->callback(
+      [&] { select_api_command(options, selection, "GET", "/api/ready"); });
+
   auto *status = api.add_subcommand("status", "Show service runtime status");
   configure_api_leaf(*status, options, "");
   status->callback([&] {
@@ -583,13 +588,13 @@ auto configure_api(CLI::App &root, ApiOptions &options,
   configure_api_run(*api, options, selection);
   configure_api_artifact(*api, options, selection);
   configure_api_request(*api, options, selection);
-  api->footer(
-      "Examples:\n"
-      "  dagforge api health\n"
-      "  dagforge api plan add workflow.json\n"
-      "  dagforge api run start hello-world @start-run.json\n"
-      "  dagforge api run cancel RUN_ID\n"
-      "  dagforge api request GET /api/status");
+  api->footer("Examples:\n"
+              "  dagforge api health\n"
+              "  dagforge api ready\n"
+              "  dagforge api plan add workflow.json\n"
+              "  dagforge api run start hello-world @start-run.json\n"
+              "  dagforge api run cancel RUN_ID\n"
+              "  dagforge api request GET /api/status");
 }
 
 } // namespace

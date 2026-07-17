@@ -14,7 +14,28 @@ TEST(MetricsExporterTest, RendersCoreMetricFamiliesWithoutStartingApp) {
 
   EXPECT_NE(text.find("dagforge_runtime_running"), std::string::npos);
   EXPECT_NE(text.find("dagforge_runtime_shards"), std::string::npos);
+  EXPECT_NE(text.find("dagforge_ready"), std::string::npos);
+  EXPECT_NE(text.find("dagforge_workflow_runs_active"), std::string::npos);
   EXPECT_NE(text.find("dagforge_workflow_active_runs"), std::string::npos);
+  EXPECT_NE(text.find("dagforge_workflow_runs_total"), std::string::npos);
+  EXPECT_NE(text.find("dagforge_workflow_task_duration_seconds"),
+            std::string::npos);
+  EXPECT_NE(text.find("dagforge_workflow_persistence_operations_total"),
+            std::string::npos);
+  for (std::string_view forbidden : {
+           "run_id=",
+           "workflow_id=",
+           "node_id=",
+           "attempt_id=",
+           "artifact_id=",
+           "plan_id=",
+           "trace_id=",
+           "span_id=",
+           "principal=",
+           "error_message=",
+       }) {
+    EXPECT_EQ(text.find(forbidden), std::string::npos) << forbidden;
+  }
 }
 
 TEST(MetricsExporterTest, RendersHttpActiveRequestsWhenApiServerExists) {
@@ -47,9 +68,11 @@ TEST(MetricsExporterTest, RuntimeRunningGaugeReflectsLifecycle) {
 
   const auto stopped = render_prometheus_metrics(app);
   EXPECT_NE(stopped.find("dagforge_runtime_running 0"), std::string::npos);
+  EXPECT_NE(stopped.find("dagforge_ready 0"), std::string::npos);
 
   ASSERT_TRUE(app.start().has_value());
   const auto running = render_prometheus_metrics(app);
   EXPECT_NE(running.find("dagforge_runtime_running 1"), std::string::npos);
+  EXPECT_NE(running.find("dagforge_ready 1"), std::string::npos);
   app.stop();
 }

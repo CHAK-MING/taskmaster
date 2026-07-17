@@ -14,6 +14,7 @@ DAGForge 的重要变化记录在本文件中。未发布内容只描述当前�
 
 ### 新增
 
+- 新增标准化 Workflow 可观测性：低基数 Run/Task/Attempt/Repair/持久化 Prometheus 指标、独立 readiness 探针、Prometheus 告警规则、Grafana Dashboard、Kubernetes probes 和资产一致性门禁。
 - 新增严格 Workflow Plan v1、Plan Compiler、immutable ExecutionPlan、ExecutorRegistry、WorkflowRuntime、typed workflow values、条件边、fan-out/fan-in、published outputs、重试、暂停、恢复、取消、idempotency 和 Repair Run。
 - 新增 Command executor，使用 server-owned program registry、最小环境、Minijail、namespace、Landlock、seccomp、resource limits、私有 Attempt workdir 和完整 process-group kill/reap。
 - 新增 HTTP executor，支持 origin/CIDR egress policy、TLS verification、custom CA、可选 mTLS、分阶段 timeout、取消、容量限制、bounded keep-alive、响应大小限制和稳定输出端口。

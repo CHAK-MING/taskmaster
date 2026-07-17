@@ -134,16 +134,16 @@ auto register_workflow_routes(ApiContext &ctx) -> void {
               payload = std::move(*body->payload);
             }
             auto started = runtime->start(
-                *plan,
-                workflow::TriggerEnvelope{
-                    .workflow_id = std::move(*workflow_id),
-                    .source = std::move(body->source),
-                    .event_type = std::move(body->event_type),
-                    .payload = std::move(payload),
-                    .idempotency_key = std::move(idempotency_key),
-                    .principal = std::move(body->principal),
-                    .occurred_at = std::chrono::system_clock::now(),
-                });
+                *plan, workflow::TriggerEnvelope{
+                           .workflow_id = std::move(*workflow_id),
+                           .source = std::move(body->source),
+                           .event_type = std::move(body->event_type),
+                           .payload = std::move(payload),
+                           .idempotency_key = std::move(idempotency_key),
+                           .principal = std::move(body->principal),
+                           .trace = std::move(body->trace),
+                           .occurred_at = std::chrono::system_clock::now(),
+                       });
             if (!started) {
               co_return result_error_response(started.error());
             }

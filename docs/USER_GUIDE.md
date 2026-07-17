@@ -620,6 +620,7 @@ leaf command.
 
 ```bash
 dagforge api health
+dagforge api ready
 dagforge api status
 dagforge api metrics
 
@@ -738,11 +739,17 @@ The runtime ownership and lifecycle contracts are recorded in [ADR 0001](adr/000
 The service exposes:
 
 - `/api/health`
+- `/api/ready`
 - `/api/status`
 - `/metrics`
 
-Runtime, HTTP, and active-workflow metrics are rendered in
-Prometheus text format.
+Runtime, HTTP, Run, Task, Attempt, Repair Run, and workflow persistence metrics
+are rendered in Prometheus text format. `/api/health` is a liveness probe;
+`/api/ready` verifies that the instance can safely accept traffic. Metrics use
+bounded labels, while Run-specific identifiers and diagnostics remain in the
+Run, Evidence, Failure Report, Artifact, log, and trace surfaces. The complete
+metric contract, alert rules, Grafana Dashboard, and Kubernetes probe template
+are documented in [Observability](OBSERVABILITY.md).
 
 ## 8. Docker
 

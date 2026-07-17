@@ -571,6 +571,20 @@ def verify_service_commands(
         if health.get("status") != "healthy":
             raise AssertionError(health)
 
+        ready = parse_json_output(
+            run(
+                binary,
+                "api",
+                "ready",
+                "--endpoint",
+                endpoint,
+                expected=0,
+                environment=environment,
+            )
+        )
+        if ready.get("status") != "ready":
+            raise AssertionError(ready)
+
         status = parse_json_output(
             run(
                 binary,

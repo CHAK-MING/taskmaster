@@ -153,6 +153,7 @@ case "$mode" in
 unit|quick|all)
   python3 "${repo_root}/scripts/check-foundation-contracts.py" \
     --compiler "${CXX:-g++}"
+  python3 "${repo_root}/scripts/check-observability-assets.py"
   ;;
 esac
 

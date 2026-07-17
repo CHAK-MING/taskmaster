@@ -1,0 +1,97 @@
+groups:
+  - name: dagforge-availability
+    rules:
+      - alert: DAGForgeUnavailable
+        expr: up{job=~"dagforge.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: DAGForge target is unavailable
+          description: Prometheus has been unable to scrape DAGForge for two minutes.
+      - alert: DAGForgeNotReady
+        expr: dagforge_ready == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: DAGForge is alive but not ready
+          description: The instance cannot safely accept workflow traffic.
+      - alert: DAGForgeRunsStuckStopping
+        expr: dagforge_workflow_runs_stopping > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Workflow Runs remain in stopping state
+          description: One or more Runs have not reaped their active Attempts within ten minutes.
+  - name: dagforge-workflows
+    rules:
+      - alert: DAGForgeWorkflowFailureRateHigh
+        expr: (sum(rate(dagforge_workflow_runs_total{result="failed"}[10m])) / clamp_min(sum(rate(dagforge_workflow_runs_total[10m])), 0.001)) > 0.05 and sum(increase(dagforge_workflow_runs_total[10m])) >= 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Workflow failure rate exceeds five percent
+          description: At least twenty Runs completed and more than five percent failed during the evaluation window.
+      - alert: DAGForgeWorkflowLatencyHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(dagforge_workflow_run_duration_seconds_bucket[10m]))) > 30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Workflow p95 latency exceeds thirty seconds
+          description: Completed Run latency has remained above the default operational threshold.
+      - alert: DAGForgeRetryStorm
+        expr: (sum(rate(dagforge_workflow_retries_total[10m])) / clamp_min(sum(rate(dagforge_workflow_attempts_total[10m])), 0.001)) > 0.20 and sum(increase(dagforge_workflow_attempts_total[10m])) >= 50
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than twenty percent of Attempts are retries
+          description: A dependency or executor may be unstable and amplifying load through retries.
+      - alert: DAGForgeTaskQueueStalled
+        expr: histogram_quantile(0.95, sum by (le) (rate(dagforge_workflow_task_queue_duration_seconds_bucket[10m]))) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Task dispatch queue p95 exceeds two seconds
+          description: Ready Tasks are waiting too long before an executor Attempt starts.
+      - alert: DAGForgeAttemptTimeouts
+        expr: sum(increase(dagforge_workflow_attempts_total{result="timed_out"}[10m])) >= 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Repeated workflow Attempt timeouts
+          description: Five or more Attempts timed out during the last ten minutes.
+  - name: dagforge-storage
+    rules:
+      - alert: DAGForgePersistenceFailures
+        expr: sum(increase(dagforge_workflow_persistence_operations_total{result="failed"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Workflow persistence operation failed
+          description: Evidence, Checkpoint, or Artifact state may be incomplete; inspect the affected Run immediately.
+      - alert: DAGForgeDurabilityDeferred
+        expr: sum(increase(dagforge_workflow_durability_deferred_total[10m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Persistence visibility was committed without confirmed directory durability
+          description: A filesystem directory sync failed after a logical commit.
+  - name: dagforge-api
+    rules:
+      - alert: DAGForgeApiServerErrors
+        expr: sum(rate(dagforge_http_requests_total{status=~"5.."}[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: DAGForge API is returning server errors
+          description: The aggregate HTTP 5xx rate has exceeded 0.1 requests per second.

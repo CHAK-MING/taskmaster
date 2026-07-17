@@ -32,6 +32,48 @@
 
 namespace dagforge::workflow {
 
+struct WorkflowDurationMetricSnapshot {
+  std::vector<std::uint64_t> bounds_ns;
+  std::vector<std::uint64_t> bucket_counts;
+  std::uint64_t count{0};
+  std::uint64_t sum_ns{0};
+};
+
+struct WorkflowMetricSeriesSnapshot {
+  std::string executor_class;
+  std::string result;
+  std::string error_type;
+  std::uint64_t total{0};
+  WorkflowDurationMetricSnapshot duration;
+};
+
+struct WorkflowPersistenceMetricSnapshot {
+  std::string store;
+  std::string operation;
+  std::string result;
+  std::string error_type;
+  std::uint64_t total{0};
+  WorkflowDurationMetricSnapshot duration;
+};
+
+struct WorkflowMetricsSnapshot {
+  std::uint64_t runs_paused{0};
+  std::uint64_t runs_stopping{0};
+  std::uint64_t tasks_ready{0};
+  std::uint64_t tasks_retry_waiting{0};
+  std::vector<std::pair<std::string, std::uint64_t>> tasks_active;
+  std::vector<std::pair<std::string, std::uint64_t>> attempts_active;
+  std::vector<std::pair<std::string, std::uint64_t>> retries;
+  std::vector<WorkflowMetricSeriesSnapshot> runs;
+  std::vector<WorkflowMetricSeriesSnapshot> tasks;
+  std::vector<WorkflowMetricSeriesSnapshot> attempts;
+  std::vector<WorkflowMetricSeriesSnapshot> task_queue;
+  std::vector<WorkflowMetricSeriesSnapshot> repair_runs;
+  std::uint64_t repair_nodes_reused{0};
+  std::uint64_t repair_nodes_invalidated{0};
+  std::vector<WorkflowPersistenceMetricSnapshot> persistence;
+};
+
 struct WorkflowCallbacks {
   std::move_only_function<void(const RunSnapshot &)> on_run_state;
   std::move_only_function<void(const WorkflowRunId &, const TaskSnapshot &)>
@@ -98,6 +140,10 @@ public:
   [[nodiscard]] auto active_run_count() const noexcept -> std::uint64_t {
     return active_run_count_.load(std::memory_order_acquire);
   }
+  [[nodiscard]] auto accepting_runs() const noexcept -> bool {
+    return runtime_.is_running() && !quiescing_.load(std::memory_order_acquire);
+  }
+  [[nodiscard]] auto metrics_snapshot() const -> WorkflowMetricsSnapshot;
 
 private:
   enum class ActivationKind : std::uint8_t {
@@ -109,6 +155,7 @@ private:
   struct TaskRuntimeState {
     TaskSnapshot snapshot;
     std::optional<InstanceId> instance_id;
+    std::optional<std::chrono::system_clock::time_point> ready_at;
     io::TimingWheel::Handle retry_handle;
   };
 
@@ -149,6 +196,7 @@ private:
 
   struct RunActivation;
   struct RunBootstrapRequest;
+  struct MetricsState;
 
   struct RunBootstrapResult {
     WorkflowRunId run_id;
@@ -258,6 +306,7 @@ private:
   std::atomic_bool quiescing_{false};
   mutable std::mutex lifecycle_mutex_;
   std::condition_variable lifecycle_changed_;
+  std::unique_ptr<MetricsState> metrics_;
 };
 
 } // namespace dagforge::workflow

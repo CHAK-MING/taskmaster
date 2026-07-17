@@ -746,6 +746,19 @@ TEST(ApiTest, SystemRoutesReportHealthStatusAndMetrics) {
   EXPECT_EQ(health_body->get_object().at("status").as<std::string>(),
             "healthy");
 
+  auto ready = invoke("/api/ready");
+  ASSERT_TRUE(ready.has_value());
+  EXPECT_EQ(ready->status, http::HttpStatus::Ok);
+  auto ready_body = parse_json(response_text(*ready));
+  ASSERT_TRUE(ready_body.has_value());
+  EXPECT_EQ(ready_body->get_object().at("status").as<std::string>(), "ready");
+  const auto &components =
+      ready_body->get_object().at("components").get_object();
+  EXPECT_EQ(components.at("runtime").as<std::string>(), "ready");
+  EXPECT_EQ(components.at("workflow").as<std::string>(), "ready");
+  EXPECT_EQ(components.at("storage").as<std::string>(), "ready");
+  EXPECT_EQ(components.at("api").as<std::string>(), "ready");
+
   auto status = invoke("/api/status");
   ASSERT_TRUE(status.has_value());
   EXPECT_EQ(status->status, http::HttpStatus::Ok);
@@ -1149,7 +1162,7 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
 
   auto start_request = request(
       http::HttpMethod::POST, "/api/v1/workflows/route-echo/runs",
-      R"({"source":"api-test","event_type":"manual","payload":{"key":"value"},"principal":{"subject":"tester","roles":["admin"]},"idempotency_key":"route-key"})");
+      R"({"source":"api-test","event_type":"manual","payload":{"key":"value"},"principal":{"subject":"tester","roles":["admin"]},"trace":{"trace_id":"trace-route","parent_span_id":"span-parent"},"idempotency_key":"route-key"})");
   start_request.headers.set("Idempotency-Key", "header-fallback");
   auto started = invoke(std::move(start_request));
   ASSERT_EQ(started.status, http::HttpStatus::Accepted)
@@ -1253,6 +1266,16 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
                   .get_object()
                   .at("type")
                   .is_string());
+  const auto &trigger_metadata = evidence_body->get_object()
+                                     .at("evidence")
+                                     .get_array()
+                                     .front()
+                                     .get_object()
+                                     .at("metadata")
+                                     .get_object();
+  EXPECT_EQ(trigger_metadata.at("trace_id").as<std::string>(), "trace-route");
+  EXPECT_EQ(trigger_metadata.at("parent_span_id").as<std::string>(),
+            "span-parent");
 
   register_plan(R"({
     "workflow_id":"route-failure","schema_version":1,

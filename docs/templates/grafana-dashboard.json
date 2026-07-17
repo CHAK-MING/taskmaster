@@ -1,0 +1,184 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "DAGForge Prometheus data source",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {"options": {"0": {"text": "Not ready"}, "1": {"text": "Ready"}}, "type": "value"}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}
+        },
+        "overrides": []
+      },
+      "gridPos": {"h": 5, "w": 4, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "targets": [{"expr": "dagforge_ready", "refId": "A"}],
+      "title": "Readiness",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "rps"}, "overrides": []},
+      "gridPos": {"h": 5, "w": 7, "x": 4, "y": 0},
+      "id": 2,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "sum by (result) (rate(dagforge_workflow_runs_total[$__rate_interval]))", "legendFormat": "{{result}}", "refId": "A"}],
+      "title": "Run completion rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"max": 1, "min": 0, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 5, "w": 6, "x": 11, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"expr": "sum(rate(dagforge_workflow_runs_total{result=\"succeeded\"}[$__rate_interval])) / clamp_min(sum(rate(dagforge_workflow_runs_total[$__rate_interval])), 0.001)", "refId": "A"}],
+      "title": "Run success ratio",
+      "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 5, "w": 7, "x": 17, "y": 0},
+      "id": 4,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(dagforge_workflow_run_duration_seconds_bucket[$__rate_interval])))", "legendFormat": "p95", "refId": "A"}],
+      "title": "Run p95 duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"min": 0}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 5},
+      "id": 5,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"expr": "dagforge_workflow_runs_active", "legendFormat": "active", "refId": "A"},
+        {"expr": "dagforge_workflow_runs_paused", "legendFormat": "paused", "refId": "B"},
+        {"expr": "dagforge_workflow_runs_stopping", "legendFormat": "stopping", "refId": "C"}
+      ],
+      "title": "Current Run states",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 5},
+      "id": 6,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "sum by (executor_class, result) (rate(dagforge_workflow_tasks_total[$__rate_interval]))", "legendFormat": "{{executor_class}} / {{result}}", "refId": "A"}],
+      "title": "Task completion rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 16, "y": 5},
+      "id": 7,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "sum by (executor_class) (rate(dagforge_workflow_retries_total[$__rate_interval]))", "legendFormat": "{{executor_class}}", "refId": "A"}],
+      "title": "Retry rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 12},
+      "id": 8,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, executor_class) (rate(dagforge_workflow_task_queue_duration_seconds_bucket[$__rate_interval])))", "legendFormat": "{{executor_class}}", "refId": "A"}],
+      "title": "Task queue p95",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"min": 0}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 12},
+      "id": 9,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"expr": "sum by (executor_class) (dagforge_workflow_tasks_active)", "legendFormat": "Tasks / {{executor_class}}", "refId": "A"},
+        {"expr": "sum by (executor_class) (dagforge_workflow_attempts_active)", "legendFormat": "Attempts / {{executor_class}}", "refId": "B"},
+        {"expr": "dagforge_workflow_tasks_ready", "legendFormat": "ready", "refId": "C"},
+        {"expr": "dagforge_workflow_tasks_retry_waiting", "legendFormat": "retry waiting", "refId": "D"}
+      ],
+      "title": "Task and Attempt saturation",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 16, "y": 12},
+      "id": 10,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [
+        {"expr": "sum by (store, operation) (rate(dagforge_workflow_persistence_operations_total{result=\"failed\"}[$__rate_interval]))", "legendFormat": "failed {{store}} / {{operation}}", "refId": "A"},
+        {"expr": "sum by (store, operation) (rate(dagforge_workflow_durability_deferred_total[$__rate_interval]))", "legendFormat": "deferred {{store}} / {{operation}}", "refId": "B"}
+      ],
+      "title": "Persistence integrity events",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 19},
+      "id": 11,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "sum by (decision) (rate(dagforge_workflow_repair_nodes_total[$__rate_interval]))", "legendFormat": "{{decision}}", "refId": "A"}],
+      "title": "Repair Node decisions",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "rps"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 19},
+      "id": 12,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "sum by (endpoint, status) (rate(dagforge_http_requests_total[$__rate_interval]))", "legendFormat": "{{endpoint}} / {{status}}", "refId": "A"}],
+      "title": "API request rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+      "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []},
+      "gridPos": {"h": 7, "w": 8, "x": 16, "y": 19},
+      "id": 13,
+      "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(dagforge_http_request_duration_seconds_bucket[$__rate_interval])))", "legendFormat": "{{endpoint}}", "refId": "A"}],
+      "title": "API p95 duration",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["dagforge", "workflow", "observability"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "DAGForge Observability",
+  "uid": "dagforge-observability",
+  "version": 1,
+  "weekStart": ""
+}

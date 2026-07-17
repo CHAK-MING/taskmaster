@@ -11,16 +11,20 @@
 #include <boost/asio/async_result.hpp>
 
 #include <algorithm>
-#include <cstddef>
+#include <array>
 #include <cassert>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <format>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
-#include <span>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -105,7 +109,298 @@ namespace {
       details ? std::move(*details) : JsonPayload{});
 }
 
+[[nodiscard]] constexpr auto executor_class(std::string_view executor) noexcept
+    -> std::string_view {
+  if (executor == "command") {
+    return "command";
+  }
+  if (executor == "http") {
+    return "http";
+  }
+  return "other";
+}
+
+[[nodiscard]] auto
+metric_error_type(const std::optional<ExecutionFailure> &failure)
+    -> std::string {
+  return failure ? std::string{to_string_view(failure->kind)} : std::string{};
+}
+
+[[nodiscard]] auto metric_error_type(std::error_code error) -> std::string {
+  if (error.category() == error_category() && error.value() >= 0 &&
+      error.value() <= std::to_underlying(Error::Unknown)) {
+    return std::string{to_string_view(static_cast<Error>(error.value()))};
+  }
+  return std::string{to_string_view(Error::Unknown)};
+}
+
+template <typename Clock>
+[[nodiscard]] auto elapsed_ns(std::chrono::time_point<Clock> started,
+                              std::chrono::time_point<Clock> finished) noexcept
+    -> std::uint64_t {
+  if (started == std::chrono::time_point<Clock>{} || finished < started) {
+    return 0;
+  }
+  const auto elapsed =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started)
+          .count();
+  return elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0;
+}
+
 } // namespace
+
+struct WorkflowRuntime::MetricsState {
+  static constexpr std::array<std::uint64_t, 15> kDurationBoundsNs{
+      5'000'000ULL,      10'000'000ULL,      25'000'000ULL,
+      50'000'000ULL,     100'000'000ULL,     250'000'000ULL,
+      500'000'000ULL,    1'000'000'000ULL,   2'500'000'000ULL,
+      5'000'000'000ULL,  10'000'000'000ULL,  30'000'000'000ULL,
+      60'000'000'000ULL, 120'000'000'000ULL, 300'000'000'000ULL,
+  };
+
+  struct SeriesKey {
+    std::string executor;
+    std::string result;
+    std::string error_type;
+
+    auto operator<=>(const SeriesKey &) const = default;
+  };
+
+  struct PersistenceKey {
+    std::string store;
+    std::string operation;
+    std::string result;
+    std::string error_type;
+
+    auto operator<=>(const PersistenceKey &) const = default;
+  };
+
+  struct Aggregate {
+    std::uint64_t total{0};
+    std::uint64_t sum_ns{0};
+    std::array<std::uint64_t, kDurationBoundsNs.size() + 1> buckets{};
+
+    auto observe(std::uint64_t duration_ns) noexcept -> void {
+      const auto bucket =
+          std::lower_bound(kDurationBoundsNs.begin(), kDurationBoundsNs.end(),
+                           duration_ns) -
+          kDurationBoundsNs.begin();
+      ++buckets[static_cast<std::size_t>(bucket)];
+      ++total;
+      sum_ns += duration_ns;
+    }
+
+    [[nodiscard]] auto duration_snapshot() const
+        -> WorkflowDurationMetricSnapshot {
+      return WorkflowDurationMetricSnapshot{
+          .bounds_ns = {kDurationBoundsNs.begin(), kDurationBoundsNs.end()},
+          .bucket_counts = {buckets.begin(), buckets.end()},
+          .count = total,
+          .sum_ns = sum_ns,
+      };
+    }
+  };
+
+  mutable std::mutex mutex;
+  std::uint64_t runs_paused{0};
+  std::uint64_t runs_stopping{0};
+  std::uint64_t tasks_ready{0};
+  std::uint64_t tasks_retry_waiting{0};
+  std::map<std::string, std::uint64_t> tasks_active;
+  std::map<std::string, std::uint64_t> attempts_active;
+  std::map<std::string, std::uint64_t> retries;
+  std::map<SeriesKey, Aggregate> runs;
+  std::map<SeriesKey, Aggregate> tasks;
+  std::map<SeriesKey, Aggregate> attempts;
+  std::map<SeriesKey, Aggregate> task_queue;
+  std::map<SeriesKey, Aggregate> repair_runs;
+  std::uint64_t repair_nodes_reused{0};
+  std::uint64_t repair_nodes_invalidated{0};
+  std::map<PersistenceKey, Aggregate> persistence;
+
+  static auto adjust(std::uint64_t &value, int delta) noexcept -> void {
+    if (delta > 0) {
+      value += static_cast<std::uint64_t>(delta);
+    } else if (value > 0) {
+      --value;
+    }
+  }
+
+  auto activate_run(RunState state) -> void {
+    std::lock_guard lock(mutex);
+    if (state == RunState::Paused) {
+      ++runs_paused;
+    } else if (state == RunState::Stopping) {
+      ++runs_stopping;
+    }
+  }
+
+  auto transition_run(RunState from, RunState to) -> void {
+    std::lock_guard lock(mutex);
+    if (from == RunState::Paused) {
+      adjust(runs_paused, -1);
+    } else if (from == RunState::Stopping) {
+      adjust(runs_stopping, -1);
+    }
+    if (to == RunState::Paused) {
+      adjust(runs_paused, 1);
+    } else if (to == RunState::Stopping) {
+      adjust(runs_stopping, 1);
+    }
+  }
+
+  auto activate_task(std::string_view executor, TaskState state) -> void {
+    const auto classification = std::string{executor_class(executor)};
+    std::lock_guard lock(mutex);
+    if (state == TaskState::Running) {
+      ++tasks_active[classification];
+    } else if (state == TaskState::Ready) {
+      ++tasks_ready;
+    } else if (state == TaskState::RetryWaiting) {
+      ++tasks_retry_waiting;
+    }
+  }
+
+  auto transition_task(std::string_view executor, TaskState from, TaskState to,
+                       const TaskSnapshot &snapshot,
+                       std::optional<std::uint64_t> queue_ns) -> void {
+    const auto classification = std::string{executor_class(executor)};
+    std::lock_guard lock(mutex);
+    if (from == TaskState::Running) {
+      adjust(tasks_active[classification], -1);
+    } else if (from == TaskState::Ready) {
+      adjust(tasks_ready, -1);
+    } else if (from == TaskState::RetryWaiting) {
+      adjust(tasks_retry_waiting, -1);
+    }
+    if (to == TaskState::Running) {
+      adjust(tasks_active[classification], 1);
+    } else if (to == TaskState::Ready) {
+      adjust(tasks_ready, 1);
+    } else if (to == TaskState::RetryWaiting) {
+      adjust(tasks_retry_waiting, 1);
+    }
+    if (queue_ns) {
+      task_queue[SeriesKey{.executor = classification}].observe(*queue_ns);
+    }
+    if (!is_terminal(to)) {
+      return;
+    }
+    tasks[SeriesKey{
+              .executor = classification,
+              .result = std::string{to_string_view(to)},
+              .error_type = metric_error_type(snapshot.failure),
+          }]
+        .observe(elapsed_ns(snapshot.started_at, snapshot.finished_at));
+  }
+
+  auto attempt_started(std::string_view executor, std::uint32_t number)
+      -> void {
+    const auto classification = std::string{executor_class(executor)};
+    std::lock_guard lock(mutex);
+    ++attempts_active[classification];
+    if (number > 1) {
+      ++retries[classification];
+    }
+  }
+
+  auto attempt_completed(std::string_view executor,
+                         const AttemptSnapshot &snapshot) -> void {
+    const auto classification = std::string{executor_class(executor)};
+    std::lock_guard lock(mutex);
+    adjust(attempts_active[classification], -1);
+    attempts[SeriesKey{
+                 .executor = classification,
+                 .result = std::string{to_string_view(snapshot.state)},
+                 .error_type = metric_error_type(snapshot.failure),
+             }]
+        .observe(elapsed_ns(snapshot.created_at, snapshot.finished_at));
+  }
+
+  auto run_completed(const RunSnapshot &snapshot) -> void {
+    const auto duration_ns =
+        elapsed_ns(snapshot.started_at, snapshot.finished_at);
+    const auto result = std::string{to_string_view(snapshot.state)};
+    const auto error_type = metric_error_type(snapshot.failure);
+    std::lock_guard lock(mutex);
+    runs[SeriesKey{.result = result, .error_type = error_type}].observe(
+        duration_ns);
+    if (snapshot.parent_run_id) {
+      repair_runs[SeriesKey{.result = result, .error_type = error_type}]
+          .observe(duration_ns);
+    }
+  }
+
+  auto repair_decision(bool reused) -> void {
+    std::lock_guard lock(mutex);
+    if (reused) {
+      ++repair_nodes_reused;
+    } else {
+      ++repair_nodes_invalidated;
+    }
+  }
+
+  auto persistence_operation(std::string_view store, std::string_view operation,
+                             std::string_view result, std::string error_type,
+                             std::uint64_t duration_ns) -> void {
+    std::lock_guard lock(mutex);
+    persistence[PersistenceKey{
+                    .store = std::string{store},
+                    .operation = std::string{operation},
+                    .result = std::string{result},
+                    .error_type = std::move(error_type),
+                }]
+        .observe(duration_ns);
+  }
+
+  [[nodiscard]] auto snapshot() const -> WorkflowMetricsSnapshot {
+    std::lock_guard lock(mutex);
+    WorkflowMetricsSnapshot out{
+        .runs_paused = runs_paused,
+        .runs_stopping = runs_stopping,
+        .tasks_ready = tasks_ready,
+        .tasks_retry_waiting = tasks_retry_waiting,
+        .repair_nodes_reused = repair_nodes_reused,
+        .repair_nodes_invalidated = repair_nodes_invalidated,
+    };
+    for (const auto &[executor, value] : tasks_active) {
+      out.tasks_active.emplace_back(executor, value);
+    }
+    for (const auto &[executor, value] : attempts_active) {
+      out.attempts_active.emplace_back(executor, value);
+    }
+    for (const auto &[executor, value] : retries) {
+      out.retries.emplace_back(executor, value);
+    }
+    const auto copy_series = [](const auto &source, auto &target) {
+      for (const auto &[key, aggregate] : source) {
+        target.push_back(WorkflowMetricSeriesSnapshot{
+            .executor_class = key.executor,
+            .result = key.result,
+            .error_type = key.error_type,
+            .total = aggregate.total,
+            .duration = aggregate.duration_snapshot(),
+        });
+      }
+    };
+    copy_series(runs, out.runs);
+    copy_series(tasks, out.tasks);
+    copy_series(attempts, out.attempts);
+    copy_series(task_queue, out.task_queue);
+    copy_series(repair_runs, out.repair_runs);
+    for (const auto &[key, aggregate] : persistence) {
+      out.persistence.push_back(WorkflowPersistenceMetricSnapshot{
+          .store = key.store,
+          .operation = key.operation,
+          .result = key.result,
+          .error_type = key.error_type,
+          .total = aggregate.total,
+          .duration = aggregate.duration_snapshot(),
+      });
+    }
+    return out;
+  }
+};
 
 WorkflowRuntime::WorkflowRuntime(
     Runtime &runtime, ExecutorRegistry &executors,
@@ -118,7 +413,8 @@ WorkflowRuntime::WorkflowRuntime(
       evidence_ledger_(std::move(evidence_ledger)),
       checkpoint_store_(std::move(checkpoint_store)),
       max_completed_runs_(std::max<std::size_t>(1, max_completed_runs)),
-      shard_states_(runtime.shard_count()) {
+      shard_states_(runtime.shard_count()),
+      metrics_(std::make_unique<MetricsState>()) {
   if (!artifact_store_) {
     artifact_store_ = std::make_shared<InMemoryArtifactStore>();
   }
@@ -353,6 +649,15 @@ auto WorkflowRuntime::initialize_checkpoint_run(
   }
   auto &active = it->second;
   active_run_count_.fetch_add(1, std::memory_order_release);
+  metrics_->activate_run(active.snapshot.state);
+  for (std::size_t index = 0; index < active.tasks.size(); ++index) {
+    auto &task = active.tasks[index];
+    const auto &executor = active.plan->nodes[index].plan.executor;
+    if (task.snapshot.state == TaskState::Ready) {
+      task.ready_at = now;
+    }
+    metrics_->activate_task(executor, task.snapshot.state);
+  }
 
   auto primed = prime_ready_tasks(active);
   if (!primed) {
@@ -387,7 +692,9 @@ auto WorkflowRuntime::initialize_checkpoint_run(
     append_typed_evidence(
         active, active.tasks.size(), EvidenceType::TriggerReceived,
         glz::obj{"source", active.trigger.source, "event_type",
-                 active.trigger.event_type, "plan_digest", active.plan->digest});
+                 active.trigger.event_type, "plan_digest", active.plan->digest,
+                 "trace_id", active.trigger.trace.trace_id, "parent_span_id",
+                 active.trigger.trace.parent_span_id});
     append_typed_evidence(
         active, active.tasks.size(), EvidenceType::PlanCompiled,
         glz::obj{"plan_id", active.plan->plan_id, "digest",
@@ -408,6 +715,7 @@ auto WorkflowRuntime::initialize_checkpoint_run(
             "revision", active.snapshot.repair_revision, "reason",
             active.snapshot.repair_reason});
     for (const auto &decision : repair_decisions) {
+      metrics_->repair_decision(decision.reused);
       const auto node = std::ranges::find_if(
           active.plan->nodes, [&](const auto &compiled) {
             return compiled.plan.node_id == decision.node_id;
@@ -550,11 +858,13 @@ auto WorkflowRuntime::schedule_run_deadline(ActiveRun &run) -> void {
 
 auto WorkflowRuntime::transition_run(ActiveRun &run, RunState state)
     -> Result<void> {
+  const auto previous = run.snapshot.state;
   auto transitioned =
       detail::transition(run.snapshot, state, std::chrono::system_clock::now());
   if (!transitioned) {
     return transitioned;
   }
+  metrics_->transition_run(previous, state);
   emit_run_state(run);
   return ok();
 }
@@ -564,12 +874,27 @@ auto WorkflowRuntime::transition_task(ActiveRun &run, std::size_t task_index,
   if (task_index >= run.tasks.size()) {
     return fail(Error::InvalidArgument);
   }
-  auto &task = run.tasks[task_index].snapshot;
+  auto &task_runtime = run.tasks[task_index];
+  auto &task = task_runtime.snapshot;
+  const auto previous = task.state;
+  const auto previous_ready_at = task_runtime.ready_at;
   auto transitioned =
       detail::transition(task, state, std::chrono::system_clock::now());
   if (!transitioned) {
     return transitioned;
   }
+  std::optional<std::uint64_t> queue_ns;
+  if (previous == TaskState::Ready && state == TaskState::Running &&
+      previous_ready_at) {
+    queue_ns = elapsed_ns(*previous_ready_at, task.started_at);
+  }
+  if (state == TaskState::Ready) {
+    task_runtime.ready_at = std::chrono::system_clock::now();
+  } else if (previous == TaskState::Ready) {
+    task_runtime.ready_at.reset();
+  }
+  metrics_->transition_task(run.plan->nodes[task_index].plan.executor, previous,
+                            state, task, queue_ns);
   emit_task_state(run, task_index);
   return ok();
 }
@@ -642,6 +967,8 @@ auto WorkflowRuntime::begin_attempt(ActiveRun &run, std::size_t task_index)
       run, task_index, EvidenceType::TaskStarted,
       glz::obj{"attempt", task.snapshot.attempt_count, "executor",
                run.plan->nodes[task_index].plan.executor});
+  metrics_->attempt_started(run.plan->nodes[task_index].plan.executor,
+                            task.snapshot.attempt_count);
   assert(invariants_hold(run));
   return attempt_id;
 }
@@ -851,6 +1178,8 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
     attempt->failure = failure;
     task.snapshot.failure = failure;
     (void)transition_attempt(*attempt, failure_attempt_state(failure.kind));
+    metrics_->attempt_completed(run.plan->nodes[task_index].plan.executor,
+                                *attempt);
     task.snapshot.active_attempt_id.reset();
     append_typed_evidence(
         run, task_index, EvidenceType::AttemptCompleted,
@@ -900,6 +1229,8 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
       (void)transition_attempt(*attempt, AttemptState::Terminating);
     }
     (void)transition_attempt(*attempt, AttemptState::Cancelled);
+    metrics_->attempt_completed(run.plan->nodes[task_index].plan.executor,
+                                *attempt);
     task.snapshot.active_attempt_id.reset();
     const auto cancellation = make_execution_failure(
         Error::Cancelled, "run_stopped_task_cancelled",
@@ -970,6 +1301,8 @@ auto WorkflowRuntime::complete_task(const WorkflowRunId &run_id,
   }
 
   (void)transition_attempt(*attempt, AttemptState::Succeeded);
+  metrics_->attempt_completed(run.plan->nodes[task_index].plan.executor,
+                              *attempt);
   task.snapshot.active_attempt_id.reset();
   task.snapshot.failure.reset();
   (void)transition_task(run, task_index, TaskState::Succeeded);
@@ -1368,6 +1701,7 @@ auto WorkflowRuntime::finalize_run_if_ready(const WorkflowRunId &run_id)
       glz::obj{"state", run.snapshot.state, "failure",
                run.snapshot.failure});
   checkpoint(run);
+  metrics_->run_completed(run.snapshot);
 
   if (run.deadline_handle.valid()) {
     runtime_.cancel_after_on(owner, run.deadline_handle);
@@ -1457,8 +1791,13 @@ auto WorkflowRuntime::append_evidence(ActiveRun &run,
   record.type = type;
   record.actor = run.trigger.principal;
   record.metadata = std::move(metadata);
+  const auto started = std::chrono::steady_clock::now();
   auto appended = evidence_ledger_->append(std::move(record));
+  const auto duration = elapsed_ns(started, std::chrono::steady_clock::now());
   if (!appended) {
+    metrics_->persistence_operation("evidence", "append", "failed",
+                                    metric_error_type(appended.error()),
+                                    duration);
     log::error("Failed to append workflow Evidence for {}: {}",
                run.snapshot.run_id, appended.error().message());
     record_persistence_failure(
@@ -1468,6 +1807,9 @@ auto WorkflowRuntime::append_evidence(ActiveRun &run,
     return;
   }
   if (appended->durability_deferred) {
+    metrics_->persistence_operation(
+        "evidence", "append", "deferred",
+        std::string{to_string_view(Error::PersistenceError)}, duration);
     log::error(
         "Workflow Evidence {} is visible but directory durability is deferred",
         appended->evidence_id);
@@ -1476,15 +1818,22 @@ auto WorkflowRuntime::append_evidence(ActiveRun &run,
                                  "evidence_durability_deferred",
                                  "Workflow Evidence durability was not confirmed",
                                  "evidence"));
+    return;
   }
+  metrics_->persistence_operation("evidence", "append", "succeeded", {},
+                                  duration);
 }
 
 auto WorkflowRuntime::checkpoint(ActiveRun &run) -> void {
   if (run.persistence_failure) {
     return;
   }
+  const auto started = std::chrono::steady_clock::now();
   auto values = run.values->snapshot();
   if (!values) {
+    metrics_->persistence_operation(
+        "checkpoint", "write", "failed", metric_error_type(values.error()),
+        elapsed_ns(started, std::chrono::steady_clock::now()));
     record_persistence_failure(
         run, persistence_failure(values.error(), "checkpoint_persist_failed",
                                  "Workflow checkpoint could not be persisted",
@@ -1499,7 +1848,10 @@ auto WorkflowRuntime::checkpoint(ActiveRun &run) -> void {
       .created_at = std::chrono::system_clock::now(),
   };
   auto saved = checkpoint_store_->save(std::move(checkpoint));
+  const auto duration = elapsed_ns(started, std::chrono::steady_clock::now());
   if (!saved) {
+    metrics_->persistence_operation("checkpoint", "write", "failed",
+                                    metric_error_type(saved.error()), duration);
     record_persistence_failure(
         run, persistence_failure(saved.error(), "checkpoint_persist_failed",
                                  "Workflow checkpoint could not be persisted",
@@ -1507,10 +1859,16 @@ auto WorkflowRuntime::checkpoint(ActiveRun &run) -> void {
     return;
   }
   if (saved->durability_deferred) {
+    metrics_->persistence_operation(
+        "checkpoint", "write", "deferred",
+        std::string{to_string_view(Error::PersistenceError)}, duration);
     log::warn(
         "Workflow checkpoint {} is visible but directory durability is deferred",
         run.snapshot.run_id);
+    return;
   }
+  metrics_->persistence_operation("checkpoint", "write", "succeeded", {},
+                                  duration);
 }
 
 auto WorkflowRuntime::record_persistence_failure(ActiveRun &run,
@@ -1574,10 +1932,15 @@ auto WorkflowRuntime::retain_failure_details(ExecutionFailure failure)
       })) {
     return failure;
   }
+  const auto started = std::chrono::steady_clock::now();
   auto stored = artifact_store_->put(
       std::as_bytes(std::span{encoded.data(), encoded.size()}),
       "application/json");
+  const auto duration = elapsed_ns(started, std::chrono::steady_clock::now());
   if (!stored) {
+    metrics_->persistence_operation("artifact", "write", "failed",
+                                    metric_error_type(stored.error()),
+                                    duration);
     log::error("Failed to retain oversized failure details: {}",
                stored.error().message());
     auto summary = JsonPayload::from(
@@ -1587,6 +1950,9 @@ auto WorkflowRuntime::retain_failure_details(ExecutionFailure failure)
     return failure;
   }
   if (stored->durability_deferred) {
+    metrics_->persistence_operation(
+        "artifact", "write", "deferred",
+        std::string{to_string_view(Error::PersistenceError)}, duration);
     const auto artifact_id = stored->artifact_id.clone();
     (void)artifact_store_->erase(artifact_id);
     auto summary = JsonPayload::from(
@@ -1596,6 +1962,8 @@ auto WorkflowRuntime::retain_failure_details(ExecutionFailure failure)
     failure.details = summary ? std::move(*summary) : JsonPayload{};
     return failure;
   }
+  metrics_->persistence_operation("artifact", "write", "succeeded", {},
+                                  duration);
   failure.artifacts.push_back(
       FailureArtifact{.name = "details",
                       .artifact = std::move(*stored).take_ref()});
@@ -1825,6 +2193,10 @@ auto WorkflowRuntime::cancel(const WorkflowRunId &run_id)
 auto WorkflowRuntime::evidence(const WorkflowRunId &run_id) const
     -> std::vector<EvidenceRecord> {
   return evidence_ledger_->records(run_id);
+}
+
+auto WorkflowRuntime::metrics_snapshot() const -> WorkflowMetricsSnapshot {
+  return metrics_->snapshot();
 }
 
 } // namespace dagforge::workflow

@@ -8,6 +8,7 @@
 - [基准规范](BENCH_REPORT.md)：当前 benchmark target、执行方法和报告规则。
 - [clangd 配置](CLANGD_SETUP.md)：build2、C++ modules 和 VS Code/clangd 环境。
 - [企业订单履约 DAG 演示](ORDER_FULFILLMENT_DEMO.md)：本地模拟企业服务，验证中间输出、并行速度、业务补偿、系统失败和 Repair Run。
+- [可观测性](OBSERVABILITY.md)：低基数 Prometheus 指标、Evidence 下钻、健康探针、告警规则、Grafana Dashboard 和 Kubernetes 部署模板。
 
 ## 工程文档
 

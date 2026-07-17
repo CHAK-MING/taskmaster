@@ -22,6 +22,7 @@ struct StartRunRequest {
   std::optional<JsonPayload> payload;
   std::string idempotency_key;
   workflow::Principal principal;
+  workflow::TraceContext trace;
 };
 
 struct RepairRunRequest {

@@ -18,6 +18,31 @@ auto register_system_routes(ApiContext &ctx) -> void {
                        glz::obj{"status", "healthy"});
                  }));
 
+  router.get("/api/ready",
+             ctx.make_instrumented_route(
+                 http::HttpMethod::GET, "/api/ready",
+                 [&ctx](http::HttpRequest) -> task<http::HttpResponse> {
+                   const auto readiness = ctx.app.readiness();
+                   co_return typed_json_response(
+                       glz::obj{
+                           "status",
+                           readiness.ready ? "ready" : "not_ready",
+                           "components",
+                           glz::obj{
+                               "runtime",
+                               readiness.runtime ? "ready" : "not_ready",
+                               "workflow",
+                               readiness.workflow ? "ready" : "not_ready",
+                               "storage",
+                               readiness.storage ? "ready" : "not_ready",
+                               "api",
+                               readiness.api ? "ready" : "not_ready",
+                           },
+                       },
+                       readiness.ready ? http::HttpStatus::Ok
+                                       : http::HttpStatus::ServiceUnavailable);
+                 }));
+
   router.get("/api/status",
              ctx.make_instrumented_route(
                  http::HttpMethod::GET, "/api/status",

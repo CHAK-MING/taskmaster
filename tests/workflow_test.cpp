@@ -2859,6 +2859,17 @@ TEST(WorkflowRuntimeTest, RetryWaitingCreatesDistinctAttempts) {
                                  .event_type = "request"});
   ASSERT_TRUE(started.has_value());
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
+  {
+    const auto metrics = runtime.metrics_snapshot();
+    const auto active_task =
+        std::ranges::find(metrics.tasks_active,
+                          std::pair<std::string, std::uint64_t>{"other", 1});
+    const auto active_attempt =
+        std::ranges::find(metrics.attempts_active,
+                          std::pair<std::string, std::uint64_t>{"other", 1});
+    EXPECT_NE(active_task, metrics.tasks_active.end());
+    EXPECT_NE(active_attempt, metrics.attempts_active.end());
+  }
   ASSERT_TRUE(environment.executor->complete_next(1));
 
   ASSERT_TRUE(dagforge::test::wait_until(
@@ -2875,6 +2886,12 @@ TEST(WorkflowRuntimeTest, RetryWaitingCreatesDistinctAttempts) {
   EXPECT_TRUE(durable_retry->snapshot.tasks[0].next_attempt_at.has_value());
 
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
+  {
+    const auto metrics = runtime.metrics_snapshot();
+    const auto retry = std::ranges::find(
+        metrics.retries, std::pair<std::string, std::uint64_t>{"other", 1});
+    EXPECT_NE(retry, metrics.retries.end());
+  }
   ASSERT_TRUE(environment.executor->complete_next(0, "ok"));
   auto completed =
       wait_for_state(runtime, core, *started, RunState::Succeeded);
@@ -2890,6 +2907,33 @@ TEST(WorkflowRuntimeTest, RetryWaitingCreatesDistinctAttempts) {
   EXPECT_EQ((*completed)->tasks[0].attempts[1].state,
             AttemptState::Succeeded);
   EXPECT_EQ((*completed)->tasks[0].attempts[1].exit_code, 0);
+  const auto metrics = runtime.metrics_snapshot();
+  const auto find_series = [](const auto &series, std::string_view executor,
+                              std::string_view result,
+                              std::string_view error_type) {
+    return std::ranges::find_if(series, [&](const auto &candidate) {
+      return candidate.executor_class == executor &&
+             candidate.result == result && candidate.error_type == error_type;
+    });
+  };
+  const auto run = find_series(metrics.runs, {}, "succeeded", {});
+  ASSERT_NE(run, metrics.runs.end());
+  EXPECT_EQ(run->total, 1U);
+  EXPECT_EQ(run->duration.count, 1U);
+  const auto task = find_series(metrics.tasks, "other", "succeeded", {});
+  ASSERT_NE(task, metrics.tasks.end());
+  EXPECT_EQ(task->total, 1U);
+  const auto failed_attempt =
+      find_series(metrics.attempts, "other", "failed", "unknown");
+  ASSERT_NE(failed_attempt, metrics.attempts.end());
+  EXPECT_EQ(failed_attempt->total, 1U);
+  const auto succeeded_attempt =
+      find_series(metrics.attempts, "other", "succeeded", {});
+  ASSERT_NE(succeeded_attempt, metrics.attempts.end());
+  EXPECT_EQ(succeeded_attempt->total, 1U);
+  ASSERT_EQ(metrics.task_queue.size(), 1U);
+  EXPECT_EQ(metrics.task_queue.front().executor_class, "other");
+  EXPECT_EQ(metrics.task_queue.front().duration.count, 1U);
   core.stop();
 }
 
@@ -7007,6 +7051,17 @@ TEST(WorkflowRuntimeTest, RepairReusesIndependentSuccessfulBranches) {
   EXPECT_EQ((*completed)->tasks[1].attempt_count, 1U);
   EXPECT_EQ((*completed)->tasks[2].attempt_count, 0U);
   EXPECT_EQ((*completed)->tasks[3].attempt_count, 1U);
+
+  const auto metrics = runtime.metrics_snapshot();
+  EXPECT_EQ(metrics.repair_nodes_reused, 2U);
+  EXPECT_EQ(metrics.repair_nodes_invalidated, 2U);
+  const auto repair_run =
+      std::ranges::find_if(metrics.repair_runs, [](const auto &series) {
+        return series.result == "succeeded" && series.error_type.empty();
+      });
+  ASSERT_NE(repair_run, metrics.repair_runs.end());
+  EXPECT_EQ(repair_run->total, 1U);
+  EXPECT_EQ(repair_run->duration.count, 1U);
 
   auto duplicate = runtime.repair(
       *revised, parent.snapshot.run_id,

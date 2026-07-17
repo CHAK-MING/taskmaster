@@ -22,6 +22,14 @@ class WorkflowRuntime;
 class StorageDirectoryLock;
 } // namespace workflow
 
+struct ApplicationReadiness {
+  bool ready{false};
+  bool runtime{false};
+  bool workflow{false};
+  bool storage{false};
+  bool api{false};
+};
+
 class Application {
 public:
   Application();
@@ -39,6 +47,7 @@ public:
   [[nodiscard]] auto start() -> Result<void>;
   auto stop() noexcept -> void;
   [[nodiscard]] auto is_running() const noexcept -> bool;
+  [[nodiscard]] auto readiness() const noexcept -> ApplicationReadiness;
 
   [[nodiscard]] auto api_server() -> ApiServer *;
   [[nodiscard]] auto api_server() const -> const ApiServer *;

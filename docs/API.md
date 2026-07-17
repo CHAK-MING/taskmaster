@@ -41,10 +41,28 @@ concurrency ceilings are controlled by `api.max_request_body_bytes` and
 
 ### `GET /api/health`
 
+Liveness endpoint. It reports whether the service process can answer requests;
+workflow failures and temporary dependency problems do not make liveness fail.
 Returns:
 
 ```json
 {"status":"healthy"}
+```
+
+### `GET /api/ready`
+
+Readiness endpoint. It returns `200` only when the Runtime is running, the
+Workflow Runtime can accept new Runs, configured storage ownership is intact,
+and the API is serving. Otherwise it returns `503` with per-component state.
+
+```json
+{"status":"ready","components":{"runtime":"ready","workflow":"ready","storage":"ready","api":"ready"}}
+```
+
+CLI equivalent:
+
+```bash
+dagforge api ready
 ```
 
 ### `GET /api/status`
@@ -53,6 +71,12 @@ Returns runtime state, whether the workflow runtime is enabled, active run
 count, shard count, and a timestamp.
 
 ### `GET /metrics`
+
+Returns Prometheus text exposition for service, HTTP, Run, Task, Attempt,
+Repair Run, and workflow persistence metrics. Metric labels are deliberately
+low-cardinality; Run, Node, Attempt, Artifact, Plan, and trace identifiers are
+available through the Run, Evidence, Failure Report, Artifact, log, and trace
+surfaces instead. See [Observability](OBSERVABILITY.md).
 
 Returns Prometheus text format.
 
@@ -101,9 +125,17 @@ Optional body:
   "principal": {
     "subject": "user-42",
     "roles": ["operator"]
+  },
+  "trace": {
+    "trace_id": "upstream-trace-id",
+    "parent_span_id": "upstream-span-id"
   }
 }
 ```
+
+Trace identifiers are propagated to executor Attempts and recorded in
+`trigger_received` Evidence for cross-service correlation. They are
+high-cardinality diagnostic fields and never become Prometheus labels.
 
 `Idempotency-Key` can be supplied as an HTTP header when the body field is
 empty. A retained key returns the original Run only when `workflow_id` and
