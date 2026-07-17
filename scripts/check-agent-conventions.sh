@@ -11,6 +11,50 @@ if ! command -v rg >/dev/null 2>&1; then
 fi
 
 failures=0
+required_guidance=(
+  .clang-format
+  AGENTS.md
+  docs/agents/architecture.md
+  docs/agents/coding-style.md
+  docs/agents/domain.md
+  docs/agents/issue-tracker.md
+  docs/agents/verification.md
+  scripts/format.sh
+)
+for path in "${required_guidance[@]}"; do
+  if [[ ! -f "$path" ]]; then
+    echo "required project guidance is missing: $path" >&2
+    failures=1
+  fi
+done
+
+if git check-ignore --no-index -q AGENTS.md; then
+  echo "AGENTS.md must be tracked and must not be ignored" >&2
+  failures=1
+fi
+if git check-ignore --no-index -q docs/agents/coding-style.md; then
+  echo "docs/agents project guidance must not be ignored" >&2
+  failures=1
+fi
+tracked_scratch=$(
+  while IFS= read -r path; do
+    if [[ -e "$path" ]]; then
+      printf '%s\n' "$path"
+    fi
+  done < <(git ls-files '.scratch/**')
+  true
+)
+if [[ -n "$tracked_scratch" ]]; then
+  echo "local scratch documents must not be tracked:" >&2
+  printf '%s\n' "$tracked_scratch" >&2
+  failures=1
+fi
+if stale_guidance=$(rg -n 'docs/ai/|triage-labels\.md|0\.4_DEVELOPMENT_STATUS\.md|NORTH_STAR_WORKFLOW\.md' AGENTS.md CONTRIBUTING.md README.md README_CN.md docs 2>/dev/null); then
+  echo "stale documentation references detected:" >&2
+  printf '%s\n' "$stale_guidance" >&2
+  failures=1
+fi
+
 cpp_roots=(include src tests docs/templates)
 cpp_globs=(
   --glob '*.hpp'

@@ -1,136 +1,33 @@
-# VS Code and clangd setup
+# clangd 与 VS Code 配置
 
-DAGForge uses build2 and C++20 modules. The authoritative build remains GCC 15,
-but clangd uses a separate Clang build2 configuration because Clang cannot load
-GCC `.gcm` files.
+DAGForge 使用 build2、C++23 和 C++ modules。正式构建可以使用 GCC，但 clangd 必须读取由同一 Clang major version 生成的 PCM 和 `compile_commands.json`，不能加载 GCC `.gcm`。
 
-The repository setup creates a matching set of:
+## 依赖
 
-- Clang-generated `.pcm` module files;
-- a real `compile_commands.json` captured from build2;
-- a workspace-local `clangd` shim pointing to the matching clangd version.
+安装 Clang、clangd 和 Bear，Clang 与 clangd major version 必须一致，推荐 20 或更高版本。还需要 build2/bdep、项目系统依赖和 Python 3。
 
-Do not point clangd at the GCC build directory.
-
-## Prerequisites
-
-Install Clang, clangd, and Bear. The Clang compiler and clangd must have the same
-major version. Clang 21 or newer is recommended.
-
-On Ubuntu or Debian:
+## 生成 IDE 构建
 
 ```bash
-sudo apt install clang-21 clangd-21 bear
+bash scripts/setup-clangd.sh
 ```
 
-The normal DAGForge build prerequisites are also required:
-
-- build2 and bdep 0.17 or newer;
-- project system libraries such as Boost and OpenSSL;
-- Python 3.
-
-## Generate the IDE build
-
-From the repository root:
+需要指定版本时使用：
 
 ```bash
-scripts/setup-clangd.sh
+bash scripts/setup-clangd.sh --compiler /usr/bin/clang++-21 --clangd /usr/bin/clangd-21
 ```
 
-The same command is available in VS Code through **Tasks: Run Task** →
-**DAGForge: Refresh clangd database**.
+脚本会重建独立 `@clangd` build2 configuration、生成匹配的 PCM、捕获真实编译命令并更新 `.clangd-tools/clangd`。`compile_commands.json`、`.clangd-tools/` 和 clangd build directory 都是本地生成物，不提交到 Git。
 
-The script selects the newest installed `clang++-22`, `clang++-21`, or
-`clang++-20`, then selects a clangd executable with the same major version.
-Explicit paths can be provided when several LLVM installations exist:
+## 何时刷新
 
-```bash
-scripts/setup-clangd.sh \
-  --compiler /usr/bin/clang++-21 \
-  --clangd /usr/bin/clangd-21
-```
+module declaration/import、buildfile、compiler flag、include path、Clang major version 或 C/C++ source list 变化后重新运行脚本；普通函数实现修改不需要重建 compilation database。
 
-The script intentionally recreates the dedicated `@clangd` build2
-configuration and builds it as shared-library-only. This produces one canonical
-PCM graph instead of parallel static and shared BMI variants.
+## 常见问题
 
-Generated local artifacts are ignored by Git:
-
-```text
-compile_commands.json
-.clangd-tools/
-~/.local/share/build2-configs/dagforge-clangd/
-```
-
-The workspace setting automatically restarts clangd when the compilation
-database changes. Run **clangd: Restart language server** manually if the
-extension does not pick up the workspace-local clangd path immediately, or
-reopen the workspace once.
-
-## When to regenerate
-
-Run `scripts/setup-clangd.sh` again after changes to:
-
-- module declarations or imports;
-- `src/buildfile`, `bin/buildfile`, or `tests/buildfile`;
-- compiler flags or include paths;
-- the selected Clang major version;
-- newly added C, C++, or module source files.
-
-Ordinary edits do not require regenerating the database. clangd indexes source
-changes in the background.
-
-## Why experimental module support is disabled
-
-The build2 compilation database already contains explicit `-fmodule-file`
-arguments for every imported module. clangd can therefore load the exact PCM
-files produced by the IDE build.
-
-On clangd 21, enabling `--experimental-modules-support` causes the module
-dependency builder to rescan the same graph and can report false
-`fe_pch_file_overridden` diagnostics for libstdc++ headers. The project VS Code
-configuration deliberately omits that flag.
-
-This is different from disabling C++ modules. Modules remain enabled by the
-captured C++23 build commands and are validated by the setup script using both a
-module interface and a module consumer.
-
-## Troubleshooting
-
-### `compile_commands.json` is missing
-
-Run:
-
-```bash
-scripts/setup-clangd.sh
-```
-
-A plain GCC build does not generate the Clang compilation database.
-
-### Clang and clangd versions do not match
-
-The setup script rejects mixed major versions because PCM files are
-compiler-version-specific. Select matching executables explicitly.
-
-### VS Code still uses a global clangd
-
-Check the clangd extension output. The executable should resolve through:
-
-```text
-${workspaceFolder}/.clangd-tools/clangd
-```
-
-The setup script refreshes this symlink on every run.
-
-### Duplicate diagnostics appear
-
-The repository disables the Microsoft C/C++ IntelliSense engine while retaining
-the extension for debugger support. Ensure workspace settings are not overridden
-by a more specific VS Code profile or remote setting.
-
-### Third-party headers show diagnostics
-
-The project `.clangd` suppresses diagnostics and background indexing under
-`third_party/`. Diagnostics in DAGForge source that originate from a third-party
-template instantiation may still be shown because the primary source file is
-part of the project.
+- 缺少 `compile_commands.json`：运行 `bash scripts/setup-clangd.sh`，普通 GCC build 不会生成 Clang compilation database。
+- Clang 与 clangd 不匹配：显式传入同一 major version 的 executable，PCM 与 compiler version 不兼容。
+- VS Code 仍使用全局 clangd：检查扩展输出，路径应指向 `${workspaceFolder}/.clangd-tools/clangd`，必要时重启 language server。
+- 重复 module diagnostics：不要启用额外 experimental module scanner；build2 command 已包含精确 `-fmodule-file` 参数。
+- third-party diagnostics：`.clangd` 会限制 `third_party/` 的 background indexing，但从第一方模板实例化暴露的真实错误仍会显示。

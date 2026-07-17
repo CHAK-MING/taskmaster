@@ -1,238 +1,59 @@
-# Changelog
+# 更新日志
 
-All notable changes to DAGForge will be documented in this file.
+DAGForge 的重要变化记录在本文件中。未发布内容只描述当前主分支相对最近正式版本的用户可见行为、兼容影响和工程基础变化，不记录一次性调查、内部过程稿或生成物。
 
-## [Unreleased]
+## [未发布]
 
-### Breaking Changes
-- Removed the unused in-process ComputePool, its Runtime submission API,
-  configuration, metrics, and tests. Workflow CPU work remains isolated in
-  sandboxed command processes.
-- Replaced protocol-specific node variants with executor-neutral Tasks. Each
-  Task selects a registered executor and carries executor-owned JSON config;
-  Workflow Runtime no longer interprets Command, HTTP, Python, Model, or Tool
-  behavior.
-- Workflow Plans and system configuration now use strict JSON only.
-- Reworked the CLI around a private CLI11 adapter. Core objects are positional,
-  `run` always waits for the terminal state, and the obsolete `--wait` and
-  trigger-only `--payload` options were removed. The new `api` command exposes
-  semantic Plan, Run, Artifact, health, status, and metrics operations while
-  retaining `api request` as a raw endpoint escape hatch.
-- Replaced the flat run/node lifecycle with explicit Run, Task, and Attempt
-  state machines. Cancellation and fail-fast now remain `stopping` until every
-  active attempt is reaped.
-- Removed Approval nodes and approval control-plane routes. External waits are
-  no longer modeled as executors.
-- Removed XCom and XCom-based branching from the C++ runtime, including persistence, APIs, CLI, metrics, modules, tests, and examples.
-- Removed the retired 0.3 TaskConfig, DAG manager, scheduler, cron, sensor, MySQL persistence, management CLI, DAG REST routes, and Web UI stacks.
-- Replaced the retired scheduler, database, and DAG-source configuration with
-  the 0.4 `SystemConfig` JSON contract.
-- Removed legacy DAG/task IDs and the DAG-specific Lua task context.
-- Replaced the Shell, Docker, Lua, Noop, and composite executor stack with a
-  generic Task executor registry. The shipped `command` adapter remains
-  sandboxed and has no direct-host fallback.
-- Unknown system configuration fields are rejected instead of being silently
-  ignored.
+### 破坏性变更
 
-### Added
-- Added versioned v1 storage envelopes for Plan, Checkpoint, Evidence, and Artifact metadata that require the explicit current format and fail closed on unversioned or unknown future formats.
-- Added an exclusive persistent-state directory lock, committed-versus-durable mutation results, and API durability status for Plan registration and Artifact upload/delete.
-- Added a reproducible Clang source-coverage workflow with a 90% production
-  source-line gate, scenario-driven coverage expansion, repository convention
-  checks, and normal/module/sanitizer validation.
-- Added controlled Runtime, Plan, Workflow, HTTP keep-alive/reconnect, and
-  checkpoint benchmarks with repeated samples, environment metadata, median,
-  p95, p99, standard deviation, coefficient of variation, and throughput.
-- Added bounded owner-shard HTTP/1.1 keep-alive pools, independent DNS,
-  connect, TLS-handshake, write, first-byte, and response-read timeouts, and
-  stage-specific transport errors that remain generically classifiable by the
-  Workflow Runtime.
-- Added an optional executor-neutral HTTP task adapter with strict JSON config,
-  exact server-owned origin allowlists, HTTPS verification, input-derived
-  headers and bodies, accepted-status policy, bounded responses, per-shard
-  concurrency, cancellation, timeout, and stable response outputs.
-- Added resolved-address egress policy with private/special-use denial and CIDR
-  exceptions, process-wide HTTP capacity, TLS minimum-version control,
-  additional CA trust, optional mTLS, and TLS-only API listeners.
-- Added active HTTP connection, idle-time, parser, and requests-per-connection
-  limits. Server shutdown closes and drains active connections.
-- Added fail-closed known-binary Command policy, trusted Minijail/BPF preflight,
-  private workdirs, stdout/stderr/line limits, and executor shutdown that
-  kills and reaps active process groups.
-- Added a server-owned Command program registry, exact name-to-path resolution
-  without PATH lookup, and a minimal inherited-environment allowlist that
-  rejects credential-like host variables.
-- Added OpenSpec coverage and real Command → HTTP → Command Workflow JSON tests
-  for TLS, retry, cancellation, timeout, response limits, UTF-8 validation,
-  status handling, and outbound-policy rejection.
-- Added explicit `plan_id` Run selection, Artifact upload/download/delete
-  routes, collection pagination, and bounded completed-Run/Evidence retention.
-- Added environment-backed Bearer authentication, parser and route request-body
-  limits, and a global concurrent-request ceiling for the HTTP control plane.
-- Added optional file-backed Run checkpoints, append-only Evidence, durable
-  Artifacts, completed-run recovery, and explicit infrastructure failure for
-  non-terminal Attempts found after restart.
-- Added server-owned `AdmissionPolicy` checks for executor allowlists and plan
-  budget ceilings. Command program and environment allowlists are enforced by
-  `CommandTaskExecutor` rather than the generic Workflow layer.
-- Added the generic `ITaskExecutor` and `ExecutorRegistry` boundary. The
-  compiler delegates executor config validation, while the runtime routes
-  start/cancel and enforces declared output ports.
-- Added pause/resume, delayed retries with bounded exponential backoff,
-  failure classification, per-attempt history, skip reasons, stop intent, and
-  explicit `continue_independent` / `fail_fast` policies.
-- Added the versioned WorkflowPlan, PlanCompiler, immutable ExecutionPlan, WorkflowRuntime, typed run values, artifacts, evidence, checkpoints, and workflow control-plane routes.
-- Added a pinned Google Minijail helper with user/PID/mount/network/IPC/UTS/cgroup namespaces, Landlock, seccomp, private tmpfs, resource limits, integration tests, and release packaging.
+- 产品从 0.3 的 DAG 调度器、MySQL 持久化、Web UI、WebSocket、cron、sensor、XCom 和多种宿主执行器收敛为单机 JSON Workflow Runtime；相关旧配置、API、CLI、模块、示例和兼容类型已删除。
+- Workflow Plan 与 System Configuration 只接受严格 JSON，未知字段和不支持的 schema version 会失败，不再静默忽略或回退旧格式。
+- Workflow Runtime 只认识 executor-neutral Task、编译后配置、typed inputs/outputs 和 `ExecutionFailure`；Command 与 HTTP 协议由各自 executor 拥有。
+- Run、Task、Attempt 使用独立状态机；取消、deadline 和 fail-fast 先进入 stopping 并等待活动 Attempt 完整终止，终态字段和 API 语义与 0.3 不兼容。
+- CLI 改为 `validate`、`run`、`serve` 和语义化 `api` 操作，删除旧 DAG 管理、`--wait`、trigger-only payload 和 retired management 命令。
 
-### Changed
-- System configuration now maps directly to `dagforge::config::SystemConfig`
-  JSON, with concrete executors grouped under `executors.command` and
-  `executors.http`; the legacy compatibility DTO and conversion layer were
-  removed.
-- Reduced the installed sandbox surface to `CommandSpec` and
-  `ICommandRunner`; Minijail policy, launch, and process-management declarations
-  are now private implementation headers, while single-use node schemas and
-  shard state live directly in their executor `.cpp` files.
-- Replaced the ambiguous executor/adapter layering with explicit ownership:
-  Workflow defines `ITaskExecutor`, concrete Command and HTTP Task executors
-  live under `executors`, and Minijail implements the lower
-  `sandbox::ICommandRunner` contract.
-- Task executors now own their lower execution resources and are quiesced
-  uniformly through `ExecutorRegistry`; Application no longer has
-  Command-specific ownership or shutdown branches.
-- Reorganized subsystem boundaries: common HTTP client/parser/router/server
-  code now lives under `dagforge/http`, while `app/api` contains only control
-  plane assembly and routes.
-- Split Workflow values, Plan IR, runtime snapshots, Evidence types, Plan JSON
-  loading, Artifact storage, Evidence storage, and Checkpoint storage into
-  focused components. Compatibility aggregate headers remain available, but
-  internal code uses precise includes.
-- Moved API route bodies and HTTP metric registry implementation out of
-  headers, and removed unused legacy Buffer, URL, MySQL formatter, BatchWriter,
-  and utility aggregate headers.
-- Updated Agent coding guidance to remove the retired ComputePool and MySQL
-  architecture and document current executor, HTTP, storage, and `detail/`
-  placement rules.
-- Removed the unused vendored Lua source distribution and its verification
-  metadata.
-- Removed the unused QueryParams helper and WebSocket stack; the optional API
-  now contains only the HTTP control plane used by the runtime.
-- Enum metadata and JSON serialization share Glaze `enumerate` definitions.
-- HTTP headers use Boost.Beast fields, preserving case-insensitive lookup and duplicate fields.
-- HTTP requests are serialized through Boost.Beast messages instead of manual
-  wire construction; unsupported inbound methods now return `405`.
-- Program, environment, executor, and private-network policy defaults are now
-  deny-by-default. Permissive settings are explicit development overrides.
-- Renamed the Command sandbox directory model from workspace to execution root
-  and per-Attempt workdir.
-- Shard hashes use `ankerl::unordered_dense` hashing.
-- Removed the direct Boost.Filesystem dependency; Boost.Charconv remains linked because Boost.URL uses it in the current system build.
-- Runtime benchmarks now target the shipped 0.4 runtime primitives instead of the retired Airflow-style scheduler stack.
+### 新增
 
-### Fixed
-- Atomic file replacement and deletion no longer collapse post-rename or post-unlink directory synchronization failure into an ordinary pre-commit error. Store caches remain consistent with visible disk state, Plan idempotency preserves deferred durability, Workflow Artifact publication rejects uncertain objects, and later same-directory synchronization can confirm earlier mutations.
-- Workflow state notifications no longer save full checkpoints implicitly. Checkpoints are persisted at initial, explicit node, retry-waiting, paused, stopping, resume, and terminal recovery boundaries, removing quadratic state-copy behavior from ordinary Task transitions without weakening restart semantics.
-- Persistent storage now enforces configured byte ceilings before allocation, rejects committed Evidence corruption while repairing only a syntactically incomplete final crash fragment, verifies Plan digests against content, and treats disk rather than a stale process cache as authoritative for Plan and Checkpoint reads.
-- Evidence retention now uses durable append with bounded batched compaction instead of copying and rewriting the entire retained ledger on every append after capacity is reached.
-- Artifact deletion now reports logical commit separately from deferred physical cleanup and deferred directory-entry durability, normalizes retry failures to `persistence_error`, and provides deterministic non-destructive reconciliation for orphan, malformed, and mismatched file pairs.
-- Application shutdown now quiesces Workflow Runtime, drains active HTTP and
-  Task coroutines through owner-shard barriers, and only then stops Runtime
-  threads. HTTP server socket closure is executor-affine, eliminating the
-  shutdown race and in-flight coroutine leaks found by TSAN and LSAN.
-- Executor completion callbacks are marshalled back to the awaiting runtime
-  executor and accepted exactly once, including synchronous and foreign-thread
-  executor completions.
-- Restarting an `Application` now rebuilds Workflow components quiesced during
-  shutdown, and `init()` reconciles changes to `workflow.enabled`.
-- Command environments are passed explicitly to the Minijail process, so
-  sanitized variables and `input_env` mappings reach sandboxed commands even
-  while the runtime uses Minijail static mode.
-- A Run can only succeed when every published Workflow output exists, and
-  scalar Workflow values remain JSON scalars in API responses.
-- DNS results are filtered before connect, command policy is enforced again at
-  the low-level process boundary, and output overflow terminates the sandbox
-  instead of continuing with silently truncated data.
+- 新增严格 Workflow Plan v1、Plan Compiler、immutable ExecutionPlan、ExecutorRegistry、WorkflowRuntime、typed workflow values、条件边、fan-out/fan-in、published outputs、重试、暂停、恢复、取消、idempotency 和 Repair Run。
+- 新增 Command executor，使用 server-owned program registry、最小环境、Minijail、namespace、Landlock、seccomp、resource limits、私有 Attempt workdir 和完整 process-group kill/reap。
+- 新增 HTTP executor，支持 origin/CIDR egress policy、TLS verification、custom CA、可选 mTLS、分阶段 timeout、取消、容量限制、bounded keep-alive、响应大小限制和稳定输出端口。
+- 新增可选文件持久化，包括 versioned Plan、Checkpoint、Evidence 和 Artifact envelope、原子替换、父目录同步、存储目录独占锁、恢复、reconciliation 和 retention。
+- 新增 HTTP 控制面和 CLI 客户端，覆盖 Plan、Run、output、Evidence、failure report、repair、Artifact、pause、resume、cancel、health、status 和 metrics。
+- 新增 release archive 重现性、依赖清单、Minijail revision、coverage、sanitizer、fuzz、module graph、foundation header、benchmark 和真实 Workflow 验证链。
+
+### 基础库
+
+- 基础层固定为 C++23，新增公共头严格独立编译、module smoke、依赖方向和禁止类型门禁。
+- 新增 table-driven static error domain，未知整数错误值安全返回稳定消息，不再进入未定义行为。
+- 新增详细整数与 JSON 解析结果、项目自有 enum metadata、typed ID validation、显式 trusted construction 和 serde 边界校验。
+- JSON 序列化失败现在必须传播，删除会把失败伪装成合法 `null` 的 `dump_json()` 路径。
+- Asio、Boost 和 errno 错误统一归一化为项目 `Result`，sleep、post、timer、HTTP 和进程边界不再把预期失败泄漏为异常。
+- metrics 支持 bucket 校验、chrono observation、弱一致 snapshot 文档和明确 overflow 语义；time API 明确区分 UTC、named zone、wall clock 与 steady deadline。
+- Logger 拆分为结构化 `LogRecord`、可注入 Sink、显式 overflow policy、drop counter、source location、flush 和 reconfigure 结果。
+- typed ID、domain tag 与 UUID 生成职责分离；线程局部 memory resource override 具有非空、LIFO 和创建线程契约，并明确禁止跨协程挂起点。
+
+### 修复
+
+- 修复 shutdown 顺序、跨 executor completion、外部线程回调、重复完成、socket 关闭亲和性和活动进程回收中的竞态与泄漏。
+- 修复 checkpoint 过度写入、Evidence 每次 append 全量重写、Plan/Checkpoint stale cache、Artifact 删除结果不真实和目录 durability 失败被吞掉的问题。
+- 修复 restart recovery、idempotency、published output、failure artifact、Plan digest、存储大小上限、损坏记录和 crash-tail repair 的边界行为。
+- 修复 HTTP DNS rebinding、防私网绕过、timeout 分类、response overflow、keep-alive shutdown、TLS policy 和 Command 环境传递问题。
 
 ## [0.3.0] - 2026-03-30
 
-### Changed
-- Rebuilt the core around C++20 modules and moved the local build/release flow to build2.
-- Refreshed packaging for the new modules-first release layout.
+### 变更
 
-### Improved
-- Expanded observability across runtime, scheduler, API, logging, WebSocket, and benchmark surfaces.
-- Refreshed the web UI dashboard with clearer log visibility and a smoother day-to-day workflow.
-- Improved hot-path performance and fixed several correctness and edge-case bugs.
-
-### Added
-- Broader benchmark coverage and updated benchmark artifacts for the 0.3.0 baseline.
-
-### Deployment & Artifacts
-- Refreshed the prebuilt Linux x86_64 tarball with the current binary, config, and web UI bundle.
+- 核心迁移到 C++ modules 和 build2，更新 Linux release 打包流程。
+- 扩展 Runtime、Scheduler、API、日志、WebSocket 和 benchmark 可观测性，并刷新 Web UI。
 
 ## [0.2.0] - 2026-03-18
 
-### Changed
-- **Configuration System Refactor**
-  - Reworked system and DAG configuration loading around the domain model instead of parallel adapter structs.
-  - Expanded instance-level configuration coverage for scheduler, API, DAG source, daemon, TLS, executor, and runtime options.
-  - Tightened CLI/config validation so invalid combinations fail earlier and with clearer diagnostics.
-- **Database & Persistence Refactor**
-  - Consolidated MySQL persistence paths and reduced duplicated query/error-handling code.
-  - Improved task/run state persistence behavior for retries, invalid commands, timeouts, and executor edge cases.
-  - Normalized task instance bookkeeping to avoid inconsistent attempt/state rows during recovery and retries.
+### 变更
 
-### Improved
-- **Performance**
-  - Reduced scheduler/executor overhead in the hot path through runtime and process-management cleanup.
-  - Added and expanded benchmark coverage for DAG engine, scheduler service, and Airflow-style workload comparisons.
-  - Current repo benchmark artifact for `scene1_linear_100x10` reports `1237 ms` total task lag and `1.237 ms/task` average lag.
+- 重构配置、MySQL 持久化、Scheduler 和 executor 生命周期，补充 timeout、invalid command、non-zero exit 和日志流式输出测试。
 
-### Fixed
-- **Correctness & Edge Cases**
-  - Fixed timeout handling so timed-out tasks fail cleanly instead of remaining effectively stuck behind retry flow.
-  - Fixed invalid command / non-zero shell exit handling and related task persistence state transitions.
-  - Fixed large-output logging so shell stdout/stderr are streamed line-by-line instead of collapsing into a few oversized log records.
-  - Fixed working-directory parsing/handling issues and cleaned up process lifecycle management shared by shell/sensor executors.
+## [0.1.0-beta]
 
-### Added
-- **Testing**
-  - Added targeted executor, persistence, validation, HTTP API, WebSocket, and end-to-end integration tests.
-  - Added regression coverage for invalid commands, timeout behavior, non-zero exits, log streaming, WebSocket delivery, and sensor execution paths.
-  - Expanded benchmark and verification coverage around scheduler throughput and Airflow-style scenarios.
+### 新增
 
-## [0.1.0-beta] - Initial Beta Release
-
-### Added
-- **Core Architecture:**
-  - High-performance DAG (Directed Acyclic Graph) workflow orchestrator built with C++23.
-  - Seastar-inspired sharded async runtime minimizing lock contention.
-- **Executors:**
-  - `shell`: Native subprocess execution.
-  - `docker`: Containerized task execution.
-  - `sensor`: Polling tasks for files, HTTP endpoints, or shell commands.
-- **Workflow Features:**
-  - XCom cross-task communication via template variables (`{{ds}}`, `{{xcom_pull(...)}}`).
-  - Branching DAGs via `is_branch = true` tasks.
-  - Complete trigger rules (`all_success`, `all_failed`, `one_success`, etc.).
-  - Configurable retries, timeouts, and soft-fails.
-- **Storage & State:**
-  - Asynchronous MySQL persistence using `Boost.Mysql`.
-  - Watermark-based crash recovery for orphaned tasks.
-- **CLI & APIs:**
-  - Full-featured CLI for service management, DAG triggering, and inspection.
-  - HTTP REST API for programmatic control.
-  - WebSocket API for real-time logs and task status events.
-- **Web UI:**
-  - Modern React 19 dashboard.
-  - Real-time DAG visualization via React Flow.
-  - Live log streaming and run history inspection.
-
-### Deployment & Artifacts
-- **Docker:** Official images available at `ghcr.io/<owner>/dagforge:0.1.0-beta`.
-- **Prebuilt Linux Tarball:** Self-contained archive with binary, config, and web-ui distribution.
-
-### Documentation
-- Complete `README.md` and `README_CN.md` with quickstart guides.
-- Detailed `USER_GUIDE.md` covering all features and troubleshooting.
-- Dedicated `API.md` for REST/WebSocket integrations.
+- 首个公开 beta，包含 sharded runtime、DAG 调度、Shell/Docker/Sensor executor、MySQL、CLI、REST API、WebSocket 和 React Web UI。

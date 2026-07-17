@@ -1,17 +1,23 @@
-# Contributing
+# 贡献指南
 
-## Development environment
+## 开发环境
 
-DAGForge uses C++23, build2, Boost, OpenSSL, GoogleTest, and a pinned Minijail revision. Start with `scripts/setup-build2.sh`, install Minijail through `scripts/install-minijail.sh`, and use the repository scripts rather than constructing an independent build command.
+DAGForge 使用 C++23、build2、Boost、OpenSSL、GoogleTest 和固定 revision 的 Minijail。使用 `bash scripts/setup-build2.sh` 建立构建环境，使用 `bash scripts/install-minijail.sh` 安装 sandbox helper，并通过仓库脚本构建和测试，不自行拼接另一套编译命令。
 
-## Required checks
+## 开始工作
 
-Run `scripts/test.sh all` for functional verification, `scripts/test-runtime-audit.sh` for ASAN/TSAN/UBSAN, `scripts/test-coverage.sh` for the 90% production line gate, `FUZZ_RUNS=10000 scripts/run-glaze-fuzz.sh` for parser fuzzing, and `scripts/verify-vendored-deps.sh` for pinned dependency integrity. The Docker `test`, `audit`, and `release-verify` targets are the CI and release equivalents.
+先阅读 `AGENTS.md`、与任务相关的 `docs/agents/*.md`、`CONTEXT.md` 和 ADR。运行 `git status --short` 确认本地状态；检出区已有未提交改动时使用独立 worktree，不覆盖、不 reset、不顺手提交无关文件。
 
-## Change discipline
+## 格式与检查
 
-Keep public contracts executor-neutral, preserve owner-shard runtime rules, treat persistent storage errors as explicit `Result` failures, and add a regression test for every corrected failure mode. Do not mix unrelated formatting or generated-file churn into a functional change. Markdown prose should use one paragraph or list item per physical line rather than manual hard wrapping.
+第一方 C++ 使用根目录 `.clang-format`。运行 `bash scripts/format.sh` 格式化相对 `HEAD` 新增或修改的文件，运行 `bash scripts/format.sh --check` 做检查。不要格式化 `third_party/`、生成物或与当前任务无关的旧文件。
 
-## Pull requests
+功能修改至少运行 `bash scripts/test.sh quick`、`python3 scripts/check-foundation-contracts.py --compiler "${CXX:-g++}"`、`bash scripts/check-agent-conventions.sh`、`bash scripts/check-module-graph.sh`、`python3 scripts/check-test-layout.py` 和 `git diff --check`。Runtime、并发、存储、HTTP、TLS、sandbox 或 release 变化还应运行 `bash scripts/test.sh all`、`bash scripts/test-runtime-audit.sh`、`bash scripts/test-coverage.sh`、fuzz 或 release verification 中与风险对应的部分。
 
-Describe the user-visible contract, failure model, compatibility impact, and evidence from tests or benchmarks. Call out changes to configuration, persistence formats, API response shapes, sandbox policy, release contents, or third-party revisions. Security-sensitive changes should follow `SECURITY.md` and avoid public exploit details before remediation.
+## 变更纪律
+
+保持 executor-neutral Workflow contract、owner-shard 所有权、显式 `Result` 失败、严格 JSON、版本化持久化和 quiesce-before-teardown。每个 corrected failure mode 添加回归测试；删除被替代的代码、文档和生成物；不要把 `.scratch/`、本地审计稿、benchmark 输出或 IDE 配置提交到 Git。
+
+## 提交与评审
+
+使用 Conventional Commits。提交说明应包含用户可见 contract、失败模型、兼容影响和验证证据，并明确配置、持久化格式、API response、sandbox policy、release 内容或第三方 revision 的变化。Markdown 自然段和列表项保持一个物理行，不按列宽手动换行。

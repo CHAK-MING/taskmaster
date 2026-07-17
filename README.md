@@ -86,7 +86,7 @@ The compiler guarantees the graph is correct, the runtime owns scheduling and li
 
 ## Learn more
 
-[User Guide](docs/USER_GUIDE.md) · [API Reference](docs/API.md) · [North-Star Workflow](docs/NORTH_STAR_WORKFLOW.md) · [0.4 Status](docs/0.4_DEVELOPMENT_STATUS.md) · [State Machine ADR](docs/adr/0001-run-task-attempt-state-machine.md)
+[User Guide](docs/USER_GUIDE.md) · [API Reference](docs/API.md) · [Documentation Index](docs/README.md) · [State Machine ADR](docs/adr/0001-run-task-attempt-state-machine.md) · [Foundation ADR](docs/adr/0002-cxx23-foundation-contracts.md)
 
 ## Developers
 

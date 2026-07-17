@@ -1,30 +1,12 @@
-# Issue tracker: Local Markdown
+# 本地任务与 Spec
 
-Issues and specs (you may know a spec as a PRD) for this repo live as markdown files in `.scratch/`.
+复杂任务可以在 `.scratch/<effort>/` 保存本地 spec、调查记录和切片清单，用于跨会话保持上下文；该目录被 Git 忽略，任何内容都不得进入提交、release archive 或长期架构文档。
 
-## Conventions
+## 推荐结构
 
-- One feature per directory: `.scratch/<feature-slug>/`
-- The spec is `.scratch/<feature-slug>/spec.md`
-- Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01` — never a single combined tickets file
-- Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
-- Comments and conversation history append to the bottom of the file under a `## Comments` heading
+- `.scratch/<effort>/spec.md`：目标、非目标、约束、兼容影响和完成条件。
+- `.scratch/<effort>/map.md`：当前结论、依赖顺序、风险和下一切片。
+- `.scratch/<effort>/issues/NN-<slug>.md`：一个文件只描述一个可验证切片，记录状态、阻塞项和验证命令。
+- `.scratch/<effort>/reviews/`：临时 Standards/Spec review；已解决的信息应进入代码、测试、`CONTEXT.md` 或 ADR，过程稿随后删除。
 
-## When a skill says "publish to the issue tracker"
-
-Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
-
-## When a skill says "fetch the relevant ticket"
-
-Read the file at the referenced path. The user will normally pass the path or the issue number directly.
-
-## Wayfinding operations
-
-Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
-
-- **Map**: `.scratch/<effort>/map.md` — the Notes / Decisions-so-far / Fog body.
-- **Child ticket**: `.scratch/<effort>/issues/NN-<slug>.md`, numbered from `01`, with the question in the body. A `Type:` line records the ticket type (`research`/`prototype`/`grilling`/`task`); a `Status:` line records `claimed`/`resolved`.
-- **Blocking**: a `Blocked by: NN, NN` line near the top. A ticket is unblocked when every file it lists is `resolved`.
-- **Frontier**: scan `.scratch/<effort>/issues/` for files that are open, unblocked, and unclaimed; first by number wins.
-- **Claim**: set `Status: claimed` and save before any work.
-- **Resolve**: append the answer under an `## Answer` heading, set `Status: resolved`, then append a context pointer (gist + link) to the map's Decisions-so-far in `map.md`.
+任务完成后删除对应 `.scratch/<effort>/`。需要长期保留的用户说明进入 `docs/USER_GUIDE.md` 或 `docs/API.md`，长期工程规则进入 `AGENTS.md` 与 `docs/agents/`，跨模块决策进入 `docs/adr/`，版本变化进入 `CHANGELOG.md`。

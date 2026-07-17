@@ -731,8 +731,7 @@ branches remain reusable.
 
 The storage model is single-process and file-backed. In persistent mode, Plan and Checkpoint reads treat disk as authoritative and fail closed on managed-path corruption instead of returning a stale in-memory cache entry. Evidence remains an audit log rather than a replay database, and an external executor operation cannot be reattached across process loss.
 
-The target multi-executor acceptance graph is recorded in
-[`NORTH_STAR_WORKFLOW.md`](NORTH_STAR_WORKFLOW.md).
+The runtime ownership and lifecycle contracts are recorded in [ADR 0001](adr/0001-run-task-attempt-state-machine.md) and [ADR 0002](adr/0002-cxx23-foundation-contracts.md).
 
 ## 7. Observability
 

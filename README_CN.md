@@ -86,7 +86,7 @@ flowchart LR
 
 ## 继续了解
 
-[用户指南](docs/USER_GUIDE.md) · [API 参考](docs/API.md) · [North-Star 场景](docs/NORTH_STAR_WORKFLOW.md) · [0.4 状态](docs/0.4_DEVELOPMENT_STATUS.md) · [状态机 ADR](docs/adr/0001-run-task-attempt-state-machine.md)
+[用户指南](docs/USER_GUIDE.md) · [API 参考](docs/API.md) · [文档索引](docs/README.md) · [状态机 ADR](docs/adr/0001-run-task-attempt-state-machine.md) · [基础层 ADR](docs/adr/0002-cxx23-foundation-contracts.md)
 
 ## 开发者
 

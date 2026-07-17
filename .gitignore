@@ -33,15 +33,20 @@
 # Local runtime data.
 *.db
 /workspaces/
+/executions/
 
 # Python caches.
 __pycache__/
 /.ruff_cache/
 
+# Local coverage and profiling output.
+*.profraw
+*.profdata
+
 # Generated benchmark results.
 /bench_results/
 
-docs/ai/*
-AGENTS.md
+# Agent scratch work is local-only. Durable decisions belong in docs/adr/.
+/.scratch/
 
 openspec/
