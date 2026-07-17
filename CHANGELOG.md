@@ -17,7 +17,7 @@ DAGForge 的重要变化记录在本文件中。未发布内容只描述当前�
 - 新增严格 Workflow Plan v1、Plan Compiler、immutable ExecutionPlan、ExecutorRegistry、WorkflowRuntime、typed workflow values、条件边、fan-out/fan-in、published outputs、重试、暂停、恢复、取消、idempotency 和 Repair Run。
 - 新增 Command executor，使用 server-owned program registry、最小环境、Minijail、namespace、Landlock、seccomp、resource limits、私有 Attempt workdir 和完整 process-group kill/reap。
 - 新增 HTTP executor，支持 origin/CIDR egress policy、TLS verification、custom CA、可选 mTLS、分阶段 timeout、取消、容量限制、bounded keep-alive、响应大小限制和稳定输出端口。
-- 新增可选文件持久化，包括 versioned Plan、Checkpoint、Evidence 和 Artifact envelope、原子替换、父目录同步、存储目录独占锁、恢复、reconciliation 和 retention。
+- 新增可选文件持久化，包括 versioned Plan、Checkpoint、Evidence 和 Artifact envelope、原子替换、父目录同步、存储目录独占锁、恢复、reconciliation、retention，以及随 release archive 交付的备份恢复 runbook。
 - 新增 HTTP 控制面和 CLI 客户端，覆盖 Plan、Run、output、Evidence、failure report、repair、Artifact、pause、resume、cancel、health、status 和 metrics。
 - 新增 release archive 重现性、依赖清单、Minijail revision、coverage、sanitizer、fuzz、module graph、foundation header、benchmark 和真实 Workflow 验证链。
 

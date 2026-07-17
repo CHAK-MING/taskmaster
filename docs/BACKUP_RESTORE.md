@@ -1,26 +1,26 @@
-# Persistent State Backup and Restore
+# 持久化状态备份与恢复
 
-## Scope
+## 适用范围
 
-DAGForge file storage is a single-writer state directory containing the Plan catalog, Run checkpoints, Evidence log, Artifact data and metadata, and `.dagforge.lock`. A backup is valid only when it captures the complete directory at one quiescent point. Do not combine subdirectories or individual files from different backups.
+DAGForge 的文件存储是单写者状态目录，包含 Plan catalog、Run checkpoint、Evidence 日志、Artifact 数据与元数据以及 `.dagforge.lock`。有效备份必须在同一个静止时间点完整捕获整个目录，不得把不同备份中的子目录或单个文件拼接到一起。
 
-The current pre-release reader accepts only explicit version-1 storage envelopes. Unversioned development state and unsupported future versions fail closed. Keep the matching DAGForge release archive and configuration with every backup.
+当前预发布版本只接受显式 version 1 存储 envelope。无版本的开发期状态和不支持的未来版本都会 fail closed。每份备份必须同时保存创建它的 DAGForge release archive 和 System Configuration。
 
-## Stop and verify ownership
+## 停止服务并确认所有权
 
-Stop the DAGForge process cleanly and wait for it to exit. Then verify that the state lock is available before copying. Replace `/var/lib/dagforge/state` with the configured `storage.directory`.
+先正常停止 DAGForge 并等待进程退出，再确认状态目录锁可以获取。以下示例中的 `/var/lib/dagforge/state` 应替换为 `storage.directory` 的实际值。
 
 ```bash
 state=/var/lib/dagforge/state
 exec 9<>"$state/.dagforge.lock"
-flock -n 9 || { echo "DAGForge still owns the state directory" >&2; exit 1; }
+flock -n 9 || { echo "DAGForge 仍持有状态目录" >&2; exit 1; }
 ```
 
-Do not copy a live state directory. The advisory lock prevents a second DAGForge Application from opening the directory, but ordinary backup tools do not automatically participate in that lock.
+不得直接复制正在使用的状态目录。DAGForge 的 advisory lock 可以阻止另一个 Application 打开同一目录，但普通备份工具不会自动参与该锁协议。
 
-## Create a backup
+## 创建备份
 
-Preserve the entire directory tree, permissions, ownership, sparse files, and timestamps. The example creates a deterministic compressed archive next to a configuration copy and checksum.
+备份必须保留完整目录树、权限、所有权、稀疏文件和时间戳。以下示例创建压缩归档、配置副本和校验和。
 
 ```bash
 state=/var/lib/dagforge/state
@@ -32,11 +32,11 @@ install -m 0600 /etc/dagforge/system_config.json "$backup/system_config-$stamp.j
 sha256sum "$backup/state-$stamp.tar.gz" "$backup/system_config-$stamp.json" > "$backup/sha256sums-$stamp.txt"
 ```
 
-Record the DAGForge release version, Minijail revision, host architecture, filesystem type, and backup command output with the archive. Store backups outside the state filesystem and apply the same confidentiality controls as the Workflow inputs and outputs they contain.
+归档旁应记录 DAGForge release version、Minijail revision、主机架构、文件系统类型和备份命令输出。备份必须存放在状态文件系统之外，并使用与 Workflow 输入和输出相同的保密控制。
 
-## Validate a backup
+## 验证备份
 
-Verify checksums before extraction. Extract into an isolated staging directory, require one expected state root, reject symlinks or group/world-writable paths, and inspect the envelope files before using the copy for a recovery drill.
+解压前先验证 checksum。归档应解压到隔离的 staging 目录，只允许一个预期状态根目录，不得包含 symlink 或 group/world writable 路径。
 
 ```bash
 backup=/var/backups/dagforge
@@ -45,15 +45,15 @@ stage=$(mktemp -d)
 cd "$backup"
 sha256sum -c "sha256sums-$stamp.txt"
 tar --no-same-owner --no-overwrite-dir -xzf "state-$stamp.tar.gz" -C "$stage"
-find "$stage" -type l -print -quit | grep -q . && { echo "backup contains a symlink" >&2; exit 1; }
-find "$stage" -perm /022 -print -quit | grep -q . && { echo "backup contains group/world-writable state" >&2; exit 1; }
+find "$stage" -type l -print -quit | grep -q . && { echo "备份包含符号链接" >&2; exit 1; }
+find "$stage" -perm /022 -print -quit | grep -q . && { echo "备份包含组或全局可写状态" >&2; exit 1; }
 ```
 
-For a full recovery drill, use a copy of the extracted state, configure API listeners on isolated ports, start the exact DAGForge release that created the backup, confirm startup recovery and Artifact reconciliation, exercise read-only Plan/Run/Artifact queries, then discard the drill copy. Startup may repair one incomplete final Evidence fragment or compact retained Evidence, so never perform a validation drill against the only backup copy.
+完整恢复演练应使用解压状态的副本，在隔离端口启动创建该备份的同一 DAGForge release，确认启动恢复与 Artifact reconciliation 成功，并执行只读 Plan、Run 和 Artifact 查询。启动过程可能修复 Evidence 最后一段不完整记录或执行 retention compaction，因此不得直接拿唯一备份副本做演练。
 
-## Restore
+## 恢复
 
-Stop DAGForge, move the current state directory aside as one rollback unit, extract the backup into an empty parent directory, and restore the service owner and restrictive permissions. The persistent lock file may contain a stale PID string; it is safe to retain because ownership is determined by the live advisory lock and the PID is overwritten on acquisition.
+停止 DAGForge，把当前状态目录整体移动为一个 rollback unit，在空父目录中解压备份，然后恢复服务账户所有权和限制性权限。`.dagforge.lock` 中可能保留旧 PID 文本，这不影响恢复，因为真正的所有权由实时 advisory lock 决定，成功获取锁后 PID 会被覆盖。
 
 ```bash
 state=/var/lib/dagforge/state
@@ -68,12 +68,12 @@ chmod 0700 "$state"
 chmod 0600 "$state/.dagforge.lock"
 ```
 
-Start DAGForge with the matching configuration. Startup must acquire `.dagforge.lock`, validate every managed catalog entry, open Evidence, reconcile Artifact pairs, restore Plans before Checkpoints, and fail closed on corruption, unsupported storage versions, unsafe permissions, or oversized files. Treat any startup error as a restore failure; do not delete the rollback directory until Workflow and Artifact checks pass.
+使用匹配的配置启动 DAGForge。启动必须成功获取 `.dagforge.lock`、验证所有 managed catalog entry、打开 Evidence、reconcile Artifact pair、先恢复 Plan 再恢复 Checkpoint，并在损坏、未知存储版本、不安全权限或超限文件上 fail closed。任何启动错误都应视为恢复失败，在 Workflow 和 Artifact 检查通过前不得删除 rollback 目录。
 
-## Rollback
+## 回滚
 
-Stop the failed restored instance, move the restored directory aside, and rename `state.before-restore` back to the configured path. Never merge a failed restore with the previous state. If both copies must be retained for investigation, keep them read-only and outside the active path.
+停止恢复失败的实例，把恢复后的目录移走，再将 `state.before-restore` 重命名回配置路径。不得把失败恢复目录与旧状态合并；需要保留两份状态调查时，应将它们设置为只读并移出 active path。
 
-## Retention and testing
+## 保留与演练
 
-Maintain multiple dated backups and test restoration regularly on an isolated host. A successful archive command is not evidence of recoverability; the acceptance criterion is a clean startup with the matching binary, expected Plan and Run inventory, readable retained Artifacts, and no unexplained reconciliation debt.
+应保留多个带日期的备份并定期在隔离主机执行恢复演练。归档命令成功不代表可恢复；验收标准是匹配二进制能够干净启动、Plan 与 Run inventory 符合预期、保留的 Artifact 可读取且没有无法解释的 reconciliation debt。
