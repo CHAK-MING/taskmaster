@@ -130,6 +130,10 @@ run_integration() {
 run_e2e() {
   printf '\n==> real workflow scenarios\n'
   python3 "${repo_root}/scripts/test-real-workflows.py" --binary "${bin_dir}/dagforge"
+  printf '\n==> enterprise order fulfillment scenario\n'
+  python3 "${repo_root}/scripts/demo-order-fulfillment.py" \
+    --binary "${bin_dir}/dagforge" \
+    --benchmark-runs 1
 }
 
 case "$mode" in

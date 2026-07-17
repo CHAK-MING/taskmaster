@@ -7,6 +7,7 @@
 - [备份与恢复](BACKUP_RESTORE.md)：持久化状态目录的停机备份、校验、恢复、回滚和演练流程。
 - [基准规范](BENCH_REPORT.md)：当前 benchmark target、执行方法和报告规则。
 - [clangd 配置](CLANGD_SETUP.md)：build2、C++ modules 和 VS Code/clangd 环境。
+- [企业订单履约 DAG 演示](ORDER_FULFILLMENT_DEMO.md)：本地模拟企业服务，验证中间输出、并行速度、业务补偿、系统失败和 Repair Run。
 
 ## 工程文档
 

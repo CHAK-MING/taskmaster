@@ -1,0 +1,253 @@
+{
+  "workflow_id": "enterprise-order-fulfillment",
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "validate_order",
+      "name": "校验订单",
+      "executor": "http",
+      "outputs": ["status", "result"],
+      "timeout_sec": 5,
+      "checkpoint": true,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__TARGET_PORT__/validate-order",
+        "headers": [{"name": "Content-Type", "value": "application/json"}],
+        "input_headers": [],
+        "body": "__ORDER_PAYLOAD__",
+        "accepted_statuses": [200]
+      }
+    },
+    {
+      "id": "calculate_price",
+      "name": "计算价格",
+      "executor": "http",
+      "inputs": [{"input": "order", "node": "validate_order", "port": "result"}],
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__TARGET_PORT__/calculate-price",
+        "headers": [],
+        "input_headers": [],
+        "body_input": "order",
+        "accepted_statuses": [200]
+      }
+    },
+    {
+      "id": "fraud_check",
+      "name": "欺诈检查",
+      "executor": "http",
+      "inputs": [{"input": "order", "node": "validate_order", "port": "result"}],
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__TARGET_PORT__/fraud-check",
+        "headers": [],
+        "input_headers": [],
+        "body_input": "order",
+        "accepted_statuses": [200]
+      }
+    },
+    {
+      "id": "inventory_preview",
+      "name": "库存预占检查",
+      "executor": "http",
+      "inputs": [{"input": "order", "node": "validate_order", "port": "result"}],
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__TARGET_PORT__/inventory-preview",
+        "headers": [],
+        "input_headers": [],
+        "body_input": "order",
+        "accepted_statuses": [200]
+      }
+    },
+    {
+      "id": "shipping_quote",
+      "name": "物流报价",
+      "executor": "http",
+      "inputs": [{"input": "order", "node": "validate_order", "port": "result"}],
+      "outputs": ["result"],
+      "max_retries": 1,
+      "retry_initial_delay_ms": 10,
+      "retry_max_delay_ms": 20,
+      "timeout_sec": 5,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__TARGET_PORT__/shipping-quote?mode=__SHIPPING_MODE__",
+        "headers": [],
+        "input_headers": [],
+        "body_input": "order",
+        "accepted_statuses": [200]
+      }
+    },
+    {
+      "id": "make_decision",
+      "name": "履约决策",
+      "executor": "http",
+      "inputs": [
+        {"input": "price", "node": "calculate_price", "port": "result"},
+        {"input": "fraud", "node": "fraud_check", "port": "result"},
+        {"input": "inventory", "node": "inventory_preview", "port": "result"},
+        {"input": "shipping", "node": "shipping_quote", "port": "result"}
+      ],
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "checkpoint": true,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__TARGET_PORT__/make-decision",
+        "headers": [],
+        "input_headers": [
+          {"input": "fraud", "header": "X-Fraud-Result"},
+          {"input": "inventory", "header": "X-Inventory-Result"},
+          {"input": "shipping", "header": "X-Shipping-Result"}
+        ],
+        "body_input": "price",
+        "accepted_statuses": [200]
+      }
+    },
+    {
+      "id": "authorize_payment",
+      "name": "支付授权",
+      "executor": "http",
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__TARGET_PORT__/authorize-payment",
+        "headers": [],
+        "input_headers": [],
+        "body": "__ORDER_ID__",
+        "accepted_statuses": [200]
+      }
+    },
+    {
+      "id": "reserve_inventory",
+      "name": "库存预占",
+      "executor": "http",
+      "inputs": [{"input": "payment", "node": "authorize_payment", "port": "result"}],
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__TARGET_PORT__/reserve-inventory?mode=__RESERVE_MODE__",
+        "headers": [],
+        "input_headers": [],
+        "body_input": "payment",
+        "accepted_statuses": [200]
+      }
+    },
+    {
+      "id": "create_shipment",
+      "name": "创建发货单",
+      "executor": "http",
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__TARGET_PORT__/create-shipment",
+        "headers": [],
+        "input_headers": [],
+        "body": "__ORDER_ID__",
+        "accepted_statuses": [200]
+      }
+    },
+    {
+      "id": "confirm_order",
+      "name": "确认订单",
+      "executor": "http",
+      "inputs": [{"input": "shipment", "node": "create_shipment", "port": "result"}],
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__TARGET_PORT__/confirm-order",
+        "headers": [],
+        "input_headers": [],
+        "body_input": "shipment",
+        "accepted_statuses": [200]
+      }
+    },
+    {
+      "id": "build_audit_package",
+      "name": "生成履约审计包",
+      "executor": "http",
+      "inputs": [{"input": "confirmation", "node": "confirm_order", "port": "result"}],
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__TARGET_PORT__/audit-package",
+        "headers": [],
+        "input_headers": [],
+        "body_input": "confirmation",
+        "accepted_statuses": [200]
+      }
+    },
+    {
+      "id": "void_payment",
+      "name": "撤销支付授权",
+      "executor": "http",
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__TARGET_PORT__/void-payment",
+        "headers": [],
+        "input_headers": [],
+        "body": "__ORDER_ID__",
+        "accepted_statuses": [200]
+      }
+    },
+    {
+      "id": "compensate_order",
+      "name": "完成订单补偿",
+      "executor": "http",
+      "inputs": [{"input": "voided_payment", "node": "void_payment", "port": "result"}],
+      "outputs": ["result"],
+      "timeout_sec": 5,
+      "config": {
+        "method": "POST",
+        "url": "http://127.0.0.1:__TARGET_PORT__/compensate-order",
+        "headers": [],
+        "input_headers": [],
+        "body_input": "voided_payment",
+        "accepted_statuses": [200]
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source_node": "make_decision",
+      "source_port": "result",
+      "target": "authorize_payment",
+      "condition": {"kind": "string_equals", "expected_string": "continue"}
+    },
+    {
+      "source_node": "reserve_inventory",
+      "source_port": "result",
+      "target": "create_shipment",
+      "condition": {"kind": "string_equals", "expected_string": "reserved"}
+    },
+    {
+      "source_node": "reserve_inventory",
+      "source_port": "result",
+      "target": "void_payment",
+      "condition": {"kind": "string_equals", "expected_string": "reservation_failed"}
+    }
+  ],
+  "policy": {
+    "failure_policy": "continue_independent",
+    "budget": {
+      "max_nodes": 32,
+      "max_parallel_nodes": 8,
+      "max_total_output_bytes": 8388608,
+      "max_run_duration_sec": 60
+    }
+  }
+}
