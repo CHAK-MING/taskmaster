@@ -62,6 +62,9 @@ for required in \
   LICENSE \
   README.md \
   README_CN.md \
+  docs/API.md \
+  docs/USER_GUIDE.md \
+  docs/BACKUP_RESTORE.md \
   BUILD-INFO \
   RUNTIME-DEPENDENCIES \
   RELEASE; do

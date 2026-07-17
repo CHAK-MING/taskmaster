@@ -36,6 +36,9 @@ for required in \
   LICENSE \
   README.md \
   README_CN.md \
+  docs/API.md \
+  docs/USER_GUIDE.md \
+  docs/BACKUP_RESTORE.md \
   BUILD-INFO \
   RUNTIME-DEPENDENCIES; do
   if [[ ! -e "${bundle_root}/${required}" ]]; then

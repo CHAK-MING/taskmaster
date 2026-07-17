@@ -64,6 +64,7 @@ COPY src ./src
 COPY tests ./tests
 COPY third_party ./third_party
 COPY dags ./dags
+COPY docs ./docs
 COPY system_config.json ./system_config.json
 COPY docker_config.json ./docker_config.json
 
@@ -82,7 +83,7 @@ RUN jobs="${BUILD_JOBS}" \
        bash scripts/build.sh
 
 RUN set -eux; \
-    install -d /release/bin /release/dags; \
+    install -d /release/bin /release/dags /release/docs; \
     install -m 0755 \
       "${BUILD2_CONFIG_DIR}/dagforge/bin/dagforge" \
       /release/bin/dagforge; \
@@ -90,6 +91,9 @@ RUN set -eux; \
     install -m 0644 docker_config.json /release/system_config.json; \
     install -m 0644 README.md /release/README.md; \
     install -m 0644 README_CN.md /release/README_CN.md; \
+    install -m 0644 docs/API.md /release/docs/API.md; \
+    install -m 0644 docs/USER_GUIDE.md /release/docs/USER_GUIDE.md; \
+    install -m 0644 docs/BACKUP_RESTORE.md /release/docs/BACKUP_RESTORE.md; \
     install -m 0644 LICENSE /release/LICENSE; \
     { \
       printf 'base_image=ubuntu:%s\n' "${UBUNTU_VERSION}"; \
