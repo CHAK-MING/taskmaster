@@ -67,6 +67,68 @@ is_first_party_cpp() {
   esac
 }
 
+format_changed_lines() (
+  declare -a tracked_files=()
+  declare -a untracked_files=()
+
+  while IFS= read -r file; do
+    [[ -f "$file" ]] || continue
+    is_first_party_cpp "$file" || continue
+    tracked_files+=("$file")
+  done < <(git diff --name-only --diff-filter=ACMR HEAD | sort -u)
+
+  while IFS= read -r file; do
+    [[ -f "$file" ]] || continue
+    is_first_party_cpp "$file" || continue
+    untracked_files+=("$file")
+  done < <(git ls-files --others --exclude-standard | sort -u)
+
+  if ((${#tracked_files[@]} == 0 && ${#untracked_files[@]} == 0)); then
+    echo "no first-party C++ changes selected"
+    return 0
+  fi
+
+  local patch_file
+  patch_file=$(mktemp)
+  trap 'rm -f "$patch_file"' EXIT
+
+  if ((${#tracked_files[@]} > 0)); then
+    git clang-format \
+      --binary "$clang_format" \
+      --diff \
+      HEAD \
+      -- "${tracked_files[@]}" >"$patch_file"
+  fi
+
+  if [[ "$mode" == check ]]; then
+    if grep -q '^diff --git ' "$patch_file"; then
+      cat "$patch_file" >&2
+      echo "changed C++ lines are not clang-formatted" >&2
+      return 1
+    fi
+    if ((${#untracked_files[@]} > 0)); then
+      "$clang_format" --style=file --dry-run --Werror "${untracked_files[@]}"
+    fi
+    printf 'clang-format changed-line check passed (%d tracked, %d untracked files)\n' \
+      "${#tracked_files[@]}" "${#untracked_files[@]}"
+    return 0
+  fi
+
+  if grep -q '^diff --git ' "$patch_file"; then
+    git apply "$patch_file"
+  fi
+  if ((${#untracked_files[@]} > 0)); then
+    "$clang_format" --style=file -i "${untracked_files[@]}"
+  fi
+  printf 'clang-format applied to changed lines (%d tracked, %d untracked files)\n' \
+    "${#tracked_files[@]}" "${#untracked_files[@]}"
+)
+
+if ((${#requested_paths[@]} == 0)) && [[ "$scope" == changed ]]; then
+  format_changed_lines
+  exit 0
+fi
+
 declare -a candidates=()
 if ((${#requested_paths[@]} > 0)); then
   for path in "${requested_paths[@]}"; do

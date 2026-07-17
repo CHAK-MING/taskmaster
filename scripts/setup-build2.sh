@@ -86,6 +86,20 @@ current_cfg_path=$(
     || true
 )
 
+if [[ -n "$current_cfg_path" ]]; then
+  src_root_file="${current_cfg_path%/}/dagforge/build/bootstrap/src-root.build"
+  configured_src_root=$(
+    awk '$1 == "src_root" && $2 == "=" {print $3; exit}' "$src_root_file" \
+      2>/dev/null || true
+  )
+  if [[ -n "$configured_src_root" ]] &&
+     [[ "$(realpath -m "$configured_src_root")" != "$(realpath -m "$repo_root")" ]]; then
+    printf 'recreating %s: source root moved from %s to %s\n' \
+      "$config_alias" "$configured_src_root" "$repo_root"
+    recreate_config=1
+  fi
+fi
+
 if [[ -n "$include_override" && -n "$current_cfg_path" ]] &&
    ! grep -q -- '-nostdinc' "${current_cfg_path%/}/build/config.build" 2>/dev/null; then
   recreate_config=1
