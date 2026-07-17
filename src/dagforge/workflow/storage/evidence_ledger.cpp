@@ -117,8 +117,10 @@ auto EvidenceLedger::append_line(std::string_view line) -> Result<WriteResult> {
     return fail(appended.error());
   }
   file_bytes_ += line.size();
+  durability_deferred_ =
+      durability_deferred_ || !appended->durability_confirmed();
   return ok(WriteResult{
-      .durability_deferred = !appended->durability_confirmed(),
+      .durability_deferred = durability_deferred_,
   });
 }
 
@@ -148,8 +150,9 @@ auto EvidenceLedger::rewrite_file(const std::vector<EvidenceRecord> &records)
     }
     file_bytes_ = contents.size();
     stale_records_ = 0;
+    durability_deferred_ = !rewritten->durability_confirmed();
     return ok(WriteResult{
-        .durability_deferred = !rewritten->durability_confirmed(),
+        .durability_deferred = durability_deferred_,
     });
   } catch (const std::bad_alloc &) {
     return fail(Error::ResourceExhausted);

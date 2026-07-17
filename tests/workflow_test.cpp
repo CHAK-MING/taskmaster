@@ -634,6 +634,38 @@ public:
   }
 };
 
+class DeferredArtifactStore final : public IArtifactStore {
+public:
+  [[nodiscard]] auto put(std::span<const std::byte> data,
+                         std::string media_type)
+      -> Result<ArtifactPutResult> override {
+    ArtifactRef ref{
+        .artifact_id = ArtifactId{"deferred-artifact"},
+        .media_type = std::move(media_type),
+        .size_bytes = static_cast<std::uint64_t>(data.size()),
+        .digest = "deferred-digest",
+    };
+    return ok(ArtifactPutResult{std::move(ref), true});
+  }
+
+  [[nodiscard]] auto get(const ArtifactId &) const
+      -> Result<ArtifactBlob> override {
+    return fail(Error::NotFound);
+  }
+
+  auto erase(const ArtifactId &) -> Result<ArtifactEraseResult> override {
+    ++erase_count_;
+    return ok(ArtifactEraseResult{.logical_deleted = true});
+  }
+
+  [[nodiscard]] auto erase_count() const noexcept -> std::size_t {
+    return erase_count_;
+  }
+
+private:
+  std::size_t erase_count_{0};
+};
+
 class ScriptedArtifactStore final : public IArtifactStore {
 public:
   [[nodiscard]] auto put(std::span<const std::byte> data,
@@ -4156,6 +4188,20 @@ TEST(WorkflowStorageTest, StorageCodecRejectsInvalidModels) {
   EXPECT_EQ(workflow::storage_detail::decode_checkpoint("{}")
                 .error(),
             make_error_code(Error::ParseError));
+  EXPECT_FALSE(workflow::storage_detail::decode_checkpoint("{").has_value());
+  EXPECT_EQ(workflow::storage_detail::decode_checkpoint(
+                R"({"format":"dagforge.checkpoint","version":1})")
+                .error(),
+            make_error_code(Error::ParseError));
+
+  StoredPlan invalid_plan;
+  EXPECT_EQ(workflow::storage_detail::encode_stored_plan(invalid_plan).error(),
+            make_error_code(Error::InvalidArgument));
+  invalid_plan.plan_id = WorkflowPlanId{"invalid-plan"};
+  invalid_plan.digest = "digest";
+  invalid_plan.plan.workflow_id = WorkflowId{"invalid-plan"};
+  EXPECT_EQ(workflow::storage_detail::encode_stored_plan(invalid_plan).error(),
+            make_error_code(Error::InvalidArgument));
 }
 
 TEST(WorkflowStorageTest, StorageEnvelopeGoldenFilesRequireCurrentVersion) {
@@ -4413,6 +4459,13 @@ TEST(WorkflowStorageTest, StoresExposeCommittedButDeferredWrites) {
   ASSERT_TRUE(appended.has_value()) << appended.error().message();
   EXPECT_TRUE(appended->durability_deferred);
   EXPECT_EQ((*ledger)->size(), 1U);
+  EvidenceRecord second_evidence;
+  second_evidence.run_id = checkpoint.snapshot.run_id.clone();
+  second_evidence.node_id = WorkflowNodeId{"task"};
+  auto second_append = (*ledger)->append(std::move(second_evidence));
+  ASSERT_TRUE(second_append.has_value()) << second_append.error().message();
+  EXPECT_TRUE(second_append->durability_deferred);
+  EXPECT_EQ((*ledger)->size(), 2U);
 
   std::filesystem::remove_all(directory, error);
 }
@@ -7313,6 +7366,50 @@ TEST(WorkflowRuntimeTest, BoundsFailureWhenArtifactRetentionFails) {
   core.stop();
 }
 
+TEST(WorkflowRuntimeTest,
+     BoundsFailureWhenArtifactDurabilityIsDeferred) {
+  Runtime core(1, false, 0);
+  ASSERT_TRUE(core.start().has_value());
+  TestExecutorEnvironment environment(core);
+  auto artifacts = std::make_shared<DeferredArtifactStore>();
+  WorkflowRuntime runtime(core, environment.registry, artifacts);
+
+  auto plan = base_plan("failure-retention-deferred");
+  plan.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"task"},
+      .executor = "test",
+      .outputs = {WorkflowPortId{"result"}},
+  });
+  auto compiled = PlanCompiler{environment.registry}.compile(std::move(plan));
+  ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
+  auto started = runtime.start(
+      *compiled,
+      TriggerEnvelope{.workflow_id = WorkflowId{"failure-retention-deferred"},
+                      .source = "test",
+                      .event_type = "diagnostic"});
+  ASSERT_TRUE(started.has_value()) << started.error().message();
+  ASSERT_TRUE(environment.executor->wait_for_pending(1));
+
+  JsonValue details = JsonValue::object_t{};
+  details["payload"] = std::string(70 * 1024, 'x');
+  ASSERT_TRUE(environment.executor->complete_next_with_failure(
+      make_execution_failure(Error::ProtocolError, "large_diagnostic",
+                             "Large diagnostic payload",
+                             make_payload(details))));
+  ASSERT_TRUE(wait_for_state(runtime, core, *started, RunState::Failed)
+                  .has_value());
+
+  auto report = sync_wait_on_runtime(core, runtime.failure_report(*started));
+  ASSERT_TRUE(report.has_value()) << report.error().message();
+  ASSERT_TRUE(report->failure.has_value());
+  EXPECT_TRUE(report->failure->artifacts.empty());
+  const auto bounded_details = materialize(report->failure->details);
+  EXPECT_TRUE(bounded_details["externalization_failed"].get<bool>());
+  EXPECT_EQ(artifacts->erase_count(), 1U);
+
+  core.stop();
+}
+
 TEST(WorkflowRuntimeTest, PersistenceFailureStopsRunWithStructuredError) {
   const auto directory = temporary_test_directory("checkpoint-write-failure");
   std::error_code filesystem_error;
@@ -7413,6 +7510,90 @@ TEST(WorkflowRuntimeTest, EvidencePersistenceFailureStopsRun) {
   EXPECT_EQ(report->failure->code, "evidence_persist_failed");
 
   core.stop();
+}
+
+TEST(WorkflowRuntimeTest, DeferredEvidenceDurabilityStopsRun) {
+  const auto directory = temporary_test_directory("evidence-deferred-runtime");
+  std::error_code filesystem_error;
+  std::filesystem::remove_all(directory, filesystem_error);
+  std::filesystem::create_directories(directory, filesystem_error);
+  ASSERT_FALSE(filesystem_error);
+
+  Runtime core(1, false, 0);
+  ASSERT_TRUE(core.start().has_value());
+  TestExecutorEnvironment environment(core);
+  auto evidence = EvidenceLedger::open(
+      directory / "evidence.jsonl", kStorageDefaults.max_evidence_records,
+      kStorageDefaults.max_evidence_file_bytes,
+      kStorageDefaults.max_evidence_record_bytes);
+  ASSERT_TRUE(evidence.has_value()) << evidence.error().message();
+  WorkflowRuntime runtime(core, environment.registry,
+                          std::make_shared<InMemoryArtifactStore>(), *evidence,
+                          std::make_shared<CheckpointStore>());
+
+  auto plan = base_plan("evidence-deferred-runtime");
+  plan.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"task"},
+      .executor = "test",
+      .outputs = {WorkflowPortId{"result"}},
+  });
+  auto compiled = PlanCompiler{environment.registry}.compile(std::move(plan));
+  ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
+  workflow::storage_detail::testing::fail_next_directory_sync();
+  auto started = runtime.start(
+      *compiled,
+      TriggerEnvelope{.workflow_id = WorkflowId{"evidence-deferred-runtime"}});
+  ASSERT_TRUE(started.has_value()) << started.error().message();
+  auto failed = wait_for_state(runtime, core, *started, RunState::Failed);
+  ASSERT_TRUE(failed.has_value()) << failed.error().message();
+  ASSERT_TRUE((*failed)->failure.has_value());
+  EXPECT_EQ((*failed)->failure->code, "evidence_durability_deferred");
+  EXPECT_EQ((*evidence)->size(), 1U);
+
+  core.stop();
+  std::filesystem::remove_all(directory, filesystem_error);
+}
+
+TEST(WorkflowRuntimeTest, DeferredCheckpointDurabilityRemainsRecoverable) {
+  const auto directory = temporary_test_directory("checkpoint-deferred-runtime");
+  std::error_code filesystem_error;
+  std::filesystem::remove_all(directory, filesystem_error);
+  std::filesystem::create_directories(directory, filesystem_error);
+  ASSERT_FALSE(filesystem_error);
+
+  Runtime core(1, false, 0);
+  ASSERT_TRUE(core.start().has_value());
+  TestExecutorEnvironment environment(core);
+  auto checkpoints = std::make_shared<CheckpointStore>(
+      directory, kStorageDefaults.max_checkpoint_bytes);
+  WorkflowRuntime runtime(core, environment.registry,
+                          std::make_shared<InMemoryArtifactStore>(),
+                          std::make_shared<EvidenceLedger>(), checkpoints);
+
+  auto plan = base_plan("checkpoint-deferred-runtime");
+  plan.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"task"},
+      .executor = "test",
+      .outputs = {WorkflowPortId{"result"}},
+  });
+  auto compiled = PlanCompiler{environment.registry}.compile(std::move(plan));
+  ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
+  workflow::storage_detail::testing::fail_next_directory_sync();
+  auto started = runtime.start(
+      *compiled,
+      TriggerEnvelope{.workflow_id = WorkflowId{"checkpoint-deferred-runtime"}});
+  ASSERT_TRUE(started.has_value()) << started.error().message();
+  ASSERT_TRUE(environment.executor->wait_for_pending(1));
+  workflow::storage_detail::testing::fail_next_directory_sync();
+  ASSERT_TRUE(environment.executor->complete_next(0, "done"));
+  ASSERT_TRUE(wait_for_state(runtime, core, *started, RunState::Succeeded)
+                  .has_value());
+  auto checkpoint = checkpoints->load(*started);
+  ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().message();
+  EXPECT_EQ(checkpoint->snapshot.state, RunState::Succeeded);
+
+  core.stop();
+  std::filesystem::remove_all(directory, filesystem_error);
 }
 
 TEST(WorkflowRuntimeTest, CompletedRunRetentionEvictsOldestRun) {

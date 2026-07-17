@@ -87,6 +87,7 @@ private:
   std::size_t max_record_bytes_{0};
   std::size_t file_bytes_{0};
   std::size_t stale_records_{0};
+  bool durability_deferred_{false};
 };
 
 } // namespace dagforge::workflow
