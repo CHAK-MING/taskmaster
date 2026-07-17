@@ -7366,8 +7366,7 @@ TEST(WorkflowRuntimeTest, BoundsFailureWhenArtifactRetentionFails) {
   core.stop();
 }
 
-TEST(WorkflowRuntimeTest,
-     BoundsFailureWhenArtifactDurabilityIsDeferred) {
+TEST(WorkflowRuntimeTest, BoundsFailureWhenArtifactDurabilityIsDeferred) {
   Runtime core(1, false, 0);
   ASSERT_TRUE(core.start().has_value());
   TestExecutorEnvironment environment(core);
@@ -7396,8 +7395,8 @@ TEST(WorkflowRuntimeTest,
       make_execution_failure(Error::ProtocolError, "large_diagnostic",
                              "Large diagnostic payload",
                              make_payload(details))));
-  ASSERT_TRUE(wait_for_state(runtime, core, *started, RunState::Failed)
-                  .has_value());
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, *started, RunState::Failed).has_value());
 
   auto report = sync_wait_on_runtime(core, runtime.failure_report(*started));
   ASSERT_TRUE(report.has_value()) << report.error().message();
@@ -7555,7 +7554,8 @@ TEST(WorkflowRuntimeTest, DeferredEvidenceDurabilityStopsRun) {
 }
 
 TEST(WorkflowRuntimeTest, DeferredCheckpointDurabilityRemainsRecoverable) {
-  const auto directory = temporary_test_directory("checkpoint-deferred-runtime");
+  const auto directory =
+      temporary_test_directory("checkpoint-deferred-runtime");
   std::error_code filesystem_error;
   std::filesystem::remove_all(directory, filesystem_error);
   std::filesystem::create_directories(directory, filesystem_error);
@@ -7580,14 +7580,14 @@ TEST(WorkflowRuntimeTest, DeferredCheckpointDurabilityRemainsRecoverable) {
   ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
   workflow::storage_detail::testing::fail_next_directory_sync();
   auto started = runtime.start(
-      *compiled,
-      TriggerEnvelope{.workflow_id = WorkflowId{"checkpoint-deferred-runtime"}});
+      *compiled, TriggerEnvelope{
+                     .workflow_id = WorkflowId{"checkpoint-deferred-runtime"}});
   ASSERT_TRUE(started.has_value()) << started.error().message();
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
   workflow::storage_detail::testing::fail_next_directory_sync();
   ASSERT_TRUE(environment.executor->complete_next(0, "done"));
-  ASSERT_TRUE(wait_for_state(runtime, core, *started, RunState::Succeeded)
-                  .has_value());
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, *started, RunState::Succeeded).has_value());
   auto checkpoint = checkpoints->load(*started);
   ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().message();
   EXPECT_EQ(checkpoint->snapshot.state, RunState::Succeeded);

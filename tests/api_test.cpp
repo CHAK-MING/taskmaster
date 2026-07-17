@@ -399,8 +399,7 @@ TEST(ApiTest, StorageDirectoryLockRejectsInvalidAndBlockedPaths) {
   }
   auto blocked = workflow::StorageDirectoryLock::acquire(root / "state");
   ASSERT_FALSE(blocked.has_value());
-  EXPECT_EQ(blocked.error(),
-            std::make_error_code(std::errc::not_a_directory));
+  EXPECT_EQ(blocked.error(), std::make_error_code(std::errc::not_a_directory));
 
   std::filesystem::remove(root, error);
   ASSERT_FALSE(error);
