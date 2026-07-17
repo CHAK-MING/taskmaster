@@ -292,7 +292,8 @@ auto HttpClient::connect_tcp(io::IoContext &ctx, std::string host,
                              uint16_t port, HttpClientConfig config,
                              boost::asio::cancellation_slot cancellation)
     -> task<Result<std::unique_ptr<HttpClient>>> {
-  auto resolver = std::make_shared<boost::asio::ip::tcp::resolver>(ctx);
+  auto resolver = std::make_shared<boost::asio::ip::tcp::resolver>(
+      ctx.native_handle());
   auto externally_cancelled = std::make_shared<std::atomic_bool>(false);
   if (cancellation.is_connected()) {
     cancellation.assign(
@@ -330,7 +331,8 @@ auto HttpClient::connect_tcp(io::IoContext &ctx, std::string host,
     co_return fail(endpoints.error());
   }
 
-  auto socket = std::make_shared<boost::asio::ip::tcp::socket>(ctx);
+  auto socket =
+      std::make_shared<boost::asio::ip::tcp::socket>(ctx.native_handle());
   if (cancellation.is_connected()) {
     cancellation.assign(
         [socket, externally_cancelled](boost::asio::cancellation_type) {
@@ -375,7 +377,8 @@ auto HttpClient::connect_tls(io::IoContext &ctx, std::string host,
     co_return fail(Error::InvalidArgument);
   }
   boost::system::error_code ec;
-  auto resolver = std::make_shared<boost::asio::ip::tcp::resolver>(ctx);
+  auto resolver = std::make_shared<boost::asio::ip::tcp::resolver>(
+      ctx.native_handle());
   auto externally_cancelled = std::make_shared<std::atomic_bool>(false);
   if (cancellation.is_connected()) {
     cancellation.assign(
@@ -451,7 +454,8 @@ auto HttpClient::connect_tls(io::IoContext &ctx, std::string host,
   }
   tls_context->set_verify_mode(boost::asio::ssl::verify_peer);
 
-  auto stream = std::make_shared<TlsStream>(ctx, *tls_context);
+  auto stream =
+      std::make_shared<TlsStream>(ctx.native_handle(), *tls_context);
   if (cancellation.is_connected()) {
     cancellation.assign(
         [stream, externally_cancelled](boost::asio::cancellation_type) {
@@ -515,8 +519,8 @@ auto HttpClient::connect_unix(io::IoContext &ctx, std::string socket_path,
                               boost::asio::cancellation_slot cancellation)
     -> task<Result<std::unique_ptr<HttpClient>>> {
   boost::system::error_code ec;
-  auto socket =
-      std::make_shared<boost::asio::local::stream_protocol::socket>(ctx);
+  auto socket = std::make_shared<boost::asio::local::stream_protocol::socket>(
+      ctx.native_handle());
   auto externally_cancelled = std::make_shared<std::atomic_bool>(false);
   if (cancellation.is_connected()) {
     cancellation.assign(

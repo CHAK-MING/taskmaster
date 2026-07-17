@@ -151,7 +151,7 @@ auto Runtime::start() -> Result<void> {
   for_each_shard(num_shards_, [this](unsigned i) {
     auto &ctx = shards_[i]->ctx();
     ctx.restart();
-    work_guards_[i].emplace(boost::asio::make_work_guard(ctx));
+    work_guards_[i].emplace(boost::asio::make_work_guard(ctx.native_handle()));
     threads_.emplace_back([this, i] { run_shard(i); });
   });
 

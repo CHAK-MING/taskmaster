@@ -51,12 +51,13 @@ TEST(ProcessManagementTest, WaitResultDefaultsToNoError) {
 
 TEST(ProcessManagementTest, TerminateAndReapProcessMarksTimeout) {
   io::IoContext io;
-  boost::process::v2::process proc(io, "/bin/sh", {"-c", "sleep 30"});
+  boost::process::v2::process proc(io.native_handle(), "/bin/sh",
+                                   {"-c", "sleep 30"});
 
   Result<ProcessWaitResult> result = fail(Error::Unknown);
   std::exception_ptr eptr;
   boost::asio::co_spawn(
-      io,
+      io.native_handle(),
       [&]() -> task<void> {
         result = co_await terminate_and_reap_process(proc, true);
         co_return;

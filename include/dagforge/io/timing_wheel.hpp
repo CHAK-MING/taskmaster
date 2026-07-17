@@ -85,12 +85,13 @@ private:
 } // namespace io
 
 [[nodiscard]] auto
-async_sleep_on_timing_wheel(std::chrono::nanoseconds duration) -> spawn_task;
+async_sleep_on_timing_wheel(std::chrono::nanoseconds duration)
+    -> task<Result<void>>;
 
 template <typename Rep, typename Period>
 [[nodiscard]] inline auto
 async_sleep_on_timing_wheel(std::chrono::duration<Rep, Period> duration)
-    -> spawn_task {
+    -> task<Result<void>> {
   return async_sleep_on_timing_wheel(
       std::chrono::duration_cast<std::chrono::nanoseconds>(duration));
 }

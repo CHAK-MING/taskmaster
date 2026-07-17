@@ -33,14 +33,16 @@ constexpr int kVeryLargeSize = 10000;
 // ---------------------------------------------------------------------------
 template <typename T>
 [[nodiscard]] auto run_on_io(io::IoContext &io, task<T> t) -> T {
-  auto fut = boost::asio::co_spawn(io, std::move(t), boost::asio::use_future);
+  auto fut = boost::asio::co_spawn(io.native_handle(), std::move(t),
+                                   boost::asio::use_future);
   (void)io.run();
   io.restart();
   return fut.get();
 }
 
 inline void run_on_io(io::IoContext &io, task<void> t) {
-  auto fut = boost::asio::co_spawn(io, std::move(t), boost::asio::use_future);
+  auto fut = boost::asio::co_spawn(io.native_handle(), std::move(t),
+                                   boost::asio::use_future);
   (void)io.run();
   io.restart();
   fut.get();

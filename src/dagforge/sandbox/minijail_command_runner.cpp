@@ -90,7 +90,8 @@ auto invoke_process(Launcher &&launch, io::IoContext &io,
                     ProcessLaunchSpec spec, Inits &&... extra)
     -> bp::process {
   auto program = std::move(spec.program);
-  return launch(io, program, std::move(spec.args), std::move(spec.stdio),
+  return launch(io.native_handle(), program, std::move(spec.args),
+                std::move(spec.stdio),
                 bp::process_start_dir{std::move(spec.working_dir)},
                 std::move(spec.env), std::forward<Inits>(extra)...);
 }
@@ -425,9 +426,8 @@ auto run_executor_heartbeat(
     co_return;
   }
   while (!stop->load(std::memory_order_acquire)) {
-    try {
-      co_await async_sleep_on_timing_wheel(kHeartbeatInterval);
-    } catch (const std::exception &) {
+    auto sleep = co_await async_sleep_on_timing_wheel(kHeartbeatInterval);
+    if (!sleep) {
       co_return;
     }
     if (!stop->load(std::memory_order_acquire)) {
@@ -523,6 +523,10 @@ wait_process_with_timeout(bp::process &process, std::chrono::seconds timeout,
   if (outcome.index() == 0) {
     co_return std::move(std::get<0>(outcome));
   }
+  auto sleep_result = std::move(std::get<1>(outcome));
+  if (!sleep_result) {
+    co_return fail(sleep_result.error());
+  }
 
   cancel_signal.emit(boost::asio::cancellation_type::total);
   auto result = co_await terminate_and_reap_process(process, true);
@@ -546,8 +550,8 @@ auto execute_command(fs::path minijail, std::vector<std::string> arguments,
                        ? resource_owner.get()
                        : current_memory_resource_or_default();
   auto &io = current_io_context();
-  boost::asio::readable_pipe stdout_pipe(io);
-  boost::asio::readable_pipe stderr_pipe(io);
+  boost::asio::readable_pipe stdout_pipe(io.native_handle());
+  boost::asio::readable_pipe stderr_pipe(io.native_handle());
   auto result = make_command_run_result(resource);
   result.stdout_output.reserve(kInitialOutputReserve);
   result.stderr_output.reserve(kInitialOutputReserve);

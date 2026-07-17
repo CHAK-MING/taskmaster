@@ -14,7 +14,7 @@ namespace dagforge::io {
 
 TimingWheel::TimingWheel(IoContext &io, std::chrono::nanoseconds tick,
                          std::size_t slot_count)
-    : timer_(io),
+    : timer_(io.native_handle()),
       tick_(std::max(tick, std::chrono::nanoseconds(std::chrono::milliseconds(1)))),
       buckets_(std::max<std::size_t>(slot_count, 1)) {}
 
@@ -151,22 +151,21 @@ auto TimingWheel::handle_tick(const boost::system::error_code &ec) -> void {
 namespace dagforge {
 
 auto async_sleep_on_timing_wheel(std::chrono::nanoseconds duration)
-    -> spawn_task {
+    -> task<Result<void>> {
   if (duration <= std::chrono::nanoseconds::zero()) {
-    co_await async_yield();
-    co_return;
+    co_return co_await async_yield();
   }
 
   auto *runtime = detail::current_runtime;
   const auto shard = detail::current_shard_id;
   if (runtime == nullptr || shard == kInvalidShard) {
-    co_await async_sleep(duration);
-    co_return;
+    co_return co_await async_sleep(duration);
   }
 
   using WaitChannel =
       boost::asio::experimental::channel<void(boost::system::error_code)>;
-  auto gate = std::make_shared<WaitChannel>(runtime->current_context(), 1);
+  auto gate = std::make_shared<WaitChannel>(
+      runtime->current_context().native_handle(), 1);
 
   const auto handle = runtime->schedule_after_on(shard, duration, [gate]() mutable {
     (void)gate->try_send(boost::system::error_code{});
@@ -176,13 +175,8 @@ auto async_sleep_on_timing_wheel(std::chrono::nanoseconds duration)
         runtime->cancel_after_on(shard, handle);
       });
 
-  const auto operation_aborted =
-      std::error_code{boost::asio::error::make_error_code(
-          boost::asio::error::operation_aborted)};
   auto wait_res = co_await co_as_result(gate->async_receive(use_nothrow));
-  if (!wait_res && wait_res.error() != operation_aborted) {
-    throw boost::system::system_error(wait_res.error());
-  }
+  co_return wait_res;
 }
 
 } // namespace dagforge

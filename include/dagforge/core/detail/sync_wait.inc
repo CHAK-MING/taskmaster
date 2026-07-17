@@ -7,8 +7,9 @@ template <typename T>
   const auto shard =
       static_cast<shard_id>(rr.fetch_add(1, std::memory_order_relaxed) %
                             std::max(1U, runtime.shard_count()));
-  auto fut = boost::asio::co_spawn(runtime.shard(shard).ctx(), std::move(op),
-                                   boost::asio::use_future);
+  auto fut = boost::asio::co_spawn(
+      runtime.shard(shard).ctx().native_handle(), std::move(op),
+      boost::asio::use_future);
   try {
     return fut.get();
   } catch (const std::future_error &) {
@@ -23,8 +24,9 @@ inline auto sync_wait_on_runtime(Runtime &runtime, task<void> op) -> void {
   const auto shard =
       static_cast<shard_id>(rr.fetch_add(1, std::memory_order_relaxed) %
                             std::max(1U, runtime.shard_count()));
-  auto fut = boost::asio::co_spawn(runtime.shard(shard).ctx(), std::move(op),
-                                   boost::asio::use_future);
+  auto fut = boost::asio::co_spawn(
+      runtime.shard(shard).ctx().native_handle(), std::move(op),
+      boost::asio::use_future);
   try {
     fut.get();
   } catch (const std::future_error &) {

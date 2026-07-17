@@ -103,6 +103,12 @@ public:
   return {std::to_underlying(e), io_error_category()};
 }
 
+[[nodiscard]] inline auto is_cancelled(const std::error_code &error) noexcept
+    -> bool {
+  return error == make_error_code(IoError::Cancelled) ||
+         error == std::errc::operation_canceled;
+}
+
 } // namespace dagforge::io
 
 template <>

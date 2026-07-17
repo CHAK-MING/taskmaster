@@ -20,8 +20,13 @@ constexpr auto kWaitTimeout = std::chrono::seconds(1);
 auto race_timing_wheel_sleep(std::shared_ptr<std::atomic<bool>> completed)
     -> spawn_task {
   using namespace boost::asio::experimental::awaitable_operators;
-  (void)co_await (async_sleep_on_timing_wheel(5s) ||
-                  async_sleep(std::chrono::milliseconds(1)));
+  auto result = co_await (async_sleep_on_timing_wheel(5s) ||
+                          async_sleep(std::chrono::milliseconds(1)));
+  const auto &sleep = result.index() == 0 ? std::get<0>(result)
+                                          : std::get<1>(result);
+  if (!sleep) {
+    co_return;
+  }
   completed->store(true, std::memory_order_release);
 }
 
@@ -92,7 +97,7 @@ TEST(TimingWheelTest, CancelsPendingSleepWhenRaceLoses) {
 TEST(TimingWheelTest, ResumesAfterBecomingIdle) {
   io::IoContext io;
   io::TimingWheel wheel(io, 5ms, 64);
-  auto guard = boost::asio::make_work_guard(io);
+  auto guard = boost::asio::make_work_guard(io.native_handle());
   std::atomic<int> fired_count{0};
 
   wheel.start();
@@ -110,7 +115,7 @@ TEST(TimingWheelTest, ResumesAfterBecomingIdle) {
   EXPECT_EQ(wheel.pending_count(), 0U);
 
   std::atomic<bool> second_armed{false};
-  boost::asio::post(io, [&] {
+  boost::asio::post(io.native_handle(), [&] {
     [[maybe_unused]] const auto second_handle = wheel.schedule_after(15ms, [&] {
       fired_count.fetch_add(1, std::memory_order_acq_rel);
       wheel.stop();

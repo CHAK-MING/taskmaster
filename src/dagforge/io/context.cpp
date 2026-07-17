@@ -3,7 +3,9 @@
 #include "dagforge/core/runtime.hpp"
 #include "dagforge/core/scope_exit.hpp"
 
+#include <boost/asio/bind_cancellation_slot.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <boost/asio/this_coro.hpp>
 #include <boost/system/system_error.hpp>
 
 #include <chrono>
@@ -12,11 +14,10 @@ namespace dagforge::io {
 
 template <typename Rep, typename Period>
 auto async_sleep(IoContext &ctx, std::chrono::duration<Rep, Period> duration)
-    -> spawn_task {
-  // Keep this wrapper instead of exposing steady_timer directly so callers get
-  // one uniform "cancel is normal, everything else is exceptional" policy.
+    -> task<Result<void>> {
   boost::asio::steady_timer timer(
-      ctx, std::chrono::duration_cast<std::chrono::nanoseconds>(duration));
+      ctx.native_handle(),
+      std::chrono::duration_cast<std::chrono::nanoseconds>(duration));
 
   Runtime *runtime = nullptr;
   shard_id shard = kInvalidShard;
@@ -32,18 +33,19 @@ auto async_sleep(IoContext &ctx, std::chrono::duration<Rep, Period> duration)
     }
   });
 
-  const auto operation_aborted =
-      std::error_code{boost::asio::error::make_error_code(
-          boost::asio::error::operation_aborted)};
-  auto wait_res = co_await co_as_result(timer.async_wait(use_nothrow));
-  if (!wait_res && wait_res.error() != operation_aborted) {
-    throw boost::system::system_error(wait_res.error());
-  }
+  const auto cancellation = co_await boost::asio::this_coro::cancellation_state;
+  auto wait_res = co_await co_as_result(timer.async_wait(
+      boost::asio::bind_cancellation_slot(cancellation.slot(), use_nothrow)));
+  co_return wait_res;
 }
 
-template auto async_sleep(IoContext &, std::chrono::nanoseconds) -> spawn_task;
-template auto async_sleep(IoContext &, std::chrono::microseconds) -> spawn_task;
-template auto async_sleep(IoContext &, std::chrono::milliseconds) -> spawn_task;
-template auto async_sleep(IoContext &, std::chrono::seconds) -> spawn_task;
+template auto async_sleep(IoContext &, std::chrono::nanoseconds)
+    -> task<Result<void>>;
+template auto async_sleep(IoContext &, std::chrono::microseconds)
+    -> task<Result<void>>;
+template auto async_sleep(IoContext &, std::chrono::milliseconds)
+    -> task<Result<void>>;
+template auto async_sleep(IoContext &, std::chrono::seconds)
+    -> task<Result<void>>;
 
 } // namespace dagforge::io

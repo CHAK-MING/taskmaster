@@ -270,13 +270,14 @@ inline thread_local Runtime *current_runtime = nullptr;
 // ---------------------------------------------------------------------------
 
 /// Yield execution back to the current shard's event loop (one cycle).
-[[nodiscard]] inline auto async_yield() -> spawn_task {
+[[nodiscard]] inline auto async_yield() -> task<Result<void>> {
   auto executor = co_await boost::asio::this_coro::executor;
   auto post_res =
       co_await co_as_result(boost::asio::post(executor, dagforge::use_nothrow));
   if (!post_res) {
-    co_return;
+    co_return fail(post_res.error());
   }
+  co_return ok();
 }
 
 [[nodiscard]] inline auto current_io_context() noexcept -> io::IoContext & {

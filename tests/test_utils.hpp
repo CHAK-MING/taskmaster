@@ -28,7 +28,7 @@ run_coro(task<T> coro,
   std::exception_ptr exception;
   std::optional<T> result;
   boost::asio::co_spawn(
-      io,
+      io.native_handle(),
       [&]() -> task<void> {
         result = co_await std::move(coro);
         co_return;
@@ -51,7 +51,7 @@ run_coro(task<void> coro,
   std::exception_ptr exception;
   bool completed = false;
   boost::asio::co_spawn(
-      io,
+      io.native_handle(),
       [&]() -> task<void> {
         co_await std::move(coro);
         completed = true;

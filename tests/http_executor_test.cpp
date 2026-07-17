@@ -683,7 +683,11 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
   server.router().get(
       "/slow", [](::dagforge::http::HttpRequest)
                     -> task<::dagforge::http::HttpResponse> {
-        co_await async_sleep(std::chrono::milliseconds(500));
+        auto sleep = co_await async_sleep(std::chrono::milliseconds(500));
+        if (!sleep) {
+          co_return ::dagforge::http::HttpResponse{
+              .status = ::dagforge::http::HttpStatus::ServiceUnavailable};
+        }
         co_return ::dagforge::http::HttpResponse::ok().set_body("slow");
       });
   server.router().post(

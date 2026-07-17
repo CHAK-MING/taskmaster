@@ -211,6 +211,13 @@ def run_static_checks() -> None:
             + ", ".join(sorted(forbidden_scope_uses))
         )
 
+    io_context = (
+        REPOSITORY_ROOT / "include" / "dagforge" / "core" / "detail" /
+        "io_context.inc"
+    ).read_text(encoding="utf-8")
+    if "operator native_type" in io_context or "operator boost::asio::io_context" in io_context:
+        fail("IoContext must not provide an implicit native-context conversion")
+
 
 def run_compile_checks(compiler: str, jobs: int) -> None:
     feature_result = compile_source(compiler, FEATURE_PROBE)

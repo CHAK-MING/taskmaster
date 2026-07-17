@@ -31,7 +31,11 @@ auto connect_unix_after_yield(std::shared_ptr<std::atomic_bool> completed,
     -> spawn_task {
   auto connect_op = HttpClient::connect_unix(
       current_io_context(), std::string{"/tmp/nonexistent_deferred.sock"});
-  co_await async_yield();
+  auto yielded = co_await async_yield();
+  if (!yielded) {
+    completed->store(true, std::memory_order_release);
+    co_return;
+  }
   auto client_res = co_await std::move(connect_op);
   failed->store(!client_res.has_value(), std::memory_order_release);
   completed->store(true, std::memory_order_release);

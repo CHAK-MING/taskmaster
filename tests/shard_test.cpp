@@ -74,7 +74,8 @@ TEST(ShardTest, TracksArenaUsageAndUpstreamFallbacks) {
 TEST(ShardTest, ContextExecutesPostedWork) {
   Shard shard(0);
   std::atomic<int> counter{0};
-  boost::asio::post(shard.ctx(), [&] { counter.fetch_add(1); });
+  boost::asio::post(shard.ctx().native_handle(),
+                    [&] { counter.fetch_add(1); });
   (void)shard.ctx().run_one();
   EXPECT_EQ(counter.load(), 1);
 }

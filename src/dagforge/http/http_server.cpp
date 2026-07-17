@@ -265,7 +265,7 @@ struct HttpServer::Impl {
       unsigned shard_index) -> spawn_task {
     auto &io_ctx = current_io_context();
     while (self->running.load(std::memory_order_acquire)) {
-      boost::asio::ip::tcp::socket socket(io_ctx);
+      boost::asio::ip::tcp::socket socket(io_ctx.native_handle());
       auto accept_res =
           co_await co_as_result(acceptor->async_accept(socket, dagforge::use_nothrow));
       if (!accept_res) {
@@ -432,7 +432,7 @@ auto HttpServer::start(std::string_view host, uint16_t port, bool reuse_port)
         reuse_port ? (i % std::max(1U, impl->runtime.shard_count())) : 0;
 
     auto acceptor = std::make_shared<boost::asio::ip::tcp::acceptor>(
-        impl->runtime.shard(shard_idx).ctx());
+        impl->runtime.shard(shard_idx).ctx().native_handle());
     boost::system::error_code ec;
 
     acceptor->open(bind_address.is_v6() ? boost::asio::ip::tcp::v6()

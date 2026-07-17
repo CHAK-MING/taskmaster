@@ -9,7 +9,7 @@ template <typename T>
 as_result(std::tuple<boost::system::error_code, T> &&v) -> Result<T> {
   auto [ec, value] = std::move(v);
   if (ec) {
-    return fail(ec);
+    return fail(io::normalize_error_code(ec));
   }
   return ok(std::move(value));
 }
@@ -18,7 +18,7 @@ as_result(std::tuple<boost::system::error_code, T> &&v) -> Result<T> {
     -> Result<void> {
   auto [ec] = std::move(v);
   if (ec) {
-    return fail(ec);
+    return fail(io::normalize_error_code(ec));
   }
   return ok();
 }
@@ -31,7 +31,7 @@ as_result(std::tuple<std::exception_ptr, T> &&v) -> Result<T> {
     try {
       std::rethrow_exception(ep);
     } catch (const boost::system::system_error &e) {
-      return fail(e.code());
+      return fail(io::normalize_error_code(e.code()));
     } catch (const std::system_error &e) {
       return fail(e.code());
     } catch (...) {
@@ -48,7 +48,7 @@ as_result(std::tuple<std::exception_ptr, T> &&v) -> Result<T> {
     try {
       std::rethrow_exception(ep);
     } catch (const boost::system::system_error &e) {
-      return fail(e.code());
+      return fail(io::normalize_error_code(e.code()));
     } catch (const std::system_error &e) {
       return fail(e.code());
     } catch (...) {

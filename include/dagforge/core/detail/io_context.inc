@@ -46,12 +46,6 @@ public:
     return context_;
   }
 
-  // Compatibility bridge while the codebase still talks directly to Asio.
-  [[nodiscard]] operator native_type &() noexcept { return context_; }
-  [[nodiscard]] operator const native_type &() const noexcept {
-    return context_;
-  }
-
 private:
   native_type context_;
 };
@@ -59,6 +53,6 @@ private:
 template <typename Rep, typename Period>
 [[nodiscard]] auto async_sleep(IoContext &ctx,
                                std::chrono::duration<Rep, Period> duration)
-    -> spawn_task;
+    -> task<Result<void>>;
 
 } // namespace dagforge::io
