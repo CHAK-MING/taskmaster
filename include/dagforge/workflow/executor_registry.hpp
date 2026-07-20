@@ -26,13 +26,14 @@ public:
       -> Result<void>;
   [[nodiscard]] auto compile(std::string_view type, JsonPayload config,
                              ExecutorCompileContext context) const
-      -> Result<CompiledExecutorConfig>;
+      -> ExecutorCompileResult<CompiledExecutorConfig>;
   auto start(std::string_view type, TaskExecutionRequest request,
              TaskExecutionSink sink) -> Result<void>;
   auto cancel(std::string_view type, const InstanceId &instance_id) -> void;
-  [[nodiscard]] auto quiesce(std::chrono::milliseconds timeout)
-      -> Result<void>;
+  [[nodiscard]] auto quiesce(std::chrono::milliseconds timeout) -> Result<void>;
   [[nodiscard]] auto contains(std::string_view type) const -> bool;
+  [[nodiscard]] auto descriptions() const
+      -> Result<std::vector<ExecutorDescription>>;
 
 private:
   std::unordered_map<std::string, std::shared_ptr<ITaskExecutor>> executors_;
@@ -41,8 +42,7 @@ private:
 
 inline auto execute_task_async(
     Runtime &runtime, shard_id owner, ExecutorRegistry &registry,
-    std::string executor_type,
-    TaskExecutionRequest request,
+    std::string executor_type, TaskExecutionRequest request,
     std::move_only_function<void(std::string_view)> on_state = {})
     -> task<TaskExecutionResult> {
   return boost::asio::async_initiate<const boost::asio::use_awaitable_t<>,
@@ -53,34 +53,31 @@ inline auto execute_task_async(
         auto shared_handler =
             std::make_shared<decltype(handler)>(std::move(handler));
         auto completed = std::make_shared<std::atomic_bool>(false);
-        auto complete =
-            [&runtime, owner, shared_handler,
-             completed](TaskExecutionResult result) mutable {
-              if (completed->exchange(true, std::memory_order_acq_rel)) {
-                return;
-              }
-              runtime.post_to(
-                  owner,
-                  [shared_handler, result = std::move(result)]() mutable {
-                    std::move(*shared_handler)(std::move(result));
-                  });
-            };
+        auto complete = [&runtime, owner, shared_handler,
+                         completed](TaskExecutionResult result) mutable {
+          if (completed->exchange(true, std::memory_order_acq_rel)) {
+            return;
+          }
+          runtime.post_to(
+              owner, [shared_handler, result = std::move(result)]() mutable {
+                std::move (*shared_handler)(std::move(result));
+              });
+        };
 
         TaskExecutionSink sink;
         if (on_state) {
           sink.on_state =
               [callback = std::move(on_state)](const InstanceId &,
-                                                std::string_view state) mutable {
+                                               std::string_view state) mutable {
                 callback(state);
               };
         }
-        sink.on_complete =
-            [complete](const InstanceId &,
-                       TaskExecutionResult result) mutable {
-              complete(std::move(result));
-            };
-        auto started = registry.start(executor_type, std::move(request),
-                                      std::move(sink));
+        sink.on_complete = [complete](const InstanceId &,
+                                      TaskExecutionResult result) mutable {
+          complete(std::move(result));
+        };
+        auto started =
+            registry.start(executor_type, std::move(request), std::move(sink));
         if (!started) {
           complete(task_failed(make_execution_failure(
               started.error(), "executor_start_failed",

@@ -45,6 +45,30 @@ struct CompiledCommand {
 
 } // namespace dagforge::executors::command::detail
 
+namespace glz {
+
+template <>
+struct meta<dagforge::executors::command::detail::EnvironmentEntry> {
+  using T = dagforge::executors::command::detail::EnvironmentEntry;
+  static constexpr auto value = object("key", &T::key, "value", &T::value);
+};
+
+template <>
+struct meta<dagforge::executors::command::detail::InputEnvironmentBinding> {
+  using T = dagforge::executors::command::detail::InputEnvironmentBinding;
+  static constexpr auto value =
+      object("input", &T::input, "environment", &T::environment);
+};
+
+template <> struct meta<dagforge::executors::command::detail::NodeConfig> {
+  using T = dagforge::executors::command::detail::NodeConfig;
+  static constexpr auto value =
+      object("program", &T::program, "arguments", &T::arguments, "env", &T::env,
+             "input_env", &T::input_env);
+};
+
+} // namespace glz
+
 namespace dagforge::executors::command {
 namespace {
 
@@ -65,6 +89,50 @@ inline constexpr std::array<std::string_view, 4> kSupportedOutputs{
   return JsonPayload::from(config);
 }
 
+[[nodiscard]] auto
+command_description(const config::CommandPolicyConfig &policy)
+    -> Result<workflow::ExecutorDescription> {
+  auto schema = json_schema_payload<detail::NodeConfig>();
+  if (!schema) {
+    return fail(schema.error());
+  }
+  std::vector<std::string> program_names;
+  program_names.reserve(policy.programs.size());
+  for (const auto &program : policy.programs) {
+    program_names.push_back(program.name);
+  }
+  std::ranges::sort(program_names);
+  const auto example_program = program_names.empty()
+                                   ? std::string{"registered-program"}
+                                   : program_names.front();
+  auto example = JsonPayload::from(glz::obj{
+      "program", example_program, "arguments", std::vector<std::string>{},
+      "env", std::vector<detail::EnvironmentEntry>{}, "input_env",
+      std::vector<detail::InputEnvironmentBinding>{}});
+  if (!example) {
+    return fail(example.error());
+  }
+  const std::vector<std::string_view> supported_outputs(
+      kSupportedOutputs.begin(), kSupportedOutputs.end());
+  auto constraints = JsonPayload::from(glz::obj{
+      "programs", program_names, "allow_unlisted_programs",
+      policy.allow_unlisted_programs, "allowed_environment",
+      policy.allowed_environment, "inherited_environment",
+      policy.inherited_environment, "require_trusted_programs",
+      policy.require_trusted_programs, "supported_outputs", supported_outputs});
+  if (!constraints) {
+    return fail(constraints.error());
+  }
+  return ok(workflow::ExecutorDescription{
+      .type = "command",
+      .summary =
+          "Run an administrator-authorized program in the command sandbox",
+      .config_schema = std::move(*schema),
+      .examples = {std::move(*example)},
+      .constraints = std::move(*constraints),
+  });
+}
+
 [[nodiscard]] auto command_failure(sandbox::CommandRunResult result)
     -> workflow::ExecutionFailure {
   auto details = JsonPayload::from(glz::obj{
@@ -77,11 +145,11 @@ inline constexpr std::array<std::string_view, 4> kSupportedOutputs{
         "Command failure diagnostics could not be encoded");
   }
   if (result.timed_out) {
-    return workflow::make_execution_failure(
-        Error::Timeout, "command_timed_out",
-        result.error.empty() ? "Command execution timed out"
-                             : std::string{result.error},
-        std::move(*details));
+    return workflow::make_execution_failure(Error::Timeout, "command_timed_out",
+                                            result.error.empty()
+                                                ? "Command execution timed out"
+                                                : std::string{result.error},
+                                            std::move(*details));
   }
   if (result.resource_exhausted) {
     return workflow::make_execution_failure(
@@ -93,9 +161,8 @@ inline constexpr std::array<std::string_view, 4> kSupportedOutputs{
   if (result.exit_code != 0) {
     return workflow::make_execution_failure(
         Error::Unknown,
-        result.exit_code < 0 && !result.error.empty()
-            ? "command_runner_failed"
-            : "command_exit_nonzero",
+        result.exit_code < 0 && !result.error.empty() ? "command_runner_failed"
+                                                      : "command_exit_nonzero",
         result.error.empty()
             ? std::format("Command exited with status {}", result.exit_code)
             : std::string{result.error},
@@ -110,20 +177,35 @@ inline constexpr std::array<std::string_view, 4> kSupportedOutputs{
 
 class CommandTaskExecutor final : public workflow::ITaskExecutor {
 public:
-  explicit CommandTaskExecutor(
-      std::unique_ptr<sandbox::ICommandRunner> runner)
-      : runner_(std::move(runner)) {}
+  explicit CommandTaskExecutor(std::unique_ptr<sandbox::ICommandRunner> runner,
+                               workflow::ExecutorDescription description)
+      : runner_(std::move(runner)), description_(std::move(description)) {}
 
   [[nodiscard]] auto type() const noexcept -> std::string_view override {
     return "command";
   }
 
-  [[nodiscard]] auto compile(
-      JsonPayload config, workflow::ExecutorCompileContext context) const
-      -> Result<workflow::CompiledExecutorConfig> override {
+  [[nodiscard]] auto describe() const
+      -> Result<workflow::ExecutorDescription> override {
+    return ok(description_);
+  }
+
+  [[nodiscard]] auto compile(JsonPayload config,
+                             workflow::ExecutorCompileContext context) const
+      -> workflow::ExecutorCompileResult<
+          workflow::CompiledExecutorConfig> override {
     auto parsed = parse_node_config(config);
     if (!parsed) {
-      return fail(parsed.error());
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              parsed.error(), "command_config_invalid",
+              "Command configuration does not match the expected schema"));
+    }
+    if (parsed->program.empty()) {
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              Error::InvalidArgument, "command_program_required",
+              "Command configuration requires a program", "/program"));
     }
     sandbox::CommandSpec command{
         .program = parsed->program,
@@ -133,7 +215,11 @@ public:
     for (const auto &entry : parsed->env) {
       if (!environment.emplace(entry.key).second ||
           !command.environment.emplace(entry.key, entry.value).second) {
-        return fail(Error::InvalidArgument);
+        return workflow::executor_compile_fail(
+            workflow::make_executor_compile_failure(
+                Error::InvalidArgument, "command_environment_invalid",
+                "Command environment names must be non-empty and unique",
+                "/env"));
       }
     }
     std::vector<std::string> deferred_environment;
@@ -141,12 +227,20 @@ public:
     for (const auto &binding : parsed->input_env) {
       if (binding.input.empty() || !input_exists(context, binding.input) ||
           !environment.emplace(binding.environment).second) {
-        return fail(Error::InvalidArgument);
+        return workflow::executor_compile_fail(
+            workflow::make_executor_compile_failure(
+                Error::InvalidArgument, "command_input_environment_invalid",
+                "Command input environment bindings must reference declared "
+                "inputs and unique environment names",
+                "/input_env"));
       }
       deferred_environment.push_back(binding.environment);
     }
     if (!outputs_supported(context.outputs, kSupportedOutputs)) {
-      return fail(Error::InvalidArgument);
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              Error::InvalidArgument, "command_outputs_unsupported",
+              "Command node declares an unsupported output"));
     }
 
     auto prepared = runner_->prepare(sandbox::CommandPreparationRequest{
@@ -154,20 +248,26 @@ public:
         .deferred_environment_keys = std::move(deferred_environment),
     });
     if (!prepared) {
-      return fail(prepared.error());
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              prepared.error(), "command_program_not_allowed",
+              "Command program or environment is not allowed by server policy",
+              "/program"));
     }
     parsed->program = prepared->program;
     parsed->arguments = prepared->arguments;
     auto encoded = encode_node_config(*parsed);
     if (!encoded) {
-      return fail(encoded.error());
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              encoded.error(), "command_config_encode_failed",
+              "Command compiled configuration could not be encoded"));
     }
-    return ok(workflow::CompiledExecutorConfig::make(
-        std::move(*encoded),
-        detail::CompiledCommand{
-            .command = std::move(*prepared),
-            .input_env = std::move(parsed->input_env),
-        }));
+    return workflow::executor_compile_ok(workflow::CompiledExecutorConfig::make(
+        std::move(*encoded), detail::CompiledCommand{
+                                 .command = std::move(*prepared),
+                                 .input_env = std::move(parsed->input_env),
+                             }));
   }
 
   auto start(workflow::TaskExecutionRequest request,
@@ -193,41 +293,39 @@ public:
     auto outputs = std::move(request.outputs);
     sandbox::CommandRunSink command_sink;
     command_sink.on_state = std::move(sink.on_state);
-    command_sink.on_complete =
-        [outputs = std::move(outputs),
-         on_complete = std::move(on_complete)](
-            const InstanceId &instance_id,
-            sandbox::CommandRunResult result) mutable {
-          if (!on_complete) {
-            return;
-          }
-          if (result.timed_out || result.resource_exhausted ||
-              result.exit_code != 0 || !result.error.empty()) {
-            on_complete(instance_id,
-                        workflow::task_failed(command_failure(
-                            std::move(result))));
-            return;
-          }
+    command_sink.on_complete = [outputs = std::move(outputs),
+                                on_complete = std::move(on_complete)](
+                                   const InstanceId &instance_id,
+                                   sandbox::CommandRunResult result) mutable {
+      if (!on_complete) {
+        return;
+      }
+      if (result.timed_out || result.resource_exhausted ||
+          result.exit_code != 0 || !result.error.empty()) {
+        on_complete(instance_id,
+                    workflow::task_failed(command_failure(std::move(result))));
+        return;
+      }
 
-          workflow::ExecutorOutputs task_outputs;
-          add_output(task_outputs, outputs, "stdout",
-                     std::string{result.stdout_output});
-          add_output(task_outputs, outputs, "stderr",
-                     std::string{result.stderr_output});
-          add_output(task_outputs, outputs, "exit_code",
-                     static_cast<std::int64_t>(result.exit_code));
-          add_output(task_outputs, outputs, "result",
-                     std::string{result.stdout_output});
-          on_complete(instance_id,
-                      workflow::task_succeeded(std::move(task_outputs)));
-        };
+      workflow::ExecutorOutputs task_outputs;
+      add_output(task_outputs, outputs, "stdout",
+                 std::string{result.stdout_output});
+      add_output(task_outputs, outputs, "stderr",
+                 std::string{result.stderr_output});
+      add_output(task_outputs, outputs, "exit_code",
+                 static_cast<std::int64_t>(result.exit_code));
+      add_output(task_outputs, outputs, "result",
+                 std::string{result.stdout_output});
+      on_complete(instance_id,
+                  workflow::task_succeeded(std::move(task_outputs)));
+    };
 
     return runner_->start(
-        sandbox::CommandRunRequest{
-            .instance_id = std::move(request.instance_id),
-            .execution_timeout = request.timeout,
-            .command = std::move(command),
-            .memory_resource = {}},
+        sandbox::CommandRunRequest{.instance_id =
+                                       std::move(request.instance_id),
+                                   .execution_timeout = request.timeout,
+                                   .command = std::move(command),
+                                   .memory_resource = {}},
         std::move(command_sink));
   }
 
@@ -241,6 +339,7 @@ public:
 
 private:
   std::unique_ptr<sandbox::ICommandRunner> runner_;
+  workflow::ExecutorDescription description_;
 };
 
 } // namespace
@@ -253,13 +352,18 @@ auto create_task_executor(std::unique_ptr<sandbox::ICommandRunner> runner,
   if (!runner) {
     return fail(Error::InvalidArgument);
   }
+  auto description = command_description(policy_config);
+  if (!description) {
+    return fail(description.error());
+  }
   auto protected_runner = sandbox::detail::create_policy_command_runner(
       std::move(runner), policy_config);
   if (!protected_runner) {
     return fail(protected_runner.error());
   }
   return ok(std::shared_ptr<workflow::ITaskExecutor>{
-      std::make_shared<CommandTaskExecutor>(std::move(*protected_runner))});
+      std::make_shared<CommandTaskExecutor>(std::move(*protected_runner),
+                                            std::move(*description))});
 }
 
 } // namespace detail
@@ -272,8 +376,13 @@ auto create_task_executor(Runtime &runtime,
   if (!runner) {
     return fail(runner.error());
   }
+  auto description = command_description(config.policy);
+  if (!description) {
+    return fail(description.error());
+  }
   return ok(std::shared_ptr<workflow::ITaskExecutor>{
-      std::make_shared<CommandTaskExecutor>(std::move(*runner))});
+      std::make_shared<CommandTaskExecutor>(std::move(*runner),
+                                            std::move(*description))});
 }
 
 } // namespace dagforge::executors::command

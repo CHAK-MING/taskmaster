@@ -25,9 +25,22 @@ public:
     return "bench";
   }
 
+  [[nodiscard]] auto describe() const -> Result<ExecutorDescription> override {
+    auto schema = JsonPayload::from(glz::obj{"type", "object"});
+    if (!schema) {
+      return fail(schema.error());
+    }
+    return ok(ExecutorDescription{
+        .type = "bench",
+        .summary = "Benchmark executor",
+        .config_schema = std::move(*schema),
+    });
+  }
+
   [[nodiscard]] auto compile(JsonPayload config, ExecutorCompileContext) const
-      -> Result<CompiledExecutorConfig> override {
-    return ok(CompiledExecutorConfig::from_encoded(std::move(config)));
+      -> ExecutorCompileResult<CompiledExecutorConfig> override {
+    return executor_compile_ok(
+        CompiledExecutorConfig::from_encoded(std::move(config)));
   }
 
   auto start(TaskExecutionRequest request, TaskExecutionSink sink)
@@ -41,8 +54,7 @@ public:
       outputs.emplace_back(output.clone(), std::string{"ok"});
     }
     if (sink.on_complete) {
-      sink.on_complete(request.instance_id,
-                       task_succeeded(std::move(outputs)));
+      sink.on_complete(request.instance_id, task_succeeded(std::move(outputs)));
     }
     return ok();
   }

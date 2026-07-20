@@ -36,9 +36,8 @@ namespace {
 }
 
 [[nodiscard]] auto same_execution_contract(const NodePlan &left,
-                                            const NodePlan &right) -> bool {
-  return left.executor == right.executor &&
-         left.config == right.config &&
+                                           const NodePlan &right) -> bool {
+  return left.executor == right.executor && left.config == right.config &&
          same_inputs(left.inputs, right.inputs) &&
          same_outputs(left.outputs, right.outputs) &&
          left.timeout == right.timeout;
@@ -66,8 +65,7 @@ namespace {
 
 } // namespace
 
-auto plan_repair(const ExecutionPlan &revised,
-                 const WorkflowCheckpoint &parent,
+auto plan_repair(const ExecutionPlan &revised, const WorkflowCheckpoint &parent,
                  const IArtifactStore &artifacts) -> Result<RepairPlan> {
   if (revised.workflow_id != parent.snapshot.workflow_id ||
       revised.workflow_id != parent.plan.workflow_id) {
@@ -95,29 +93,31 @@ auto plan_repair(const ExecutionPlan &revised,
   std::vector<bool> reusable(revised.nodes.size(), false);
   for (const auto node_index : revised.topological_order) {
     const auto &compiled = revised.nodes[node_index];
-    const auto node_key = compiled.plan.node_id.str();
-    RepairNodeDecision decision{.node_id = compiled.plan.node_id.clone()};
+    const auto &target_node = target_plan.nodes[node_index];
+    const auto node_key = target_node.node_id.str();
+    RepairNodeDecision decision{.node_id = target_node.node_id.clone()};
 
     const auto parent_node = parent_nodes.find(node_key);
     const auto parent_task = parent_tasks.find(node_key);
-    if (parent_node == parent_nodes.end() || parent_task == parent_tasks.end()) {
+    if (parent_node == parent_nodes.end() ||
+        parent_task == parent_tasks.end()) {
       decision.reason = "node_added";
     } else if (parent_task->second->state != TaskState::Succeeded) {
       decision.reason = "source_not_succeeded";
-    } else if (!same_execution_contract(*parent_node->second,
-                                        compiled.plan)) {
+    } else if (!same_execution_contract(*parent_node->second, target_node)) {
       decision.reason = "execution_contract_changed";
-    } else if (incoming_edges(parent.plan, compiled.plan.node_id) !=
-               incoming_edges(target_plan, compiled.plan.node_id)) {
+    } else if (incoming_edges(parent.plan, target_node.node_id) !=
+               incoming_edges(target_plan, target_node.node_id)) {
       decision.reason = "incoming_condition_changed";
-    } else if (std::ranges::any_of(
-                   compiled.dependencies,
-                   [&](std::size_t dependency) { return !reusable[dependency]; })) {
+    } else if (std::ranges::any_of(compiled.dependencies,
+                                   [&](std::size_t dependency) {
+                                     return !reusable[dependency];
+                                   })) {
       decision.reason = "dependency_invalidated";
     } else {
       bool missing_required_output = false;
-      for (const auto &port : compiled.plan.outputs) {
-        OutputRef output{.node_id = compiled.plan.node_id.clone(),
+      for (const auto &port : target_node.outputs) {
+        OutputRef output{.node_id = target_node.node_id.clone(),
                          .port = port.clone()};
         const auto retained = parent_values.find(output);
         if (retained == parent_values.end()) {
@@ -138,7 +138,7 @@ auto plan_repair(const ExecutionPlan &revised,
         reusable[node_index] = true;
         result.reused_nodes.emplace(node_key);
         for (const auto &entry : parent.values) {
-          if (entry.output.node_id == compiled.plan.node_id) {
+          if (entry.output.node_id == target_node.node_id) {
             result.values.push_back(entry);
           }
         }

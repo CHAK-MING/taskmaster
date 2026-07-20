@@ -1,5 +1,7 @@
 #include "dagforge/workflow/workflow_control_plane.hpp"
 
+#include "../detail/capability_catalog.hpp"
+
 #include <algorithm>
 #include <memory>
 #include <ranges>
@@ -8,28 +10,28 @@
 
 namespace dagforge::workflow {
 
-WorkflowControlPlane::WorkflowControlPlane(const ExecutorRegistry &executors,
-                                           PlanValidator validator,
-                                           std::shared_ptr<PlanStore> plan_store)
-    : compiler_(executors, std::move(validator)),
-      plan_store_(std::move(plan_store)) {
+WorkflowControlPlane::WorkflowControlPlane(
+    const ExecutorRegistry &executors, PlanValidator validator,
+    std::shared_ptr<PlanStore> plan_store)
+    : compiler_(executors, validator), executors_(&executors),
+      admission_(validator.admission()), plan_store_(std::move(plan_store)) {
   if (!plan_store_) {
     plan_store_ = std::make_shared<PlanStore>();
   }
 }
 
 auto WorkflowControlPlane::register_plan(WorkflowPlan plan)
-    -> Result<PlanRegistration> {
+    -> PlanResult<PlanRegistration> {
   auto compiled = compiler_.compile(std::move(plan));
   if (!compiled) {
-    return fail(compiled.error());
+    return plan_fail(std::move(compiled.error()));
   }
 
   std::lock_guard lock(mutex_);
   if (const auto existing = plans_by_digest_.find((*compiled)->digest);
       existing != plans_by_digest_.end()) {
     latest_by_workflow_[existing->second->workflow_id.str()] = existing->second;
-    return ok(PlanRegistration{
+    return plan_ok(PlanRegistration{
         .plan = existing->second,
         .durability_deferred =
             durability_deferred_by_plan_id_[existing->second->plan_id.str()],
@@ -37,7 +39,9 @@ auto WorkflowControlPlane::register_plan(WorkflowPlan plan)
   }
   auto persisted = plan_store_->save(**compiled);
   if (!persisted) {
-    return fail(persisted.error());
+    return plan_fail(
+        make_plan_diagnostic(persisted.error(), "plan_persist_failed",
+                             "Workflow Plan could not be persisted"));
   }
   plans_by_id_[(*compiled)->plan_id.str()] = *compiled;
   plans_by_digest_[(*compiled)->digest] = *compiled;
@@ -49,7 +53,7 @@ auto WorkflowControlPlane::register_plan(WorkflowPlan plan)
   durability_deferred_by_plan_id_[(*compiled)->plan_id.str()] =
       persisted->durability_deferred;
   latest_by_workflow_[(*compiled)->workflow_id.str()] = *compiled;
-  return ok(PlanRegistration{
+  return plan_ok(PlanRegistration{
       .plan = std::move(*compiled),
       .durability_deferred = persisted->durability_deferred,
   });
@@ -58,20 +62,22 @@ auto WorkflowControlPlane::register_plan(WorkflowPlan plan)
 auto WorkflowControlPlane::restore_plan(WorkflowPlan plan,
                                         const WorkflowPlanId &plan_id,
                                         std::string_view expected_digest)
-    -> Result<std::shared_ptr<const ExecutionPlan>> {
+    -> PlanResult<std::shared_ptr<const ExecutionPlan>> {
   auto compiled = compiler_.compile(std::move(plan), plan_id);
   if (!compiled) {
-    return fail(compiled.error());
+    return plan_fail(std::move(compiled.error()));
   }
   if (!expected_digest.empty() && (*compiled)->digest != expected_digest) {
-    return fail(Error::ParseError);
+    return plan_fail(make_plan_diagnostic(
+        Error::ParseError, "plan_digest_mismatch",
+        "Stored Workflow Plan digest does not match its content", "/digest"));
   }
   std::lock_guard lock(mutex_);
   plans_by_id_[(*compiled)->plan_id.str()] = *compiled;
   plans_by_digest_[(*compiled)->digest] = *compiled;
   durability_deferred_by_plan_id_[(*compiled)->plan_id.str()] = false;
   latest_by_workflow_[(*compiled)->workflow_id.str()] = *compiled;
-  return ok(std::move(*compiled));
+  return plan_ok(std::move(*compiled));
 }
 
 auto WorkflowControlPlane::get_latest(const WorkflowId &workflow_id) const
@@ -102,10 +108,14 @@ auto WorkflowControlPlane::list_plans() const
   for (const auto &[_, plan] : plans_by_id_) {
     plans.push_back(plan);
   }
-  std::ranges::sort(plans, {}, [](const auto &plan) {
-    return plan->workflow_id.value();
-  });
+  std::ranges::sort(plans, {},
+                    [](const auto &plan) { return plan->workflow_id.value(); });
   return plans;
+}
+
+auto WorkflowControlPlane::capabilities() const
+    -> Result<WorkflowCapabilities> {
+  return detail::build_workflow_capabilities(*executors_, admission_);
 }
 
 } // namespace dagforge::workflow

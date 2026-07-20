@@ -65,6 +65,29 @@ struct DiagnosticHeader {
 
 } // namespace dagforge::executors::http::detail
 
+namespace glz {
+
+template <> struct meta<dagforge::executors::http::detail::HeaderEntry> {
+  using T = dagforge::executors::http::detail::HeaderEntry;
+  static constexpr auto value = object("name", &T::name, "value", &T::value);
+};
+
+template <> struct meta<dagforge::executors::http::detail::InputHeaderBinding> {
+  using T = dagforge::executors::http::detail::InputHeaderBinding;
+  static constexpr auto value =
+      object("input", &T::input, "header", &T::header);
+};
+
+template <> struct meta<dagforge::executors::http::detail::NodeConfig> {
+  using T = dagforge::executors::http::detail::NodeConfig;
+  static constexpr auto value =
+      object("method", &T::method, "url", &T::url, "headers", &T::headers,
+             "input_headers", &T::input_headers, "body", &T::body, "body_input",
+             &T::body_input, "accepted_statuses", &T::accepted_statuses);
+};
+
+} // namespace glz
+
 namespace dagforge::executors::http {
 namespace {
 
@@ -85,6 +108,48 @@ inline constexpr std::array<std::string_view, 4> kSupportedOutputs{
 [[nodiscard]] auto encode_node_config(const detail::NodeConfig &config)
     -> Result<JsonPayload> {
   return JsonPayload::from(config);
+}
+
+[[nodiscard]] auto http_description(const config::HttpEgressConfig &config)
+    -> Result<workflow::ExecutorDescription> {
+  auto schema = json_schema_payload<detail::NodeConfig>();
+  if (!schema) {
+    return fail(schema.error());
+  }
+  const auto example_url = config.allowed_origins.empty()
+                               ? std::string{"https://allowed.example/resource"}
+                               : config.allowed_origins.front() + "/resource";
+  auto example =
+      JsonPayload::from(glz::obj{"method", "GET", "url", example_url});
+  if (!example) {
+    return fail(example.error());
+  }
+  const std::vector<std::string_view> supported_outputs(
+      kSupportedOutputs.begin(), kSupportedOutputs.end());
+  auto constraints = JsonPayload::from(
+      glz::obj{"allowed_origins",           config.allowed_origins,
+               "allow_plaintext",           config.allow_plaintext,
+               "deny_private_networks",     config.deny_private_networks,
+               "ip_exception_count",        config.allowed_ip_cidrs.size(),
+               "max_request_headers",       config.max_request_headers,
+               "max_request_header_bytes",  config.max_request_header_bytes,
+               "max_request_body_bytes",    config.max_request_body_bytes,
+               "max_response_headers",      config.max_response_headers,
+               "max_response_header_bytes", config.max_response_header_bytes,
+               "max_response_body_bytes",   config.max_response_body_bytes,
+               "max_concurrent_requests",   config.max_concurrent_requests,
+               "tls_min_version",           config.tls_min_version,
+               "supported_outputs",         supported_outputs});
+  if (!constraints) {
+    return fail(constraints.error());
+  }
+  return ok(workflow::ExecutorDescription{
+      .type = "http",
+      .summary = "Call an HTTP origin authorized by server egress policy",
+      .config_schema = std::move(*schema),
+      .examples = {std::move(*example)},
+      .constraints = std::move(*constraints),
+  });
 }
 
 [[nodiscard]] auto parse_method(std::string_view method)
@@ -191,9 +256,9 @@ struct HttpExecutorCore {
 [[nodiscard]] auto try_acquire_global_slot(HttpExecutorCore &core) -> bool {
   auto current = core.active_requests.load(std::memory_order_relaxed);
   while (current < core.policy.config().max_concurrent_requests) {
-    if (core.active_requests.compare_exchange_weak(
-            current, current + 1, std::memory_order_acq_rel,
-            std::memory_order_relaxed)) {
+    if (core.active_requests.compare_exchange_weak(current, current + 1,
+                                                   std::memory_order_acq_rel,
+                                                   std::memory_order_relaxed)) {
       return true;
     }
   }
@@ -209,8 +274,7 @@ auto prune_idle_origin(HttpShardState &state, std::string_view origin,
   auto &clients = found->second;
   const auto old_size = clients.size();
   std::erase_if(clients, [now](PooledHttpClient &entry) {
-    if (entry.client && entry.client->is_reusable() &&
-        entry.expires_at > now) {
+    if (entry.client && entry.client->is_reusable() && entry.expires_at > now) {
       return false;
     }
     if (entry.client) {
@@ -275,7 +339,8 @@ auto prune_idle_clients(HttpShardState &state,
 
 auto release_idle_client(HttpExecutorCore &core, shard_id shard,
                          std::string origin,
-                         std::unique_ptr<transport::HttpClient> client) -> void {
+                         std::unique_ptr<transport::HttpClient> client)
+    -> void {
   if (!client) {
     return;
   }
@@ -347,15 +412,16 @@ auto close_idle_clients(HttpShardState &state) -> void {
       reinterpret_cast<const std::uint8_t *>(value.data()), value.size()});
 }
 
-[[nodiscard]] auto valid_response_headers(
-    const transport::HttpHeaders &headers) -> bool {
+[[nodiscard]] auto valid_response_headers(const transport::HttpHeaders &headers)
+    -> bool {
   return std::ranges::all_of(headers, [](const auto &header) {
     return valid_utf8(header.name) && valid_utf8(header.value);
   });
 }
 
-[[nodiscard]] auto accepted_status(
-    std::uint16_t status, std::span<const std::uint16_t> accepted) -> bool {
+[[nodiscard]] auto accepted_status(std::uint16_t status,
+                                   std::span<const std::uint16_t> accepted)
+    -> bool {
   if (accepted.empty()) {
     return status >= 200 && status <= 299;
   }
@@ -381,8 +447,8 @@ auto close_idle_clients(HttpShardState &state) -> void {
   std::vector<detail::HeaderEntry> encoded;
   encoded.reserve(headers.size());
   for (const auto &field : headers) {
-    encoded.push_back(detail::HeaderEntry{.name = field.name,
-                                          .value = field.value});
+    encoded.push_back(
+        detail::HeaderEntry{.name = field.name, .value = field.value});
   }
   return JsonPayload::from(encoded);
 }
@@ -395,13 +461,13 @@ auto close_idle_clients(HttpShardState &state) -> void {
   const auto normalized = util::ascii_lowercase(name);
   return std::ranges::find(kSensitiveHeaders, normalized) !=
              kSensitiveHeaders.end() ||
-         normalized.ends_with("-api-key") ||
-         normalized.ends_with("-secret") ||
+         normalized.ends_with("-api-key") || normalized.ends_with("-secret") ||
          normalized.ends_with("-token");
 }
 
-[[nodiscard]] auto diagnostic_response_headers(
-    const transport::HttpHeaders &headers) -> std::vector<detail::DiagnosticHeader> {
+[[nodiscard]] auto
+diagnostic_response_headers(const transport::HttpHeaders &headers)
+    -> std::vector<detail::DiagnosticHeader> {
   std::vector<detail::DiagnosticHeader> encoded;
   encoded.reserve(headers.size());
   for (const auto &field : headers) {
@@ -415,9 +481,10 @@ auto close_idle_clients(HttpShardState &state) -> void {
   return encoded;
 }
 
-[[nodiscard]] auto http_operation_failure(
-    const std::shared_ptr<HttpRequestState> &state,
-    std::error_code operation_error) -> workflow::ExecutionFailure {
+[[nodiscard]] auto
+http_operation_failure(const std::shared_ptr<HttpRequestState> &state,
+                       std::error_code operation_error)
+    -> workflow::ExecutionFailure {
   auto details = JsonPayload::from(
       glz::obj{"cause", workflow::FailureCause{
                             .category = operation_error.category().name(),
@@ -430,37 +497,37 @@ auto close_idle_clients(HttpShardState &state) -> void {
         "HTTP failure diagnostics could not be encoded");
   }
   if (state->timed_out) {
-    return workflow::make_execution_failure(
-        Error::Timeout, "http_timed_out", "HTTP request timed out",
-        std::move(*details));
+    return workflow::make_execution_failure(Error::Timeout, "http_timed_out",
+                                            "HTTP request timed out",
+                                            std::move(*details));
   }
   if (state->cancel_requested) {
-    return workflow::make_execution_failure(
-        Error::Cancelled, "http_cancelled",
-        "HTTP request was cancelled", std::move(*details));
+    return workflow::make_execution_failure(Error::Cancelled, "http_cancelled",
+                                            "HTTP request was cancelled",
+                                            std::move(*details));
   }
   return workflow::make_execution_failure(
       operation_error, "http_transport_failed", "HTTP transport failed");
 }
 
-[[nodiscard]] auto http_response_details(
-    std::uint16_t status, const transport::HttpHeaders &headers,
-    std::span<const std::uint8_t> body) -> Result<JsonPayload> {
+[[nodiscard]] auto http_response_details(std::uint16_t status,
+                                         const transport::HttpHeaders &headers,
+                                         std::span<const std::uint8_t> body)
+    -> Result<JsonPayload> {
   const auto headers_valid = valid_response_headers(headers);
   const auto body_valid = valid_utf8(body);
   const auto diagnostic_headers =
-      headers_valid
-          ? std::optional{diagnostic_response_headers(headers)}
-          : std::nullopt;
+      headers_valid ? std::optional{diagnostic_response_headers(headers)}
+                    : std::nullopt;
   const auto diagnostic_body =
       body_valid
           ? std::optional{std::string{
                 reinterpret_cast<const char *>(body.data()), body.size()}}
           : std::nullopt;
   return JsonPayload::from(glz::obj{
-      "status", status, "body_size_bytes", body.size(),
-      "headers_valid_utf8", headers_valid, "body_valid_utf8", body_valid,
-      "headers", diagnostic_headers, "body", diagnostic_body});
+      "status", status, "body_size_bytes", body.size(), "headers_valid_utf8",
+      headers_valid, "body_valid_utf8", body_valid, "headers",
+      diagnostic_headers, "body", diagnostic_body});
 }
 
 [[nodiscard]] auto rejected_status_failure(
@@ -489,8 +556,7 @@ auto close_idle_clients(HttpShardState &state) -> void {
   }
   return workflow::make_execution_failure(
       Error::ProtocolError, "http_invalid_response",
-      "HTTP response contains invalid UTF-8 data",
-      std::move(*details));
+      "HTTP response contains invalid UTF-8 data", std::move(*details));
 }
 
 auto cancel_state(const std::shared_ptr<HttpRequestState> &state,
@@ -529,8 +595,8 @@ auto complete_request(const std::shared_ptr<HttpExecutorCore> &core,
   }
 }
 
-[[nodiscard]] auto interrupted_error(
-    const std::shared_ptr<HttpRequestState> &state)
+[[nodiscard]] auto
+interrupted_error(const std::shared_ptr<HttpRequestState> &state)
     -> std::optional<std::error_code> {
   if (state->timed_out) {
     return make_error_code(Error::Timeout);
@@ -544,14 +610,13 @@ auto complete_request(const std::shared_ptr<HttpExecutorCore> &core,
 auto run_http_request(std::shared_ptr<HttpExecutorCore> core, shard_id shard,
                       std::shared_ptr<HttpRequestState> state,
                       detail::ParsedHttpTarget target,
-                      transport::HttpRequest request,
-                      detail::NodeConfig config,
+                      transport::HttpRequest request, detail::NodeConfig config,
                       std::vector<WorkflowPortId> requested_outputs)
     -> spawn_task {
   if (auto interrupted = interrupted_error(state)) {
-    complete_request(core, shard, state,
-                     workflow::task_failed(
-                         http_operation_failure(state, *interrupted)));
+    complete_request(
+        core, shard, state,
+        workflow::task_failed(http_operation_failure(state, *interrupted)));
     co_return;
   }
   const auto &egress = core->policy.config();
@@ -565,18 +630,19 @@ auto run_http_request(std::shared_ptr<HttpExecutorCore> core, shard_id shard,
           std::chrono::milliseconds(egress.first_byte_timeout_ms),
       .read_timeout = std::chrono::milliseconds(egress.read_timeout_ms),
       .max_response_headers = egress.max_response_headers,
-      .max_response_header_size = static_cast<std::size_t>(
-          egress.max_response_header_bytes),
-      .max_response_size = static_cast<std::size_t>(
-          egress.max_response_body_bytes),
+      .max_response_header_size =
+          static_cast<std::size_t>(egress.max_response_header_bytes),
+      .max_response_size =
+          static_cast<std::size_t>(egress.max_response_body_bytes),
       .keep_alive = true,
       .tls_min_version = egress.tls_min_version,
       .tls_ca_file = egress.tls_ca_file,
       .tls_client_cert_file = egress.tls_client_cert_file,
       .tls_client_key_file = egress.tls_client_key_file,
-      .endpoint_allowed = [core](const boost::asio::ip::address &address) {
-        return core->policy.address_allowed(address);
-      },
+      .endpoint_allowed =
+          [core](const boost::asio::ip::address &address) {
+            return core->policy.address_allowed(address);
+          },
   };
 
   state->client = acquire_idle_client(*core, shard, target.origin);
@@ -589,68 +655,62 @@ auto run_http_request(std::shared_ptr<HttpExecutorCore> core, shard_id shard,
                                current_io_context(), target.host, target.port,
                                client_config, state->cancellation.slot());
     if (!connected) {
-      complete_request(
-          core, shard, state,
-          workflow::task_failed(
-              http_operation_failure(state, connected.error())));
+      complete_request(core, shard, state,
+                       workflow::task_failed(
+                           http_operation_failure(state, connected.error())));
       co_return;
     }
     state->client = std::move(*connected);
   }
   if (auto interrupted = interrupted_error(state)) {
-    complete_request(core, shard, state,
-                     workflow::task_failed(
-                         http_operation_failure(state, *interrupted)));
+    complete_request(
+        core, shard, state,
+        workflow::task_failed(http_operation_failure(state, *interrupted)));
     co_return;
   }
 
-  auto response = co_await state->client->request(
-      std::move(request), state->cancellation.slot());
+  auto response = co_await state->client->request(std::move(request),
+                                                  state->cancellation.slot());
   if (!response) {
     complete_request(
         core, shard, state,
-        workflow::task_failed(
-            http_operation_failure(state, response.error())));
+        workflow::task_failed(http_operation_failure(state, response.error())));
     co_return;
   }
   if (auto interrupted = interrupted_error(state)) {
-    complete_request(core, shard, state,
-                     workflow::task_failed(
-                         http_operation_failure(state, *interrupted)));
+    complete_request(
+        core, shard, state,
+        workflow::task_failed(http_operation_failure(state, *interrupted)));
     co_return;
   }
   if (state->client->is_reusable()) {
-    release_idle_client(*core, shard, target.origin,
-                        std::move(state->client));
+    release_idle_client(*core, shard, target.origin, std::move(state->client));
   } else {
     state->client.reset();
   }
 
   const auto status = static_cast<std::uint16_t>(response->status);
   if (!accepted_status(status, config.accepted_statuses)) {
-    complete_request(
-        core, shard, state,
-        workflow::task_failed(rejected_status_failure(
-            status, response->headers, response->body)));
+    complete_request(core, shard, state,
+                     workflow::task_failed(rejected_status_failure(
+                         status, response->headers, response->body)));
     co_return;
   }
   if (!valid_utf8(response->body) ||
       !valid_response_headers(response->headers)) {
-    complete_request(
-        core, shard, state,
-        workflow::task_failed(invalid_response_failure(
-            status, response->headers, response->body)));
+    complete_request(core, shard, state,
+                     workflow::task_failed(invalid_response_failure(
+                         status, response->headers, response->body)));
     co_return;
   }
 
   const std::string body{response->body_as_string()};
   auto headers = response_headers(response->headers);
   if (!headers) {
-    complete_request(
-        core, shard, state,
-        workflow::task_failed(workflow::make_execution_failure(
-            headers.error(), "http_response_headers_encode_failed",
-            "HTTP response headers could not be encoded")));
+    complete_request(core, shard, state,
+                     workflow::task_failed(workflow::make_execution_failure(
+                         headers.error(), "http_response_headers_encode_failed",
+                         "HTTP response headers could not be encoded")));
     co_return;
   }
   workflow::ExecutorOutputs outputs;
@@ -666,60 +726,98 @@ auto run_http_request(std::shared_ptr<HttpExecutorCore> core, shard_id shard,
 
 class HttpTaskExecutor final : public workflow::ITaskExecutor {
 public:
-  explicit HttpTaskExecutor(std::shared_ptr<HttpExecutorCore> core)
-      : core_(std::move(core)) {}
+  HttpTaskExecutor(std::shared_ptr<HttpExecutorCore> core,
+                   workflow::ExecutorDescription description)
+      : core_(std::move(core)), description_(std::move(description)) {}
 
   [[nodiscard]] auto type() const noexcept -> std::string_view override {
     return "http";
   }
 
-  [[nodiscard]] auto compile(
-      JsonPayload config, workflow::ExecutorCompileContext context) const
-      -> Result<workflow::CompiledExecutorConfig> override {
+  [[nodiscard]] auto describe() const
+      -> Result<workflow::ExecutorDescription> override {
+    return ok(description_);
+  }
+
+  [[nodiscard]] auto compile(JsonPayload config,
+                             workflow::ExecutorCompileContext context) const
+      -> workflow::ExecutorCompileResult<
+          workflow::CompiledExecutorConfig> override {
     auto parsed = parse_node_config(config);
     if (!parsed) {
-      return fail(parsed.error());
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              parsed.error(), "http_config_invalid",
+              "HTTP configuration does not match the expected schema"));
     }
     auto method = parse_method(parsed->method);
     auto target = core_->policy.authorize(parsed->url);
-    if (!method || !target) {
-      return fail(!method ? method.error() : target.error());
+    if (!method) {
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              method.error(), "http_method_invalid",
+              "HTTP method is not supported", "/method"));
+    }
+    if (!target) {
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              target.error(), "http_target_not_allowed",
+              "HTTP target is not allowed by server egress policy", "/url"));
     }
     if (parsed->body && parsed->body_input) {
-      return fail(Error::InvalidArgument);
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              Error::InvalidArgument, "http_body_source_conflict",
+              "HTTP configuration must use exactly one of body or body_input",
+              "/body"));
     }
     if ((*method == transport::HttpMethod::GET ||
          *method == transport::HttpMethod::HEAD) &&
         (parsed->body || parsed->body_input)) {
-      return fail(Error::InvalidArgument);
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              Error::InvalidArgument, "http_method_body_forbidden",
+              "GET and HEAD HTTP requests cannot carry a body", "/body"));
     }
     if (parsed->body &&
-        parsed->body->size() >
-            core_->policy.config().max_request_body_bytes) {
-      return fail(Error::ResourceExhausted);
+        parsed->body->size() > core_->policy.config().max_request_body_bytes) {
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              Error::ResourceExhausted, "http_body_too_large",
+              "HTTP static request body exceeds the configured byte limit",
+              "/body"));
     }
-    if (parsed->body_input &&
-        (parsed->body_input->empty() ||
-         !input_exists(context, *parsed->body_input))) {
-      return fail(Error::InvalidArgument);
+    if (parsed->body_input && (parsed->body_input->empty() ||
+                               !input_exists(context, *parsed->body_input))) {
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              Error::InvalidArgument, "http_body_input_invalid",
+              "HTTP body_input must reference a declared input",
+              "/body_input"));
     }
 
     if (parsed->headers.size() + parsed->input_headers.size() >
         core_->policy.config().max_request_headers) {
-      return fail(Error::ResourceExhausted);
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              Error::ResourceExhausted, "http_header_count_exceeded",
+              "HTTP request header count exceeds the configured limit",
+              "/headers"));
     }
     std::unordered_set<std::string> header_names;
     std::uint64_t static_header_bytes = 0;
     for (const auto &header : parsed->headers) {
       auto normalized = util::ascii_lowercase(header.name);
-      if (!valid_header_name(header.name) ||
-          !safe_header_value(header.value) ||
+      if (!valid_header_name(header.name) || !safe_header_value(header.value) ||
           executor_owned_header(header.name) ||
           !header_names.emplace(normalized).second) {
-        return fail(Error::InvalidArgument);
+        return workflow::executor_compile_fail(
+            workflow::make_executor_compile_failure(
+                Error::InvalidArgument, "http_header_invalid",
+                "HTTP static headers must be safe, unique, and caller-owned",
+                "/headers"));
       }
-      static_header_bytes +=
-          header_wire_bytes(header.name, header.value);
+      static_header_bytes += header_wire_bytes(header.name, header.value);
     }
     for (const auto &binding : parsed->input_headers) {
       auto normalized = util::ascii_lowercase(binding.header);
@@ -727,33 +825,52 @@ public:
           !valid_header_name(binding.header) ||
           executor_owned_header(binding.header) ||
           !header_names.emplace(normalized).second) {
-        return fail(Error::InvalidArgument);
+        return workflow::executor_compile_fail(
+            workflow::make_executor_compile_failure(
+                Error::InvalidArgument, "http_input_header_invalid",
+                "HTTP input headers must reference declared inputs and safe "
+                "unique headers",
+                "/input_headers"));
       }
       static_header_bytes += header_wire_bytes(binding.header, {});
     }
-    if (static_header_bytes >
-        core_->policy.config().max_request_header_bytes) {
-      return fail(Error::ResourceExhausted);
+    if (static_header_bytes > core_->policy.config().max_request_header_bytes) {
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              Error::ResourceExhausted, "http_header_bytes_exceeded",
+              "HTTP request headers exceed the configured byte limit",
+              "/headers"));
     }
 
     std::unordered_set<std::uint16_t> accepted;
     for (const auto status : parsed->accepted_statuses) {
       if (status < 100 || status > 599 || !accepted.emplace(status).second) {
-        return fail(Error::InvalidArgument);
+        return workflow::executor_compile_fail(
+            workflow::make_executor_compile_failure(
+                Error::InvalidArgument, "http_accepted_status_invalid",
+                "HTTP accepted_statuses must contain unique status codes from "
+                "100 to 599",
+                "/accepted_statuses"));
       }
     }
     std::ranges::sort(parsed->accepted_statuses);
 
     if (!outputs_supported(context.outputs, kSupportedOutputs)) {
-      return fail(Error::InvalidArgument);
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              Error::InvalidArgument, "http_outputs_unsupported",
+              "HTTP node declares an unsupported output"));
     }
 
     auto encoded = encode_node_config(*parsed);
     if (!encoded) {
-      return fail(encoded.error());
+      return workflow::executor_compile_fail(
+          workflow::make_executor_compile_failure(
+              encoded.error(), "http_config_encode_failed",
+              "HTTP compiled configuration could not be encoded"));
     }
-    return ok(workflow::CompiledExecutorConfig::from_encoded(
-        std::move(*encoded)));
+    return workflow::executor_compile_ok(
+        workflow::CompiledExecutorConfig::from_encoded(std::move(*encoded)));
   }
 
   auto start(workflow::TaskExecutionRequest request,
@@ -853,7 +970,8 @@ public:
       cancel_state(state, false);
     }
     state->timeout_handle = core_->runtime->schedule_after_on(
-        shard, request.timeout, [weak = std::weak_ptr<HttpRequestState>{state}] {
+        shard, request.timeout,
+        [weak = std::weak_ptr<HttpRequestState>{state}] {
           if (auto locked = weak.lock()) {
             cancel_state(locked, true);
           }
@@ -871,14 +989,14 @@ public:
 
   auto cancel(const InstanceId &instance_id) -> void override {
     for (shard_id shard = 0; shard < core_->shard_states.size(); ++shard) {
-      core_->runtime->post_to(
-          shard, [core = core_, shard, instance_id = instance_id.clone()] {
-            auto active = core->shard_states[shard].find_active_mut(instance_id);
-            if (active == core->shard_states[shard].active_end()) {
-              return;
-            }
-            cancel_state(active->second, false);
-          });
+      core_->runtime->post_to(shard, [core = core_, shard,
+                                      instance_id = instance_id.clone()] {
+        auto active = core->shard_states[shard].find_active_mut(instance_id);
+        if (active == core->shard_states[shard].active_end()) {
+          return;
+        }
+        cancel_state(active->second, false);
+      });
     }
   }
 
@@ -911,6 +1029,7 @@ public:
 
 private:
   std::shared_ptr<HttpExecutorCore> core_;
+  workflow::ExecutorDescription description_;
 };
 
 } // namespace
@@ -922,10 +1041,14 @@ auto create_task_executor(Runtime &runtime,
   if (!policy) {
     return fail(policy.error());
   }
-  auto core =
-      std::make_shared<HttpExecutorCore>(runtime, std::move(*policy));
+  auto description = http_description(config);
+  if (!description) {
+    return fail(description.error());
+  }
+  auto core = std::make_shared<HttpExecutorCore>(runtime, std::move(*policy));
   return ok(std::shared_ptr<workflow::ITaskExecutor>{
-      std::make_shared<HttpTaskExecutor>(std::move(core))});
+      std::make_shared<HttpTaskExecutor>(std::move(core),
+                                         std::move(*description))});
 }
 
 } // namespace dagforge::executors::http

@@ -33,6 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libboost-system-dev \
     libboost-url-dev \
     libcap-dev \
+    libpcre2-dev \
     libssl-dev \
     liburing-dev \
     make \
@@ -155,6 +156,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libboost-process1.90.0 \
     libboost-url1.90.0 \
     libcap2 \
+    libpcre2-8-0 \
     libquadmath0 \
     libssl3t64 \
     libstdc++6 \

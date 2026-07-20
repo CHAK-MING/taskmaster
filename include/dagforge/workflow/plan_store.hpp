@@ -19,8 +19,9 @@ namespace dagforge::workflow {
 
 struct StoredPlan {
   WorkflowPlanId plan_id;
-  std::string digest;
-  WorkflowPlan plan;
+  std::string execution_digest;
+  std::string source_digest;
+  WorkflowPlan source_plan;
   std::chrono::system_clock::time_point created_at{
       std::chrono::system_clock::now()};
 };

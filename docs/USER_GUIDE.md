@@ -124,10 +124,7 @@ sandbox mounts a private tmpfs over `/tmp`. Environment overrides are:
 - `DAGFORGE_SANDBOX_MAX_OPEN_FILES`
 
 Command-specific program registration and environment policy live under
-`executors.command.policy`. A slash-free name such as `python3` resolves only through
-`programs`; DAGForge never searches PATH. Registered and legacy absolute paths
-are canonicalized and checked both while compiling the node config and
-immediately before process launch.
+`executors.command.policy`. A slash-free name such as `python3` resolves only through `programs`; DAGForge never searches PATH. Registered and explicitly allowed absolute paths are canonicalized and checked both while compiling the node config and immediately before process launch.
 
 The runner always owns `PATH`, `HOME`, and `TMPDIR`. Only names listed in
 `inherited_environment` are copied from the DAGForge process, and
@@ -256,7 +253,7 @@ Admission is owned by the server, not by the Workflow Plan:
 {
   "admission": {
     "allow_unlisted_executors": false,
-    "allowed_executors": ["command", "http"],
+    "allowed_executors": ["command", "http", "transform"],
     "max_nodes": 256,
     "max_parallel_nodes": 32,
     "max_total_output_bytes": 67108864,
@@ -269,6 +266,14 @@ When `allow_unlisted_executors` is false, the executor allowlist is exact.
 Admission also caps every plan budget. Command program and environment policy
 is deliberately separate because it belongs to that executor, not to the
 generic Workflow Runtime.
+
+#### Capability discovery
+
+`GET /api/v1/capabilities` returns the versioned Workflow Capability Document used by Plan authoring tools. It includes the Workflow Plan JSON Schema, effective admission ceilings, executor kinds constructed in the process, the constructed kinds currently permitted by admission, and each executor's strict config schema, examples and non-secret constraints.
+
+`enabled_executors` lists registered executor kinds. `allowed_executors` is the subset that can currently pass admission. The complete `admission` object remains authoritative when `allow_unlisted_executors` is enabled.
+
+The document is deliberately narrower than `SystemConfig`. Command descriptions expose registered program names but not resolved paths or environment values. HTTP descriptions expose allowed origins and numeric limits but not credentials, certificate paths or CIDR contents. Capability schema changes are governed by `capability_schema_version`.
 
 ### 2.6 Storage
 
@@ -522,7 +527,42 @@ HTTP executor contract.
 
 See `dags/http_pipeline.json` for a real Command → HTTP → Command Workflow.
 
-### 3.4 Conditional edges
+### 3.4 Transform configuration
+
+The Transform executor compiles one JSONata 2.2.2 expression when the Workflow Plan is accepted:
+
+```json
+{
+  "executor": "transform",
+  "inputs": [
+    {"input":"message","node":"prepare","port":"result"}
+  ],
+  "outputs": ["result"],
+  "timeout_sec": 30,
+  "config": {
+    "expression": "\"received:\" & $message"
+  }
+}
+```
+
+Every input is a property of the root input object and is also installed as a same-named JSONata binding. Use `$message` when the input name is a valid JSONata variable token. Names containing operators remain accessible through the root object, for example `$lookup($, 'hyphen-name')`. Use `$` when an expression needs to enumerate or transform the complete input document. Strings, booleans, nulls, arrays, and objects preserve their structural type; Workflow integers and doubles both use JSONata binary64 number semantics. Artifact inputs expose reference metadata only and are never dereferenced by this executor.
+
+With one declared output, the complete result is published on that port. With multiple outputs, the expression must return an object with exactly the declared keys:
+
+```json
+{
+  "outputs": ["total", "label"],
+  "config": {
+    "expression": "{\"total\": $left + $right, \"label\": \"sum\"}"
+  }
+}
+```
+
+Invalid JSONata source is rejected when the Plan is accepted. During a Run, `undefined`, functions, missing or extra multi-output keys, cancellation, timeout, resource-limit violations, and other evaluation failures fail the Attempt. Evaluation failures retain structured JSONata diagnostics. The node timeout includes time waiting for a Transform worker.
+
+See `dags/dataflow.json` for a real Command → Transform → Command Workflow.
+
+### 3.5 Conditional edges
 
 Conditions are explicit edges rather than executable branch tasks.
 
@@ -541,7 +581,7 @@ Supported condition kinds:
 - `bool_equals`
 - `string_equals`
 
-### 3.5 Policy and budgets
+### 3.6 Policy and budgets
 
 ```json
 {
@@ -574,6 +614,31 @@ dagforge validate workflow.json
 
 Validation loads the plan, rejects unknown fields, compiles the graph, and
 prints the workflow ID, generated plan ID, digest, and node count.
+When admission rejects the Plan, `validate` writes the complete
+`PlanDiagnostic` JSON object to standard error, including the stable code,
+JSON Pointer path, optional Node and executor identity, and bounded details.
+
+Plan rejection uses a structured diagnostic rather than a log string. The response contains `kind`, stable `code`, `message`, absolute JSON Pointer `path`, optional `node_id`, optional `executor`, and bounded executor-owned `details`. For example, an invalid Transform expression can return:
+
+```json
+{
+  "error": {
+    "kind": "invalid_argument",
+    "code": "transform_expression_invalid",
+    "message": "Expected a right-hand expression",
+    "path": "/nodes/0/config/expression",
+    "node_id": "normalize",
+    "executor": "transform",
+    "details": {
+      "jsonata_code": "S0207",
+      "position": 8,
+      "token": "+"
+    }
+  }
+}
+```
+
+Admission reports the first deterministic failure. Validation and server policy run before graph references and cycle detection; graph errors run before executor compilation. Policy denial returns HTTP 403. Caller-controlled malformed, unsupported, cyclic, duplicate, missing and over-budget Plans return HTTP 400. Persistence and internal encoding failures remain server errors.
 
 HTTP Plan validation must load the server policy:
 
@@ -623,6 +688,7 @@ dagforge api health
 dagforge api ready
 dagforge api status
 dagforge api metrics
+dagforge api capabilities
 
 dagforge api plan add workflow.json
 dagforge api plan list

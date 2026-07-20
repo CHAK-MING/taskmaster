@@ -1,8 +1,9 @@
 # DAGForge 0.4 HTTP API
 
 The API is available when `[api].enabled = true`. JSON responses use the
-standard HTTP status code for success or failure. Error responses use one
-stable envelope rather than a string-only field:
+standard HTTP status code for success or failure. Ordinary operation and
+runtime failures use an `ExecutionFailure` envelope rather than a string-only
+field:
 
 ```json
 {
@@ -23,8 +24,32 @@ stable envelope rather than a string-only field:
 ```
 
 `kind` drives broad policy and `code` is the stable machine identifier.
-Validation errors use codes such as `invalid_request`; callers do not need to
-parse `message`.
+Callers do not need to parse `message`.
+
+Workflow Plan admission and repair compilation use a `PlanDiagnostic` in the
+same outer `error` envelope. It identifies the rejected submitted field and
+does not contain runtime diagnostic Artifacts:
+
+```json
+{
+  "error": {
+    "kind": "invalid_argument",
+    "code": "transform_expression_invalid",
+    "message": "Transform expression could not be compiled",
+    "path": "/nodes/0/config/expression",
+    "node_id": "transform",
+    "executor": "transform",
+    "details": {
+      "jsonata_code": "S0207"
+    }
+  }
+}
+```
+
+`path` is an absolute JSON Pointer into the submitted Workflow Plan. Plan
+admission returns the first deterministic failure: server policy denial is
+`403`, caller-controlled Plan faults are `400`, and genuine persistence or
+internal encoding failures are `500`.
 
 When `api.bearer_token_env` is configured, every endpoint requires:
 
@@ -70,6 +95,21 @@ dagforge api ready
 Returns runtime state, whether the workflow runtime is enabled, active run
 count, shard count, and a timestamp.
 
+### `GET /api/v1/capabilities`
+
+Returns the versioned Workflow Capability Document used by Plan-authoring
+clients. It includes the Workflow Plan JSON Schema, effective admission
+ceilings, sorted `enabled_executors`, the admission-allowed subset, and each
+executor's strict configuration schema, examples, and non-secret constraints.
+It is not a system-configuration export: command filesystem paths, credential
+values, TLS key paths, and HTTP CIDR contents are not returned.
+
+CLI equivalent:
+
+```bash
+dagforge api capabilities
+```
+
 ### `GET /metrics`
 
 Returns Prometheus text exposition for service, HTTP, Run, Task, Attempt,
@@ -98,7 +138,12 @@ The response has status `201 Created`:
 }
 ```
 
-Plans with the same canonical digest are deduplicated. When file storage is enabled, the immutable Plan catalog is restored before Run checkpoints. A stored `plan_id` cannot be overwritten with a different digest. `durability_deferred` is true only when the Plan rename committed and the Plan is immediately readable but the containing-directory `fsync` did not confirm crash durability; an idempotent registration of the same digest preserves that state until a later confirmed Plan-directory synchronization or process restart.
+Plans with the same compiled execution digest are deduplicated. When file storage is enabled, the immutable Plan catalog stores the submitted Plan, its source digest and the expected compiled execution digest, then recompiles it before restoring Run checkpoints. A stored `plan_id` cannot be overwritten with a different source or execution identity. `durability_deferred` is true only when the Plan rename committed and the Plan is immediately readable but the containing-directory `fsync` did not confirm crash durability; an idempotent registration of the same identities preserves that state until a later confirmed Plan-directory synchronization or process restart.
+
+Rejected Plans return `PlanDiagnostic`. Executor-owned relative configuration
+paths are prefixed by the Plan compiler, for example
+`/nodes/0/config/program`; an unregistered executor points to
+`/nodes/0/executor`.
 
 ### `GET /api/v1/workflows/plans`
 
@@ -223,8 +268,8 @@ policy. `code` is the stable machine identifier. `details` is executor-owned
 bounded JSON. Command failures can include exit status and captured output;
 HTTP status failures can include status, headers, body, UTF-8 validity, and
 body size. Credential-bearing response headers keep their names but return the
-value `[redacted]` and `redacted: true`. Legacy string-only `error` and
-`last_error` fields are not emitted.
+value `[redacted]` and `redacted: true`. String-only `error` and `last_error`
+fields are not emitted.
 
 When complete diagnostic JSON exceeds the inline limit, `details` becomes a
 small externalization summary and `artifacts` contains a named reference:
@@ -311,7 +356,7 @@ reuse decision for every node:
 }
 ```
 
-Reuse requires the same node ID, executor, canonical config, input and output
+Reuse requires the same node ID, executor, submitted config, input and output
 contracts, timeout, incoming conditional edges, reusable dependencies, and
 retained outputs. Missing Artifacts invalidate reuse. The parent checkpoint
 and Evidence are never modified. A repair idempotency key is bound to both the
@@ -355,7 +400,9 @@ Moves a paused run back to `running` and resumes dispatch.
 ## Error behavior
 
 Every JSON error response contains `error.kind`, `error.code`,
-`error.message`, `error.details`, and `error.artifacts`.
+`error.message`, and `error.details`. Runtime `ExecutionFailure` values also
+contain `error.artifacts`. Plan-admission `PlanDiagnostic` values instead
+contain `error.path` and may contain `error.node_id` and `error.executor`.
 
 - `400`: invalid path parameter, body, plan, or strict parser failure.
 - `401`/`403`: mapped adapter or policy authorization failure.

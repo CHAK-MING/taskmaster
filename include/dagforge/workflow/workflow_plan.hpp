@@ -158,6 +158,7 @@ private:
 struct CompiledNode {
   std::size_t index{0};
   NodePlan plan;
+  JsonPayload source_config;
   CompiledExecutorConfig executor_config;
   std::vector<std::size_t> dependencies;
   std::vector<std::size_t> dependents;
@@ -166,6 +167,7 @@ struct CompiledNode {
 struct ExecutionPlan {
   WorkflowPlanId plan_id;
   WorkflowId workflow_id;
+  std::uint32_t schema_version{1};
   std::string digest;
   std::vector<CompiledNode> nodes;
   std::vector<ConditionalEdge> edges;
@@ -174,10 +176,11 @@ struct ExecutionPlan {
   WorkflowPolicy policy;
 };
 
-[[nodiscard]] inline auto source_plan(const ExecutionPlan &execution)
+[[nodiscard]] inline auto compiled_plan(const ExecutionPlan &execution)
     -> WorkflowPlan {
   WorkflowPlan plan;
   plan.workflow_id = execution.workflow_id.clone();
+  plan.schema_version = execution.schema_version;
   plan.nodes.reserve(execution.nodes.size());
   for (const auto &compiled : execution.nodes) {
     plan.nodes.push_back(compiled.plan);
@@ -185,6 +188,15 @@ struct ExecutionPlan {
   plan.edges = execution.edges;
   plan.outputs = execution.outputs;
   plan.policy = execution.policy;
+  return plan;
+}
+
+[[nodiscard]] inline auto source_plan(const ExecutionPlan &execution)
+    -> WorkflowPlan {
+  auto plan = compiled_plan(execution);
+  for (std::size_t index = 0; index < plan.nodes.size(); ++index) {
+    plan.nodes[index].config = execution.nodes[index].source_config;
+  }
   return plan;
 }
 

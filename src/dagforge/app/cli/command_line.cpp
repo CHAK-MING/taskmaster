@@ -58,8 +58,7 @@ using ParsedCommand =
 
 class CommandSelection {
 public:
-  template <typename Options>
-  auto select(Options options) -> void {
+  template <typename Options> auto select(Options options) -> void {
     ++count_;
     if (!command_) {
       command_.emplace(std::move(options));
@@ -91,7 +90,8 @@ private:
         constexpr std::array<std::string_view, 7> methods{
             "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"};
         if (std::ranges::find(methods, value) == methods.end()) {
-          return "method must be GET, POST, PUT, DELETE, PATCH, OPTIONS, or HEAD";
+          return "method must be GET, POST, PUT, DELETE, PATCH, OPTIONS, or "
+                 "HEAD";
         }
         return {};
       },
@@ -99,32 +99,30 @@ private:
 }
 
 [[nodiscard]] auto request_path_validator() -> CLI::Validator {
-  return CLI::Validator{
-      [](std::string &value) -> std::string {
-        if (value.empty() || value.front() != '/') {
-          return "request path must start with '/'";
-        }
-        if (contains_line_break(value)) {
-          return "request path must not contain line breaks";
-        }
-        return {};
-      },
-      "absolute HTTP path", "HTTP_PATH"};
+  return CLI::Validator{[](std::string &value) -> std::string {
+                          if (value.empty() || value.front() != '/') {
+                            return "request path must start with '/'";
+                          }
+                          if (contains_line_break(value)) {
+                            return "request path must not contain line breaks";
+                          }
+                          return {};
+                        },
+                        "absolute HTTP path", "HTTP_PATH"};
 }
 
 [[nodiscard]] auto path_segment_validator() -> CLI::Validator {
-  return CLI::Validator{
-      [](std::string &value) -> std::string {
-        if (value.empty()) {
-          return "identifier must not be empty";
-        }
-        if (value.find_first_of("/?#") != std::string::npos ||
-            contains_line_break(value)) {
-          return "identifier must be one URL path segment";
-        }
-        return {};
-      },
-      "URL path segment", "ID"};
+  return CLI::Validator{[](std::string &value) -> std::string {
+                          if (value.empty()) {
+                            return "identifier must not be empty";
+                          }
+                          if (value.find_first_of("/?#") != std::string::npos ||
+                              contains_line_break(value)) {
+                            return "identifier must be one URL path segment";
+                          }
+                          return {};
+                        },
+                        "URL path segment", "ID"};
 }
 
 [[nodiscard]] auto endpoint_validator() -> CLI::Validator {
@@ -194,8 +192,8 @@ auto configure_serve(CLI::App &root, ServeOptions &options,
   auto *command =
       root.add_subcommand("serve", "Run the long-lived Workflow HTTP service");
   configure_leaf(*command, "[CONFIG]");
-  command->add_option("config", options.config_path,
-                      "System configuration JSON")
+  command
+      ->add_option("config", options.config_path, "System configuration JSON")
       ->default_val(options.config_path)
       ->envname("DAGFORGE_CONFIG")
       ->check(CLI::ExistingFile)
@@ -213,8 +211,9 @@ auto configure_validate(CLI::App &root, ValidateOptions &options,
       ->required()
       ->check(CLI::ExistingFile)
       ->type_name("PLAN");
-  command->add_option("-c,--config", options.config_path,
-                      "Use server executor and admission policy")
+  command
+      ->add_option("-c,--config", options.config_path,
+                   "Use server executor and admission policy")
       ->envname("DAGFORGE_CONFIG")
       ->check(CLI::ExistingFile)
       ->type_name("JSON");
@@ -233,8 +232,9 @@ auto configure_run(CLI::App &root, RunOptions &options,
       ->required()
       ->check(CLI::ExistingFile)
       ->type_name("PLAN");
-  command->add_option("-c,--config", options.config_path,
-                      "System configuration JSON")
+  command
+      ->add_option("-c,--config", options.config_path,
+                   "System configuration JSON")
       ->default_val(options.config_path)
       ->envname("DAGFORGE_CONFIG")
       ->check(CLI::ExistingFile)
@@ -252,15 +252,15 @@ auto configure_api_options(CLI::App &command, ApiOptions &options) -> void {
       ->envname("DAGFORGE_ENDPOINT")
       ->check(endpoint_validator())
       ->type_name("URL");
-  connection
-      ->add_option("--token", options.bearer_token, "Bearer token")
+  connection->add_option("--token", options.bearer_token, "Bearer token")
       ->envname("DAGFORGE_API_TOKEN")
       ->type_name("TOKEN");
 
   auto *request = command.add_option_group("Request");
   request->set_help_all_flag("");
-  request->add_option("-H,--header", options.headers,
-                      "Additional request header; repeat as needed")
+  request
+      ->add_option("-H,--header", options.headers,
+                   "Additional request header; repeat as needed")
       ->check(header_validator())
       ->take_all()
       ->type_name("HEADER");
@@ -293,8 +293,9 @@ auto configure_api_options(CLI::App &command, ApiOptions &options) -> void {
   output->set_help_all_flag("");
   output->add_flag("-i,--include", options.include_headers,
                    "Print response status and headers");
-  output->add_option("-o,--output", options.output_path,
-                     "Write response body to a file")
+  output
+      ->add_option("-o,--output", options.output_path,
+                   "Write response body to a file")
       ->type_name("FILE");
 }
 
@@ -309,8 +310,8 @@ auto configure_api_leaf(CLI::App &command, ApiOptions &options,
 
 auto select_api_command(const ApiOptions &common, CommandSelection &selection,
                         std::string method, std::string path,
-                        std::string body = {},
-                        std::string content_type = {}) -> void {
+                        std::string body = {}, std::string content_type = {})
+    -> void {
   auto options = common;
   options.method = std::move(method);
   options.path = std::move(path);
@@ -329,8 +330,8 @@ auto add_identifier(CLI::App &command, std::string name, std::string &value,
 
 auto add_pagination(CLI::App &command, PageArgs &page) -> void {
   command.add_option("--offset", page.offset, "First result offset")
-      ->check(CLI::Range(std::size_t{0},
-                        std::numeric_limits<std::size_t>::max()))
+      ->check(
+          CLI::Range(std::size_t{0}, std::numeric_limits<std::size_t>::max()))
       ->type_name("N");
   command.add_option("--limit", page.limit, "Maximum returned results")
       ->check(CLI::Range(std::size_t{1}, std::size_t{1000}))
@@ -341,9 +342,8 @@ auto configure_api_system(CLI::App &api, ApiOptions &options,
                           CommandSelection &selection) -> void {
   auto *health = api.add_subcommand("health", "Check service liveness");
   configure_api_leaf(*health, options, "");
-  health->callback([&] {
-    select_api_command(options, selection, "GET", "/api/health");
-  });
+  health->callback(
+      [&] { select_api_command(options, selection, "GET", "/api/health"); });
 
   auto *ready = api.add_subcommand("ready", "Check service readiness");
   configure_api_leaf(*ready, options, "");
@@ -352,8 +352,14 @@ auto configure_api_system(CLI::App &api, ApiOptions &options,
 
   auto *status = api.add_subcommand("status", "Show service runtime status");
   configure_api_leaf(*status, options, "");
-  status->callback([&] {
-    select_api_command(options, selection, "GET", "/api/status");
+  status->callback(
+      [&] { select_api_command(options, selection, "GET", "/api/status"); });
+
+  auto *capabilities =
+      api.add_subcommand("capabilities", "Discover Workflow capabilities");
+  configure_api_leaf(*capabilities, options, "");
+  capabilities->callback([&] {
+    select_api_command(options, selection, "GET", "/api/v1/capabilities");
   });
 
   auto *metrics = api.add_subcommand("metrics", "Read Prometheus metrics");
@@ -364,7 +370,8 @@ auto configure_api_system(CLI::App &api, ApiOptions &options,
 
 auto configure_api_plan(CLI::App &api, ApiOptions &options,
                         CommandSelection &selection) -> void {
-  auto *plan = api.add_subcommand("plan", "Register and inspect Workflow Plans");
+  auto *plan =
+      api.add_subcommand("plan", "Register and inspect Workflow Plans");
   require_subcommand(*plan);
   plan->footer("Run `dagforge api plan COMMAND --help` for command options.");
 
@@ -387,10 +394,10 @@ auto configure_api_plan(CLI::App &api, ApiOptions &options,
   configure_api_leaf(*list, options, "[--offset N] [--limit N]");
   add_pagination(*list, *list_args);
   list->callback([&, list_args] {
-    select_api_command(options, selection, "GET",
-                       "/api/v1/workflows/plans?offset=" +
-                           std::to_string(list_args->offset) + "&limit=" +
-                           std::to_string(list_args->limit));
+    select_api_command(
+        options, selection, "GET",
+        "/api/v1/workflows/plans?offset=" + std::to_string(list_args->offset) +
+            "&limit=" + std::to_string(list_args->limit));
   });
 
   auto get_args = std::make_shared<IdentifierArgs>();
@@ -406,25 +413,23 @@ auto configure_api_plan(CLI::App &api, ApiOptions &options,
 
 auto configure_api_run(CLI::App &api, ApiOptions &options,
                        CommandSelection &selection) -> void {
-  auto *run = api.add_subcommand("run", "Start and control remote Workflow Runs");
+  auto *run =
+      api.add_subcommand("run", "Start and control remote Workflow Runs");
   require_subcommand(*run);
   run->footer("Run `dagforge api run COMMAND --help` for command options.");
 
   auto start_args = std::make_shared<StartRunArgs>();
   auto *start = run->add_subcommand("start", "Start a remote Workflow Run");
   configure_api_leaf(*start, options, "WORKFLOW_ID [REQUEST]");
-  add_identifier(*start, "workflow_id", start_args->workflow_id,
-                 "Workflow ID");
+  add_identifier(*start, "workflow_id", start_args->workflow_id, "Workflow ID");
   start
-      ->add_option(
-          "request", start_args->request_body,
-          "StartRunRequest JSON, @file, or - for standard input")
+      ->add_option("request", start_args->request_body,
+                   "StartRunRequest JSON, @file, or - for standard input")
       ->type_name("JSON");
   start->callback([&, start_args] {
-    select_api_command(
-        options, selection, "POST",
-        "/api/v1/workflows/" + start_args->workflow_id + "/runs",
-        start_args->request_body, "application/json");
+    select_api_command(options, selection, "POST",
+                       "/api/v1/workflows/" + start_args->workflow_id + "/runs",
+                       start_args->request_body, "application/json");
   });
 
   auto get_args = std::make_shared<IdentifierArgs>();
@@ -441,8 +446,7 @@ auto configure_api_run(CLI::App &api, ApiOptions &options,
   auto *failures =
       run->add_subcommand("failures", "Get a Workflow Run failure report");
   configure_api_leaf(*failures, options, "RUN_ID");
-  add_identifier(*failures, "run_id", failures_args->value,
-                 "Workflow Run ID");
+  add_identifier(*failures, "run_id", failures_args->value, "Workflow Run ID");
   failures->callback([&, failures_args] {
     select_api_command(options, selection, "GET",
                        "/api/v1/workflow-runs/" + failures_args->value +
@@ -459,10 +463,10 @@ auto configure_api_run(CLI::App &api, ApiOptions &options,
       ->required()
       ->type_name("JSON");
   repair->callback([&, repair_args] {
-    select_api_command(
-        options, selection, "POST",
-        "/api/v1/workflow-runs/" + repair_args->run_id + "/repairs",
-        repair_args->request_body, "application/json");
+    select_api_command(options, selection, "POST",
+                       "/api/v1/workflow-runs/" + repair_args->run_id +
+                           "/repairs",
+                       repair_args->request_body, "application/json");
   });
 
   auto output_args = std::make_shared<OutputArgs>();
@@ -483,27 +487,25 @@ auto configure_api_run(CLI::App &api, ApiOptions &options,
     PageArgs page;
   };
   auto evidence_args = std::make_shared<EvidenceArgs>();
-  auto *evidence = run->add_subcommand("evidence", "List Workflow Run evidence");
-  configure_api_leaf(*evidence, options,
-                     "RUN_ID [--offset N] [--limit N]");
-  add_identifier(*evidence, "run_id", evidence_args->run_id,
-                 "Workflow Run ID");
+  auto *evidence =
+      run->add_subcommand("evidence", "List Workflow Run evidence");
+  configure_api_leaf(*evidence, options, "RUN_ID [--offset N] [--limit N]");
+  add_identifier(*evidence, "run_id", evidence_args->run_id, "Workflow Run ID");
   add_pagination(*evidence, evidence_args->page);
   evidence->callback([&, evidence_args] {
     select_api_command(
         options, selection, "GET",
         "/api/v1/workflow-runs/" + evidence_args->run_id +
-            "/evidence?offset=" +
-            std::to_string(evidence_args->page.offset) + "&limit=" +
-            std::to_string(evidence_args->page.limit));
+            "/evidence?offset=" + std::to_string(evidence_args->page.offset) +
+            "&limit=" + std::to_string(evidence_args->page.limit));
   });
 
-  for (const auto action : {std::string_view{"pause"},
-                            std::string_view{"resume"},
-                            std::string_view{"cancel"}}) {
+  for (const auto action :
+       {std::string_view{"pause"}, std::string_view{"resume"},
+        std::string_view{"cancel"}}) {
     auto args = std::make_shared<IdentifierArgs>();
-    auto *command = run->add_subcommand(std::string(action),
-                                        std::string(action) + " a Workflow Run");
+    auto *command = run->add_subcommand(
+        std::string(action), std::string(action) + " a Workflow Run");
     configure_api_leaf(*command, options, "RUN_ID");
     add_identifier(*command, "run_id", args->value, "Workflow Run ID");
     command->callback([&, args, action] {
@@ -566,8 +568,7 @@ auto configure_api_request(CLI::App &api, ApiOptions &options,
       ->required()
       ->transform(http_method_validator())
       ->type_name("METHOD");
-  request->add_option("path", options.path,
-                      "API path, including query string")
+  request->add_option("path", options.path, "API path, including query string")
       ->required()
       ->check(request_path_validator())
       ->type_name("PATH");
@@ -591,6 +592,7 @@ auto configure_api(CLI::App &root, ApiOptions &options,
   api->footer("Examples:\n"
               "  dagforge api health\n"
               "  dagforge api ready\n"
+              "  dagforge api capabilities\n"
               "  dagforge api plan add workflow.json\n"
               "  dagforge api run start hello-world @start-run.json\n"
               "  dagforge api run cancel RUN_ID\n"

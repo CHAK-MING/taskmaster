@@ -67,8 +67,7 @@ const StorageConfig kStorageDefaults{};
     std::size_t max_records = StorageConfig{}.max_evidence_records)
     -> std::shared_ptr<EvidenceLedger> {
   auto opened = EvidenceLedger::open(
-      std::move(file), max_records,
-      kStorageDefaults.max_evidence_file_bytes,
+      std::move(file), max_records, kStorageDefaults.max_evidence_file_bytes,
       kStorageDefaults.max_evidence_record_bytes);
   if (!opened) {
     throw std::runtime_error(opened.error().message());
@@ -118,10 +117,28 @@ public:
     return "test";
   }
 
-  [[nodiscard]] auto compile(JsonPayload config,
-                             ExecutorCompileContext) const
-      -> Result<CompiledExecutorConfig> override {
-    return ok(CompiledExecutorConfig::from_encoded(std::move(config)));
+  [[nodiscard]] auto describe() const -> Result<ExecutorDescription> override {
+    auto schema = JsonPayload::from(
+        glz::obj{"type", "object", "additionalProperties", false});
+    if (!schema) {
+      return fail(schema.error());
+    }
+    auto example = JsonPayload::from(glz::obj{});
+    if (!example) {
+      return fail(example.error());
+    }
+    return ok(ExecutorDescription{
+        .type = "test",
+        .summary = "Test executor",
+        .config_schema = std::move(*schema),
+        .examples = {std::move(*example)},
+    });
+  }
+
+  [[nodiscard]] auto compile(JsonPayload config, ExecutorCompileContext) const
+      -> ExecutorCompileResult<CompiledExecutorConfig> override {
+    return executor_compile_ok(
+        CompiledExecutorConfig::from_encoded(std::move(config)));
   }
 
   auto start(TaskExecutionRequest request, TaskExecutionSink sink)
@@ -144,7 +161,8 @@ public:
     std::lock_guard lock(mutex_);
     pending_.push_back(Pending{
         .instance_id = std::move(request.instance_id),
-        .owner = runtime_ != nullptr ? runtime_->current_shard() : kInvalidShard,
+        .owner =
+            runtime_ != nullptr ? runtime_->current_shard() : kInvalidShard,
         .principal = std::move(request.principal),
         .trace = std::move(request.trace),
         .config = request.config.encoded(),
@@ -217,9 +235,10 @@ public:
     return true;
   }
 
-  [[nodiscard]] auto wait_for_pending(
-      std::size_t count,
-      std::chrono::milliseconds timeout = std::chrono::seconds(2)) -> bool {
+  [[nodiscard]] auto
+  wait_for_pending(std::size_t count,
+                   std::chrono::milliseconds timeout = std::chrono::seconds(2))
+      -> bool {
     std::unique_lock lock(mutex_);
     return changed_.wait_for(lock, timeout,
                              [&] { return pending_.size() >= count; });
@@ -274,14 +293,14 @@ public:
     if (runtime_ == nullptr) {
       return false;
     }
-    runtime_->post_to(
-        pending->owner,
-        [pending = std::move(*pending),
-         result = task_succeeded(std::move(outputs))]() mutable {
-          if (pending.sink.on_complete) {
-            pending.sink.on_complete(pending.instance_id, std::move(result));
-          }
-        });
+    runtime_->post_to(pending->owner,
+                      [pending = std::move(*pending),
+                       result = task_succeeded(std::move(outputs))]() mutable {
+                        if (pending.sink.on_complete) {
+                          pending.sink.on_complete(pending.instance_id,
+                                                   std::move(result));
+                        }
+                      });
     return true;
   }
 
@@ -300,9 +319,8 @@ public:
       return false;
     }
     runtime_->post_to(
-        pending->owner,
-        [pending = std::move(*pending),
-         result = task_failed(std::move(failure))]() mutable {
+        pending->owner, [pending = std::move(*pending),
+                         result = task_failed(std::move(failure))]() mutable {
           if (pending.sink.on_complete) {
             pending.sink.on_complete(pending.instance_id, std::move(result));
           }
@@ -344,8 +362,7 @@ private:
     TaskExecutionSink sink;
   };
 
-  [[nodiscard]] static auto make_outputs(const Pending &pending,
-                                         int exit_code,
+  [[nodiscard]] static auto make_outputs(const Pending &pending, int exit_code,
                                          const std::string &output)
       -> TaskExecutionResult {
     if (exit_code != 0) {
@@ -394,13 +411,12 @@ private:
     if (runtime_ == nullptr) {
       return;
     }
-    runtime_->post_to(
-        pending->owner,
-        [pending = std::move(*pending), result = std::move(result)]() mutable {
-          if (pending.sink.on_complete) {
-            pending.sink.on_complete(pending.instance_id, std::move(result));
-          }
-        });
+    runtime_->post_to(pending->owner, [pending = std::move(*pending),
+                                       result = std::move(result)]() mutable {
+      if (pending.sink.on_complete) {
+        pending.sink.on_complete(pending.instance_id, std::move(result));
+      }
+    });
   }
 
   auto complete_inline(const InstanceId &instance_id, int exit_code,
@@ -571,10 +587,10 @@ struct CommandTaskExecutorEnvironment {
   return make_payload(config);
 }
 
-[[nodiscard]] auto wait_for_state(WorkflowRuntime &runtime, Runtime &core,
-                                  const WorkflowRunId &run_id, RunState state,
-                                  std::chrono::milliseconds timeout =
-                                      std::chrono::seconds(5))
+[[nodiscard]] auto
+wait_for_state(WorkflowRuntime &runtime, Runtime &core,
+               const WorkflowRunId &run_id, RunState state,
+               std::chrono::milliseconds timeout = std::chrono::seconds(5))
     -> Result<std::shared_ptr<const RunSnapshot>> {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (std::chrono::steady_clock::now() < deadline) {
@@ -684,12 +700,11 @@ public:
 
   [[nodiscard]] auto get(const ArtifactId &artifact_id) const
       -> Result<ArtifactBlob> override {
-    const auto artifact = std::ranges::find_if(
-        artifacts_, [&](const ArtifactBlob &candidate) {
+    const auto artifact =
+        std::ranges::find_if(artifacts_, [&](const ArtifactBlob &candidate) {
           return candidate.ref.artifact_id == artifact_id;
         });
-    return artifact == artifacts_.end() ? fail(Error::NotFound)
-                                        : ok(*artifact);
+    return artifact == artifacts_.end() ? fail(Error::NotFound) : ok(*artifact);
   }
 
   auto erase(const ArtifactId &artifact_id)
@@ -697,8 +712,8 @@ public:
     if (erase_failure_ && *erase_failure_ == artifact_id) {
       return fail(Error::PersistenceError);
     }
-    const auto artifact = std::ranges::find_if(
-        artifacts_, [&](const ArtifactBlob &candidate) {
+    const auto artifact =
+        std::ranges::find_if(artifacts_, [&](const ArtifactBlob &candidate) {
           return candidate.ref.artifact_id == artifact_id;
         });
     if (artifact == artifacts_.end()) {
@@ -730,8 +745,8 @@ private:
   std::vector<ArtifactBlob> artifacts_;
 };
 
-[[nodiscard]] auto observe_executor_completion(
-    Runtime &runtime, ExecutorRegistry &registry)
+[[nodiscard]] auto observe_executor_completion(Runtime &runtime,
+                                               ExecutorRegistry &registry)
     -> task<Result<ExecutorContinuationObservation>> {
   if (!runtime.is_current_shard()) {
     co_return fail(Error::InvalidState);
@@ -746,8 +761,8 @@ private:
   if (!outputs) {
     co_return fail(make_error_code(outputs.error().kind));
   }
-  const auto after = runtime.is_current_shard() ? runtime.current_shard()
-                                                : kInvalidShard;
+  const auto after =
+      runtime.is_current_shard() ? runtime.current_shard() : kInvalidShard;
   co_return ok(ExecutorContinuationObservation{
       .before = before,
       .after = after,
@@ -774,16 +789,13 @@ TEST(WorkflowPlanLoaderTest, ParsesJsonPlanWithOpaqueExecutorConfig) {
   ASSERT_EQ(json_plan->nodes.size(), 1U);
   EXPECT_EQ(json_plan->nodes.front().executor, "test");
   ASSERT_TRUE(json_plan->nodes.front().config.is_object());
-  const auto executor_config =
-      materialize(json_plan->nodes.front().config);
+  const auto executor_config = materialize(json_plan->nodes.front().config);
   EXPECT_EQ(executor_config["operation"].as<std::string>(), "analyze");
   ASSERT_EQ(json_plan->nodes.front().outputs.size(), 1U);
-  EXPECT_EQ(json_plan->nodes.front().outputs.front(),
-            WorkflowPortId{"result"});
+  EXPECT_EQ(json_plan->nodes.front().outputs.front(), WorkflowPortId{"result"});
   TestExecutorEnvironment environment;
-  EXPECT_TRUE(PlanCompiler{environment.registry}
-                  .compile(*json_plan)
-                  .has_value());
+  EXPECT_TRUE(
+      PlanCompiler{environment.registry}.compile(*json_plan).has_value());
 
   constexpr std::string_view invalid_policy_json = R"({
     "workflow_id":"loader-invalid-policy",
@@ -852,12 +864,10 @@ TEST(WorkflowPlanLoaderTest, RoundTripsInputsConditionsAndPublishedOutputs) {
   ASSERT_EQ(decoded->outputs.size(), 1U);
   EXPECT_EQ(decoded->outputs.front().node_id, WorkflowNodeId{"target"});
   EXPECT_EQ(decoded->policy.failure_policy, FailurePolicy::FailFast);
-  EXPECT_EQ(decoded->policy.budget.max_run_duration,
-            std::chrono::seconds(45));
+  EXPECT_EQ(decoded->policy.budget.max_run_duration, std::chrono::seconds(45));
   EXPECT_EQ(decoded->nodes[1].retry_initial_delay,
             std::chrono::milliseconds(25));
-  EXPECT_EQ(decoded->nodes[1].retry_max_delay,
-            std::chrono::milliseconds(100));
+  EXPECT_EQ(decoded->nodes[1].retry_max_delay, std::chrono::milliseconds(100));
   EXPECT_EQ(decoded->nodes[1].timeout, std::chrono::seconds(12));
 
   constexpr std::string_view invalid_condition = R"({
@@ -886,8 +896,8 @@ TEST(WorkflowPlanLoaderTest, RoundTripsInputsConditionsAndPublishedOutputs) {
   ASSERT_TRUE(invalid_node_result.has_value())
       << invalid_node_result.error().message();
   TestExecutorEnvironment environment;
-  auto invalid_node_compiled =
-      PlanCompiler{environment.registry}.compile(std::move(*invalid_node_result));
+  auto invalid_node_compiled = PlanCompiler{environment.registry}.compile(
+      std::move(*invalid_node_result));
   ASSERT_FALSE(invalid_node_compiled.has_value());
   EXPECT_EQ(invalid_node_compiled.error(),
             make_error_code(Error::InvalidArgument));
@@ -936,8 +946,7 @@ TEST(WorkflowSerdeTest, UsesTypedDomainMetadataDirectly) {
             "repair_run_started");
 
   auto task_state_json = serialize_json(TaskState::RetryWaiting);
-  ASSERT_TRUE(task_state_json.has_value())
-      << task_state_json.error().message();
+  ASSERT_TRUE(task_state_json.has_value()) << task_state_json.error().message();
   EXPECT_EQ(*task_state_json, R"("retry_waiting")");
 
   auto task_state = parse_json_as<TaskState>(*task_state_json);
@@ -971,8 +980,7 @@ TEST(WorkflowSerdeTest, RoundTripsTaggedWorkflowValues) {
   constexpr std::array<std::string_view, 7> tags{
       "null", "bool", "integer", "number", "string", "json", "artifact"};
   constexpr std::array<std::string_view, 7> text{
-      "", "true", "42", "3.25", "text", R"({"nested":[1,true]})",
-      "artifact-a"};
+      "", "true", "42", "3.25", "text", R"({"nested":[1,true]})", "artifact-a"};
 
   for (std::size_t index = 0; index < values.size(); ++index) {
     EXPECT_EQ(workflow_value_text(values[index]), text[index]);
@@ -987,9 +995,9 @@ TEST(WorkflowSerdeTest, RoundTripsTaggedWorkflowValues) {
     EXPECT_EQ(decoded->index(), index);
   }
 
-  EXPECT_FALSE(parse_json_as<WorkflowValue>(
-                   R"({"type":"unsupported","value":1})")
-                   .has_value());
+  EXPECT_FALSE(
+      parse_json_as<WorkflowValue>(R"({"type":"unsupported","value":1})")
+          .has_value());
 }
 
 TEST(WorkflowSerdeTest, UsesDirectCheckpointAndEvidenceSchemas) {
@@ -1000,17 +1008,15 @@ TEST(WorkflowSerdeTest, UsesDirectCheckpointAndEvidenceSchemas) {
   checkpoint.snapshot.run_id = WorkflowRunId{"run-a"};
   checkpoint.snapshot.workflow_id = WorkflowId{"direct-storage"};
   checkpoint.snapshot.plan_id = WorkflowPlanId{"plan-a"};
-  checkpoint.values.emplace_back(
-      OutputRef{.node_id = WorkflowNodeId{"node-a"},
-                .port = WorkflowPortId{"result"}},
-      std::string{"value"});
+  checkpoint.values.emplace_back(OutputRef{.node_id = WorkflowNodeId{"node-a"},
+                                           .port = WorkflowPortId{"result"}},
+                                 std::string{"value"});
 
   auto encoded_checkpoint = serialize_json(checkpoint);
   ASSERT_TRUE(encoded_checkpoint.has_value())
       << encoded_checkpoint.error().message();
   auto checkpoint_json = parse_json(*encoded_checkpoint);
-  ASSERT_TRUE(checkpoint_json.has_value())
-      << checkpoint_json.error().message();
+  ASSERT_TRUE(checkpoint_json.has_value()) << checkpoint_json.error().message();
   EXPECT_TRUE(checkpoint_json->contains("plan"));
   EXPECT_TRUE(checkpoint_json->contains("trigger"));
   EXPECT_FALSE(checkpoint_json->contains("plan_json"));
@@ -1018,8 +1024,7 @@ TEST(WorkflowSerdeTest, UsesDirectCheckpointAndEvidenceSchemas) {
   const auto &trigger = (*checkpoint_json)["trigger"];
   EXPECT_TRUE(trigger.contains("principal"));
   EXPECT_FALSE(trigger.contains("principal_subject"));
-  const auto &stored_value =
-      (*checkpoint_json)["values"].get_array().front();
+  const auto &stored_value = (*checkpoint_json)["values"].get_array().front();
   EXPECT_TRUE(stored_value.contains("output"));
   EXPECT_EQ(stored_value["value"]["type"].as<std::string>(), "string");
 
@@ -1056,12 +1061,13 @@ TEST(WorkflowSerdeTest, SerializesRuntimeSnapshotsWithApiWireSemantics) {
               .attempt_id = AttemptId{"attempt-a"},
               .number = 1,
               .state = AttemptState::Failed,
-              .created_at = std::chrono::system_clock::time_point{
-                  std::chrono::milliseconds{25}},
+              .created_at =
+                  std::chrono::system_clock::time_point{
+                      std::chrono::milliseconds{25}},
           }},
       }},
-      .created_at = std::chrono::system_clock::time_point{
-          std::chrono::milliseconds{10}},
+      .created_at =
+          std::chrono::system_clock::time_point{std::chrono::milliseconds{10}},
   };
 
   auto encoded = serialize_json(snapshot);
@@ -1081,8 +1087,7 @@ TEST(WorkflowSerdeTest, SerializesRuntimeSnapshotsWithApiWireSemantics) {
   EXPECT_EQ(task.at("state").as<std::string>(), "failed");
   EXPECT_FALSE(task.contains("next_attempt_at_ms"));
   EXPECT_FALSE(task.contains("active_attempt_id"));
-  const auto &attempt =
-      task.at("attempts").get_array().front().get_object();
+  const auto &attempt = task.at("attempts").get_array().front().get_object();
   EXPECT_EQ(attempt.at("state").as<std::string>(), "failed");
   EXPECT_EQ(attempt.at("created_at_ms").as<std::int64_t>(), 25);
   EXPECT_FALSE(attempt.contains("started_at_ms"));
@@ -1095,12 +1100,13 @@ TEST(WorkflowSerdeTest, SerializesFailuresFromOneMetadataDefinition) {
       .message = "bad input",
       .artifacts = {FailureArtifact{
           .name = "details",
-          .artifact = ArtifactRef{
-              .artifact_id = ArtifactId{"artifact-b"},
-              .media_type = "application/json",
-              .size_bytes = 9,
-              .digest = "digest-b",
-          },
+          .artifact =
+              ArtifactRef{
+                  .artifact_id = ArtifactId{"artifact-b"},
+                  .media_type = "application/json",
+                  .size_bytes = 9,
+                  .digest = "digest-b",
+              },
       }},
   };
 
@@ -1119,18 +1125,18 @@ TEST(WorkflowSerdeTest, SerializesFailuresFromOneMetadataDefinition) {
 }
 
 TEST(WorkflowStateModelTest, RejectsIllegalTerminalTransitions) {
-  EXPECT_TRUE(workflow::detail::can_transition(RunState::Running,
-                                               RunState::Pausing));
-  EXPECT_TRUE(workflow::detail::can_transition(RunState::Pausing,
-                                               RunState::Paused));
-  EXPECT_TRUE(workflow::detail::can_transition(RunState::Paused,
-                                               RunState::Running));
-  EXPECT_TRUE(workflow::detail::can_transition(RunState::Running,
-                                               RunState::Stopping));
+  EXPECT_TRUE(
+      workflow::detail::can_transition(RunState::Running, RunState::Pausing));
+  EXPECT_TRUE(
+      workflow::detail::can_transition(RunState::Pausing, RunState::Paused));
+  EXPECT_TRUE(
+      workflow::detail::can_transition(RunState::Paused, RunState::Running));
+  EXPECT_TRUE(
+      workflow::detail::can_transition(RunState::Running, RunState::Stopping));
   EXPECT_TRUE(workflow::detail::can_transition(RunState::Stopping,
                                                RunState::Cancelled));
-  EXPECT_FALSE(workflow::detail::can_transition(RunState::Cancelled,
-                                                RunState::Running));
+  EXPECT_FALSE(
+      workflow::detail::can_transition(RunState::Cancelled, RunState::Running));
 
   EXPECT_TRUE(workflow::detail::can_transition(TaskState::Running,
                                                TaskState::RetryWaiting));
@@ -1139,18 +1145,14 @@ TEST(WorkflowStateModelTest, RejectsIllegalTerminalTransitions) {
   EXPECT_FALSE(workflow::detail::can_transition(TaskState::Succeeded,
                                                 TaskState::Running));
 
-  EXPECT_TRUE(
-      workflow::detail::can_transition(AttemptState::Running,
-                                       AttemptState::Terminating));
-  EXPECT_TRUE(
-      workflow::detail::can_transition(AttemptState::Starting,
-                                       AttemptState::TimedOut));
-  EXPECT_TRUE(
-      workflow::detail::can_transition(AttemptState::Terminating,
-                                       AttemptState::TimedOut));
-  EXPECT_FALSE(
-      workflow::detail::can_transition(AttemptState::Succeeded,
-                                       AttemptState::Running));
+  EXPECT_TRUE(workflow::detail::can_transition(AttemptState::Running,
+                                               AttemptState::Terminating));
+  EXPECT_TRUE(workflow::detail::can_transition(AttemptState::Starting,
+                                               AttemptState::TimedOut));
+  EXPECT_TRUE(workflow::detail::can_transition(AttemptState::Terminating,
+                                               AttemptState::TimedOut));
+  EXPECT_FALSE(workflow::detail::can_transition(AttemptState::Succeeded,
+                                                AttemptState::Running));
 }
 
 TEST(WorkflowStateModelTest, AppliesTransitionsAndValidatesSnapshots) {
@@ -1163,13 +1165,13 @@ TEST(WorkflowStateModelTest, AppliesTransitionsAndValidatesSnapshots) {
       .plan_id = WorkflowPlanId{"state-plan"},
       .state = RunState::Running,
   };
-  EXPECT_EQ(workflow::detail::transition(transitioned_run, RunState::Cancelled,
-                                         now)
-                .error(),
-            make_error_code(Error::InvalidState));
-  ASSERT_TRUE(workflow::detail::transition(transitioned_run,
-                                           RunState::Succeeded, later)
-                  .has_value());
+  EXPECT_EQ(
+      workflow::detail::transition(transitioned_run, RunState::Cancelled, now)
+          .error(),
+      make_error_code(Error::InvalidState));
+  ASSERT_TRUE(
+      workflow::detail::transition(transitioned_run, RunState::Succeeded, later)
+          .has_value());
   EXPECT_EQ(transitioned_run.finished_at, later);
 
   TaskSnapshot transitioned_task{
@@ -1177,13 +1179,13 @@ TEST(WorkflowStateModelTest, AppliesTransitionsAndValidatesSnapshots) {
       .state = TaskState::Pending,
       .next_attempt_at = later,
   };
-  ASSERT_TRUE(workflow::detail::transition(transitioned_task, TaskState::Ready,
-                                           now)
-                  .has_value());
+  ASSERT_TRUE(
+      workflow::detail::transition(transitioned_task, TaskState::Ready, now)
+          .has_value());
   EXPECT_FALSE(transitioned_task.next_attempt_at.has_value());
-  ASSERT_TRUE(workflow::detail::transition(transitioned_task,
-                                           TaskState::Running, now)
-                  .has_value());
+  ASSERT_TRUE(
+      workflow::detail::transition(transitioned_task, TaskState::Running, now)
+          .has_value());
   EXPECT_EQ(transitioned_task.started_at, now);
   transitioned_task.active_attempt_id = AttemptId{"attempt"};
   transitioned_task.next_attempt_at = later;
@@ -1212,8 +1214,8 @@ TEST(WorkflowStateModelTest, AppliesTransitionsAndValidatesSnapshots) {
                 .error(),
             make_error_code(Error::InvalidState));
 
-  const auto failure = make_execution_failure(
-      Error::Unknown, "state_failure", "State model failure");
+  const auto failure = make_execution_failure(Error::Unknown, "state_failure",
+                                              "State model failure");
   RunSnapshot persisted_failure{
       .run_id = WorkflowRunId{"persisted-run"},
       .workflow_id = WorkflowId{"persisted-workflow"},
@@ -1393,43 +1395,44 @@ TEST(WorkflowStateModelTest, RehydratesInterruptedRetryAndStoppingRuns) {
       .workflow_id = WorkflowId{"resumed-workflow"},
       .plan_id = WorkflowPlanId{"resumed-plan"},
       .state = RunState::Pausing,
-      .tasks = {
-          TaskSnapshot{
-              .node_id = WorkflowNodeId{"interrupted"},
-              .state = TaskState::Running,
-              .attempt_count = 1,
-              .active_attempt_id = AttemptId{"interrupted-attempt"},
-              .attempts = {AttemptSnapshot{
-                  .attempt_id = AttemptId{"interrupted-attempt"},
-                  .number = 1,
-                  .state = AttemptState::Running,
-              }},
+      .tasks =
+          {
+              TaskSnapshot{
+                  .node_id = WorkflowNodeId{"interrupted"},
+                  .state = TaskState::Running,
+                  .attempt_count = 1,
+                  .active_attempt_id = AttemptId{"interrupted-attempt"},
+                  .attempts = {AttemptSnapshot{
+                      .attempt_id = AttemptId{"interrupted-attempt"},
+                      .number = 1,
+                      .state = AttemptState::Running,
+                  }},
+              },
+              TaskSnapshot{
+                  .node_id = WorkflowNodeId{"expired-retry"},
+                  .state = TaskState::RetryWaiting,
+                  .attempt_count = 1,
+                  .next_attempt_at = now,
+                  .attempts = {AttemptSnapshot{
+                      .attempt_id = AttemptId{"expired-attempt"},
+                      .number = 1,
+                      .state = AttemptState::Failed,
+                      .failure = restart_failure,
+                  }},
+              },
+              TaskSnapshot{
+                  .node_id = WorkflowNodeId{"future-retry"},
+                  .state = TaskState::RetryWaiting,
+                  .attempt_count = 1,
+                  .next_attempt_at = now + std::chrono::minutes(1),
+                  .attempts = {AttemptSnapshot{
+                      .attempt_id = AttemptId{"future-attempt"},
+                      .number = 1,
+                      .state = AttemptState::Failed,
+                      .failure = restart_failure,
+                  }},
+              },
           },
-          TaskSnapshot{
-              .node_id = WorkflowNodeId{"expired-retry"},
-              .state = TaskState::RetryWaiting,
-              .attempt_count = 1,
-              .next_attempt_at = now,
-              .attempts = {AttemptSnapshot{
-                  .attempt_id = AttemptId{"expired-attempt"},
-                  .number = 1,
-                  .state = AttemptState::Failed,
-                  .failure = restart_failure,
-              }},
-          },
-          TaskSnapshot{
-              .node_id = WorkflowNodeId{"future-retry"},
-              .state = TaskState::RetryWaiting,
-              .attempt_count = 1,
-              .next_attempt_at = now + std::chrono::minutes(1),
-              .attempts = {AttemptSnapshot{
-                  .attempt_id = AttemptId{"future-attempt"},
-                  .number = 1,
-                  .state = AttemptState::Failed,
-                  .failure = restart_failure,
-              }},
-          },
-      },
   };
 
   const auto resumed_preparation =
@@ -1441,8 +1444,7 @@ TEST(WorkflowStateModelTest, RehydratesInterruptedRetryAndStoppingRuns) {
   EXPECT_EQ(resumed.tasks[0].state, TaskState::Ready);
   EXPECT_FALSE(resumed.tasks[0].active_attempt_id.has_value());
   ASSERT_TRUE(resumed.tasks[0].attempts[0].failure.has_value());
-  EXPECT_EQ(resumed.tasks[0].attempts[0].failure->code,
-            "runtime_restarted");
+  EXPECT_EQ(resumed.tasks[0].attempts[0].failure->code, "runtime_restarted");
   EXPECT_EQ(resumed.tasks[1].state, TaskState::Ready);
   EXPECT_FALSE(resumed.tasks[1].next_attempt_at.has_value());
   EXPECT_EQ(resumed.tasks[2].state, TaskState::RetryWaiting);
@@ -1455,24 +1457,25 @@ TEST(WorkflowStateModelTest, RehydratesInterruptedRetryAndStoppingRuns) {
       .state = RunState::Stopping,
       .stop_intent = StopIntent::Cancel,
       .stop_reason = "operator cancelled",
-      .tasks = {
-          TaskSnapshot{
-              .node_id = WorkflowNodeId{"active"},
-              .state = TaskState::Running,
-              .attempt_count = 1,
-              .active_attempt_id = AttemptId{"active-attempt"},
-              .attempts = {AttemptSnapshot{
-                  .attempt_id = AttemptId{"active-attempt"},
-                  .number = 1,
-                  .state = AttemptState::Terminating,
-                  .termination_reason = TerminationReason::RunCancelled,
-              }},
+      .tasks =
+          {
+              TaskSnapshot{
+                  .node_id = WorkflowNodeId{"active"},
+                  .state = TaskState::Running,
+                  .attempt_count = 1,
+                  .active_attempt_id = AttemptId{"active-attempt"},
+                  .attempts = {AttemptSnapshot{
+                      .attempt_id = AttemptId{"active-attempt"},
+                      .number = 1,
+                      .state = AttemptState::Terminating,
+                      .termination_reason = TerminationReason::RunCancelled,
+                  }},
+              },
+              TaskSnapshot{
+                  .node_id = WorkflowNodeId{"pending"},
+                  .state = TaskState::Pending,
+              },
           },
-          TaskSnapshot{
-              .node_id = WorkflowNodeId{"pending"},
-              .state = TaskState::Pending,
-          },
-      },
   };
   const auto cancelled_preparation =
       workflow::detail::rehydrate_for_restart(cancelled, now);
@@ -1483,8 +1486,7 @@ TEST(WorkflowStateModelTest, RehydratesInterruptedRetryAndStoppingRuns) {
     ASSERT_TRUE(task.failure.has_value());
     EXPECT_EQ(task.failure->kind, Error::Cancelled);
   }
-  EXPECT_EQ(cancelled.tasks[0].attempts[0].state,
-            AttemptState::Cancelled);
+  EXPECT_EQ(cancelled.tasks[0].attempts[0].state, AttemptState::Cancelled);
   EXPECT_EQ(cancelled.tasks[0].attempts[0].termination_reason,
             TerminationReason::RunCancelled);
 
@@ -1494,23 +1496,24 @@ TEST(WorkflowStateModelTest, RehydratesInterruptedRetryAndStoppingRuns) {
       .plan_id = WorkflowPlanId{"failed-plan"},
       .state = RunState::Stopping,
       .stop_intent = StopIntent::Fail,
-      .tasks = {
-          TaskSnapshot{
-              .node_id = WorkflowNodeId{"running"},
-              .state = TaskState::Running,
-              .attempt_count = 1,
-              .active_attempt_id = AttemptId{"running-attempt"},
-              .attempts = {AttemptSnapshot{
-                  .attempt_id = AttemptId{"running-attempt"},
-                  .number = 1,
-                  .state = AttemptState::Running,
-              }},
+      .tasks =
+          {
+              TaskSnapshot{
+                  .node_id = WorkflowNodeId{"running"},
+                  .state = TaskState::Running,
+                  .attempt_count = 1,
+                  .active_attempt_id = AttemptId{"running-attempt"},
+                  .attempts = {AttemptSnapshot{
+                      .attempt_id = AttemptId{"running-attempt"},
+                      .number = 1,
+                      .state = AttemptState::Running,
+                  }},
+              },
+              TaskSnapshot{
+                  .node_id = WorkflowNodeId{"ready"},
+                  .state = TaskState::Ready,
+              },
           },
-          TaskSnapshot{
-              .node_id = WorkflowNodeId{"ready"},
-              .state = TaskState::Ready,
-          },
-      },
       .failure = restart_failure,
   };
   const auto failed_preparation =
@@ -1552,38 +1555,44 @@ TEST(WorkflowRetryPolicyTest, StopsPermanentFailuresAndExhaustedBudgets) {
   const WorkflowRunId run_id{"retry-policy__run"};
 
   constexpr std::array permanent_failures{
-      Error::Success,          Error::FileNotFound,    Error::ParseError,
-      Error::InvalidArgument,  Error::NotFound,        Error::AlreadyExists,
-      Error::Cancelled,        Error::CycleDetected,   Error::ReadOnly,
-      Error::HasDependents,    Error::HasActiveRuns,   Error::InvalidUrl,
-      Error::ResourceExhausted, Error::InvalidState,   Error::Incomplete,
-      Error::ProtocolError,    Error::Unauthorized,    Error::Unsupported,
+      Error::Success,           Error::FileNotFound,  Error::ParseError,
+      Error::InvalidArgument,   Error::NotFound,      Error::AlreadyExists,
+      Error::Cancelled,         Error::CycleDetected, Error::ReadOnly,
+      Error::HasDependents,     Error::HasActiveRuns, Error::InvalidUrl,
+      Error::ResourceExhausted, Error::InvalidState,  Error::Incomplete,
+      Error::ProtocolError,     Error::Unauthorized,  Error::Unsupported,
   };
   for (const auto failure : permanent_failures) {
-    EXPECT_FALSE(workflow::detail::next_retry_delay(
-        node, failure, 1, run_id, node.node_id));
+    EXPECT_FALSE(workflow::detail::next_retry_delay(node, failure, 1, run_id,
+                                                    node.node_id));
   }
-  EXPECT_FALSE(workflow::detail::next_retry_delay(
-      node, Error::Unknown, 0, run_id, node.node_id));
-  EXPECT_FALSE(workflow::detail::next_retry_delay(
-      node, Error::Unknown, 4, run_id, node.node_id));
+  EXPECT_FALSE(workflow::detail::next_retry_delay(node, Error::Unknown, 0,
+                                                  run_id, node.node_id));
+  EXPECT_FALSE(workflow::detail::next_retry_delay(node, Error::Unknown, 4,
+                                                  run_id, node.node_id));
 
   constexpr std::array retryable_failures{
-      Error::FileOpenFailed,      Error::DatabaseError,
-      Error::DatabaseOpenFailed,  Error::DatabaseQueryFailed,
-      Error::Timeout,             Error::SystemNotRunning,
-      Error::QueueFull,           Error::ProcessForkFailed,
-      Error::RateLimited,         Error::PersistenceError,
+      Error::FileOpenFailed,
+      Error::DatabaseError,
+      Error::DatabaseOpenFailed,
+      Error::DatabaseQueryFailed,
+      Error::Timeout,
+      Error::SystemNotRunning,
+      Error::QueueFull,
+      Error::ProcessForkFailed,
+      Error::RateLimited,
+      Error::PersistenceError,
       Error::Unknown,
   };
   for (const auto failure : retryable_failures) {
-    EXPECT_TRUE(workflow::detail::next_retry_delay(
-                    node, failure, 1, run_id, node.node_id)
+    EXPECT_TRUE(workflow::detail::next_retry_delay(node, failure, 1, run_id,
+                                                   node.node_id)
                     .has_value());
   }
 }
 
-TEST(WorkflowRetryPolicyTest, AppliesDeterministicFullJitterWithinSaturatedCap) {
+TEST(WorkflowRetryPolicyTest,
+     AppliesDeterministicFullJitterWithinSaturatedCap) {
   NodePlan node{
       .node_id = WorkflowNodeId{"task"},
       .max_retries = 100,
@@ -1626,10 +1635,9 @@ TEST(WorkflowControlPlaneTest, DeduplicatesPlansByDigest) {
   admission.allowed_executors = {"test"};
   WorkflowControlPlane control{environment.registry, PlanValidator{admission}};
   auto plan = base_plan("dedupe");
-  plan.nodes.push_back(NodePlan{
-      .node_id = WorkflowNodeId{"command"},
-      .executor = "test",
-      .outputs = {WorkflowPortId{"result"}}});
+  plan.nodes.push_back(NodePlan{.node_id = WorkflowNodeId{"command"},
+                                .executor = "test",
+                                .outputs = {WorkflowPortId{"result"}}});
   auto first = control.register_plan(plan);
   auto second = control.register_plan(std::move(plan));
   ASSERT_TRUE(first.has_value());
@@ -1724,18 +1732,19 @@ TEST(WorkflowControlPlaneTest, CanonicalDigestIgnoresCollectionOrder) {
       NodePlan{
           .node_id = WorkflowNodeId{"second"},
           .executor = "test",
-          .inputs = {
-              InputBinding{
-                  .input = WorkflowPortId{"beta"},
-                  .source = OutputRef{.node_id = WorkflowNodeId{"first"},
-                                      .port = WorkflowPortId{"out2"}},
+          .inputs =
+              {
+                  InputBinding{
+                      .input = WorkflowPortId{"beta"},
+                      .source = OutputRef{.node_id = WorkflowNodeId{"first"},
+                                          .port = WorkflowPortId{"out2"}},
+                  },
+                  InputBinding{
+                      .input = WorkflowPortId{"alpha"},
+                      .source = OutputRef{.node_id = WorkflowNodeId{"first"},
+                                          .port = WorkflowPortId{"out1"}},
+                  },
               },
-              InputBinding{
-                  .input = WorkflowPortId{"alpha"},
-                  .source = OutputRef{.node_id = WorkflowNodeId{"first"},
-                                      .port = WorkflowPortId{"out1"}},
-              },
-          },
           .outputs = {WorkflowPortId{"z"}, WorkflowPortId{"a"}},
       },
       NodePlan{
@@ -1749,10 +1758,11 @@ TEST(WorkflowControlPlaneTest, CanonicalDigestIgnoresCollectionOrder) {
           .source = OutputRef{.node_id = WorkflowNodeId{"first"},
                               .port = WorkflowPortId{"out2"}},
           .target = WorkflowNodeId{"second"},
-          .condition = ConditionExpr{
-              .kind = ConditionKind::StringEquals,
-              .expected_string = "go",
-          },
+          .condition =
+              ConditionExpr{
+                  .kind = ConditionKind::StringEquals,
+                  .expected_string = "go",
+              },
       },
       ConditionalEdge{
           .source = OutputRef{.node_id = WorkflowNodeId{"first"},
@@ -1822,6 +1832,71 @@ TEST(WorkflowControlPlaneTest, EnforcesServerPlanValidation) {
   EXPECT_EQ(budget_result.error(), make_error_code(Error::ResourceExhausted));
 }
 
+TEST(WorkflowControlPlaneTest, DiscoversVersionedAdmissibleCapabilities) {
+  TestExecutorEnvironment environment;
+  AdmissionConfig config;
+  config.allow_unlisted_executors = false;
+  config.allowed_executors = {"test"};
+  config.max_nodes = 17;
+  config.max_parallel_nodes = 5;
+  WorkflowControlPlane control{environment.registry, PlanValidator{config}};
+
+  auto capabilities = control.capabilities();
+  ASSERT_TRUE(capabilities.has_value()) << capabilities.error().message();
+  EXPECT_EQ(capabilities->capability_schema_version, 1U);
+  EXPECT_EQ(capabilities->workflow_schema_version, 1U);
+  EXPECT_EQ(capabilities->admission.max_nodes, 17U);
+  EXPECT_EQ(capabilities->admission.max_parallel_nodes, 5U);
+  EXPECT_NE(capabilities->workflow_plan_schema.encoded().find("workflow_id"),
+            std::string_view::npos);
+  EXPECT_NE(capabilities->workflow_plan_schema.encoded().find("nodes"),
+            std::string_view::npos);
+  EXPECT_EQ(capabilities->workflow_plan_schema.encoded().find("custom_t"),
+            std::string_view::npos);
+  EXPECT_EQ(
+      capabilities->workflow_plan_schema.encoded().find("workflow_plan.hpp"),
+      std::string_view::npos);
+
+  auto plan_schema = capabilities->workflow_plan_schema.materialize();
+  ASSERT_TRUE(plan_schema.has_value()) << plan_schema.error().message();
+  const auto &plan_properties =
+      plan_schema->get_object().at("properties").get_object();
+  const auto &node_properties = plan_properties.at("nodes")
+                                    .get_object()
+                                    .at("items")
+                                    .get_object()
+                                    .at("properties")
+                                    .get_object();
+  const auto &input_properties = node_properties.at("inputs")
+                                     .get_object()
+                                     .at("items")
+                                     .get_object()
+                                     .at("properties")
+                                     .get_object();
+  EXPECT_EQ(
+      input_properties.at("node").get_object().at("type").as<std::string>(),
+      "string");
+  EXPECT_EQ(
+      input_properties.at("port").get_object().at("type").as<std::string>(),
+      "string");
+  const auto &failure_policy = plan_properties.at("policy")
+                                   .get_object()
+                                   .at("properties")
+                                   .get_object()
+                                   .at("failure_policy")
+                                   .get_object();
+  EXPECT_EQ(failure_policy.at("type").as<std::string>(), "string");
+  EXPECT_EQ(failure_policy.at("oneOf").get_array().size(), 2U);
+
+  ASSERT_EQ(capabilities->executors.size(), 1U);
+  const auto &executor = capabilities->executors.front();
+  EXPECT_EQ(executor.type, "test");
+  EXPECT_EQ(capabilities->enabled_executors, std::vector<std::string>{"test"});
+  EXPECT_EQ(capabilities->allowed_executors, std::vector<std::string>{"test"});
+  EXPECT_FALSE(executor.config_schema.encoded().empty());
+  ASSERT_EQ(executor.examples.size(), 1U);
+}
+
 TEST(WorkflowPlanCompilerTest, RejectsCyclesAndInvalidExecutorConfig) {
   TestExecutorEnvironment environment;
   PlanCompiler compiler{environment.registry};
@@ -1830,22 +1905,45 @@ TEST(WorkflowPlanCompilerTest, RejectsCyclesAndInvalidExecutorConfig) {
   cycle.nodes = {
       NodePlan{.node_id = WorkflowNodeId{"a"},
                .executor = "test",
-               .inputs = {InputBinding{.input = WorkflowPortId{"value"},
-                                      .source = OutputRef{
-                                          .node_id = WorkflowNodeId{"b"},
-                                          .port = WorkflowPortId{"result"}}}},
+               .inputs = {InputBinding{
+                   .input = WorkflowPortId{"value"},
+                   .source = OutputRef{.node_id = WorkflowNodeId{"b"},
+                                       .port = WorkflowPortId{"result"}}}},
                .outputs = {WorkflowPortId{"result"}}},
       NodePlan{.node_id = WorkflowNodeId{"b"},
                .executor = "test",
-               .inputs = {InputBinding{.input = WorkflowPortId{"value"},
-                                      .source = OutputRef{
-                                          .node_id = WorkflowNodeId{"a"},
-                                          .port = WorkflowPortId{"result"}}}},
+               .inputs = {InputBinding{
+                   .input = WorkflowPortId{"value"},
+                   .source = OutputRef{.node_id = WorkflowNodeId{"a"},
+                                       .port = WorkflowPortId{"result"}}}},
                .outputs = {WorkflowPortId{"result"}}},
   };
   auto cycle_result = compiler.compile(std::move(cycle));
   ASSERT_FALSE(cycle_result.has_value());
-  EXPECT_EQ(cycle_result.error(), make_error_code(Error::CycleDetected));
+  EXPECT_EQ(cycle_result.error().kind, Error::CycleDetected);
+  EXPECT_EQ(cycle_result.error().code, "plan_cycle_detected");
+  EXPECT_EQ(cycle_result.error().path, "/nodes");
+
+  auto cycle_with_bad_executor = base_plan("cycle-before-executor-compile");
+  cycle_with_bad_executor.nodes = {
+      NodePlan{.node_id = WorkflowNodeId{"a"},
+               .executor = "unknown",
+               .inputs = {InputBinding{
+                   .input = WorkflowPortId{"value"},
+                   .source = OutputRef{.node_id = WorkflowNodeId{"b"},
+                                       .port = WorkflowPortId{"result"}}}},
+               .outputs = {WorkflowPortId{"result"}}},
+      NodePlan{.node_id = WorkflowNodeId{"b"},
+               .executor = "unknown",
+               .inputs = {InputBinding{
+                   .input = WorkflowPortId{"value"},
+                   .source = OutputRef{.node_id = WorkflowNodeId{"a"},
+                                       .port = WorkflowPortId{"result"}}}},
+               .outputs = {WorkflowPortId{"result"}}},
+  };
+  auto ordered_result = compiler.compile(std::move(cycle_with_bad_executor));
+  ASSERT_FALSE(ordered_result.has_value());
+  EXPECT_EQ(ordered_result.error().code, "plan_cycle_detected");
 
   CommandTaskExecutorEnvironment command_environment;
   auto relative_command = base_plan("relative-command");
@@ -1855,11 +1953,12 @@ TEST(WorkflowPlanCompilerTest, RejectsCyclesAndInvalidExecutorConfig) {
       .config = command_config("./true"),
       .outputs = {WorkflowPortId{"result"}},
   });
-  auto relative_result =
-      PlanCompiler{command_environment.registry}.compile(
-          std::move(relative_command));
+  auto relative_result = PlanCompiler{command_environment.registry}.compile(
+      std::move(relative_command));
   ASSERT_FALSE(relative_result.has_value());
-  EXPECT_EQ(relative_result.error(), make_error_code(Error::InvalidArgument));
+  EXPECT_EQ(relative_result.error().kind, Error::InvalidArgument);
+  EXPECT_EQ(relative_result.error().code, "command_program_not_allowed");
+  EXPECT_EQ(relative_result.error().path, "/nodes/0/config/program");
 
   auto unknown_executor = base_plan("unknown-executor");
   unknown_executor.nodes.push_back(NodePlan{
@@ -1868,7 +1967,11 @@ TEST(WorkflowPlanCompilerTest, RejectsCyclesAndInvalidExecutorConfig) {
   });
   auto unknown_result = compiler.compile(std::move(unknown_executor));
   ASSERT_FALSE(unknown_result.has_value());
-  EXPECT_EQ(unknown_result.error(), make_error_code(Error::Unsupported));
+  EXPECT_EQ(unknown_result.error().kind, Error::Unsupported);
+  EXPECT_EQ(unknown_result.error().code, "executor_not_registered");
+  EXPECT_EQ(unknown_result.error().path, "/nodes/0/executor");
+  EXPECT_EQ(unknown_result.error().node_id, WorkflowNodeId{"task"});
+  EXPECT_EQ(unknown_result.error().executor, "unknown");
 }
 
 TEST(CommandTaskExecutorTest, OwnsCommandPolicyAndInputMapping) {
@@ -1881,15 +1984,13 @@ TEST(CommandTaskExecutorTest, OwnsCommandPolicyAndInputMapping) {
 
   std::vector<InputBinding> inputs{
       InputBinding{.input = WorkflowPortId{"value"},
-                   .source = OutputRef{
-                       .node_id = WorkflowNodeId{"source"},
-                       .port = WorkflowPortId{"result"}}}};
+                   .source = OutputRef{.node_id = WorkflowNodeId{"source"},
+                                       .port = WorkflowPortId{"result"}}}};
   std::vector<WorkflowPortId> outputs{WorkflowPortId{"result"}};
   const ExecutorCompileContext context{.inputs = inputs, .outputs = outputs};
 
   auto compiled = environment.registry.compile(
-      "command",
-      command_config("echo", {}, {}, {{"value", "UPSTREAM"}}),
+      "command", command_config("echo", {}, {}, {{"value", "UPSTREAM"}}),
       context);
   ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
 
@@ -1897,8 +1998,8 @@ TEST(CommandTaskExecutorTest, OwnsCommandPolicyAndInputMapping) {
       "command",
       TaskExecutionRequest{
           .instance_id = InstanceId{"uncompiled-command"},
-          .config = CompiledExecutorConfig::from_encoded(
-              command_config("echo")),
+          .config =
+              CompiledExecutorConfig::from_encoded(command_config("echo")),
           .outputs = outputs,
       },
       {});
@@ -1911,17 +2012,14 @@ TEST(CommandTaskExecutorTest, OwnsCommandPolicyAndInputMapping) {
   EXPECT_EQ(blocked_program.error(), make_error_code(Error::Unauthorized));
 
   auto blocked_environment = environment.registry.compile(
-      "command", command_config("echo", {}, {{"SECRET", "value"}}),
-      context);
+      "command", command_config("echo", {}, {{"SECRET", "value"}}), context);
   ASSERT_FALSE(blocked_environment.has_value());
-  EXPECT_EQ(blocked_environment.error(),
-            make_error_code(Error::Unauthorized));
+  EXPECT_EQ(blocked_environment.error(), make_error_code(Error::Unauthorized));
 
   const std::vector unsupported_outputs{WorkflowPortId{"unknown"}};
   auto unsupported_output = environment.registry.compile(
       "command", command_config("echo"),
-      ExecutorCompileContext{.inputs = inputs,
-                             .outputs = unsupported_outputs});
+      ExecutorCompileContext{.inputs = inputs, .outputs = unsupported_outputs});
   ASSERT_FALSE(unsupported_output.has_value());
   EXPECT_EQ(unsupported_output.error(),
             make_error_code(Error::InvalidArgument));
@@ -1941,26 +2039,24 @@ TEST(CommandTaskExecutorTest, OwnsCommandPolicyAndInputMapping) {
     completion.emplace(std::move(result));
   };
   ExecutorInputs values;
-  values.emplace(
-      "value",
-      std::make_shared<const WorkflowValue>(std::string{"hello"}));
+  values.emplace("value",
+                 std::make_shared<const WorkflowValue>(std::string{"hello"}));
   const InstanceId instance_id{"command-adapter"};
-  auto started = environment.registry.start(
-      "command",
-      TaskExecutionRequest{
-          .instance_id = instance_id.clone(),
-          .config = std::move(*compiled),
-          .inputs = std::move(values),
-          .outputs = outputs,
-          .timeout = std::chrono::seconds(1),
-      },
-      std::move(sink));
+  auto started =
+      environment.registry.start("command",
+                                 TaskExecutionRequest{
+                                     .instance_id = instance_id.clone(),
+                                     .config = std::move(*compiled),
+                                     .inputs = std::move(values),
+                                     .outputs = outputs,
+                                     .timeout = std::chrono::seconds(1),
+                                 },
+                                 std::move(sink));
   ASSERT_TRUE(started.has_value()) << started.error().message();
 
   auto command = environment.runner->command();
   ASSERT_TRUE(command.has_value());
-  EXPECT_EQ(command->program,
-            std::filesystem::canonical("/bin/echo").string());
+  EXPECT_EQ(command->program, std::filesystem::canonical("/bin/echo").string());
   ASSERT_TRUE(command->environment.contains("UPSTREAM"));
   EXPECT_EQ(command->environment.at("UPSTREAM"), "hello");
 
@@ -1999,8 +2095,8 @@ TEST(CommandTaskExecutorTest, MapsAllInputTypesAndCompletionFailures) {
   policy.allow_unlisted_programs = false;
   policy.programs = {{.name = "echo", .path = "/bin/echo"}};
   policy.allow_unlisted_environment = false;
-  policy.allowed_environment = {"NULL_VALUE", "BOOL_VALUE", "INT_VALUE",
-                                "DOUBLE_VALUE", "STRING_VALUE", "JSON_VALUE",
+  policy.allowed_environment = {"NULL_VALUE",    "BOOL_VALUE",   "INT_VALUE",
+                                "DOUBLE_VALUE",  "STRING_VALUE", "JSON_VALUE",
                                 "ARTIFACT_VALUE"};
   CommandTaskExecutorEnvironment environment{policy};
 
@@ -2008,9 +2104,12 @@ TEST(CommandTaskExecutorTest, MapsAllInputTypesAndCompletionFailures) {
   std::vector<std::pair<std::string, std::string>> input_environment;
   for (const auto &[input, variable] :
        std::vector<std::pair<std::string, std::string>>{
-           {"null", "NULL_VALUE"},       {"boolean", "BOOL_VALUE"},
-           {"integer", "INT_VALUE"},     {"real", "DOUBLE_VALUE"},
-           {"text", "STRING_VALUE"},     {"json", "JSON_VALUE"},
+           {"null", "NULL_VALUE"},
+           {"boolean", "BOOL_VALUE"},
+           {"integer", "INT_VALUE"},
+           {"real", "DOUBLE_VALUE"},
+           {"text", "STRING_VALUE"},
+           {"json", "JSON_VALUE"},
            {"artifact", "ARTIFACT_VALUE"}}) {
     bindings.push_back(InputBinding{
         .input = WorkflowPortId{input},
@@ -2039,10 +2138,10 @@ TEST(CommandTaskExecutorTest, MapsAllInputTypesAndCompletionFailures) {
   };
   std::optional<TaskExecutionResult> completion;
   TaskExecutionSink sink{
-      .on_complete = [&completion](const InstanceId &,
-                                   TaskExecutionResult result) {
-        completion.emplace(std::move(result));
-      },
+      .on_complete =
+          [&completion](const InstanceId &, TaskExecutionResult result) {
+            completion.emplace(std::move(result));
+          },
   };
   ASSERT_TRUE(environment.registry
                   .start("command",
@@ -2072,28 +2171,27 @@ TEST(CommandTaskExecutorTest, MapsAllInputTypesAndCompletionFailures) {
                                    CommandRunResult result) {
     completion.reset();
     TaskExecutionSink failure_sink{
-        .on_complete = [&completion](const InstanceId &,
-                                     TaskExecutionResult value) {
-          completion.emplace(std::move(value));
-        },
+        .on_complete =
+            [&completion](const InstanceId &, TaskExecutionResult value) {
+              completion.emplace(std::move(value));
+            },
     };
     auto started = environment.registry.start(
         "command",
         TaskExecutionRequest{
             .instance_id = InstanceId{std::move(instance)},
             .config = *compiled,
-            .inputs = {{"null", std::make_shared<const WorkflowValue>()},
-                       {"boolean", std::make_shared<const WorkflowValue>(true)},
-                       {"integer", std::make_shared<const WorkflowValue>(
-                                       std::int64_t{1})},
-                       {"real", std::make_shared<const WorkflowValue>(1.0)},
-                       {"text", std::make_shared<const WorkflowValue>(
-                                    std::string{"x"})},
-                       {"json", std::make_shared<const WorkflowValue>(
-                                    JsonPayload{})},
-                       {"artifact", std::make_shared<const WorkflowValue>(
-                                        ArtifactRef{.artifact_id =
-                                                        ArtifactId{"a"}})}},
+            .inputs =
+                {{"null", std::make_shared<const WorkflowValue>()},
+                 {"boolean", std::make_shared<const WorkflowValue>(true)},
+                 {"integer",
+                  std::make_shared<const WorkflowValue>(std::int64_t{1})},
+                 {"real", std::make_shared<const WorkflowValue>(1.0)},
+                 {"text",
+                  std::make_shared<const WorkflowValue>(std::string{"x"})},
+                 {"json", std::make_shared<const WorkflowValue>(JsonPayload{})},
+                 {"artifact", std::make_shared<const WorkflowValue>(ArtifactRef{
+                                  .artifact_id = ArtifactId{"a"}})}},
             .outputs = outputs,
             .timeout = std::chrono::seconds(1),
         },
@@ -2125,14 +2223,12 @@ TEST(CommandTaskExecutorTest, MapsAllInputTypesAndCompletionFailures) {
   failed.exit_code = 7;
   failed.stdout_output = "partial output";
   failed.stderr_output = "invalid configuration";
-  auto command_failure =
-      execute_failure("command-failed", std::move(failed));
+  auto command_failure = execute_failure("command-failed", std::move(failed));
   EXPECT_EQ(command_failure.kind, Error::Unknown);
   EXPECT_EQ(command_failure.code, "command_exit_nonzero");
   const auto command_details = materialize(command_failure.details);
   EXPECT_EQ(command_details["exit_code"].as<std::int64_t>(), 7);
-  EXPECT_EQ(command_details["stdout"].as<std::string>(),
-            "partial output");
+  EXPECT_EQ(command_details["stdout"].as<std::string>(), "partial output");
   EXPECT_EQ(command_details["stderr"].as<std::string>(),
             "invalid configuration");
   auto runner_failed = make_command_run_result();
@@ -2141,26 +2237,33 @@ TEST(CommandTaskExecutorTest, MapsAllInputTypesAndCompletionFailures) {
       execute_failure("command-runner-failed", std::move(runner_failed));
   EXPECT_EQ(runner_failure.kind, Error::Unknown);
   EXPECT_EQ(runner_failure.code, "command_runner_failed");
-  EXPECT_EQ(runner_failure.message,
-            "runner failed before process completion");
+  EXPECT_EQ(runner_failure.message, "runner failed before process completion");
 
   TaskExecutionSink no_completion;
-  ASSERT_TRUE(environment.registry
-                  .start("command",
-                         TaskExecutionRequest{
-                             .instance_id = InstanceId{"no-completion"},
-                             .config = *compiled,
-                             .inputs = {{"null", std::make_shared<const WorkflowValue>()},
-                                        {"boolean", std::make_shared<const WorkflowValue>(true)},
-                                        {"integer", std::make_shared<const WorkflowValue>(std::int64_t{1})},
-                                        {"real", std::make_shared<const WorkflowValue>(1.0)},
-                                        {"text", std::make_shared<const WorkflowValue>(std::string{"x"})},
-                                        {"json", std::make_shared<const WorkflowValue>(JsonPayload{})},
-                                        {"artifact", std::make_shared<const WorkflowValue>(ArtifactRef{.artifact_id = ArtifactId{"a"}})}},
-                             .outputs = outputs,
-                         },
-                         std::move(no_completion))
-                  .has_value());
+  ASSERT_TRUE(
+      environment.registry
+          .start(
+              "command",
+              TaskExecutionRequest{
+                  .instance_id = InstanceId{"no-completion"},
+                  .config = *compiled,
+                  .inputs =
+                      {{"null", std::make_shared<const WorkflowValue>()},
+                       {"boolean", std::make_shared<const WorkflowValue>(true)},
+                       {"integer",
+                        std::make_shared<const WorkflowValue>(std::int64_t{1})},
+                       {"real", std::make_shared<const WorkflowValue>(1.0)},
+                       {"text", std::make_shared<const WorkflowValue>(
+                                    std::string{"x"})},
+                       {"json",
+                        std::make_shared<const WorkflowValue>(JsonPayload{})},
+                       {"artifact",
+                        std::make_shared<const WorkflowValue>(
+                            ArtifactRef{.artifact_id = ArtifactId{"a"}})}},
+                  .outputs = outputs,
+              },
+              std::move(no_completion))
+          .has_value());
   environment.runner->complete(0);
 }
 
@@ -2169,21 +2272,21 @@ TEST(CommandTaskExecutorTest, RejectsDuplicateAndMissingInputEnvironment) {
   policy.allow_unlisted_programs = true;
   policy.allow_unlisted_environment = true;
   CommandTaskExecutorEnvironment environment{policy};
-  const std::vector inputs{InputBinding{
-      .input = WorkflowPortId{"value"},
-      .source = OutputRef{.node_id = WorkflowNodeId{"source"},
-                          .port = WorkflowPortId{"result"}}}};
+  const std::vector inputs{
+      InputBinding{.input = WorkflowPortId{"value"},
+                   .source = OutputRef{.node_id = WorkflowNodeId{"source"},
+                                       .port = WorkflowPortId{"result"}}}};
   const std::vector outputs{WorkflowPortId{"result"}};
   const ExecutorCompileContext context{.inputs = inputs, .outputs = outputs};
 
-  auto duplicate_static = command_config(
-      "/bin/echo", {}, {{"VALUE", "one"}, {"VALUE", "two"}});
+  auto duplicate_static =
+      command_config("/bin/echo", {}, {{"VALUE", "one"}, {"VALUE", "two"}});
   EXPECT_EQ(environment.registry
                 .compile("command", std::move(duplicate_static), context)
                 .error(),
             make_error_code(Error::InvalidArgument));
-  auto duplicate_dynamic = command_config(
-      "/bin/echo", {}, {{"VALUE", "one"}}, {{"value", "VALUE"}});
+  auto duplicate_dynamic =
+      command_config("/bin/echo", {}, {{"VALUE", "one"}}, {{"value", "VALUE"}});
   EXPECT_EQ(environment.registry
                 .compile("command", std::move(duplicate_dynamic), context)
                 .error(),
@@ -2199,14 +2302,15 @@ TEST(CommandTaskExecutorTest, RejectsDuplicateAndMissingInputEnvironment) {
       "command", command_config("/bin/echo", {}, {}, {{"value", "VALUE"}}),
       context);
   ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
-  EXPECT_EQ(environment.registry
-                .start("command",
-                       TaskExecutionRequest{.instance_id = InstanceId{"missing"},
-                                            .config = std::move(*compiled),
-                                            .outputs = outputs},
-                       {})
-                .error(),
-            make_error_code(Error::InvalidArgument));
+  EXPECT_EQ(
+      environment.registry
+          .start("command",
+                 TaskExecutionRequest{.instance_id = InstanceId{"missing"},
+                                      .config = std::move(*compiled),
+                                      .outputs = outputs},
+                 {})
+          .error(),
+      make_error_code(Error::InvalidArgument));
   EXPECT_EQ(command::detail::create_task_executor(nullptr, policy).error(),
             make_error_code(Error::InvalidArgument));
 }
@@ -2221,9 +2325,8 @@ TEST(ExecutorRegistryTest, MarshalsAndDeduplicatesCompletion) {
     if (!executor->wait_for_pending(1)) {
       return;
     }
-    completion_ok.store(
-        executor->complete_next_inline_twice("first", "second"),
-        std::memory_order_release);
+    completion_ok.store(executor->complete_next_inline_twice("first", "second"),
+                        std::memory_order_release);
   });
 
   auto observed = sync_wait_on_runtime(
@@ -2245,9 +2348,9 @@ TEST(ExecutionFailureTest, NormalizesSystemErrorsAndProjectsStableJson) {
   EXPECT_EQ(normalize_execution_error(
                 std::make_error_code(std::errc::operation_canceled)),
             Error::Cancelled);
-  EXPECT_EQ(normalize_execution_error(
-                std::make_error_code(std::errc::timed_out)),
-            Error::Timeout);
+  EXPECT_EQ(
+      normalize_execution_error(std::make_error_code(std::errc::timed_out)),
+      Error::Timeout);
   EXPECT_EQ(normalize_execution_error(
                 std::make_error_code(std::errc::permission_denied)),
             Error::Unauthorized);
@@ -2263,8 +2366,8 @@ TEST(ExecutionFailureTest, NormalizesSystemErrorsAndProjectsStableJson) {
   EXPECT_EQ(normalize_execution_error(make_error_code(Error::Success)),
             Error::Unknown);
 
-  auto normalized = make_execution_failure(
-      Error::Success, {}, {}, parse_payload("[]"));
+  auto normalized =
+      make_execution_failure(Error::Success, {}, {}, parse_payload("[]"));
   EXPECT_EQ(normalized.kind, Error::Unknown);
   EXPECT_EQ(normalized.code, "unknown");
   EXPECT_EQ(normalized.message, make_error_code(Error::Unknown).message());
@@ -2278,8 +2381,7 @@ TEST(ExecutionFailureTest, NormalizesSystemErrorsAndProjectsStableJson) {
   const auto failure_details = materialize(failure.details);
   const auto &cause_json = failure_details["cause"];
   ASSERT_TRUE(cause_json.is_object());
-  EXPECT_EQ(cause_json["category"].as<std::string>(),
-            cause.category().name());
+  EXPECT_EQ(cause_json["category"].as<std::string>(), cause.category().name());
   EXPECT_EQ(cause_json["value"].as<std::int64_t>(), cause.value());
   EXPECT_EQ(cause_json["message"].as<std::string>(), cause.message());
 
@@ -2288,8 +2390,7 @@ TEST(ExecutionFailureTest, NormalizesSystemErrorsAndProjectsStableJson) {
   auto projected_json = parse_json(*projected);
   ASSERT_TRUE(projected_json.has_value()) << projected_json.error().message();
   EXPECT_EQ((*projected_json)["kind"].as<std::string>(), "unauthorized");
-  EXPECT_EQ((*projected_json)["code"].as<std::string>(),
-            "permission_denied");
+  EXPECT_EQ((*projected_json)["code"].as<std::string>(), "permission_denied");
   EXPECT_EQ((*projected_json)["message"].as<std::string>(), cause.message());
   EXPECT_TRUE((*projected_json)["details"].is_object());
 }
@@ -2298,17 +2399,15 @@ TEST(ExecutorRegistryTest, RejectsInvalidAndDuplicateRegistrations) {
   ExecutorRegistry registry;
   EXPECT_EQ(registry.register_executor(nullptr).error(),
             make_error_code(Error::InvalidArgument));
-  ASSERT_TRUE(
-      registry.register_executor(std::make_shared<ManualTaskExecutor>())
-          .has_value());
-  EXPECT_EQ(registry
-                .register_executor(std::make_shared<ManualTaskExecutor>())
+  ASSERT_TRUE(registry.register_executor(std::make_shared<ManualTaskExecutor>())
+                  .has_value());
+  EXPECT_EQ(registry.register_executor(std::make_shared<ManualTaskExecutor>())
                 .error(),
             make_error_code(Error::AlreadyExists));
-  EXPECT_EQ(registry
-                .start("missing", TaskExecutionRequest{}, TaskExecutionSink{})
-                .error(),
-            make_error_code(Error::Unsupported));
+  EXPECT_EQ(
+      registry.start("missing", TaskExecutionRequest{}, TaskExecutionSink{})
+          .error(),
+      make_error_code(Error::Unsupported));
 }
 
 TEST(ExecutorRegistryTest, QuiesceStopsRegisteredExecutorsAndRejectsNewWork) {
@@ -2320,8 +2419,7 @@ TEST(ExecutorRegistryTest, QuiesceStopsRegisteredExecutorsAndRejectsNewWork) {
 
   TaskExecutionSink sink;
   auto started = environment.registry.start(
-      "test",
-      TaskExecutionRequest{.instance_id = InstanceId{"after-quiesce"}},
+      "test", TaskExecutionRequest{.instance_id = InstanceId{"after-quiesce"}},
       std::move(sink));
   ASSERT_FALSE(started.has_value());
   EXPECT_EQ(started.error(), make_error_code(Error::InvalidState));
@@ -2357,7 +2455,11 @@ TEST(WorkflowPlanCompilerTest, RejectsUnknownSchemaVersion) {
   });
   auto compiled = PlanCompiler{environment.registry}.compile(std::move(plan));
   ASSERT_FALSE(compiled.has_value());
-  EXPECT_EQ(compiled.error(), make_error_code(Error::InvalidArgument));
+  EXPECT_EQ(compiled.error().kind, Error::InvalidArgument);
+  EXPECT_EQ(compiled.error().code, "plan_schema_version_unsupported");
+  EXPECT_EQ(compiled.error().path, "/schema_version");
+  EXPECT_FALSE(compiled.error().node_id.has_value());
+  EXPECT_FALSE(compiled.error().executor.has_value());
 }
 
 TEST(WorkflowPlanCompilerTest, RejectsUnknownPublishedOutput) {
@@ -2373,8 +2475,7 @@ TEST(WorkflowPlanCompilerTest, RejectsUnknownPublishedOutput) {
       .port = WorkflowPortId{"missing"},
   });
 
-  auto compiled =
-      PlanCompiler{environment.registry}.compile(std::move(plan));
+  auto compiled = PlanCompiler{environment.registry}.compile(std::move(plan));
   ASSERT_FALSE(compiled.has_value());
   EXPECT_EQ(compiled.error(), make_error_code(Error::NotFound));
 }
@@ -2424,12 +2525,10 @@ TEST(WorkflowRuntimeTest, PauseDrainsActiveAttemptBeforeResume) {
   EXPECT_EQ((*paused)->tasks[0].state, TaskState::Succeeded);
   EXPECT_EQ((*paused)->tasks[1].state, TaskState::Ready);
   ASSERT_EQ((*paused)->tasks[0].attempts.size(), 1U);
-  EXPECT_EQ((*paused)->tasks[0].attempts[0].state,
-            AttemptState::Succeeded);
+  EXPECT_EQ((*paused)->tasks[0].attempts[0].state, AttemptState::Succeeded);
   EXPECT_EQ(environment.executor->pending_count(), 0U);
   auto durable_paused = checkpoints->load(*started);
-  ASSERT_TRUE(durable_paused.has_value())
-      << durable_paused.error().message();
+  ASSERT_TRUE(durable_paused.has_value()) << durable_paused.error().message();
   EXPECT_EQ(durable_paused->snapshot.state, RunState::Paused);
   EXPECT_EQ(durable_paused->snapshot.tasks[0].state, TaskState::Succeeded);
   EXPECT_EQ(durable_paused->snapshot.tasks[1].state, TaskState::Ready);
@@ -2439,15 +2538,14 @@ TEST(WorkflowRuntimeTest, PauseDrainsActiveAttemptBeforeResume) {
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
   ASSERT_TRUE(environment.executor->complete_next(0, "second"));
 
-  auto completed =
-      wait_for_state(runtime, core, *started, RunState::Succeeded);
+  auto completed = wait_for_state(runtime, core, *started, RunState::Succeeded);
   ASSERT_TRUE(completed.has_value()) << completed.error().message();
   EXPECT_EQ((*completed)->tasks[1].state, TaskState::Succeeded);
 
   auto output = sync_wait_on_runtime(
-      core, runtime.output(*started,
-                           OutputRef{.node_id = WorkflowNodeId{"second"},
-                                     .port = WorkflowPortId{"result"}}));
+      core,
+      runtime.output(*started, OutputRef{.node_id = WorkflowNodeId{"second"},
+                                         .port = WorkflowPortId{"result"}}));
   ASSERT_TRUE(output.has_value()) << output.error().message();
   EXPECT_EQ(std::get<std::string>(**output), "second");
   EXPECT_FALSE(runtime.evidence(*started).empty());
@@ -2498,8 +2596,8 @@ TEST(WorkflowRuntimeTest, PersistsOnlyRecoveryBoundaries) {
   EXPECT_TRUE(initial->values.empty());
 
   ASSERT_TRUE(environment.executor->complete_next(0, "second"));
-  ASSERT_TRUE(wait_for_state(runtime, core, *started, RunState::Succeeded)
-                  .has_value());
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, *started, RunState::Succeeded).has_value());
   auto terminal = checkpoints->load(*started);
   ASSERT_TRUE(terminal.has_value()) << terminal.error().message();
   EXPECT_EQ(terminal->snapshot.state, RunState::Succeeded);
@@ -2553,8 +2651,8 @@ TEST(WorkflowRuntimeTest, ExplicitNodeCheckpointPersistsCompletedPrefix) {
   EXPECT_EQ(durable->values.front().output.node_id, WorkflowNodeId{"first"});
 
   ASSERT_TRUE(environment.executor->complete_next(0, "second"));
-  ASSERT_TRUE(wait_for_state(runtime, core, *started, RunState::Succeeded)
-                  .has_value());
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, *started, RunState::Succeeded).has_value());
   core.stop();
 }
 
@@ -2575,10 +2673,9 @@ TEST(WorkflowRuntimeTest, AttemptStartsBeforeExecutorReportsRunning) {
   ASSERT_TRUE(compiled.has_value());
 
   auto started = runtime.start(
-      *compiled,
-      TriggerEnvelope{.workflow_id = WorkflowId{"attempt-starting"},
-                      .source = "test",
-                      .event_type = "request"});
+      *compiled, TriggerEnvelope{.workflow_id = WorkflowId{"attempt-starting"},
+                                 .source = "test",
+                                 .event_type = "request"});
   ASSERT_TRUE(started.has_value());
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
 
@@ -2635,8 +2732,7 @@ TEST(WorkflowRuntimeTest, RunDeadlineStopsAndReapsActiveAttempt) {
   ASSERT_EQ((*failed)->tasks.size(), 1U);
   EXPECT_EQ((*failed)->tasks[0].state, TaskState::Cancelled);
   ASSERT_EQ((*failed)->tasks[0].attempts.size(), 1U);
-  EXPECT_EQ((*failed)->tasks[0].attempts[0].state,
-            AttemptState::Cancelled);
+  EXPECT_EQ((*failed)->tasks[0].attempts[0].state, AttemptState::Cancelled);
   EXPECT_EQ((*failed)->tasks[0].attempts[0].termination_reason,
             TerminationReason::RunFailed);
   core.stop();
@@ -2673,8 +2769,7 @@ TEST(WorkflowRuntimeTest, CancelStaysStoppingUntilAttemptIsReaped) {
   ASSERT_EQ((*stopping)->tasks.size(), 1U);
   EXPECT_EQ((*stopping)->tasks[0].state, TaskState::Running);
   ASSERT_EQ((*stopping)->tasks[0].attempts.size(), 1U);
-  EXPECT_EQ((*stopping)->tasks[0].attempts[0].state,
-            AttemptState::Terminating);
+  EXPECT_EQ((*stopping)->tasks[0].attempts[0].state, AttemptState::Terminating);
   EXPECT_EQ((*stopping)->tasks[0].attempts[0].termination_reason,
             TerminationReason::RunCancelled);
   auto durable_stopping = checkpoints->load(*started);
@@ -2686,12 +2781,10 @@ TEST(WorkflowRuntimeTest, CancelStaysStoppingUntilAttemptIsReaped) {
             AttemptState::Terminating);
 
   ASSERT_TRUE(environment.executor->complete_next(-1));
-  auto completed =
-      wait_for_state(runtime, core, *started, RunState::Cancelled);
+  auto completed = wait_for_state(runtime, core, *started, RunState::Cancelled);
   ASSERT_TRUE(completed.has_value()) << completed.error().message();
   EXPECT_EQ((*completed)->tasks[0].state, TaskState::Cancelled);
-  EXPECT_EQ((*completed)->tasks[0].attempts[0].state,
-            AttemptState::Cancelled);
+  EXPECT_EQ((*completed)->tasks[0].attempts[0].state, AttemptState::Cancelled);
   ASSERT_TRUE((*completed)->stop_intent.has_value());
   EXPECT_EQ(*(*completed)->stop_intent, StopIntent::Cancel);
   core.stop();
@@ -2767,15 +2860,13 @@ TEST(WorkflowRuntimeTest, DestructionWaitsForQueuedRunActivation) {
     FAIL() << "owner shard blocker did not start";
   }
 
-  auto runtime =
-      std::make_unique<WorkflowRuntime>(core, environment.registry);
+  auto runtime = std::make_unique<WorkflowRuntime>(core, environment.registry);
   auto started = runtime->start(
-      *compiled,
-      TriggerEnvelope{
-          .workflow_id = WorkflowId{"queued-activation-destruction"},
-          .source = "test",
-          .event_type = "request",
-      });
+      *compiled, TriggerEnvelope{
+                     .workflow_id = WorkflowId{"queued-activation-destruction"},
+                     .source = "test",
+                     .event_type = "request",
+                 });
   if (!started) {
     release_blocker->set_value();
     runtime.reset();
@@ -2824,12 +2915,10 @@ TEST(WorkflowRuntimeTest, SynchronousCancelCompletionIsReentrantSafe) {
 
   auto cancelled = sync_wait_on_runtime(core, runtime.cancel(*started));
   ASSERT_TRUE(cancelled.has_value()) << cancelled.error().message();
-  auto completed =
-      wait_for_state(runtime, core, *started, RunState::Cancelled);
+  auto completed = wait_for_state(runtime, core, *started, RunState::Cancelled);
   ASSERT_TRUE(completed.has_value()) << completed.error().message();
   EXPECT_EQ((*completed)->tasks[0].state, TaskState::Cancelled);
-  EXPECT_EQ((*completed)->tasks[0].attempts[0].state,
-            AttemptState::Cancelled);
+  EXPECT_EQ((*completed)->tasks[0].attempts[0].state, AttemptState::Cancelled);
   core.stop();
 }
 
@@ -2875,14 +2964,13 @@ TEST(WorkflowRuntimeTest, RetryWaitingCreatesDistinctAttempts) {
   ASSERT_TRUE(dagforge::test::wait_until(
       [&] {
         auto persisted = checkpoints->load(*started);
-        return persisted && persisted->snapshot.tasks[0].state ==
-                                TaskState::RetryWaiting;
+        return persisted &&
+               persisted->snapshot.tasks[0].state == TaskState::RetryWaiting;
       },
       std::chrono::seconds(2)));
   auto durable_retry = checkpoints->load(*started);
   ASSERT_TRUE(durable_retry.has_value()) << durable_retry.error().message();
-  EXPECT_EQ(durable_retry->snapshot.tasks[0].state,
-            TaskState::RetryWaiting);
+  EXPECT_EQ(durable_retry->snapshot.tasks[0].state, TaskState::RetryWaiting);
   EXPECT_TRUE(durable_retry->snapshot.tasks[0].next_attempt_at.has_value());
 
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
@@ -2893,19 +2981,16 @@ TEST(WorkflowRuntimeTest, RetryWaitingCreatesDistinctAttempts) {
     EXPECT_NE(retry, metrics.retries.end());
   }
   ASSERT_TRUE(environment.executor->complete_next(0, "ok"));
-  auto completed =
-      wait_for_state(runtime, core, *started, RunState::Succeeded);
+  auto completed = wait_for_state(runtime, core, *started, RunState::Succeeded);
   ASSERT_TRUE(completed.has_value()) << completed.error().message();
   ASSERT_EQ((*completed)->tasks[0].attempt_count, 2U);
   ASSERT_EQ((*completed)->tasks[0].attempts.size(), 2U);
   EXPECT_NE((*completed)->tasks[0].attempts[0].attempt_id,
             (*completed)->tasks[0].attempts[1].attempt_id);
-  EXPECT_EQ((*completed)->tasks[0].attempts[0].state,
-            AttemptState::Failed);
+  EXPECT_EQ((*completed)->tasks[0].attempts[0].state, AttemptState::Failed);
   ASSERT_TRUE((*completed)->tasks[0].attempts[0].failure.has_value());
   EXPECT_EQ((*completed)->tasks[0].attempts[0].failure->kind, Error::Unknown);
-  EXPECT_EQ((*completed)->tasks[0].attempts[1].state,
-            AttemptState::Succeeded);
+  EXPECT_EQ((*completed)->tasks[0].attempts[1].state, AttemptState::Succeeded);
   EXPECT_EQ((*completed)->tasks[0].attempts[1].exit_code, 0);
   const auto metrics = runtime.metrics_snapshot();
   const auto find_series = [](const auto &series, std::string_view executor,
@@ -2957,10 +3042,9 @@ TEST(WorkflowRuntimeTest, PermanentFailureDoesNotRetry) {
   ASSERT_TRUE(compiled.has_value());
 
   auto started = runtime.start(
-      *compiled,
-      TriggerEnvelope{.workflow_id = WorkflowId{"permanent-failure"},
-                      .source = "test",
-                      .event_type = "request"});
+      *compiled, TriggerEnvelope{.workflow_id = WorkflowId{"permanent-failure"},
+                                 .source = "test",
+                                 .event_type = "request"});
   ASSERT_TRUE(started.has_value());
   auto failed = wait_for_state(runtime, core, *started, RunState::Failed);
   ASSERT_TRUE(failed.has_value()) << failed.error().message();
@@ -2971,8 +3055,7 @@ TEST(WorkflowRuntimeTest, PermanentFailureDoesNotRetry) {
   ASSERT_EQ((*failed)->tasks[0].attempts.size(), 1U);
   EXPECT_EQ((*failed)->tasks[0].attempts[0].state, AttemptState::Failed);
   ASSERT_TRUE((*failed)->tasks[0].attempts[0].failure.has_value());
-  EXPECT_EQ((*failed)->tasks[0].attempts[0].failure->kind,
-            Error::Unsupported);
+  EXPECT_EQ((*failed)->tasks[0].attempts[0].failure->kind, Error::Unsupported);
   core.stop();
 }
 
@@ -3013,10 +3096,9 @@ TEST(WorkflowRuntimeTest, OutputBudgetFailureDoesNotRetry) {
   EXPECT_EQ((*failed)->tasks[0].attempts[0].failure->kind,
             Error::ResourceExhausted);
   auto partial = sync_wait_on_runtime(
-      core, runtime.output(
-                *started,
-                OutputRef{.node_id = WorkflowNodeId{"command"},
-                          .port = WorkflowPortId{"partial"}}));
+      core,
+      runtime.output(*started, OutputRef{.node_id = WorkflowNodeId{"command"},
+                                         .port = WorkflowPortId{"partial"}}));
   EXPECT_EQ(partial.error(), make_error_code(Error::NotFound));
   core.stop();
 }
@@ -3033,8 +3115,7 @@ TEST(WorkflowRuntimeTest, RejectsUndeclaredExecutorOutput) {
       .executor = "test",
       .outputs = {WorkflowPortId{"result"}},
   });
-  auto compiled =
-      PlanCompiler{environment.registry}.compile(std::move(plan));
+  auto compiled = PlanCompiler{environment.registry}.compile(std::move(plan));
   ASSERT_TRUE(compiled.has_value());
 
   auto started = runtime.start(
@@ -3098,8 +3179,7 @@ TEST(WorkflowRuntimeTest, FailFastStopsIndependentAttempts) {
   EXPECT_EQ((*stopping)->stop_intent, StopIntent::Fail);
   EXPECT_EQ((*stopping)->tasks[0].state, TaskState::Failed);
   EXPECT_EQ((*stopping)->tasks[1].state, TaskState::Running);
-  EXPECT_EQ((*stopping)->tasks[1].attempts[0].state,
-            AttemptState::Terminating);
+  EXPECT_EQ((*stopping)->tasks[1].attempts[0].state, AttemptState::Terminating);
 
   ASSERT_TRUE(environment.executor->complete_next(-1));
   auto failed = wait_for_state(runtime, core, *started, RunState::Failed);
@@ -3118,10 +3198,10 @@ TEST(WorkflowRuntimeTest, CommandNodeOwnsRunIdAcrossSuspension) {
   }
 
   CommandExecutorConfig executor_config;
-  const auto helper = fs::path(home) /
-                      ".local/libexec/dagforge/minijail/minijail0";
-  const auto policy = fs::path(home) /
-                      ".local/libexec/dagforge/minijail/dagforge_command.bpf";
+  const auto helper =
+      fs::path(home) / ".local/libexec/dagforge/minijail/minijail0";
+  const auto policy =
+      fs::path(home) / ".local/libexec/dagforge/minijail/dagforge_command.bpf";
   if (!fs::is_regular_file(helper) || !fs::is_regular_file(policy)) {
     GTEST_SKIP() << "Minijail helper is not installed";
   }
@@ -3146,8 +3226,8 @@ TEST(WorkflowRuntimeTest, CommandNodeOwnsRunIdAcrossSuspension) {
   plan.nodes.push_back(NodePlan{
       .node_id = WorkflowNodeId{"command"},
       .executor = "command",
-      .config = command_config(
-          "/bin/sh", {"-c", "sleep 0.05; printf workflow-ok"}),
+      .config =
+          command_config("/bin/sh", {"-c", "sleep 0.05; printf workflow-ok"}),
       .outputs = {WorkflowPortId{"stdout"}, WorkflowPortId{"stderr"},
                   WorkflowPortId{"exit_code"}, WorkflowPortId{"result"}},
   });
@@ -3165,9 +3245,9 @@ TEST(WorkflowRuntimeTest, CommandNodeOwnsRunIdAcrossSuspension) {
   ASSERT_TRUE(completed.has_value()) << completed.error().message();
 
   auto output = sync_wait_on_runtime(
-      core, runtime.output(*started,
-                           OutputRef{.node_id = WorkflowNodeId{"command"},
-                                     .port = WorkflowPortId{"stdout"}}));
+      core,
+      runtime.output(*started, OutputRef{.node_id = WorkflowNodeId{"command"},
+                                         .port = WorkflowPortId{"stdout"}}));
   ASSERT_TRUE(output.has_value()) << output.error().message();
   const auto *text = std::get_if<std::string>(output->get());
   ASSERT_NE(text, nullptr);
@@ -3185,10 +3265,9 @@ TEST(WorkflowRuntimeTest, IdempotentTriggerReturnsExistingRun) {
   WorkflowRuntime runtime(core, environment.registry);
 
   auto plan = base_plan("idempotent");
-  plan.nodes.push_back(NodePlan{
-      .node_id = WorkflowNodeId{"command"},
-      .executor = "test",
-      .outputs = {WorkflowPortId{"result"}}});
+  plan.nodes.push_back(NodePlan{.node_id = WorkflowNodeId{"command"},
+                                .executor = "test",
+                                .outputs = {WorkflowPortId{"result"}}});
   auto compiled = PlanCompiler{environment.registry}.compile(std::move(plan));
   ASSERT_TRUE(compiled.has_value());
 
@@ -3205,37 +3284,35 @@ TEST(WorkflowRuntimeTest, IdempotentTriggerReturnsExistingRun) {
   EXPECT_EQ(*first, *second);
 
   auto revised_plan = base_plan("idempotent");
-  revised_plan.nodes.push_back(NodePlan{
-      .node_id = WorkflowNodeId{"command"},
-      .executor = "test",
-      .config = make_payload(JsonValue{{"revision", 2}}),
-      .outputs = {WorkflowPortId{"result"}}});
+  revised_plan.nodes.push_back(
+      NodePlan{.node_id = WorkflowNodeId{"command"},
+               .executor = "test",
+               .config = make_payload(JsonValue{{"revision", 2}}),
+               .outputs = {WorkflowPortId{"result"}}});
   auto revised =
       PlanCompiler{environment.registry}.compile(std::move(revised_plan));
   ASSERT_TRUE(revised.has_value()) << revised.error().message();
   EXPECT_EQ(runtime
                 .start(*revised,
-                       TriggerEnvelope{
-                           .workflow_id = WorkflowId{"idempotent"},
-                           .idempotency_key = "same-request"})
+                       TriggerEnvelope{.workflow_id = WorkflowId{"idempotent"},
+                                       .idempotency_key = "same-request"})
                 .error(),
             make_error_code(Error::AlreadyExists));
 
   auto other_plan = base_plan("other-workflow");
-  other_plan.nodes.push_back(NodePlan{
-      .node_id = WorkflowNodeId{"command"},
-      .executor = "test",
-      .outputs = {WorkflowPortId{"result"}}});
+  other_plan.nodes.push_back(NodePlan{.node_id = WorkflowNodeId{"command"},
+                                      .executor = "test",
+                                      .outputs = {WorkflowPortId{"result"}}});
   auto other =
       PlanCompiler{environment.registry}.compile(std::move(other_plan));
   ASSERT_TRUE(other.has_value()) << other.error().message();
-  EXPECT_EQ(runtime
-                .start(*other,
-                       TriggerEnvelope{
-                           .workflow_id = WorkflowId{"other-workflow"},
-                           .idempotency_key = "same-request"})
-                .error(),
-            make_error_code(Error::AlreadyExists));
+  EXPECT_EQ(
+      runtime
+          .start(*other,
+                 TriggerEnvelope{.workflow_id = WorkflowId{"other-workflow"},
+                                 .idempotency_key = "same-request"})
+          .error(),
+      make_error_code(Error::AlreadyExists));
 
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
   ASSERT_TRUE(environment.executor->complete_next(0, "done"));
@@ -3271,10 +3348,9 @@ TEST(WorkflowRuntimeTest, PropagatesUpstreamOutputToGenericExecutor) {
   ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
 
   auto started = runtime.start(
-      *compiled,
-      TriggerEnvelope{.workflow_id = WorkflowId{"generic-dataflow"},
-                      .source = "test",
-                      .event_type = "request"});
+      *compiled, TriggerEnvelope{.workflow_id = WorkflowId{"generic-dataflow"},
+                                 .source = "test",
+                                 .event_type = "request"});
   ASSERT_TRUE(started.has_value());
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
   ASSERT_TRUE(environment.executor->complete_next(0, "hello"));
@@ -3306,16 +3382,15 @@ TEST(WorkflowRuntimeTest, PropagatesPrincipalAndTraceToExecutor) {
   ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
 
   auto started = runtime.start(
-      *compiled,
-      TriggerEnvelope{
-          .workflow_id = WorkflowId{"executor-context"},
-          .source = "api",
-          .event_type = "request",
-          .principal = Principal{.subject = "user-42",
-                                 .roles = {"planner", "operator"}},
-          .trace = TraceContext{.trace_id = "trace-123",
-                                .parent_span_id = "span-456"},
-      });
+      *compiled, TriggerEnvelope{
+                     .workflow_id = WorkflowId{"executor-context"},
+                     .source = "api",
+                     .event_type = "request",
+                     .principal = Principal{.subject = "user-42",
+                                            .roles = {"planner", "operator"}},
+                     .trace = TraceContext{.trace_id = "trace-123",
+                                           .parent_span_id = "span-456"},
+                 });
   ASSERT_TRUE(started.has_value()) << started.error().message();
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
   const auto context = environment.executor->next_context();
@@ -3326,8 +3401,8 @@ TEST(WorkflowRuntimeTest, PropagatesPrincipalAndTraceToExecutor) {
   EXPECT_EQ(context->second.trace_id, "trace-123");
   EXPECT_EQ(context->second.parent_span_id, "span-456");
   ASSERT_TRUE(environment.executor->complete_next(0, "done"));
-  ASSERT_TRUE(wait_for_state(runtime, core, *started, RunState::Succeeded)
-                  .has_value());
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, *started, RunState::Succeeded).has_value());
   core.stop();
 }
 
@@ -3364,10 +3439,9 @@ TEST(WorkflowRuntimeTest, EvaluatesConditionsForEveryWorkflowValueType) {
     auto compiled = PlanCompiler{environment.registry}.compile(std::move(plan));
     ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
     auto started = runtime.start(
-        *compiled,
-        TriggerEnvelope{.workflow_id = WorkflowId{workflow_name},
-                        .source = "test",
-                        .event_type = "condition"});
+        *compiled, TriggerEnvelope{.workflow_id = WorkflowId{workflow_name},
+                                   .source = "test",
+                                   .event_type = "condition"});
     ASSERT_TRUE(started.has_value()) << started.error().message();
     ASSERT_TRUE(environment.executor->wait_for_pending(1));
     ASSERT_TRUE(environment.executor->complete_next_with_outputs(
@@ -3384,70 +3458,69 @@ TEST(WorkflowRuntimeTest, EvaluatesConditionsForEveryWorkflowValueType) {
     EXPECT_EQ((*completed)->tasks[1].state,
               selected ? TaskState::Succeeded : TaskState::Skipped);
     if (!selected) {
-      EXPECT_EQ((*completed)->tasks[1].skip_reason,
-                SkipReason::ConditionFalse);
+      EXPECT_EQ((*completed)->tasks[1].skip_reason, SkipReason::ConditionFalse);
     }
   };
 
-  run_case(std::monostate{},
-           ConditionExpr{.kind = ConditionKind::BoolEquals,
-                         .expected_bool = false},
-           true);
-  run_case(false,
-           ConditionExpr{.kind = ConditionKind::BoolEquals,
-                         .expected_bool = false},
-           true);
-  run_case(true,
-           ConditionExpr{.kind = ConditionKind::BoolEquals,
-                         .expected_bool = true},
-           true);
-  run_case(std::int64_t{0},
-           ConditionExpr{.kind = ConditionKind::BoolEquals,
-                         .expected_bool = false},
-           true);
-  run_case(std::int64_t{42},
-           ConditionExpr{.kind = ConditionKind::BoolEquals,
-                         .expected_bool = true},
-           true);
-  run_case(0.0,
-           ConditionExpr{.kind = ConditionKind::BoolEquals,
-                         .expected_bool = false},
-           true);
-  run_case(3.5,
-           ConditionExpr{.kind = ConditionKind::BoolEquals,
-                         .expected_bool = true},
-           true);
-  run_case(std::string{},
-           ConditionExpr{.kind = ConditionKind::BoolEquals,
-                         .expected_bool = false},
-           true);
-  run_case(std::string{"ready"},
-           ConditionExpr{.kind = ConditionKind::BoolEquals,
-                         .expected_bool = true},
-           true);
-  run_case(parse_payload("null"),
-           ConditionExpr{.kind = ConditionKind::BoolEquals,
-                         .expected_bool = false},
-           true);
+  run_case(
+      std::monostate{},
+      ConditionExpr{.kind = ConditionKind::BoolEquals, .expected_bool = false},
+      true);
+  run_case(
+      false,
+      ConditionExpr{.kind = ConditionKind::BoolEquals, .expected_bool = false},
+      true);
+  run_case(
+      true,
+      ConditionExpr{.kind = ConditionKind::BoolEquals, .expected_bool = true},
+      true);
+  run_case(
+      std::int64_t{0},
+      ConditionExpr{.kind = ConditionKind::BoolEquals, .expected_bool = false},
+      true);
+  run_case(
+      std::int64_t{42},
+      ConditionExpr{.kind = ConditionKind::BoolEquals, .expected_bool = true},
+      true);
+  run_case(
+      0.0,
+      ConditionExpr{.kind = ConditionKind::BoolEquals, .expected_bool = false},
+      true);
+  run_case(
+      3.5,
+      ConditionExpr{.kind = ConditionKind::BoolEquals, .expected_bool = true},
+      true);
+  run_case(
+      std::string{},
+      ConditionExpr{.kind = ConditionKind::BoolEquals, .expected_bool = false},
+      true);
+  run_case(
+      std::string{"ready"},
+      ConditionExpr{.kind = ConditionKind::BoolEquals, .expected_bool = true},
+      true);
+  run_case(
+      parse_payload("null"),
+      ConditionExpr{.kind = ConditionKind::BoolEquals, .expected_bool = false},
+      true);
   JsonValue object = JsonValue::object_t{};
   object["ready"] = true;
-  run_case(make_payload(object),
-           ConditionExpr{.kind = ConditionKind::BoolEquals,
-                         .expected_bool = true},
-           true);
-  run_case(ArtifactRef{},
-           ConditionExpr{.kind = ConditionKind::BoolEquals,
-                         .expected_bool = false},
-           true);
-  run_case(ArtifactRef{.artifact_id = ArtifactId{"artifact-ready"}},
-           ConditionExpr{.kind = ConditionKind::BoolEquals,
-                         .expected_bool = true},
-           true);
+  run_case(
+      make_payload(object),
+      ConditionExpr{.kind = ConditionKind::BoolEquals, .expected_bool = true},
+      true);
+  run_case(
+      ArtifactRef{},
+      ConditionExpr{.kind = ConditionKind::BoolEquals, .expected_bool = false},
+      true);
+  run_case(
+      ArtifactRef{.artifact_id = ArtifactId{"artifact-ready"}},
+      ConditionExpr{.kind = ConditionKind::BoolEquals, .expected_bool = true},
+      true);
 
-  run_case(std::monostate{},
-           ConditionExpr{.kind = ConditionKind::StringEquals,
-                         .expected_string = ""},
-           true);
+  run_case(
+      std::monostate{},
+      ConditionExpr{.kind = ConditionKind::StringEquals, .expected_string = ""},
+      true);
   run_case(true,
            ConditionExpr{.kind = ConditionKind::StringEquals,
                          .expected_string = "true"},
@@ -3473,10 +3546,10 @@ TEST(WorkflowRuntimeTest, EvaluatesConditionsForEveryWorkflowValueType) {
            ConditionExpr{.kind = ConditionKind::StringEquals,
                          .expected_string = "artifact-string"},
            true);
-  run_case(true,
-           ConditionExpr{.kind = ConditionKind::BoolEquals,
-                         .expected_bool = false},
-           false);
+  run_case(
+      true,
+      ConditionExpr{.kind = ConditionKind::BoolEquals, .expected_bool = false},
+      false);
 
   core.stop();
 }
@@ -3526,16 +3599,14 @@ TEST(WorkflowRuntimeTest, MapsExecutorStartFailuresToAttemptOutcome) {
     auto compiled = PlanCompiler{environment.registry}.compile(std::move(plan));
     ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
     auto started = runtime.start(
-        *compiled,
-        TriggerEnvelope{.workflow_id = WorkflowId{workflow_name},
-                        .source = "test",
-                        .event_type = "failure"});
+        *compiled, TriggerEnvelope{.workflow_id = WorkflowId{workflow_name},
+                                   .source = "test",
+                                   .event_type = "failure"});
     ASSERT_TRUE(started.has_value()) << started.error().message();
-    auto failed =
-        wait_for_state(runtime, core, *started, failure.run_state);
+    auto failed = wait_for_state(runtime, core, *started, failure.run_state);
     ASSERT_TRUE(failed.has_value())
-        << failed.error().message() << " for error="
-        << static_cast<int>(failure.error);
+        << failed.error().message()
+        << " for error=" << static_cast<int>(failure.error);
     ASSERT_EQ((*failed)->tasks.size(), 1U);
     ASSERT_EQ((*failed)->tasks.front().attempts.size(), 1U);
     const auto &attempt = (*failed)->tasks.front().attempts.front();
@@ -3578,10 +3649,11 @@ TEST(WorkflowRuntimeTest, PublishesRunTaskAndCompletionCallbacks) {
                       .source = "test",
                       .event_type = "callback"},
       WorkflowCallbacks{
-          .on_run_state = [callbacks](const RunSnapshot &snapshot) {
-            std::lock_guard lock(callbacks->mutex);
-            callbacks->run_states.push_back(snapshot.state);
-          },
+          .on_run_state =
+              [callbacks](const RunSnapshot &snapshot) {
+                std::lock_guard lock(callbacks->mutex);
+                callbacks->run_states.push_back(snapshot.state);
+              },
           .on_task_state =
               [callbacks](const WorkflowRunId &, const TaskSnapshot &snapshot) {
                 std::lock_guard lock(callbacks->mutex);
@@ -3632,14 +3704,14 @@ TEST(WorkflowRuntimeTest, ValidatesStoppedQuiescedAndRestoreLifecycles) {
             make_error_code(Error::InvalidArgument));
   EXPECT_EQ(runtime
                 .start(*compiled,
-                       TriggerEnvelope{
-                           .workflow_id = WorkflowId{"different-workflow"}})
+                       TriggerEnvelope{.workflow_id =
+                                           WorkflowId{"different-workflow"}})
                 .error(),
             make_error_code(Error::InvalidArgument));
   EXPECT_EQ(runtime
                 .start(*compiled,
-                       TriggerEnvelope{
-                           .workflow_id = WorkflowId{"lifecycle-validation"}})
+                       TriggerEnvelope{.workflow_id =
+                                           WorkflowId{"lifecycle-validation"}})
                 .error(),
             make_error_code(Error::SystemNotRunning));
   EXPECT_EQ(runtime.restore(*compiled, WorkflowCheckpoint{}).error(),
@@ -3667,8 +3739,8 @@ TEST(WorkflowRuntimeTest, ValidatesStoppedQuiescedAndRestoreLifecycles) {
   EXPECT_TRUE(runtime.quiesce(std::chrono::seconds(2)).has_value());
   EXPECT_EQ(runtime
                 .start(*compiled,
-                       TriggerEnvelope{
-                           .workflow_id = WorkflowId{"lifecycle-validation"}})
+                       TriggerEnvelope{.workflow_id =
+                                           WorkflowId{"lifecycle-validation"}})
                 .error(),
             make_error_code(Error::SystemNotRunning));
   core.stop();
@@ -3730,9 +3802,8 @@ TEST(WorkflowRuntimeTest, RestoreRetentionEvictsSnapshotsAndIdempotency) {
   EXPECT_EQ((*second_snapshot)->state, RunState::Succeeded);
 
   auto restarted = runtime.start(
-      *first_plan,
-      TriggerEnvelope{.workflow_id = WorkflowId{"restore-first"},
-                      .idempotency_key = "restore-key"});
+      *first_plan, TriggerEnvelope{.workflow_id = WorkflowId{"restore-first"},
+                                   .idempotency_key = "restore-key"});
   ASSERT_TRUE(restarted.has_value()) << restarted.error().message();
   EXPECT_NE(*restarted, WorkflowRunId{"restored-first"});
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
@@ -3758,21 +3829,23 @@ TEST(WorkflowRuntimeTest, RestoreRejectsDuplicateRunsAndConflictingKeys) {
   const auto checkpoint_for = [&](std::string run_id) {
     return WorkflowCheckpoint{
         .plan = plan,
-        .trigger = TriggerEnvelope{
-            .trigger_id = WorkflowTriggerId{run_id + "-trigger"},
-            .workflow_id = WorkflowId{"restore-idempotency-conflict"},
-            .source = "test",
-            .event_type = "restore",
-            .idempotency_key = "restored-request",
-        },
-        .snapshot = RunSnapshot{
-            .run_id = WorkflowRunId{std::move(run_id)},
-            .workflow_id = WorkflowId{"restore-idempotency-conflict"},
-            .plan_id = (*compiled)->plan_id.clone(),
-            .state = RunState::Succeeded,
-            .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"task"},
-                                   .state = TaskState::Succeeded}},
-        },
+        .trigger =
+            TriggerEnvelope{
+                .trigger_id = WorkflowTriggerId{run_id + "-trigger"},
+                .workflow_id = WorkflowId{"restore-idempotency-conflict"},
+                .source = "test",
+                .event_type = "restore",
+                .idempotency_key = "restored-request",
+            },
+        .snapshot =
+            RunSnapshot{
+                .run_id = WorkflowRunId{std::move(run_id)},
+                .workflow_id = WorkflowId{"restore-idempotency-conflict"},
+                .plan_id = (*compiled)->plan_id.clone(),
+                .state = RunState::Succeeded,
+                .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"task"},
+                                       .state = TaskState::Succeeded}},
+            },
     };
   };
 
@@ -3810,23 +3883,21 @@ TEST(WorkflowRuntimeTest, SkipsFalseBranchesAndFailedDependencies) {
         .target = WorkflowNodeId{"dependent"},
         .condition = fail_upstream
                          ? ConditionExpr{.kind = ConditionKind::Always}
-                         : ConditionExpr{
-                               .kind = ConditionKind::StringEquals,
-                               .expected_string = "selected"},
+                         : ConditionExpr{.kind = ConditionKind::StringEquals,
+                                         .expected_string = "selected"},
     });
     auto compiled = PlanCompiler{environment.registry}.compile(std::move(plan));
     ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
     auto started = runtime.start(
         *compiled,
-        TriggerEnvelope{
-            .workflow_id = compiled.value()->workflow_id.clone()});
+        TriggerEnvelope{.workflow_id = compiled.value()->workflow_id.clone()});
     ASSERT_TRUE(started.has_value()) << started.error().message();
     ASSERT_TRUE(environment.executor->wait_for_pending(1));
     ASSERT_TRUE(environment.executor->complete_next(fail_upstream ? 1 : 0,
                                                     "not-selected"));
-    auto terminal = wait_for_state(runtime, core, *started,
-                                   fail_upstream ? RunState::Failed
-                                                 : RunState::Succeeded);
+    auto terminal =
+        wait_for_state(runtime, core, *started,
+                       fail_upstream ? RunState::Failed : RunState::Succeeded);
     ASSERT_TRUE(terminal.has_value()) << terminal.error().message();
     ASSERT_EQ((*terminal)->tasks.size(), 2U);
     EXPECT_EQ((*terminal)->tasks[1].state, TaskState::Skipped);
@@ -3851,9 +3922,9 @@ TEST(WorkflowRuntimeTest, MissingRunControlOperationsReturnNotFound) {
   auto snapshot = sync_wait_on_runtime(core, runtime.snapshot(missing));
   EXPECT_EQ(snapshot.error(), make_error_code(Error::NotFound));
   auto output = sync_wait_on_runtime(
-      core, runtime.output(missing,
-                           OutputRef{.node_id = WorkflowNodeId{"node"},
-                                     .port = WorkflowPortId{"result"}}));
+      core,
+      runtime.output(missing, OutputRef{.node_id = WorkflowNodeId{"node"},
+                                        .port = WorkflowPortId{"result"}}));
   EXPECT_EQ(output.error(), make_error_code(Error::NotFound));
   EXPECT_EQ(sync_wait_on_runtime(core, runtime.pause(missing)).error(),
             make_error_code(Error::NotFound));
@@ -3883,21 +3954,23 @@ TEST(WorkflowRuntimeTest, RestoredIdempotencyKeyReturnsAuthoritativeRun) {
 
   WorkflowCheckpoint checkpoint{
       .plan = plan,
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"trigger"},
-          .workflow_id = WorkflowId{"restored-idempotency"},
-          .source = "api",
-          .event_type = "request",
-          .idempotency_key = "same-key",
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"restored-idempotency__run"},
-          .workflow_id = WorkflowId{"restored-idempotency"},
-          .plan_id = plan_id.clone(),
-          .state = RunState::Succeeded,
-          .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"task"},
-                                 .state = TaskState::Succeeded}},
-      },
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"trigger"},
+              .workflow_id = WorkflowId{"restored-idempotency"},
+              .source = "api",
+              .event_type = "request",
+              .idempotency_key = "same-key",
+          },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"restored-idempotency__run"},
+              .workflow_id = WorkflowId{"restored-idempotency"},
+              .plan_id = plan_id.clone(),
+              .state = RunState::Succeeded,
+              .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"task"},
+                                     .state = TaskState::Succeeded}},
+          },
   };
   ASSERT_TRUE(runtime.restore(*compiled, checkpoint).has_value());
   ASSERT_TRUE(core.start().has_value());
@@ -3934,10 +4007,9 @@ TEST(WorkflowRuntimeTest, LargeCommandOutputIsExternalizedAsArtifact) {
   ASSERT_TRUE(compiled.has_value());
 
   auto started = runtime.start(
-      *compiled,
-      TriggerEnvelope{.workflow_id = WorkflowId{"artifact-flow"},
-                      .source = "test",
-                      .event_type = "request"});
+      *compiled, TriggerEnvelope{.workflow_id = WorkflowId{"artifact-flow"},
+                                 .source = "test",
+                                 .event_type = "request"});
   ASSERT_TRUE(started.has_value());
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
   ASSERT_TRUE(
@@ -3945,9 +4017,9 @@ TEST(WorkflowRuntimeTest, LargeCommandOutputIsExternalizedAsArtifact) {
   ASSERT_TRUE(wait_for_state(runtime, core, *started, RunState::Succeeded));
 
   auto output = sync_wait_on_runtime(
-      core, runtime.output(*started,
-                           OutputRef{.node_id = WorkflowNodeId{"command"},
-                                     .port = WorkflowPortId{"stdout"}}));
+      core,
+      runtime.output(*started, OutputRef{.node_id = WorkflowNodeId{"command"},
+                                         .port = WorkflowPortId{"stdout"}}));
   ASSERT_TRUE(output.has_value());
   const auto *artifact = std::get_if<ArtifactRef>(output->get());
   ASSERT_NE(artifact, nullptr);
@@ -3964,8 +4036,8 @@ TEST(WorkflowStorageTest, FileArtifactStorePersistsAndVerifiesContent) {
   std::error_code error;
   std::filesystem::remove_all(directory, error);
 
-  const std::array<std::byte, 4> data{
-      std::byte{'D'}, std::byte{'A'}, std::byte{'G'}, std::byte{'F'}};
+  const std::array<std::byte, 4> data{std::byte{'D'}, std::byte{'A'},
+                                      std::byte{'G'}, std::byte{'F'}};
   FileArtifactStore writer(directory,
                            kStorageDefaults.max_artifact_metadata_bytes,
                            kStorageDefaults.max_artifact_bytes);
@@ -3992,16 +4064,14 @@ TEST(WorkflowStorageTest, DurableFileReplacesAppendsAndRemoves) {
   std::error_code error;
   std::filesystem::remove_all(directory, error);
 
-  ASSERT_TRUE(
-      workflow::storage_detail::store_text_file_atomic(target, "first")
-          .has_value());
+  ASSERT_TRUE(workflow::storage_detail::store_text_file_atomic(target, "first")
+                  .has_value());
   auto first = workflow::storage_detail::load_text_file(target, 1024);
   ASSERT_TRUE(first.has_value()) << first.error().message();
   EXPECT_EQ(*first, "first");
 
-  ASSERT_TRUE(
-      workflow::storage_detail::store_text_file_atomic(target, "second")
-          .has_value());
+  ASSERT_TRUE(workflow::storage_detail::store_text_file_atomic(target, "second")
+                  .has_value());
   ASSERT_TRUE(workflow::storage_detail::append_text_file_durable(
                   target, "\nthird", 1024)
                   .has_value());
@@ -4011,8 +4081,8 @@ TEST(WorkflowStorageTest, DurableFileReplacesAppendsAndRemoves) {
 
   for (const auto &entry :
        std::filesystem::directory_iterator(target.parent_path())) {
-    EXPECT_FALSE(entry.path().filename().string().starts_with(
-        "state.json.tmp."));
+    EXPECT_FALSE(
+        entry.path().filename().string().starts_with("state.json.tmp."));
   }
 
   auto removed = workflow::storage_detail::remove_file_durable(target);
@@ -4032,8 +4102,8 @@ TEST(WorkflowStorageTest, DurableFileReplacesAppendsAndRemoves) {
   EXPECT_TRUE(std::filesystem::is_directory(target));
   for (const auto &entry :
        std::filesystem::directory_iterator(target.parent_path())) {
-    EXPECT_FALSE(entry.path().filename().string().starts_with(
-        "state.json.tmp."));
+    EXPECT_FALSE(
+        entry.path().filename().string().starts_with("state.json.tmp."));
   }
 
   std::filesystem::remove_all(directory, error);
@@ -4044,9 +4114,8 @@ TEST(WorkflowStorageTest, DurableRemoveReportsPostUnlinkSyncFailure) {
   const auto target = directory / "state.json";
   std::error_code error;
   std::filesystem::remove_all(directory, error);
-  ASSERT_TRUE(
-      workflow::storage_detail::store_text_file_atomic(target, "state")
-          .has_value());
+  ASSERT_TRUE(workflow::storage_detail::store_text_file_atomic(target, "state")
+                  .has_value());
 
   workflow::storage_detail::testing::fail_next_directory_sync();
   auto removed = workflow::storage_detail::remove_file_durable(target);
@@ -4113,11 +4182,10 @@ TEST(WorkflowStorageTest, DurableFileRejectsUnsafeAndBlockedPaths) {
   const auto read_only = directory / "read-only";
   std::filesystem::create_directory(read_only, error);
   ASSERT_FALSE(error);
-  std::filesystem::permissions(
-      read_only,
-      std::filesystem::perms::owner_read |
-          std::filesystem::perms::owner_exec,
-      std::filesystem::perm_options::replace, error);
+  std::filesystem::permissions(read_only,
+                               std::filesystem::perms::owner_read |
+                                   std::filesystem::perms::owner_exec,
+                               std::filesystem::perm_options::replace, error);
   ASSERT_FALSE(error);
   EXPECT_FALSE(workflow::storage_detail::store_text_file_atomic(
                    read_only / "state.json", "blocked")
@@ -4148,16 +4216,15 @@ TEST(WorkflowStorageTest, DurableFileEnforcesByteLimitsBeforeAllocation) {
   const auto target = directory / "state.bin";
   std::error_code error;
   std::filesystem::remove_all(directory, error);
-  ASSERT_TRUE(workflow::storage_detail::store_text_file_atomic(
-                  target, "12345678")
-                  .has_value());
+  ASSERT_TRUE(
+      workflow::storage_detail::store_text_file_atomic(target, "12345678")
+          .has_value());
 
   EXPECT_EQ(workflow::storage_detail::load_text_file(target, 4).error(),
             make_error_code(Error::ResourceExhausted));
   EXPECT_EQ(workflow::storage_detail::load_file(target, 4).error(),
             make_error_code(Error::ResourceExhausted));
-  EXPECT_EQ(workflow::storage_detail::append_text_file_durable(
-                target, "9", 8)
+  EXPECT_EQ(workflow::storage_detail::append_text_file_durable(target, "9", 8)
                 .error(),
             make_error_code(Error::ResourceExhausted));
   auto unchanged = workflow::storage_detail::load_text_file(target, 8);
@@ -4182,9 +4249,9 @@ TEST(WorkflowStorageTest, JsonCatalogRejectsManagedPathCorruption) {
     std::ofstream root_file(directory);
     root_file << "not-a-directory";
   }
-  EXPECT_EQ(workflow::storage_detail::load_json_catalog(directory, 1024)
-                .error(),
-            make_error_code(Error::InvalidState));
+  EXPECT_EQ(
+      workflow::storage_detail::load_json_catalog(directory, 1024).error(),
+      make_error_code(Error::InvalidState));
   std::filesystem::remove(directory, error);
   ASSERT_FALSE(error);
 
@@ -4196,41 +4263,37 @@ TEST(WorkflowStorageTest, JsonCatalogRejectsManagedPathCorruption) {
   }
   std::filesystem::create_directory(directory / "managed.json", error);
   ASSERT_FALSE(error);
-  EXPECT_EQ(workflow::storage_detail::load_json_catalog(directory, 1024)
-                .error(),
-            make_error_code(Error::InvalidState));
+  EXPECT_EQ(
+      workflow::storage_detail::load_json_catalog(directory, 1024).error(),
+      make_error_code(Error::InvalidState));
   std::filesystem::remove_all(directory / "managed.json", error);
   ASSERT_FALSE(error);
   {
     std::ofstream invalid_key(directory / "..json");
     invalid_key << "{}";
   }
-  EXPECT_EQ(workflow::storage_detail::load_json_catalog(directory, 1024)
-                .error(),
-            make_error_code(Error::ParseError));
+  EXPECT_EQ(
+      workflow::storage_detail::load_json_catalog(directory, 1024).error(),
+      make_error_code(Error::ParseError));
 
   std::filesystem::remove_all(directory, error);
 }
 
 TEST(WorkflowStorageTest, StorageCodecRejectsInvalidModels) {
-  EXPECT_EQ(workflow::storage_detail::encode_artifact_metadata(ArtifactRef{})
-                .error(),
-            make_error_code(Error::InvalidArgument));
-  EXPECT_EQ(workflow::storage_detail::decode_artifact_metadata("{}")
-                .error(),
+  EXPECT_EQ(
+      workflow::storage_detail::encode_artifact_metadata(ArtifactRef{}).error(),
+      make_error_code(Error::InvalidArgument));
+  EXPECT_EQ(workflow::storage_detail::decode_artifact_metadata("{}").error(),
             make_error_code(Error::ParseError));
-  EXPECT_EQ(workflow::storage_detail::encode_evidence(EvidenceRecord{})
-                .error(),
+  EXPECT_EQ(workflow::storage_detail::encode_evidence(EvidenceRecord{}).error(),
             make_error_code(Error::InvalidArgument));
-  EXPECT_EQ(workflow::storage_detail::decode_evidence("{}")
-                .error(),
+  EXPECT_EQ(workflow::storage_detail::decode_evidence("{}").error(),
             make_error_code(Error::ParseError));
 
   WorkflowCheckpoint checkpoint;
   EXPECT_EQ(workflow::storage_detail::encode_checkpoint(checkpoint).error(),
             make_error_code(Error::InvalidArgument));
-  EXPECT_EQ(workflow::storage_detail::decode_checkpoint("{}")
-                .error(),
+  EXPECT_EQ(workflow::storage_detail::decode_checkpoint("{}").error(),
             make_error_code(Error::ParseError));
   EXPECT_FALSE(workflow::storage_detail::decode_checkpoint("{").has_value());
   EXPECT_EQ(workflow::storage_detail::decode_checkpoint(
@@ -4242,8 +4305,9 @@ TEST(WorkflowStorageTest, StorageCodecRejectsInvalidModels) {
   EXPECT_EQ(workflow::storage_detail::encode_stored_plan(invalid_plan).error(),
             make_error_code(Error::InvalidArgument));
   invalid_plan.plan_id = WorkflowPlanId{"invalid-plan"};
-  invalid_plan.digest = "digest";
-  invalid_plan.plan.workflow_id = WorkflowId{"invalid-plan"};
+  invalid_plan.execution_digest = "execution-digest";
+  invalid_plan.source_digest = "source-digest";
+  invalid_plan.source_plan.workflow_id = WorkflowId{"invalid-plan"};
   EXPECT_EQ(workflow::storage_detail::encode_stored_plan(invalid_plan).error(),
             make_error_code(Error::InvalidArgument));
 }
@@ -4326,30 +4390,27 @@ TEST(WorkflowStorageTest, StorageEnvelopeGoldenFilesRequireCurrentVersion) {
   auto evidence_future = parse_json(evidence_v1);
   ASSERT_TRUE(evidence_future.has_value()) << evidence_future.error().message();
   evidence_future->get_object()["version"] = std::int64_t{2};
-  EXPECT_EQ(
-      workflow::storage_detail::decode_evidence(
-          serialize_json(*evidence_future).value())
-          .error(),
-      make_error_code(Error::Unsupported));
+  EXPECT_EQ(workflow::storage_detail::decode_evidence(
+                serialize_json(*evidence_future).value())
+                .error(),
+            make_error_code(Error::Unsupported));
 
   auto checkpoint_future = parse_json(checkpoint_v1);
   ASSERT_TRUE(checkpoint_future.has_value())
       << checkpoint_future.error().message();
   checkpoint_future->get_object()["version"] = std::int64_t{2};
-  EXPECT_EQ(
-      workflow::storage_detail::decode_checkpoint(
-          serialize_json(*checkpoint_future).value())
-          .error(),
-      make_error_code(Error::Unsupported));
+  EXPECT_EQ(workflow::storage_detail::decode_checkpoint(
+                serialize_json(*checkpoint_future).value())
+                .error(),
+            make_error_code(Error::Unsupported));
 
   auto plan_future = parse_json(plan_v1);
   ASSERT_TRUE(plan_future.has_value()) << plan_future.error().message();
   plan_future->get_object()["version"] = std::int64_t{2};
-  EXPECT_EQ(
-      workflow::storage_detail::decode_stored_plan(
-          serialize_json(*plan_future).value())
-          .error(),
-      make_error_code(Error::Unsupported));
+  EXPECT_EQ(workflow::storage_detail::decode_stored_plan(
+                serialize_json(*plan_future).value())
+                .error(),
+            make_error_code(Error::Unsupported));
 
   auto wrong_format = parse_json(evidence_v1);
   ASSERT_TRUE(wrong_format.has_value()) << wrong_format.error().message();
@@ -4376,14 +4437,14 @@ TEST(WorkflowStorageTest, StoresRejectDataOutsideConfiguredLimits) {
   std::filesystem::create_directories(directory, error);
   ASSERT_FALSE(error);
 
-  const std::array<std::byte, 4> data{
-      std::byte{'D'}, std::byte{'A'}, std::byte{'T'}, std::byte{'A'}};
+  const std::array<std::byte, 4> data{std::byte{'D'}, std::byte{'A'},
+                                      std::byte{'T'}, std::byte{'A'}};
   FileArtifactStore tiny_artifacts(directory / "artifacts", 1024, 3);
   EXPECT_EQ(tiny_artifacts.put(data, "application/octet-stream").error(),
             make_error_code(Error::ResourceExhausted));
 
-  auto evidence = EvidenceLedger::open(directory / "evidence.jsonl", 10,
-                                       1024, 16);
+  auto evidence =
+      EvidenceLedger::open(directory / "evidence.jsonl", 10, 1024, 16);
   ASSERT_TRUE(evidence.has_value()) << evidence.error().message();
   EvidenceRecord record;
   record.run_id = WorkflowRunId{"run"};
@@ -4396,8 +4457,8 @@ TEST(WorkflowStorageTest, StoresRejectDataOutsideConfiguredLimits) {
                             std::ios::binary | std::ios::trunc);
     oversized << std::string(65, 'x');
   }
-  auto oversized_evidence = EvidenceLedger::open(
-      directory / "oversized-evidence.jsonl", 10, 64, 64);
+  auto oversized_evidence =
+      EvidenceLedger::open(directory / "oversized-evidence.jsonl", 10, 64, 64);
   ASSERT_FALSE(oversized_evidence.has_value());
   EXPECT_EQ(oversized_evidence.error(),
             make_error_code(Error::ResourceExhausted));
@@ -4467,20 +4528,22 @@ TEST(WorkflowStorageTest, StoresExposeCommittedButDeferredWrites) {
 
   WorkflowCheckpoint checkpoint{
       .plan = std::move(plan),
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"deferred-trigger"},
-          .workflow_id = WorkflowId{"deferred-plan"},
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"deferred-run"},
-          .workflow_id = WorkflowId{"deferred-plan"},
-          .plan_id = (*registered)->plan_id.clone(),
-          .state = RunState::Succeeded,
-          .tasks = {TaskSnapshot{
-              .node_id = WorkflowNodeId{"task"},
-              .state = TaskState::Succeeded,
-          }},
-      },
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"deferred-trigger"},
+              .workflow_id = WorkflowId{"deferred-plan"},
+          },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"deferred-run"},
+              .workflow_id = WorkflowId{"deferred-plan"},
+              .plan_id = (*registered)->plan_id.clone(),
+              .state = RunState::Succeeded,
+              .tasks = {TaskSnapshot{
+                  .node_id = WorkflowNodeId{"task"},
+                  .state = TaskState::Succeeded,
+              }},
+          },
   };
   CheckpointStore checkpoints(directory / "runs",
                               kStorageDefaults.max_checkpoint_bytes);
@@ -4490,10 +4553,10 @@ TEST(WorkflowStorageTest, StoresExposeCommittedButDeferredWrites) {
   EXPECT_TRUE(saved->durability_deferred);
   EXPECT_TRUE(checkpoints.load(checkpoint.snapshot.run_id).has_value());
 
-  auto ledger = EvidenceLedger::open(
-      directory / "evidence.jsonl", 10,
-      kStorageDefaults.max_evidence_file_bytes,
-      kStorageDefaults.max_evidence_record_bytes);
+  auto ledger =
+      EvidenceLedger::open(directory / "evidence.jsonl", 10,
+                           kStorageDefaults.max_evidence_file_bytes,
+                           kStorageDefaults.max_evidence_record_bytes);
   ASSERT_TRUE(ledger.has_value()) << ledger.error().message();
   EvidenceRecord evidence;
   evidence.run_id = checkpoint.snapshot.run_id.clone();
@@ -4524,8 +4587,8 @@ TEST(WorkflowStorageTest,
   FileArtifactStore artifacts(directory,
                               kStorageDefaults.max_artifact_metadata_bytes,
                               kStorageDefaults.max_artifact_bytes);
-  const std::array<std::byte, 4> data{
-      std::byte{'D'}, std::byte{'A'}, std::byte{'T'}, std::byte{'A'}};
+  const std::array<std::byte, 4> data{std::byte{'D'}, std::byte{'A'},
+                                      std::byte{'T'}, std::byte{'A'}};
 
   workflow::storage_detail::testing::fail_directory_sync_after(1);
   auto stored = artifacts.put(data, "application/octet-stream");
@@ -4541,10 +4604,10 @@ TEST(WorkflowStorageTest,
   auto publication_result = publication.get_future();
   core.post_to(shard_id{0}, [&values, &publication] {
     workflow::storage_detail::testing::fail_directory_sync_after(1);
-    publication.set_value(values.put(
-        OutputRef{.node_id = WorkflowNodeId{"task"},
-                  .port = WorkflowPortId{"result"}},
-        std::string{"large-value"}));
+    publication.set_value(
+        values.put(OutputRef{.node_id = WorkflowNodeId{"task"},
+                             .port = WorkflowPortId{"result"}},
+                   std::string{"large-value"}));
   });
   ASSERT_EQ(publication_result.wait_for(std::chrono::seconds(2)),
             std::future_status::ready);
@@ -4559,23 +4622,26 @@ TEST(WorkflowStorageTest,
   std::filesystem::remove_all(directory, error);
 }
 
-TEST(WorkflowStorageTest, CheckpointStoreSurfacesDurableDeleteFailureAndDiskState) {
+TEST(WorkflowStorageTest,
+     CheckpointStoreSurfacesDurableDeleteFailureAndDiskState) {
   const auto directory = temporary_test_directory("checkpoint-delete-failure");
   std::error_code error;
   std::filesystem::remove_all(directory, error);
 
   WorkflowCheckpoint checkpoint{
       .plan = base_plan("checkpoint-delete-failure"),
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"delete-trigger"},
-          .workflow_id = WorkflowId{"checkpoint-delete-failure"},
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"delete-run"},
-          .workflow_id = WorkflowId{"checkpoint-delete-failure"},
-          .plan_id = WorkflowPlanId{"delete-plan"},
-          .state = RunState::Succeeded,
-      },
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"delete-trigger"},
+              .workflow_id = WorkflowId{"checkpoint-delete-failure"},
+          },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"delete-run"},
+              .workflow_id = WorkflowId{"checkpoint-delete-failure"},
+              .plan_id = WorkflowPlanId{"delete-plan"},
+              .state = RunState::Succeeded,
+          },
   };
   CheckpointStore store(directory, kStorageDefaults.max_checkpoint_bytes);
   ASSERT_TRUE(store.save(checkpoint).has_value());
@@ -4602,16 +4668,18 @@ TEST(WorkflowStorageTest,
 
   WorkflowCheckpoint checkpoint{
       .plan = base_plan("checkpoint-delete-sync"),
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"delete-sync-trigger"},
-          .workflow_id = WorkflowId{"checkpoint-delete-sync"},
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"delete-sync-run"},
-          .workflow_id = WorkflowId{"checkpoint-delete-sync"},
-          .plan_id = WorkflowPlanId{"delete-sync-plan"},
-          .state = RunState::Succeeded,
-      },
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"delete-sync-trigger"},
+              .workflow_id = WorkflowId{"checkpoint-delete-sync"},
+          },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"delete-sync-run"},
+              .workflow_id = WorkflowId{"checkpoint-delete-sync"},
+              .plan_id = WorkflowPlanId{"delete-sync-plan"},
+              .state = RunState::Succeeded,
+          },
   };
   CheckpointStore store(directory, kStorageDefaults.max_checkpoint_bytes);
   ASSERT_TRUE(store.save(checkpoint).has_value());
@@ -4640,29 +4708,31 @@ TEST(WorkflowStorageTest, RejectsInconsistentAttemptOutcomes) {
       Error::Timeout, "attempt_timed_out", "Attempt timed out");
   WorkflowCheckpoint checkpoint{
       .plan = std::move(plan),
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"outcome-trigger"},
-          .workflow_id = WorkflowId{"attempt-outcome-codec"},
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"outcome-run"},
-          .workflow_id = WorkflowId{"attempt-outcome-codec"},
-          .plan_id = WorkflowPlanId{"outcome-plan"},
-          .state = RunState::Failed,
-          .tasks = {TaskSnapshot{
-              .node_id = WorkflowNodeId{"task"},
-              .state = TaskState::Failed,
-              .attempt_count = 1,
-              .failure = timeout,
-              .attempts = {AttemptSnapshot{
-                  .attempt_id = AttemptId{"outcome-attempt"},
-                  .number = 1,
-                  .state = AttemptState::TimedOut,
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"outcome-trigger"},
+              .workflow_id = WorkflowId{"attempt-outcome-codec"},
+          },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"outcome-run"},
+              .workflow_id = WorkflowId{"attempt-outcome-codec"},
+              .plan_id = WorkflowPlanId{"outcome-plan"},
+              .state = RunState::Failed,
+              .tasks = {TaskSnapshot{
+                  .node_id = WorkflowNodeId{"task"},
+                  .state = TaskState::Failed,
+                  .attempt_count = 1,
                   .failure = timeout,
+                  .attempts = {AttemptSnapshot{
+                      .attempt_id = AttemptId{"outcome-attempt"},
+                      .number = 1,
+                      .state = AttemptState::TimedOut,
+                      .failure = timeout,
+                  }},
               }},
-          }},
-          .failure = timeout,
-      },
+              .failure = timeout,
+          },
   };
   ASSERT_TRUE(
       workflow::storage_detail::validate_checkpoint(checkpoint).has_value());
@@ -4778,10 +4848,10 @@ TEST(WorkflowStorageTest, CheckpointAndEvidenceStoresExposeFailureContracts) {
   const auto blocked_path = directory / "blocked-evidence.jsonl";
   std::filesystem::create_directory(blocked_path, error);
   ASSERT_FALSE(error);
-  auto blocked = EvidenceLedger::open(
-      blocked_path, kStorageDefaults.max_evidence_records,
-      kStorageDefaults.max_evidence_file_bytes,
-      kStorageDefaults.max_evidence_record_bytes);
+  auto blocked =
+      EvidenceLedger::open(blocked_path, kStorageDefaults.max_evidence_records,
+                           kStorageDefaults.max_evidence_file_bytes,
+                           kStorageDefaults.max_evidence_record_bytes);
   ASSERT_FALSE(blocked.has_value());
   EXPECT_EQ(blocked.error(), make_error_code(Error::InvalidState));
 
@@ -4790,8 +4860,8 @@ TEST(WorkflowStorageTest, CheckpointAndEvidenceStoresExposeFailureContracts) {
 
 TEST(WorkflowStorageTest, InMemoryArtifactStoreSupportsLifecycleAndNotFound) {
   InMemoryArtifactStore store;
-  const std::array<std::byte, 3> data{
-      std::byte{'o'}, std::byte{'n'}, std::byte{'e'}};
+  const std::array<std::byte, 3> data{std::byte{'o'}, std::byte{'n'},
+                                      std::byte{'e'}};
 
   auto stored = store.put(data, "text/plain");
   ASSERT_TRUE(stored.has_value()) << stored.error().message();
@@ -4831,8 +4901,8 @@ TEST(WorkflowStorageTest, FileArtifactStoreRejectsMissingAndCorruptContent) {
   EXPECT_EQ(store.erase(ArtifactId{".."}).error(),
             make_error_code(Error::InvalidArgument));
 
-  const std::array<std::byte, 4> data{
-      std::byte{'D'}, std::byte{'A'}, std::byte{'T'}, std::byte{'A'}};
+  const std::array<std::byte, 4> data{std::byte{'D'}, std::byte{'A'},
+                                      std::byte{'T'}, std::byte{'A'}};
   auto first = store.put(data, "application/octet-stream");
   ASSERT_TRUE(first.has_value()) << first.error().message();
   {
@@ -4892,13 +4962,12 @@ TEST(WorkflowStorageTest, ArtifactDeleteReportsDeferredCleanupTruthfully) {
   FileArtifactStore store(directory,
                           kStorageDefaults.max_artifact_metadata_bytes,
                           kStorageDefaults.max_artifact_bytes);
-  const std::array<std::byte, 4> data{
-      std::byte{'D'}, std::byte{'A'}, std::byte{'T'}, std::byte{'A'}};
+  const std::array<std::byte, 4> data{std::byte{'D'}, std::byte{'A'},
+                                      std::byte{'T'}, std::byte{'A'}};
   auto stored = store.put(data, "application/octet-stream");
   ASSERT_TRUE(stored.has_value()) << stored.error().message();
 
-  const auto data_path =
-      directory / (stored->artifact_id.str() + ".bin");
+  const auto data_path = directory / (stored->artifact_id.str() + ".bin");
   std::filesystem::remove(data_path, error);
   ASSERT_FALSE(error);
   std::filesystem::create_directory(data_path, error);
@@ -4936,13 +5005,12 @@ TEST(WorkflowStorageTest,
   FileArtifactStore store(directory,
                           kStorageDefaults.max_artifact_metadata_bytes,
                           kStorageDefaults.max_artifact_bytes);
-  const std::array<std::byte, 4> data{
-      std::byte{'D'}, std::byte{'A'}, std::byte{'T'}, std::byte{'A'}};
+  const std::array<std::byte, 4> data{std::byte{'D'}, std::byte{'A'},
+                                      std::byte{'T'}, std::byte{'A'}};
   auto stored = store.put(data, "application/octet-stream");
   ASSERT_TRUE(stored.has_value()) << stored.error().message();
 
-  const auto data_path =
-      directory / (stored->artifact_id.str() + ".bin");
+  const auto data_path = directory / (stored->artifact_id.str() + ".bin");
   std::filesystem::remove(data_path, error);
   ASSERT_FALSE(error);
 
@@ -4967,8 +5035,8 @@ TEST(WorkflowStorageTest,
   FileArtifactStore store(directory,
                           kStorageDefaults.max_artifact_metadata_bytes,
                           kStorageDefaults.max_artifact_bytes);
-  const std::array<std::byte, 4> data{
-      std::byte{'D'}, std::byte{'A'}, std::byte{'T'}, std::byte{'A'}};
+  const std::array<std::byte, 4> data{std::byte{'D'}, std::byte{'A'},
+                                      std::byte{'T'}, std::byte{'A'}};
   auto stored = store.put(data, "application/octet-stream");
   ASSERT_TRUE(stored.has_value()) << stored.error().message();
 
@@ -4991,13 +5059,12 @@ TEST(WorkflowStorageTest, ArtifactStoreSurfacesMetadataCommitFailure) {
   FileArtifactStore store(directory,
                           kStorageDefaults.max_artifact_metadata_bytes,
                           kStorageDefaults.max_artifact_bytes);
-  const std::array<std::byte, 4> data{
-      std::byte{'D'}, std::byte{'A'}, std::byte{'T'}, std::byte{'A'}};
+  const std::array<std::byte, 4> data{std::byte{'D'}, std::byte{'A'},
+                                      std::byte{'T'}, std::byte{'A'}};
   auto stored = store.put(data, "application/octet-stream");
   ASSERT_TRUE(stored.has_value()) << stored.error().message();
 
-  const auto metadata_path =
-      directory / (stored->artifact_id.str() + ".json");
+  const auto metadata_path = directory / (stored->artifact_id.str() + ".json");
   std::filesystem::remove(metadata_path, error);
   ASSERT_FALSE(error);
   std::filesystem::create_directory(metadata_path, error);
@@ -5010,8 +5077,8 @@ TEST(WorkflowStorageTest, ArtifactStoreSurfacesMetadataCommitFailure) {
   auto report = store.reconcile();
   ASSERT_TRUE(report.has_value()) << report.error().message();
   EXPECT_EQ(report->count(ArtifactReconciliationState::MalformedMetadata), 1U);
-  EXPECT_TRUE(std::filesystem::exists(
-      directory / (stored->artifact_id.str() + ".bin")));
+  EXPECT_TRUE(std::filesystem::exists(directory /
+                                      (stored->artifact_id.str() + ".bin")));
 
   std::filesystem::remove_all(directory, error);
 }
@@ -5039,8 +5106,7 @@ TEST(WorkflowStorageTest, ArtifactReconciliationHandlesRootAndSizeErrors) {
   {
     std::ofstream metadata(directory / "large-metadata.json");
     metadata << std::string(32, 'x');
-    std::ofstream data(directory / "large-metadata.bin",
-                       std::ios::binary);
+    std::ofstream data(directory / "large-metadata.bin", std::ios::binary);
     data << "x";
   }
   {
@@ -5073,14 +5139,13 @@ TEST(WorkflowStorageTest, ArtifactReconciliationClassifiesWithoutMutation) {
   FileArtifactStore store(directory,
                           kStorageDefaults.max_artifact_metadata_bytes,
                           kStorageDefaults.max_artifact_bytes);
-  const std::array<std::byte, 4> data{
-      std::byte{'D'}, std::byte{'A'}, std::byte{'T'}, std::byte{'A'}};
+  const std::array<std::byte, 4> data{std::byte{'D'}, std::byte{'A'},
+                                      std::byte{'T'}, std::byte{'A'}};
 
   auto complete = store.put(data, "application/octet-stream");
   ASSERT_TRUE(complete.has_value()) << complete.error().message();
   auto orphan_metadata = store.put(data, "application/octet-stream");
-  ASSERT_TRUE(orphan_metadata.has_value())
-      << orphan_metadata.error().message();
+  ASSERT_TRUE(orphan_metadata.has_value()) << orphan_metadata.error().message();
   auto mismatch = store.put(data, "application/octet-stream");
   ASSERT_TRUE(mismatch.has_value()) << mismatch.error().message();
 
@@ -5088,9 +5153,8 @@ TEST(WorkflowStorageTest, ArtifactReconciliationClassifiesWithoutMutation) {
       directory / (orphan_metadata->artifact_id.str() + ".bin"), error);
   ASSERT_FALSE(error);
   {
-    std::ofstream output(
-        directory / (mismatch->artifact_id.str() + ".bin"),
-        std::ios::binary | std::ios::trunc);
+    std::ofstream output(directory / (mismatch->artifact_id.str() + ".bin"),
+                         std::ios::binary | std::ios::trunc);
     output << "tampered";
   }
   {
@@ -5140,12 +5204,11 @@ TEST(WorkflowStorageTest, ArtifactReconciliationClassifiesWithoutMutation) {
                         ArtifactReconciliationState::OrphanMetadata));
   EXPECT_TRUE(has_entry(mismatch->artifact_id.str(),
                         ArtifactReconciliationState::ContentMismatch));
-  EXPECT_TRUE(has_entry("orphan-data",
-                        ArtifactReconciliationState::OrphanData));
-  EXPECT_TRUE(has_entry("malformed",
-                        ArtifactReconciliationState::MalformedMetadata));
-  EXPECT_TRUE(has_entry("..json",
-                        ArtifactReconciliationState::InvalidEntry));
+  EXPECT_TRUE(
+      has_entry("orphan-data", ArtifactReconciliationState::OrphanData));
+  EXPECT_TRUE(
+      has_entry("malformed", ArtifactReconciliationState::MalformedMetadata));
+  EXPECT_TRUE(has_entry("..json", ArtifactReconciliationState::InvalidEntry));
 
   std::vector<std::string> after;
   for (const auto &entry : std::filesystem::directory_iterator(directory)) {
@@ -5154,9 +5217,9 @@ TEST(WorkflowStorageTest, ArtifactReconciliationClassifiesWithoutMutation) {
   std::ranges::sort(after);
   EXPECT_EQ(after, before);
 
-  FileArtifactStore missing(
-      directory / "missing", kStorageDefaults.max_artifact_metadata_bytes,
-      kStorageDefaults.max_artifact_bytes);
+  FileArtifactStore missing(directory / "missing",
+                            kStorageDefaults.max_artifact_metadata_bytes,
+                            kStorageDefaults.max_artifact_bytes);
   auto empty = missing.reconcile();
   ASSERT_TRUE(empty.has_value()) << empty.error().message();
   EXPECT_TRUE(empty->clean());
@@ -5220,12 +5283,10 @@ TEST(WorkflowStorageTest, RunValueStoreCoversTypedBudgetAndArtifactScenarios) {
     (void)store.put(integer, std::int64_t{42});
     (void)store.put(real, 3.5);
     (void)store.put(none, std::monostate{});
-    (void)store.put(
-        artifact,
-        ArtifactRef{.artifact_id = ArtifactId{"existing"},
-                    .media_type = "text/plain",
-                    .size_bytes = 1,
-                    .digest = "digest"});
+    (void)store.put(artifact, ArtifactRef{.artifact_id = ArtifactId{"existing"},
+                                          .media_type = "text/plain",
+                                          .size_bytes = 1,
+                                          .digest = "digest"});
     (void)store.put(text, std::string{"externalized text"});
     JsonValue object = JsonValue::object_t{};
     object["message"] = "externalized json";
@@ -5233,8 +5294,9 @@ TEST(WorkflowStorageTest, RunValueStoreCoversTypedBudgetAndArtifactScenarios) {
 
     observed.contains_text = store.contains(text);
     observed.missing_output =
-        store.get(OutputRef{.node_id = WorkflowNodeId{"missing"},
-                            .port = WorkflowPortId{"value"}})
+        store
+            .get(OutputRef{.node_id = WorkflowNodeId{"missing"},
+                           .port = WorkflowPortId{"value"}})
             .error();
     auto text_value = store.get(text);
     auto json_value = store.get(json);
@@ -5275,8 +5337,7 @@ TEST(WorkflowStorageTest, RunValueStoreCoversTypedBudgetAndArtifactScenarios) {
   EXPECT_EQ(observed.invalid_output, make_error_code(Error::InvalidArgument));
   EXPECT_EQ(observed.missing_output, make_error_code(Error::NotFound));
   EXPECT_EQ(observed.budget_error, make_error_code(Error::ResourceExhausted));
-  EXPECT_EQ(observed.artifact_error,
-            make_error_code(Error::ResourceExhausted));
+  EXPECT_EQ(observed.artifact_error, make_error_code(Error::ResourceExhausted));
   EXPECT_EQ(observed.snapshot_size, 7U);
   EXPECT_EQ(observed.artifact_count, 0U);
   EXPECT_GT(observed.total_before_erase, 0U);
@@ -5322,8 +5383,8 @@ TEST(WorkflowStorageTest, RunValueStoreRollsBackArtifactReplacementAndCleanup) {
     observed.replacement_error = replacement.error();
     auto retained = store.get(replaced);
     observed.previous_value_retained =
-        retained && std::get<ArtifactRef>(**retained).artifact_id ==
-                        first_ref.artifact_id;
+        retained &&
+        std::get<ArtifactRef>(**retained).artifact_id == first_ref.artifact_id;
     observed.artifacts_after_replacement = artifacts.size();
     observed.replacement_artifact_removed = artifacts.size() == 1U;
 
@@ -5346,12 +5407,11 @@ TEST(WorkflowStorageTest, RunValueStoreRollsBackArtifactReplacementAndCleanup) {
     RunValueStore failing_json(core, 0, failing, 4096, 1);
     JsonValue object = JsonValue::object_t{};
     object["value"] = "cannot-store";
-    observed.json_error =
-        failing_json
-            .put(OutputRef{.node_id = WorkflowNodeId{"json"},
-                           .port = WorkflowPortId{"value"}},
-                 make_payload(object))
-            .error();
+    observed.json_error = failing_json
+                              .put(OutputRef{.node_id = WorkflowNodeId{"json"},
+                                             .port = WorkflowPortId{"value"}},
+                                   make_payload(object))
+                              .error();
     promise.set_value(std::move(observed));
   });
 
@@ -5402,7 +5462,8 @@ TEST(WorkflowStorageTest, EvidenceLedgerReloadsJsonLines) {
   std::filesystem::remove_all(directory, error);
 }
 
-TEST(WorkflowStorageTest, EvidenceLedgerValidatesOpenAndCanonicalizesFinalRecord) {
+TEST(WorkflowStorageTest,
+     EvidenceLedgerValidatesOpenAndCanonicalizesFinalRecord) {
   EXPECT_EQ(EvidenceLedger::open({}, 1, 1, 1).error(),
             make_error_code(Error::InvalidArgument));
   EXPECT_EQ(EvidenceLedger::open("evidence.jsonl", 0, 1, 1).error(),
@@ -5427,9 +5488,9 @@ TEST(WorkflowStorageTest, EvidenceLedgerValidatesOpenAndCanonicalizesFinalRecord
     std::ofstream output(file, std::ios::binary | std::ios::trunc);
     output << *encoded;
   }
-  auto opened = EvidenceLedger::open(
-      file, 10, kStorageDefaults.max_evidence_file_bytes,
-      kStorageDefaults.max_evidence_record_bytes);
+  auto opened =
+      EvidenceLedger::open(file, 10, kStorageDefaults.max_evidence_file_bytes,
+                           kStorageDefaults.max_evidence_record_bytes);
   ASSERT_TRUE(opened.has_value()) << opened.error().message();
   EXPECT_EQ((*opened)->size(), 1U);
   auto canonical = workflow::storage_detail::load_text_file(
@@ -5493,11 +5554,11 @@ TEST(WorkflowStorageTest, EvidenceLedgerAmortizesRetentionCompaction) {
   append("node-00");
   append("node-01");
 
-  struct stat initial_metadata {};
+  struct stat initial_metadata{};
   ASSERT_EQ(::stat(file.c_str(), &initial_metadata), 0);
   for (std::size_t index = 2; index < 12; ++index) {
     append(std::format("node-{:02}", index));
-    struct stat current_metadata {};
+    struct stat current_metadata{};
     ASSERT_EQ(::stat(file.c_str(), &current_metadata), 0);
     EXPECT_EQ(current_metadata.st_ino, initial_metadata.st_ino);
   }
@@ -5532,8 +5593,7 @@ TEST(WorkflowStorageTest, EvidenceLedgerCompactsBeforeFileLimit) {
   const auto existing_size = std::filesystem::file_size(file, error);
   ASSERT_FALSE(error);
 
-  auto opened = EvidenceLedger::open(
-      file, 2, existing_size, existing_size);
+  auto opened = EvidenceLedger::open(file, 2, existing_size, existing_size);
   ASSERT_TRUE(opened.has_value()) << opened.error().message();
   EvidenceRecord record;
   record.run_id = run_id.clone();
@@ -5597,21 +5657,23 @@ TEST(WorkflowStorageTest, CheckpointStoreRoundTripsPlanStateAndValues) {
 
   WorkflowCheckpoint checkpoint{
       .plan = plan,
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"trigger"},
-          .workflow_id = WorkflowId{"persisted-plan"},
-          .source = "test",
-          .event_type = "request",
-          .payload = std::string{"payload"},
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"persisted-plan__run"},
-          .workflow_id = WorkflowId{"persisted-plan"},
-          .plan_id = (*compiled)->plan_id.clone(),
-          .state = RunState::Succeeded,
-          .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"command"},
-                                 .state = TaskState::Succeeded}},
-      },
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"trigger"},
+              .workflow_id = WorkflowId{"persisted-plan"},
+              .source = "test",
+              .event_type = "request",
+              .payload = std::string{"payload"},
+          },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"persisted-plan__run"},
+              .workflow_id = WorkflowId{"persisted-plan"},
+              .plan_id = (*compiled)->plan_id.clone(),
+              .state = RunState::Succeeded,
+              .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"command"},
+                                     .state = TaskState::Succeeded}},
+          },
       .values = {{OutputRef{.node_id = WorkflowNodeId{"command"},
                             .port = WorkflowPortId{"stdout"}},
                   std::string{"hello"}}},
@@ -5645,10 +5707,10 @@ TEST(WorkflowControlPlaneTest, PersistsPlanCatalogWithoutRunCheckpoints) {
   WorkflowPlanId stored_plan_id;
   std::string stored_digest;
   {
-    auto store = std::make_shared<PlanStore>(
-        directory, kStorageDefaults.max_plan_bytes);
-    WorkflowControlPlane control(environment.registry,
-                                 PlanValidator{admission}, store);
+    auto store =
+        std::make_shared<PlanStore>(directory, kStorageDefaults.max_plan_bytes);
+    WorkflowControlPlane control(environment.registry, PlanValidator{admission},
+                                 store);
     auto plan = base_plan("catalog-only");
     plan.nodes.push_back(NodePlan{
         .node_id = WorkflowNodeId{"task"},
@@ -5670,7 +5732,7 @@ TEST(WorkflowControlPlaneTest, PersistsPlanCatalogWithoutRunCheckpoints) {
 
     auto loaded = store->load(stored_plan_id);
     ASSERT_TRUE(loaded.has_value()) << loaded.error().message();
-    EXPECT_EQ(loaded->digest, stored_digest);
+    EXPECT_EQ(loaded->execution_digest, stored_digest);
     EXPECT_EQ(store->load(WorkflowPlanId{"missing"}).error(),
               make_error_code(Error::NotFound));
     EXPECT_EQ(store->load(WorkflowPlanId{"../outside"}).error(),
@@ -5699,31 +5761,30 @@ TEST(WorkflowControlPlaneTest, PersistsPlanCatalogWithoutRunCheckpoints) {
               make_error_code(Error::InvalidArgument));
   }
 
-  auto reopened_store = std::make_shared<PlanStore>(
-      directory, kStorageDefaults.max_plan_bytes);
+  auto reopened_store =
+      std::make_shared<PlanStore>(directory, kStorageDefaults.max_plan_bytes);
   auto stored = reopened_store->list();
   ASSERT_TRUE(stored.has_value()) << stored.error().message();
   ASSERT_EQ(stored->size(), 2U);
-  const auto persisted = std::ranges::find(
-      *stored, stored_plan_id, &StoredPlan::plan_id);
+  const auto persisted =
+      std::ranges::find(*stored, stored_plan_id, &StoredPlan::plan_id);
   ASSERT_NE(persisted, stored->end());
-  EXPECT_EQ(persisted->digest, stored_digest);
-  EXPECT_EQ(persisted->plan.workflow_id, WorkflowId{"catalog-only"});
+  EXPECT_EQ(persisted->execution_digest, stored_digest);
+  EXPECT_EQ(persisted->source_plan.workflow_id, WorkflowId{"catalog-only"});
 
   auto loaded_from_file = reopened_store->load(stored_plan_id);
   ASSERT_TRUE(loaded_from_file.has_value())
       << loaded_from_file.error().message();
-  EXPECT_EQ(loaded_from_file->digest, stored_digest);
+  EXPECT_EQ(loaded_from_file->execution_digest, stored_digest);
 
   auto same_persisted = PlanCompiler{environment.registry}.compile(
-      persisted->plan, persisted->plan_id);
-  ASSERT_TRUE(same_persisted.has_value())
-      << same_persisted.error().message();
+      persisted->source_plan, persisted->plan_id);
+  ASSERT_TRUE(same_persisted.has_value()) << same_persisted.error().message();
   EXPECT_TRUE((PlanStore{directory, kStorageDefaults.max_plan_bytes}
                    .save(**same_persisted)
                    .has_value()));
 
-  auto conflicting_persisted_plan = persisted->plan;
+  auto conflicting_persisted_plan = persisted->source_plan;
   conflicting_persisted_plan.nodes.front().config =
       make_payload(JsonValue{{"revision", 3}});
   auto conflicting_persisted = PlanCompiler{environment.registry}.compile(
@@ -5735,16 +5796,16 @@ TEST(WorkflowControlPlaneTest, PersistsPlanCatalogWithoutRunCheckpoints) {
                  .error()),
             make_error_code(Error::AlreadyExists));
 
-  WorkflowControlPlane restored(environment.registry,
-                                PlanValidator{admission}, reopened_store);
-  auto tampered = persisted->plan;
-  EXPECT_EQ(restored.restore_plan(std::move(tampered), stored_plan_id,
-                                  "wrong-digest")
-                .error(),
-            make_error_code(Error::ParseError));
+  WorkflowControlPlane restored(environment.registry, PlanValidator{admission},
+                                reopened_store);
+  auto tampered = persisted->source_plan;
+  EXPECT_EQ(
+      restored.restore_plan(std::move(tampered), stored_plan_id, "wrong-digest")
+          .error(),
+      make_error_code(Error::ParseError));
   for (auto &entry : *stored) {
-    auto loaded = restored.restore_plan(std::move(entry.plan), entry.plan_id,
-                                        entry.digest);
+    auto loaded = restored.restore_plan(std::move(entry.source_plan),
+                                        entry.plan_id, entry.execution_digest);
     ASSERT_TRUE(loaded.has_value()) << loaded.error().message();
   }
   auto by_id = restored.get_plan(stored_plan_id);
@@ -5778,10 +5839,9 @@ TEST(WorkflowControlPlaneTest, PersistsPlanCatalogWithoutRunCheckpoints) {
   auto memory_plans = memory_store.list();
   ASSERT_TRUE(memory_plans.has_value()) << memory_plans.error().message();
   ASSERT_EQ(memory_plans->size(), 2U);
-  EXPECT_EQ(memory_plans->front().plan_id,
-            WorkflowPlanId{"memory-first-plan"});
-  EXPECT_TRUE(memory_store.load(WorkflowPlanId{"memory-first-plan"})
-                  .has_value());
+  EXPECT_EQ(memory_plans->front().plan_id, WorkflowPlanId{"memory-first-plan"});
+  EXPECT_TRUE(
+      memory_store.load(WorkflowPlanId{"memory-first-plan"}).has_value());
   EXPECT_EQ(memory_store.load(WorkflowPlanId{"missing"}).error(),
             make_error_code(Error::NotFound));
 
@@ -5802,8 +5862,7 @@ TEST(WorkflowControlPlaneTest, PersistsPlanCatalogWithoutRunCheckpoints) {
       std::move(malformed_plan), WorkflowPlanId{"malformed-plan"});
   ASSERT_TRUE(malformed_compiled.has_value())
       << malformed_compiled.error().message();
-  EXPECT_EQ((PlanStore{malformed_directory,
-                       kStorageDefaults.max_plan_bytes}
+  EXPECT_EQ((PlanStore{malformed_directory, kStorageDefaults.max_plan_bytes}
                  .save(**malformed_compiled)
                  .error()),
             make_error_code(Error::ParseError));
@@ -5813,15 +5872,14 @@ TEST(WorkflowControlPlaneTest, PersistsPlanCatalogWithoutRunCheckpoints) {
     std::ofstream blocker(blocked_directory);
     blocker << "not-a-directory";
   }
-  EXPECT_FALSE((PlanStore{blocked_directory,
-                          kStorageDefaults.max_plan_bytes}
+  EXPECT_FALSE((PlanStore{blocked_directory, kStorageDefaults.max_plan_bytes}
                     .save(**memory_first)
                     .has_value()));
 
-  std::filesystem::copy_file(
-      directory / (stored_plan_id.str() + ".json"),
-      directory / "aliased-plan.json",
-      std::filesystem::copy_options::overwrite_existing, error);
+  std::filesystem::copy_file(directory / (stored_plan_id.str() + ".json"),
+                             directory / "aliased-plan.json",
+                             std::filesystem::copy_options::overwrite_existing,
+                             error);
   ASSERT_FALSE(error);
   EXPECT_EQ((PlanStore{directory, kStorageDefaults.max_plan_bytes}
                  .load(WorkflowPlanId{"aliased-plan"})
@@ -5837,14 +5895,12 @@ TEST(WorkflowControlPlaneTest, PersistsPlanCatalogWithoutRunCheckpoints) {
   ASSERT_TRUE(reopened_store->list().has_value());
 
   std::filesystem::copy_file(
-      directory / (stored_plan_id.str() + ".json"),
-      directory / "wrong.json",
+      directory / (stored_plan_id.str() + ".json"), directory / "wrong.json",
       std::filesystem::copy_options::overwrite_existing, error);
   ASSERT_FALSE(error);
-  EXPECT_EQ((PlanStore{directory, kStorageDefaults.max_plan_bytes}
-                 .list()
-                 .error()),
-            make_error_code(Error::ParseError));
+  EXPECT_EQ(
+      (PlanStore{directory, kStorageDefaults.max_plan_bytes}.list().error()),
+      make_error_code(Error::ParseError));
   std::filesystem::remove(directory / "wrong.json", error);
   ASSERT_FALSE(error);
 
@@ -5852,15 +5908,15 @@ TEST(WorkflowControlPlaneTest, PersistsPlanCatalogWithoutRunCheckpoints) {
     std::ofstream broken(directory / "broken.json");
     broken << "not-json";
   }
-  EXPECT_EQ((PlanStore{directory, kStorageDefaults.max_plan_bytes}
-                 .list()
-                 .error()),
-            make_error_code(Error::ParseError));
+  EXPECT_EQ(
+      (PlanStore{directory, kStorageDefaults.max_plan_bytes}.list().error()),
+      make_error_code(Error::ParseError));
 
   std::filesystem::remove_all(directory, error);
 }
 
-TEST(WorkflowControlPlaneTest, PlanStoreRejectsStructuredCorruptionAndDigestDrift) {
+TEST(WorkflowControlPlaneTest,
+     StoredPlanRejectsObsoleteShapeAndValidatesOwnedDigests) {
   const auto directory = temporary_test_directory("plan-store-corruption");
   std::error_code error;
   std::filesystem::remove_all(directory, error);
@@ -5869,28 +5925,39 @@ TEST(WorkflowControlPlaneTest, PlanStoreRejectsStructuredCorruptionAndDigestDrif
 
   {
     std::ofstream invalid(directory / "invalid.json");
-    invalid << R"({"format":"dagforge.stored-plan","version":1,"payload":{"plan_id":"invalid","digest":"digest","created_at_ms":0,"plan":{"workflow_id":"invalid","nodes":[{"id":"","executor":"test"}]}}})";
+    invalid
+        << R"({"format":"dagforge.stored-plan","version":1,"payload":{"plan_id":"invalid","execution_digest":"execution-digest","source_digest":"source-digest","source_plan":{"workflow_id":"invalid","nodes":[{"id":"","executor":"test"}]},"created_at_ms":0}})";
   }
   EXPECT_EQ((PlanStore{directory, kStorageDefaults.max_plan_bytes}
                  .load(WorkflowPlanId{"invalid"})
                  .error()),
             make_error_code(Error::InvalidArgument));
-  EXPECT_EQ((PlanStore{directory, kStorageDefaults.max_plan_bytes}
-                 .list()
-                 .error()),
-            make_error_code(Error::InvalidArgument));
+  EXPECT_EQ(
+      (PlanStore{directory, kStorageDefaults.max_plan_bytes}.list().error()),
+      make_error_code(Error::InvalidArgument));
   std::filesystem::remove(directory / "invalid.json", error);
   ASSERT_FALSE(error);
 
   {
     std::ofstream missing_fields(directory / "missing-fields.json");
-    missing_fields << R"({"format":"dagforge.stored-plan","version":1,"payload":{"plan_id":"","digest":"","created_at_ms":"bad","plan":[]}})";
+    missing_fields
+        << R"({"format":"dagforge.stored-plan","version":1,"payload":{"plan_id":"","execution_digest":"","source_digest":"","source_plan":[],"created_at_ms":"bad"}})";
   }
-  EXPECT_EQ((PlanStore{directory, kStorageDefaults.max_plan_bytes}
-                 .list()
-                 .error()),
-            make_error_code(Error::ParseError));
+  EXPECT_EQ(
+      (PlanStore{directory, kStorageDefaults.max_plan_bytes}.list().error()),
+      make_error_code(Error::ParseError));
   std::filesystem::remove(directory / "missing-fields.json", error);
+  ASSERT_FALSE(error);
+
+  {
+    std::ofstream obsolete(directory / "obsolete.json");
+    obsolete
+        << R"({"format":"dagforge.stored-plan","version":1,"payload":{"plan_id":"obsolete","digest":"old-digest","plan":{"workflow_id":"obsolete","schema_version":1,"nodes":[]},"created_at_ms":0}})";
+  }
+  EXPECT_EQ(
+      (PlanStore{directory, kStorageDefaults.max_plan_bytes}.list().error()),
+      make_error_code(Error::ParseError));
+  std::filesystem::remove(directory / "obsolete.json", error);
   ASSERT_FALSE(error);
 
   TestExecutorEnvironment environment;
@@ -5910,21 +5977,32 @@ TEST(WorkflowControlPlaneTest, PlanStoreRejectsStructuredCorruptionAndDigestDrif
   auto encoded = workflow::storage_detail::load_text_file(
       path, kStorageDefaults.max_plan_bytes);
   ASSERT_TRUE(encoded.has_value()) << encoded.error().message();
-  ASSERT_FALSE(
-      glz::write_at<"/payload/digest">(R"("tampered-digest")", *encoded));
+  const auto original = *encoded;
+  ASSERT_FALSE(glz::write_at<"/payload/source_digest">(
+      R"("tampered-source-digest")", *encoded));
   ASSERT_TRUE(workflow::storage_detail::store_text_file_atomic(
                   path, std::move(*encoded))
                   .has_value());
   EXPECT_EQ(store.load(WorkflowPlanId{"digest-drift-plan"}).error(),
             make_error_code(Error::ParseError));
   EXPECT_EQ(store.list().error(), make_error_code(Error::ParseError));
-  EXPECT_EQ((PlanStore{directory, kStorageDefaults.max_plan_bytes}
-                 .load(WorkflowPlanId{"digest-drift-plan"})
-                 .error()),
-            make_error_code(Error::ParseError));
-  EXPECT_EQ((PlanStore{directory, kStorageDefaults.max_plan_bytes}
-                 .list()
-                 .error()),
+
+  encoded = original;
+  ASSERT_FALSE(glz::write_at<"/payload/execution_digest">(
+      R"("tampered-execution-digest")", *encoded));
+  ASSERT_TRUE(workflow::storage_detail::store_text_file_atomic(
+                  path, std::move(*encoded))
+                  .has_value());
+  auto execution_tampered = store.load(WorkflowPlanId{"digest-drift-plan"});
+  ASSERT_TRUE(execution_tampered.has_value())
+      << execution_tampered.error().message();
+  WorkflowControlPlane control(environment.registry, PlanValidator{});
+  EXPECT_EQ(control
+                .restore_plan(std::move(execution_tampered->source_plan),
+                              execution_tampered->plan_id,
+                              execution_tampered->execution_digest)
+                .error()
+                .error_code(),
             make_error_code(Error::ParseError));
 
   std::filesystem::remove_all(directory, error);
@@ -5941,8 +6019,7 @@ TEST(WorkflowRecoveryTest, ExplainsConservativeRepairInvalidation) {
                .outputs = {WorkflowPortId{"result"}}},
       NodePlan{.node_id = WorkflowNodeId{"changed"},
                .executor = "test",
-               .config = make_payload(
-                   JsonValue{{"version", std::int64_t{1}}}),
+               .config = make_payload(JsonValue{{"version", std::int64_t{1}}}),
                .outputs = {WorkflowPortId{"result"}}},
       NodePlan{
           .node_id = WorkflowNodeId{"child"},
@@ -5977,62 +6054,65 @@ TEST(WorkflowRecoveryTest, ExplainsConservativeRepairInvalidation) {
 
   WorkflowCheckpoint parent{
       .plan = parent_plan,
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"repair-reasons-trigger"},
-          .workflow_id = WorkflowId{"repair-reasons"},
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"repair-reasons__parent"},
-          .workflow_id = WorkflowId{"repair-reasons"},
-          .plan_id = WorkflowPlanId{"repair-reasons-plan"},
-          .state = RunState::Failed,
-          .tasks = {
-              TaskSnapshot{.node_id = WorkflowNodeId{"root"},
-                           .state = TaskState::Succeeded},
-              TaskSnapshot{.node_id = WorkflowNodeId{"changed"},
-                           .state = TaskState::Succeeded},
-              TaskSnapshot{.node_id = WorkflowNodeId{"child"},
-                           .state = TaskState::Succeeded},
-              TaskSnapshot{.node_id = WorkflowNodeId{"conditioned"},
-                           .state = TaskState::Succeeded},
-              TaskSnapshot{.node_id = WorkflowNodeId{"missing"},
-                           .state = TaskState::Succeeded},
-              TaskSnapshot{.node_id = WorkflowNodeId{"artifact"},
-                           .state = TaskState::Succeeded},
-              TaskSnapshot{.node_id = WorkflowNodeId{"failed"},
-                           .state = TaskState::Failed},
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"repair-reasons-trigger"},
+              .workflow_id = WorkflowId{"repair-reasons"},
           },
-      },
-      .values = {
-          {OutputRef{.node_id = WorkflowNodeId{"root"},
-                     .port = WorkflowPortId{"result"}},
-           std::string{"go"}},
-          {OutputRef{.node_id = WorkflowNodeId{"changed"},
-                     .port = WorkflowPortId{"result"}},
-           std::string{"old"}},
-          {OutputRef{.node_id = WorkflowNodeId{"child"},
-                     .port = WorkflowPortId{"result"}},
-           std::string{"child"}},
-          {OutputRef{.node_id = WorkflowNodeId{"conditioned"},
-                     .port = WorkflowPortId{"result"}},
-           std::string{"conditioned"}},
-          {OutputRef{.node_id = WorkflowNodeId{"artifact"},
-                     .port = WorkflowPortId{"result"}},
-           ArtifactRef{.artifact_id = ArtifactId{"missing-artifact"},
-                       .media_type = "application/json",
-                       .size_bytes = 10,
-                       .digest = "missing-digest"}},
-      },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"repair-reasons__parent"},
+              .workflow_id = WorkflowId{"repair-reasons"},
+              .plan_id = WorkflowPlanId{"repair-reasons-plan"},
+              .state = RunState::Failed,
+              .tasks =
+                  {
+                      TaskSnapshot{.node_id = WorkflowNodeId{"root"},
+                                   .state = TaskState::Succeeded},
+                      TaskSnapshot{.node_id = WorkflowNodeId{"changed"},
+                                   .state = TaskState::Succeeded},
+                      TaskSnapshot{.node_id = WorkflowNodeId{"child"},
+                                   .state = TaskState::Succeeded},
+                      TaskSnapshot{.node_id = WorkflowNodeId{"conditioned"},
+                                   .state = TaskState::Succeeded},
+                      TaskSnapshot{.node_id = WorkflowNodeId{"missing"},
+                                   .state = TaskState::Succeeded},
+                      TaskSnapshot{.node_id = WorkflowNodeId{"artifact"},
+                                   .state = TaskState::Succeeded},
+                      TaskSnapshot{.node_id = WorkflowNodeId{"failed"},
+                                   .state = TaskState::Failed},
+                  },
+          },
+      .values =
+          {
+              {OutputRef{.node_id = WorkflowNodeId{"root"},
+                         .port = WorkflowPortId{"result"}},
+               std::string{"go"}},
+              {OutputRef{.node_id = WorkflowNodeId{"changed"},
+                         .port = WorkflowPortId{"result"}},
+               std::string{"old"}},
+              {OutputRef{.node_id = WorkflowNodeId{"child"},
+                         .port = WorkflowPortId{"result"}},
+               std::string{"child"}},
+              {OutputRef{.node_id = WorkflowNodeId{"conditioned"},
+                         .port = WorkflowPortId{"result"}},
+               std::string{"conditioned"}},
+              {OutputRef{.node_id = WorkflowNodeId{"artifact"},
+                         .port = WorkflowPortId{"result"}},
+               ArtifactRef{.artifact_id = ArtifactId{"missing-artifact"},
+                           .media_type = "application/json",
+                           .size_bytes = 10,
+                           .digest = "missing-digest"}},
+          },
   };
 
   auto revised_plan = parent_plan;
   revised_plan.nodes[1].config =
       make_payload(JsonValue{{"version", std::int64_t{2}}});
   revised_plan.edges.front().condition.expected_string = "continue";
-  revised_plan.nodes.push_back(
-      NodePlan{.node_id = WorkflowNodeId{"added"},
-               .executor = "test",
-               .outputs = {WorkflowPortId{"result"}}});
+  revised_plan.nodes.push_back(NodePlan{.node_id = WorkflowNodeId{"added"},
+                                        .executor = "test",
+                                        .outputs = {WorkflowPortId{"result"}}});
   auto revised = PlanCompiler{environment.registry}.compile(
       std::move(revised_plan), WorkflowPlanId{"repair-reasons-revised"});
   ASSERT_TRUE(revised.has_value()) << revised.error().message();
@@ -6045,7 +6125,7 @@ TEST(WorkflowRecoveryTest, ExplainsConservativeRepairInvalidation) {
           return candidate.node_id == WorkflowNodeId{node_id};
         });
     return decision == planned->decisions.end() ? std::string{}
-                                                 : decision->reason;
+                                                : decision->reason;
   };
   EXPECT_EQ(reason_for("root"), "reused");
   EXPECT_EQ(reason_for("changed"), "execution_contract_changed");
@@ -6072,34 +6152,35 @@ TEST(WorkflowRecoveryTest, NormalizesPausingAndExpiredRetryState) {
       .workflow_id = WorkflowId{"recovery-normalization"},
       .plan_id = WorkflowPlanId{"recovery-normalization-plan"},
       .state = RunState::Pausing,
-      .tasks = {
-          TaskSnapshot{
-              .node_id = WorkflowNodeId{"expired"},
-              .state = TaskState::RetryWaiting,
-              .attempt_count = 1,
-              .next_attempt_at = now - std::chrono::milliseconds(1),
-              .failure = prior_failure,
-              .attempts = {AttemptSnapshot{
-                  .attempt_id = AttemptId{"expired-attempt"},
-                  .number = 1,
-                  .state = AttemptState::Failed,
+      .tasks =
+          {
+              TaskSnapshot{
+                  .node_id = WorkflowNodeId{"expired"},
+                  .state = TaskState::RetryWaiting,
+                  .attempt_count = 1,
+                  .next_attempt_at = now - std::chrono::milliseconds(1),
                   .failure = prior_failure,
-              }},
-          },
-          TaskSnapshot{
-              .node_id = WorkflowNodeId{"future"},
-              .state = TaskState::RetryWaiting,
-              .attempt_count = 1,
-              .next_attempt_at = now + std::chrono::minutes(1),
-              .failure = prior_failure,
-              .attempts = {AttemptSnapshot{
-                  .attempt_id = AttemptId{"future-attempt"},
-                  .number = 1,
-                  .state = AttemptState::Failed,
+                  .attempts = {AttemptSnapshot{
+                      .attempt_id = AttemptId{"expired-attempt"},
+                      .number = 1,
+                      .state = AttemptState::Failed,
+                      .failure = prior_failure,
+                  }},
+              },
+              TaskSnapshot{
+                  .node_id = WorkflowNodeId{"future"},
+                  .state = TaskState::RetryWaiting,
+                  .attempt_count = 1,
+                  .next_attempt_at = now + std::chrono::minutes(1),
                   .failure = prior_failure,
-              }},
+                  .attempts = {AttemptSnapshot{
+                      .attempt_id = AttemptId{"future-attempt"},
+                      .number = 1,
+                      .state = AttemptState::Failed,
+                      .failure = prior_failure,
+                  }},
+              },
           },
-      },
   };
 
   (void)workflow::detail::rehydrate_for_restart(snapshot, now);
@@ -6110,7 +6191,8 @@ TEST(WorkflowRecoveryTest, NormalizesPausingAndExpiredRetryState) {
   EXPECT_TRUE(snapshot.tasks[1].next_attempt_at.has_value());
 }
 
-TEST(WorkflowRuntimeTest, RestartResumesInterruptedAttemptWithoutRerunningSuccess) {
+TEST(WorkflowRuntimeTest,
+     RestartResumesInterruptedAttemptWithoutRerunningSuccess) {
   Runtime core(1, false, 0);
   TestExecutorEnvironment environment(core);
   auto checkpoint_store = std::make_shared<CheckpointStore>();
@@ -6135,41 +6217,44 @@ TEST(WorkflowRuntimeTest, RestartResumesInterruptedAttemptWithoutRerunningSucces
 
   WorkflowCheckpoint checkpoint{
       .plan = plan,
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"trigger"},
-          .workflow_id = WorkflowId{"restart-active"},
-          .source = "test",
-          .event_type = "request",
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"restart-active__run"},
-          .workflow_id = WorkflowId{"restart-active"},
-          .plan_id = plan_id.clone(),
-          .state = RunState::Running,
-          .tasks = {
-              TaskSnapshot{
-                  .node_id = WorkflowNodeId{"completed"},
-                  .state = TaskState::Succeeded,
-                  .attempt_count = 1,
-                  .attempts = {AttemptSnapshot{
-                      .attempt_id = AttemptId{"completed-attempt"},
-                      .number = 1,
-                      .state = AttemptState::Succeeded,
-                  }},
-              },
-              TaskSnapshot{
-                  .node_id = WorkflowNodeId{"interrupted"},
-                  .state = TaskState::Running,
-                  .attempt_count = 1,
-                  .active_attempt_id = AttemptId{"interrupted-attempt"},
-                  .attempts = {AttemptSnapshot{
-                      .attempt_id = AttemptId{"interrupted-attempt"},
-                      .number = 1,
-                      .state = AttemptState::Running,
-                  }},
-              },
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"trigger"},
+              .workflow_id = WorkflowId{"restart-active"},
+              .source = "test",
+              .event_type = "request",
           },
-      },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"restart-active__run"},
+              .workflow_id = WorkflowId{"restart-active"},
+              .plan_id = plan_id.clone(),
+              .state = RunState::Running,
+              .tasks =
+                  {
+                      TaskSnapshot{
+                          .node_id = WorkflowNodeId{"completed"},
+                          .state = TaskState::Succeeded,
+                          .attempt_count = 1,
+                          .attempts = {AttemptSnapshot{
+                              .attempt_id = AttemptId{"completed-attempt"},
+                              .number = 1,
+                              .state = AttemptState::Succeeded,
+                          }},
+                      },
+                      TaskSnapshot{
+                          .node_id = WorkflowNodeId{"interrupted"},
+                          .state = TaskState::Running,
+                          .attempt_count = 1,
+                          .active_attempt_id = AttemptId{"interrupted-attempt"},
+                          .attempts = {AttemptSnapshot{
+                              .attempt_id = AttemptId{"interrupted-attempt"},
+                              .number = 1,
+                              .state = AttemptState::Running,
+                          }},
+                      },
+                  },
+          },
       .values = {{OutputRef{.node_id = WorkflowNodeId{"completed"},
                             .port = WorkflowPortId{"result"}},
                   std::string{"retained"}}},
@@ -6179,25 +6264,23 @@ TEST(WorkflowRuntimeTest, RestartResumesInterruptedAttemptWithoutRerunningSucces
   ASSERT_TRUE(runtime.activate_restored().has_value());
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
 
-  auto restored = sync_wait_on_runtime(
-      core, runtime.snapshot(checkpoint.snapshot.run_id));
+  auto restored =
+      sync_wait_on_runtime(core, runtime.snapshot(checkpoint.snapshot.run_id));
   ASSERT_TRUE(restored.has_value()) << restored.error().message();
   EXPECT_EQ((*restored)->state, RunState::Running);
   EXPECT_EQ((*restored)->tasks[0].state, TaskState::Succeeded);
   EXPECT_EQ((*restored)->tasks[0].attempt_count, 1U);
   EXPECT_EQ((*restored)->tasks[1].state, TaskState::Running);
   ASSERT_EQ((*restored)->tasks[1].attempts.size(), 2U);
-  EXPECT_EQ((*restored)->tasks[1].attempts.front().state,
-            AttemptState::Failed);
+  EXPECT_EQ((*restored)->tasks[1].attempts.front().state, AttemptState::Failed);
   ASSERT_TRUE((*restored)->tasks[1].attempts.front().failure.has_value());
   EXPECT_EQ((*restored)->tasks[1].attempts.front().failure->code,
             "runtime_restarted");
 
   auto retained = sync_wait_on_runtime(
-      core, runtime.output(
-                checkpoint.snapshot.run_id,
-                OutputRef{.node_id = WorkflowNodeId{"completed"},
-                          .port = WorkflowPortId{"result"}}));
+      core, runtime.output(checkpoint.snapshot.run_id,
+                           OutputRef{.node_id = WorkflowNodeId{"completed"},
+                                     .port = WorkflowPortId{"result"}}));
   ASSERT_TRUE(retained.has_value()) << retained.error().message();
   EXPECT_EQ(std::get<std::string>(**retained), "retained");
 
@@ -6216,13 +6299,14 @@ TEST(WorkflowRuntimeTest, RestartResumesInterruptedAttemptWithoutRerunningSucces
   EXPECT_EQ(report->tasks.front().attempts.front().failure.code,
             "runtime_restarted");
   const auto recovery_evidence = runtime.evidence(checkpoint.snapshot.run_id);
-  EXPECT_NE(std::ranges::find_if(
-                recovery_evidence, [](const EvidenceRecord &record) {
-                  return record.type == EvidenceType::RunRecoveryResumed;
-                }),
+  EXPECT_NE(std::ranges::find_if(recovery_evidence,
+                                 [](const EvidenceRecord &record) {
+                                   return record.type ==
+                                          EvidenceType::RunRecoveryResumed;
+                                 }),
             recovery_evidence.end());
-  const auto recovered_attempt = std::ranges::find_if(
-      recovery_evidence, [](const EvidenceRecord &record) {
+  const auto recovered_attempt =
+      std::ranges::find_if(recovery_evidence, [](const EvidenceRecord &record) {
         if (record.type != EvidenceType::AttemptCompleted) {
           return false;
         }
@@ -6233,8 +6317,7 @@ TEST(WorkflowRuntimeTest, RestartResumesInterruptedAttemptWithoutRerunningSucces
         const auto failure = metadata->get_object().find("failure");
         return failure != metadata->get_object().end() &&
                failure->second.is_object() &&
-               failure->second["code"].as<std::string>() ==
-                   "runtime_restarted";
+               failure->second["code"].as<std::string>() == "runtime_restarted";
       });
   EXPECT_NE(recovered_attempt, recovery_evidence.end());
   core.stop();
@@ -6257,31 +6340,31 @@ TEST(WorkflowRuntimeTest, RestoreRejectsCheckpointFromDifferentPlanDigest) {
   const WorkflowPlanId plan_id{"restore-digest-plan"};
 
   auto different_plan = checkpoint_plan;
-  auto different_config =
-      materialize(different_plan.nodes.front().config);
+  auto different_config = materialize(different_plan.nodes.front().config);
   different_config["revision"] = std::int64_t{2};
   different_plan.nodes.front().config = make_payload(different_config);
-  auto compiled =
-      PlanCompiler{environment.registry}.compile(std::move(different_plan),
-                                                  plan_id);
+  auto compiled = PlanCompiler{environment.registry}.compile(
+      std::move(different_plan), plan_id);
   ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
 
   WorkflowCheckpoint checkpoint{
       .plan = std::move(checkpoint_plan),
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"restore-digest-trigger"},
-          .workflow_id = WorkflowId{"restore-digest"},
-          .source = "test",
-          .event_type = "restore",
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"restore-digest__run"},
-          .workflow_id = WorkflowId{"restore-digest"},
-          .plan_id = plan_id.clone(),
-          .state = RunState::Running,
-          .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"task"},
-                                 .state = TaskState::Ready}},
-      },
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"restore-digest-trigger"},
+              .workflow_id = WorkflowId{"restore-digest"},
+              .source = "test",
+              .event_type = "restore",
+          },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"restore-digest__run"},
+              .workflow_id = WorkflowId{"restore-digest"},
+              .plan_id = plan_id.clone(),
+              .state = RunState::Running,
+              .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"task"},
+                                     .state = TaskState::Ready}},
+          },
   };
 
   EXPECT_EQ(runtime.restore(*compiled, std::move(checkpoint)).error(),
@@ -6305,28 +6388,30 @@ TEST(WorkflowRuntimeTest, RestoredPausedRunWaitsForExplicitResume) {
 
   WorkflowCheckpoint checkpoint{
       .plan = std::move(plan),
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"restore-paused-trigger"},
-          .workflow_id = WorkflowId{"restore-paused"},
-          .source = "test",
-          .event_type = "paused",
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"restore-paused__run"},
-          .workflow_id = WorkflowId{"restore-paused"},
-          .plan_id = WorkflowPlanId{"restore-paused-plan"},
-          .state = RunState::Paused,
-          .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"task"},
-                                 .state = TaskState::Ready}},
-      },
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"restore-paused-trigger"},
+              .workflow_id = WorkflowId{"restore-paused"},
+              .source = "test",
+              .event_type = "paused",
+          },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"restore-paused__run"},
+              .workflow_id = WorkflowId{"restore-paused"},
+              .plan_id = WorkflowPlanId{"restore-paused-plan"},
+              .state = RunState::Paused,
+              .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"task"},
+                                     .state = TaskState::Ready}},
+          },
   };
   ASSERT_TRUE(runtime.restore(*compiled, checkpoint).has_value());
   ASSERT_TRUE(core.start().has_value());
   ASSERT_TRUE(runtime.activate_restored().has_value());
   EXPECT_EQ(environment.executor->pending_count(), 0U);
 
-  auto paused = sync_wait_on_runtime(
-      core, runtime.snapshot(checkpoint.snapshot.run_id));
+  auto paused =
+      sync_wait_on_runtime(core, runtime.snapshot(checkpoint.snapshot.run_id));
   ASSERT_TRUE(paused.has_value()) << paused.error().message();
   EXPECT_EQ((*paused)->state, RunState::Paused);
 
@@ -6365,39 +6450,41 @@ TEST(WorkflowRuntimeTest, RestoredRetryWaitHonorsPersistedDeadline) {
       Error::Unknown, "transient_failure", "Transient failure");
   WorkflowCheckpoint checkpoint{
       .plan = std::move(plan),
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"restore-retry-trigger"},
-          .workflow_id = WorkflowId{"restore-retry"},
-          .source = "test",
-          .event_type = "retry",
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"restore-retry__run"},
-          .workflow_id = WorkflowId{"restore-retry"},
-          .plan_id = WorkflowPlanId{"restore-retry-plan"},
-          .state = RunState::Running,
-          .tasks = {TaskSnapshot{
-              .node_id = WorkflowNodeId{"task"},
-              .state = TaskState::RetryWaiting,
-              .attempt_count = 1,
-              .next_attempt_at = retry_at,
-              .failure = prior_failure,
-              .attempts = {AttemptSnapshot{
-                  .attempt_id = AttemptId{"prior-attempt"},
-                  .number = 1,
-                  .state = AttemptState::Failed,
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"restore-retry-trigger"},
+              .workflow_id = WorkflowId{"restore-retry"},
+              .source = "test",
+              .event_type = "retry",
+          },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"restore-retry__run"},
+              .workflow_id = WorkflowId{"restore-retry"},
+              .plan_id = WorkflowPlanId{"restore-retry-plan"},
+              .state = RunState::Running,
+              .tasks = {TaskSnapshot{
+                  .node_id = WorkflowNodeId{"task"},
+                  .state = TaskState::RetryWaiting,
+                  .attempt_count = 1,
+                  .next_attempt_at = retry_at,
                   .failure = prior_failure,
+                  .attempts = {AttemptSnapshot{
+                      .attempt_id = AttemptId{"prior-attempt"},
+                      .number = 1,
+                      .state = AttemptState::Failed,
+                      .failure = prior_failure,
+                  }},
               }},
-          }},
-      },
+          },
   };
   ASSERT_TRUE(runtime.restore(*compiled, checkpoint).has_value());
   ASSERT_TRUE(core.start().has_value());
   ASSERT_TRUE(runtime.activate_restored().has_value());
-  EXPECT_FALSE(environment.executor->wait_for_pending(
-      1, std::chrono::milliseconds(30)));
-  ASSERT_TRUE(environment.executor->wait_for_pending(
-      1, std::chrono::seconds(1)));
+  EXPECT_FALSE(
+      environment.executor->wait_for_pending(1, std::chrono::milliseconds(30)));
+  ASSERT_TRUE(
+      environment.executor->wait_for_pending(1, std::chrono::seconds(1)));
   ASSERT_TRUE(environment.executor->complete_next(0, "retried"));
   auto completed = wait_for_state(runtime, core, checkpoint.snapshot.run_id,
                                   RunState::Succeeded);
@@ -6423,39 +6510,41 @@ TEST(WorkflowRuntimeTest, RestoredStoppingRunFinishesCancellation) {
 
   WorkflowCheckpoint checkpoint{
       .plan = std::move(plan),
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"restore-stopping-trigger"},
-          .workflow_id = WorkflowId{"restore-stopping"},
-          .source = "test",
-          .event_type = "cancel",
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"restore-stopping__run"},
-          .workflow_id = WorkflowId{"restore-stopping"},
-          .plan_id = WorkflowPlanId{"restore-stopping-plan"},
-          .state = RunState::Stopping,
-          .stop_intent = StopIntent::Cancel,
-          .stop_reason = "operator cancelled",
-          .tasks = {TaskSnapshot{
-              .node_id = WorkflowNodeId{"task"},
-              .state = TaskState::Running,
-              .attempt_count = 1,
-              .active_attempt_id = AttemptId{"active-attempt"},
-              .attempts = {AttemptSnapshot{
-                  .attempt_id = AttemptId{"active-attempt"},
-                  .number = 1,
-                  .state = AttemptState::Terminating,
-                  .termination_reason = TerminationReason::RunCancelled,
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"restore-stopping-trigger"},
+              .workflow_id = WorkflowId{"restore-stopping"},
+              .source = "test",
+              .event_type = "cancel",
+          },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"restore-stopping__run"},
+              .workflow_id = WorkflowId{"restore-stopping"},
+              .plan_id = WorkflowPlanId{"restore-stopping-plan"},
+              .state = RunState::Stopping,
+              .stop_intent = StopIntent::Cancel,
+              .stop_reason = "operator cancelled",
+              .tasks = {TaskSnapshot{
+                  .node_id = WorkflowNodeId{"task"},
+                  .state = TaskState::Running,
+                  .attempt_count = 1,
+                  .active_attempt_id = AttemptId{"active-attempt"},
+                  .attempts = {AttemptSnapshot{
+                      .attempt_id = AttemptId{"active-attempt"},
+                      .number = 1,
+                      .state = AttemptState::Terminating,
+                      .termination_reason = TerminationReason::RunCancelled,
+                  }},
               }},
-          }},
-      },
+          },
   };
   ASSERT_TRUE(runtime.restore(*compiled, checkpoint).has_value());
   ASSERT_TRUE(core.start().has_value());
   ASSERT_TRUE(runtime.activate_restored().has_value());
 
-  auto cancelled = sync_wait_on_runtime(
-      core, runtime.snapshot(checkpoint.snapshot.run_id));
+  auto cancelled =
+      sync_wait_on_runtime(core, runtime.snapshot(checkpoint.snapshot.run_id));
   ASSERT_TRUE(cancelled.has_value()) << cancelled.error().message();
   EXPECT_EQ((*cancelled)->state, RunState::Cancelled);
   EXPECT_EQ((*cancelled)->tasks.front().state, TaskState::Cancelled);
@@ -6493,39 +6582,44 @@ TEST(WorkflowRuntimeTest, RestoredStoppingFailureRecordsTaskEvidence) {
 
   WorkflowCheckpoint checkpoint{
       .plan = std::move(plan),
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"restore-stopping-failure-trigger"},
-          .workflow_id = WorkflowId{"restore-stopping-failure"},
-          .source = "test",
-          .event_type = "failure",
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"restore-stopping-failure__run"},
-          .workflow_id = WorkflowId{"restore-stopping-failure"},
-          .plan_id = plan_id.clone(),
-          .state = RunState::Stopping,
-          .stop_intent = StopIntent::Fail,
-          .stop_reason = run_failure.message,
-          .tasks = {
-              TaskSnapshot{
-                  .node_id = WorkflowNodeId{"active"},
-                  .state = TaskState::Running,
-                  .attempt_count = 1,
-                  .active_attempt_id = AttemptId{"active-attempt"},
-                  .attempts = {AttemptSnapshot{
-                      .attempt_id = AttemptId{"active-attempt"},
-                      .number = 1,
-                      .state = AttemptState::Terminating,
-                      .termination_reason = TerminationReason::RunFailed,
-                  }},
-              },
-              TaskSnapshot{
-                  .node_id = WorkflowNodeId{"pending"},
-                  .state = TaskState::Pending,
-              },
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id =
+                  WorkflowTriggerId{"restore-stopping-failure-trigger"},
+              .workflow_id = WorkflowId{"restore-stopping-failure"},
+              .source = "test",
+              .event_type = "failure",
           },
-          .failure = run_failure,
-      },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"restore-stopping-failure__run"},
+              .workflow_id = WorkflowId{"restore-stopping-failure"},
+              .plan_id = plan_id.clone(),
+              .state = RunState::Stopping,
+              .stop_intent = StopIntent::Fail,
+              .stop_reason = run_failure.message,
+              .tasks =
+                  {
+                      TaskSnapshot{
+                          .node_id = WorkflowNodeId{"active"},
+                          .state = TaskState::Running,
+                          .attempt_count = 1,
+                          .active_attempt_id = AttemptId{"active-attempt"},
+                          .attempts = {AttemptSnapshot{
+                              .attempt_id = AttemptId{"active-attempt"},
+                              .number = 1,
+                              .state = AttemptState::Terminating,
+                              .termination_reason =
+                                  TerminationReason::RunFailed,
+                          }},
+                      },
+                      TaskSnapshot{
+                          .node_id = WorkflowNodeId{"pending"},
+                          .state = TaskState::Pending,
+                      },
+                  },
+              .failure = run_failure,
+          },
   };
   const auto run_id = checkpoint.snapshot.run_id.clone();
   ASSERT_TRUE(runtime.restore(*compiled, std::move(checkpoint)).has_value());
@@ -6585,24 +6679,27 @@ TEST(WorkflowRuntimeTest, RecoveryFailsWhenConditionValueIsMissing) {
 
   WorkflowCheckpoint checkpoint{
       .plan = std::move(plan),
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"missing-condition-trigger"},
-          .workflow_id = WorkflowId{"restore-missing-condition-value"},
-          .source = "test",
-          .event_type = "recovery",
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"restore-missing-condition-value__run"},
-          .workflow_id = WorkflowId{"restore-missing-condition-value"},
-          .plan_id = plan_id.clone(),
-          .state = RunState::Running,
-          .tasks = {
-              TaskSnapshot{.node_id = WorkflowNodeId{"source"},
-                           .state = TaskState::Succeeded},
-              TaskSnapshot{.node_id = WorkflowNodeId{"dependent"},
-                           .state = TaskState::Pending},
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"missing-condition-trigger"},
+              .workflow_id = WorkflowId{"restore-missing-condition-value"},
+              .source = "test",
+              .event_type = "recovery",
           },
-      },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"restore-missing-condition-value__run"},
+              .workflow_id = WorkflowId{"restore-missing-condition-value"},
+              .plan_id = plan_id.clone(),
+              .state = RunState::Running,
+              .tasks =
+                  {
+                      TaskSnapshot{.node_id = WorkflowNodeId{"source"},
+                                   .state = TaskState::Succeeded},
+                      TaskSnapshot{.node_id = WorkflowNodeId{"dependent"},
+                                   .state = TaskState::Pending},
+                  },
+          },
   };
   const auto run_id = checkpoint.snapshot.run_id.clone();
   ASSERT_TRUE(runtime.restore(*compiled, std::move(checkpoint)).has_value());
@@ -6633,39 +6730,48 @@ TEST(WorkflowRuntimeTest, RecoveryValueFailureBecomesTerminalRunFailure) {
   plan.nodes.push_back(NodePlan{
       .node_id = WorkflowNodeId{"task"},
       .executor = "test",
+      .config = make_payload(JsonValue{{"projection", "submitted"}}),
       .outputs = {WorkflowPortId{"result"}},
   });
   const WorkflowPlanId plan_id{"restore-value-failure-plan"};
   auto compiled = PlanCompiler{environment.registry}.compile(plan, plan_id);
   ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
+  auto execution = std::make_shared<ExecutionPlan>(**compiled);
+  execution->nodes.front().plan.config =
+      make_payload(JsonValue{{"projection", "compiled"}});
+  auto execution_digest = PlanCompiler::digest(compiled_plan(*execution));
+  ASSERT_TRUE(execution_digest.has_value())
+      << execution_digest.error().message();
+  execution->digest = std::move(*execution_digest);
 
   WorkflowCheckpoint checkpoint{
       .plan = std::move(plan),
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"restore-value-failure-trigger"},
-          .workflow_id = WorkflowId{"restore-value-failure"},
-          .source = "test",
-          .event_type = "recovery",
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"restore-value-failure__run"},
-          .workflow_id = WorkflowId{"restore-value-failure"},
-          .plan_id = plan_id.clone(),
-          .state = RunState::Running,
-          .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"task"},
-                                 .state = TaskState::Succeeded}},
-      },
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"restore-value-failure-trigger"},
+              .workflow_id = WorkflowId{"restore-value-failure"},
+              .source = "test",
+              .event_type = "recovery",
+          },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"restore-value-failure__run"},
+              .workflow_id = WorkflowId{"restore-value-failure"},
+              .plan_id = plan_id.clone(),
+              .state = RunState::Running,
+              .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"task"},
+                                     .state = TaskState::Succeeded}},
+          },
       .values = {{OutputRef{.node_id = WorkflowNodeId{"task"},
                             .port = WorkflowPortId{"result"}},
                   std::string(300 * 1024, 'x')}},
   };
-  ASSERT_TRUE(runtime.restore(*compiled, std::move(checkpoint)).has_value());
+  ASSERT_TRUE(runtime.restore(execution, std::move(checkpoint)).has_value());
   ASSERT_TRUE(core.start().has_value());
   ASSERT_TRUE(runtime.activate_restored().has_value());
 
   auto restored = sync_wait_on_runtime(
-      core,
-      runtime.snapshot(WorkflowRunId{"restore-value-failure__run"}));
+      core, runtime.snapshot(WorkflowRunId{"restore-value-failure__run"}));
   ASSERT_TRUE(restored.has_value()) << restored.error().message();
   EXPECT_EQ((*restored)->state, RunState::Failed);
   ASSERT_TRUE((*restored)->failure.has_value());
@@ -6676,6 +6782,9 @@ TEST(WorkflowRuntimeTest, RecoveryValueFailureBecomesTerminalRunFailure) {
       checkpoints->load(WorkflowRunId{"restore-value-failure__run"});
   ASSERT_TRUE(persisted.has_value()) << persisted.error().message();
   EXPECT_EQ(persisted->snapshot.state, RunState::Failed);
+  EXPECT_EQ(materialize(persisted->plan.nodes.front().config)["projection"]
+                .as<std::string>(),
+            "submitted");
   core.stop();
 }
 
@@ -6697,39 +6806,40 @@ TEST(WorkflowRuntimeTest, RestoreValidatesArtifactReferences) {
   const auto checkpoint_for = [&](ArtifactRef reference, std::string run_id) {
     return WorkflowCheckpoint{
         .plan = plan,
-        .trigger = TriggerEnvelope{
-            .trigger_id = WorkflowTriggerId{run_id + "-trigger"},
-            .workflow_id = WorkflowId{"restore-artifact-validation"},
-            .source = "test",
-            .event_type = "restore",
-        },
-        .snapshot = RunSnapshot{
-            .run_id = WorkflowRunId{std::move(run_id)},
-            .workflow_id = WorkflowId{"restore-artifact-validation"},
-            .plan_id = (*compiled)->plan_id.clone(),
-            .state = RunState::Succeeded,
-            .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"task"},
-                                   .state = TaskState::Succeeded}},
-        },
+        .trigger =
+            TriggerEnvelope{
+                .trigger_id = WorkflowTriggerId{run_id + "-trigger"},
+                .workflow_id = WorkflowId{"restore-artifact-validation"},
+                .source = "test",
+                .event_type = "restore",
+            },
+        .snapshot =
+            RunSnapshot{
+                .run_id = WorkflowRunId{std::move(run_id)},
+                .workflow_id = WorkflowId{"restore-artifact-validation"},
+                .plan_id = (*compiled)->plan_id.clone(),
+                .state = RunState::Succeeded,
+                .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"task"},
+                                       .state = TaskState::Succeeded}},
+            },
         .values = {{OutputRef{.node_id = WorkflowNodeId{"task"},
                               .port = WorkflowPortId{"result"}},
                     std::move(reference)}},
     };
   };
 
-  auto missing = checkpoint_for(
-      ArtifactRef{.artifact_id = ArtifactId{"missing"},
-                  .media_type = "application/json",
-                  .size_bytes = 7,
-                  .digest = "missing-digest"},
-      "restore-missing-artifact");
+  auto missing =
+      checkpoint_for(ArtifactRef{.artifact_id = ArtifactId{"missing"},
+                                 .media_type = "application/json",
+                                 .size_bytes = 7,
+                                 .digest = "missing-digest"},
+                     "restore-missing-artifact");
   EXPECT_EQ(runtime.restore(*compiled, std::move(missing)).error(),
             make_error_code(Error::NotFound));
 
   const std::string payload{"payload"};
   auto stored = artifacts->put(
-      std::as_bytes(std::span{payload.data(), payload.size()}),
-      "text/plain");
+      std::as_bytes(std::span{payload.data(), payload.size()}), "text/plain");
   ASSERT_TRUE(stored.has_value()) << stored.error().message();
   auto mismatched = checkpoint_for(*stored, "restore-mismatched-artifact");
   std::get<ArtifactRef>(mismatched.values.front().value).digest =
@@ -6762,10 +6872,9 @@ TEST(WorkflowRuntimeTest, PersistsAuthoritativeRunTransitions) {
   auto compiled = PlanCompiler{environment.registry}.compile(std::move(plan));
   ASSERT_TRUE(compiled.has_value());
   auto started = runtime.start(
-      *compiled,
-      TriggerEnvelope{.workflow_id = WorkflowId{"persisted-runtime"},
-                      .source = "test",
-                      .event_type = "request"});
+      *compiled, TriggerEnvelope{.workflow_id = WorkflowId{"persisted-runtime"},
+                                 .source = "test",
+                                 .event_type = "request"});
   ASSERT_TRUE(started.has_value());
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
   ASSERT_TRUE(environment.executor->complete_next(0, "persisted"));
@@ -6782,6 +6891,117 @@ TEST(WorkflowRuntimeTest, PersistsAuthoritativeRunTransitions) {
 
   core.stop();
   std::filesystem::remove_all(directory, error);
+}
+
+TEST(WorkflowRuntimeTest, CheckpointsRetainSubmittedCommandConfiguration) {
+  const auto directory =
+      temporary_test_directory("runtime-source-plan-checkpoint");
+  std::error_code error;
+  std::filesystem::remove_all(directory, error);
+
+  Runtime core(1, false, 0);
+  ASSERT_TRUE(core.start().has_value());
+  CommandPolicyConfig policy;
+  policy.allow_unlisted_programs = false;
+  policy.programs = {{.name = "true-tool", .path = "/bin/true"}};
+  CommandTaskExecutorEnvironment environment{policy};
+  auto checkpoint_store = std::make_shared<CheckpointStore>(
+      directory, kStorageDefaults.max_checkpoint_bytes);
+  WorkflowRuntime runtime(core, environment.registry, {}, {}, checkpoint_store);
+
+  auto plan = base_plan("source-plan-checkpoint");
+  plan.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .executor = "command",
+      .config = command_config("true-tool"),
+      .outputs = {WorkflowPortId{"result"}},
+  });
+  auto compiled = PlanCompiler{environment.registry}.compile(std::move(plan));
+  ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
+  const auto canonical_program =
+      std::filesystem::canonical("/bin/true").string();
+  EXPECT_EQ(materialize((*compiled)->nodes.front().source_config)["program"]
+                .as<std::string>(),
+            "true-tool");
+  EXPECT_EQ(materialize((*compiled)->nodes.front().plan.config)["program"]
+                .as<std::string>(),
+            canonical_program);
+
+  auto started = runtime.start(
+      *compiled,
+      TriggerEnvelope{.workflow_id = WorkflowId{"source-plan-checkpoint"},
+                      .source = "test",
+                      .event_type = "checkpoint"});
+  ASSERT_TRUE(started.has_value()) << started.error().message();
+
+  auto initial = checkpoint_store->load(*started);
+  ASSERT_TRUE(initial.has_value()) << initial.error().message();
+  EXPECT_EQ(materialize(initial->plan.nodes.front().config)["program"]
+                .as<std::string>(),
+            "true-tool");
+
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!environment.runner->command() &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  ASSERT_TRUE(environment.runner->command().has_value());
+  environment.runner->complete(0);
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, *started, RunState::Succeeded).has_value());
+
+  auto terminal = checkpoint_store->load(*started);
+  ASSERT_TRUE(terminal.has_value()) << terminal.error().message();
+  EXPECT_EQ(materialize(terminal->plan.nodes.front().config)["program"]
+                .as<std::string>(),
+            "true-tool");
+  auto encoded = serialize_json(*terminal);
+  ASSERT_TRUE(encoded.has_value()) << encoded.error().message();
+  EXPECT_EQ(encoded->find(canonical_program), std::string::npos);
+
+  core.stop();
+  std::filesystem::remove_all(directory, error);
+}
+
+TEST(WorkflowRuntimeTest, RejectsCompiledCheckpointProjection) {
+  Runtime core(1, false, 0);
+  CommandPolicyConfig policy;
+  policy.allow_unlisted_programs = false;
+  policy.programs = {{.name = "true-tool", .path = "/bin/true"}};
+  CommandTaskExecutorEnvironment environment{policy};
+  WorkflowRuntime runtime(core, environment.registry);
+
+  auto plan = base_plan("compiled-checkpoint-rejected");
+  plan.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .executor = "command",
+      .config = command_config("true-tool"),
+      .outputs = {WorkflowPortId{"result"}},
+  });
+  const WorkflowPlanId plan_id{"compiled-checkpoint-plan"};
+  auto compiled = PlanCompiler{environment.registry}.compile(plan, plan_id);
+  ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
+
+  WorkflowCheckpoint checkpoint{
+      .plan = compiled_plan(**compiled),
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"compiled-checkpoint-trigger"},
+              .workflow_id = WorkflowId{"compiled-checkpoint-rejected"},
+          },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"compiled-checkpoint-run"},
+              .workflow_id = WorkflowId{"compiled-checkpoint-rejected"},
+              .plan_id = plan_id.clone(),
+              .state = RunState::Succeeded,
+              .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"command"},
+                                     .state = TaskState::Succeeded}},
+          },
+  };
+  EXPECT_EQ(runtime.restore(*compiled, std::move(checkpoint)).error(),
+            make_error_code(Error::InvalidState));
 }
 
 TEST(WorkflowRuntimeTest, PersistsInitialExplicitAndTerminalBoundaries) {
@@ -6885,24 +7105,22 @@ TEST(WorkflowRuntimeTest, InitialPersistenceFailureRejectsRunBeforeDispatch) {
   ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
 
   auto started = runtime.start(
-      *compiled,
-      TriggerEnvelope{
-          .workflow_id = WorkflowId{"initial-persistence-failure"},
-          .source = "test",
-          .event_type = "write-failure",
-          .idempotency_key = "must-not-publish",
-      });
+      *compiled, TriggerEnvelope{
+                     .workflow_id = WorkflowId{"initial-persistence-failure"},
+                     .source = "test",
+                     .event_type = "write-failure",
+                     .idempotency_key = "must-not-publish",
+                 });
   ASSERT_FALSE(started.has_value());
   EXPECT_EQ(environment.executor->pending_count(), 0U);
 
   auto retried = runtime.start(
-      *compiled,
-      TriggerEnvelope{
-          .workflow_id = WorkflowId{"initial-persistence-failure"},
-          .source = "test",
-          .event_type = "write-failure",
-          .idempotency_key = "must-not-publish",
-      });
+      *compiled, TriggerEnvelope{
+                     .workflow_id = WorkflowId{"initial-persistence-failure"},
+                     .source = "test",
+                     .event_type = "write-failure",
+                     .idempotency_key = "must-not-publish",
+                 });
   ASSERT_FALSE(retried.has_value());
   EXPECT_EQ(environment.executor->pending_count(), 0U);
 
@@ -6940,86 +7158,88 @@ TEST(WorkflowRuntimeTest, RepairReusesIndependentSuccessfulBranches) {
       NodePlan{
           .node_id = WorkflowNodeId{"aggregate"},
           .executor = "test",
-          .inputs = {
-              InputBinding{
-                  .input = WorkflowPortId{"a"},
-                  .source = OutputRef{.node_id = WorkflowNodeId{"branch_a"},
-                                      .port = WorkflowPortId{"result"}},
+          .inputs =
+              {
+                  InputBinding{
+                      .input = WorkflowPortId{"a"},
+                      .source = OutputRef{.node_id = WorkflowNodeId{"branch_a"},
+                                          .port = WorkflowPortId{"result"}},
+                  },
+                  InputBinding{
+                      .input = WorkflowPortId{"b"},
+                      .source = OutputRef{.node_id = WorkflowNodeId{"branch_b"},
+                                          .port = WorkflowPortId{"result"}},
+                  },
+                  InputBinding{
+                      .input = WorkflowPortId{"c"},
+                      .source = OutputRef{.node_id = WorkflowNodeId{"branch_c"},
+                                          .port = WorkflowPortId{"result"}},
+                  },
               },
-              InputBinding{
-                  .input = WorkflowPortId{"b"},
-                  .source = OutputRef{.node_id = WorkflowNodeId{"branch_b"},
-                                      .port = WorkflowPortId{"result"}},
-              },
-              InputBinding{
-                  .input = WorkflowPortId{"c"},
-                  .source = OutputRef{.node_id = WorkflowNodeId{"branch_c"},
-                                      .port = WorkflowPortId{"result"}},
-              },
-          },
           .outputs = {WorkflowPortId{"result"}},
       },
   };
-  auto parent_compiled =
-      PlanCompiler{environment.registry}.compile(parent_plan,
-                                                  WorkflowPlanId{"parent-plan"});
-  ASSERT_TRUE(parent_compiled.has_value())
-      << parent_compiled.error().message();
+  auto parent_compiled = PlanCompiler{environment.registry}.compile(
+      parent_plan, WorkflowPlanId{"parent-plan"});
+  ASSERT_TRUE(parent_compiled.has_value()) << parent_compiled.error().message();
 
-  const auto parent_failure = make_execution_failure(
-      Error::ProtocolError, "branch_b_invalid_response",
-      "Branch B returned invalid data");
+  const auto parent_failure =
+      make_execution_failure(Error::ProtocolError, "branch_b_invalid_response",
+                             "Branch B returned invalid data");
   WorkflowCheckpoint parent{
       .plan = parent_plan,
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"parent-trigger"},
-          .workflow_id = WorkflowId{"repair-fanout"},
-          .source = "test",
-          .event_type = "fanout",
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"repair-fanout__parent"},
-          .workflow_id = WorkflowId{"repair-fanout"},
-          .plan_id = WorkflowPlanId{"parent-plan"},
-          .state = RunState::Failed,
-          .stop_intent = StopIntent::Fail,
-          .stop_reason = parent_failure.message,
-          .tasks = {
-              TaskSnapshot{.node_id = WorkflowNodeId{"branch_a"},
-                           .state = TaskState::Succeeded},
-              TaskSnapshot{.node_id = WorkflowNodeId{"branch_b"},
-                           .state = TaskState::Failed,
-                           .failure = parent_failure},
-              TaskSnapshot{.node_id = WorkflowNodeId{"branch_c"},
-                           .state = TaskState::Succeeded},
-              TaskSnapshot{.node_id = WorkflowNodeId{"aggregate"},
-                           .state = TaskState::Skipped,
-                           .skip_reason = SkipReason::UpstreamFailed},
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"parent-trigger"},
+              .workflow_id = WorkflowId{"repair-fanout"},
+              .source = "test",
+              .event_type = "fanout",
           },
-          .failure = parent_failure,
-      },
-      .values = {
-          {OutputRef{.node_id = WorkflowNodeId{"branch_a"},
-                     .port = WorkflowPortId{"result"}},
-           std::string{"a-value"}},
-          {OutputRef{.node_id = WorkflowNodeId{"branch_c"},
-                     .port = WorkflowPortId{"result"}},
-           std::string{"c-value"}},
-      },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"repair-fanout__parent"},
+              .workflow_id = WorkflowId{"repair-fanout"},
+              .plan_id = WorkflowPlanId{"parent-plan"},
+              .state = RunState::Failed,
+              .stop_intent = StopIntent::Fail,
+              .stop_reason = parent_failure.message,
+              .tasks =
+                  {
+                      TaskSnapshot{.node_id = WorkflowNodeId{"branch_a"},
+                                   .state = TaskState::Succeeded},
+                      TaskSnapshot{.node_id = WorkflowNodeId{"branch_b"},
+                                   .state = TaskState::Failed,
+                                   .failure = parent_failure},
+                      TaskSnapshot{.node_id = WorkflowNodeId{"branch_c"},
+                                   .state = TaskState::Succeeded},
+                      TaskSnapshot{.node_id = WorkflowNodeId{"aggregate"},
+                                   .state = TaskState::Skipped,
+                                   .skip_reason = SkipReason::UpstreamFailed},
+                  },
+              .failure = parent_failure,
+          },
+      .values =
+          {
+              {OutputRef{.node_id = WorkflowNodeId{"branch_a"},
+                         .port = WorkflowPortId{"result"}},
+               std::string{"a-value"}},
+              {OutputRef{.node_id = WorkflowNodeId{"branch_c"},
+                         .port = WorkflowPortId{"result"}},
+               std::string{"c-value"}},
+          },
   };
   ASSERT_TRUE(checkpoint_store->save(parent).has_value());
 
   auto revised_plan = parent_plan;
-  revised_plan.nodes[1].config =
-      make_payload(JsonValue{{"source", "fixed"}});
+  revised_plan.nodes[1].config = make_payload(JsonValue{{"source", "fixed"}});
   auto revised = PlanCompiler{environment.registry}.compile(
       std::move(revised_plan), WorkflowPlanId{"revised-plan"});
   ASSERT_TRUE(revised.has_value()) << revised.error().message();
 
-  auto repaired = runtime.repair(
-      *revised, parent.snapshot.run_id,
-      RepairRequest{.reason = "fix branch B response schema",
-                    .idempotency_key = "repair-once"});
+  auto repaired =
+      runtime.repair(*revised, parent.snapshot.run_id,
+                     RepairRequest{.reason = "fix branch B response schema",
+                                   .idempotency_key = "repair-once"});
   ASSERT_TRUE(repaired.has_value()) << repaired.error().message();
   ASSERT_EQ(repaired->nodes.size(), 4U);
   EXPECT_TRUE(repaired->nodes[0].reused);
@@ -7038,16 +7258,15 @@ TEST(WorkflowRuntimeTest, RepairReusesIndependentSuccessfulBranches) {
   EXPECT_EQ(std::get<std::string>(*aggregate_inputs.at("c")), "c-value");
   ASSERT_TRUE(environment.executor->complete_next(0, "combined"));
 
-  auto completed = wait_for_state(runtime, core, repaired->run_id,
-                                  RunState::Succeeded);
+  auto completed =
+      wait_for_state(runtime, core, repaired->run_id, RunState::Succeeded);
   ASSERT_TRUE(completed.has_value()) << completed.error().message();
   ASSERT_EQ((*completed)->tasks.size(), 4U);
   EXPECT_EQ((*completed)->parent_run_id, parent.snapshot.run_id);
   EXPECT_EQ((*completed)->parent_plan_id, parent.snapshot.plan_id);
   EXPECT_EQ((*completed)->repair_revision, 1U);
   EXPECT_EQ((*completed)->tasks[0].attempt_count, 0U);
-  EXPECT_EQ((*completed)->tasks[0].reused_from_run_id,
-            parent.snapshot.run_id);
+  EXPECT_EQ((*completed)->tasks[0].reused_from_run_id, parent.snapshot.run_id);
   EXPECT_EQ((*completed)->tasks[1].attempt_count, 1U);
   EXPECT_EQ((*completed)->tasks[2].attempt_count, 0U);
   EXPECT_EQ((*completed)->tasks[3].attempt_count, 1U);
@@ -7065,8 +7284,7 @@ TEST(WorkflowRuntimeTest, RepairReusesIndependentSuccessfulBranches) {
 
   auto duplicate = runtime.repair(
       *revised, parent.snapshot.run_id,
-      RepairRequest{.reason = "duplicate",
-                    .idempotency_key = "repair-once"});
+      RepairRequest{.reason = "duplicate", .idempotency_key = "repair-once"});
   ASSERT_TRUE(duplicate.has_value()) << duplicate.error().message();
   EXPECT_EQ(duplicate->run_id, repaired->run_id);
 
@@ -7078,6 +7296,47 @@ TEST(WorkflowRuntimeTest, RepairReusesIndependentSuccessfulBranches) {
             "branch_b_invalid_response");
 
   core.stop();
+}
+
+TEST(WorkflowRuntimeTest, RepairComparesSubmittedExecutorConfiguration) {
+  CommandPolicyConfig policy;
+  policy.allow_unlisted_programs = false;
+  policy.programs = {{.name = "true-tool", .path = "/bin/true"}};
+  CommandTaskExecutorEnvironment environment{policy};
+
+  auto plan = base_plan("repair-submitted-config");
+  plan.nodes.push_back(NodePlan{
+      .node_id = WorkflowNodeId{"command"},
+      .executor = "command",
+      .config = command_config("true-tool"),
+      .outputs = {WorkflowPortId{"result"}},
+  });
+  auto compiled = PlanCompiler{environment.registry}.compile(
+      plan, WorkflowPlanId{"repair-submitted-plan"});
+  ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
+
+  WorkflowCheckpoint parent{
+      .plan = plan,
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"repair-submitted-config__parent"},
+              .workflow_id = WorkflowId{"repair-submitted-config"},
+              .plan_id = WorkflowPlanId{"repair-submitted-plan"},
+              .state = RunState::Succeeded,
+              .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"command"},
+                                     .state = TaskState::Succeeded}},
+          },
+      .values = {{OutputRef{.node_id = WorkflowNodeId{"command"},
+                            .port = WorkflowPortId{"result"}},
+                  std::string{"retained"}}},
+  };
+  InMemoryArtifactStore artifacts;
+  auto repair = workflow::detail::plan_repair(**compiled, parent, artifacts);
+  ASSERT_TRUE(repair.has_value()) << repair.error().message();
+  ASSERT_EQ(repair->decisions.size(), 1U);
+  EXPECT_TRUE(repair->decisions.front().reused);
+  EXPECT_EQ(repair->decisions.front().reason, "reused");
+  ASSERT_EQ(repair->values.size(), 1U);
 }
 
 TEST(WorkflowRuntimeTest, RepairInvalidatesMissingArtifactAndDependents) {
@@ -7110,35 +7369,37 @@ TEST(WorkflowRuntimeTest, RepairInvalidatesMissingArtifactAndDependents) {
   const WorkflowPlanId parent_plan_id{"missing-artifact-parent-plan"};
   auto parent_compiled =
       PlanCompiler{environment.registry}.compile(plan, parent_plan_id);
-  ASSERT_TRUE(parent_compiled.has_value())
-      << parent_compiled.error().message();
+  ASSERT_TRUE(parent_compiled.has_value()) << parent_compiled.error().message();
 
-  const auto parent_failure = make_execution_failure(
-      Error::Incomplete, "required_output_missing",
-      "Published consumer output was not retained");
+  const auto parent_failure =
+      make_execution_failure(Error::Incomplete, "required_output_missing",
+                             "Published consumer output was not retained");
   WorkflowCheckpoint parent{
       .plan = plan,
-      .trigger = TriggerEnvelope{
-          .trigger_id = WorkflowTriggerId{"missing-artifact-trigger"},
-          .workflow_id = WorkflowId{"repair-missing-artifact"},
-          .source = "test",
-          .event_type = "repair",
-      },
-      .snapshot = RunSnapshot{
-          .run_id = WorkflowRunId{"repair-missing-artifact__parent"},
-          .workflow_id = WorkflowId{"repair-missing-artifact"},
-          .plan_id = parent_plan_id.clone(),
-          .state = RunState::Failed,
-          .stop_intent = StopIntent::Fail,
-          .stop_reason = parent_failure.message,
-          .tasks = {
-              TaskSnapshot{.node_id = WorkflowNodeId{"source"},
-                           .state = TaskState::Succeeded},
-              TaskSnapshot{.node_id = WorkflowNodeId{"consumer"},
-                           .state = TaskState::Succeeded},
+      .trigger =
+          TriggerEnvelope{
+              .trigger_id = WorkflowTriggerId{"missing-artifact-trigger"},
+              .workflow_id = WorkflowId{"repair-missing-artifact"},
+              .source = "test",
+              .event_type = "repair",
           },
-          .failure = parent_failure,
-      },
+      .snapshot =
+          RunSnapshot{
+              .run_id = WorkflowRunId{"repair-missing-artifact__parent"},
+              .workflow_id = WorkflowId{"repair-missing-artifact"},
+              .plan_id = parent_plan_id.clone(),
+              .state = RunState::Failed,
+              .stop_intent = StopIntent::Fail,
+              .stop_reason = parent_failure.message,
+              .tasks =
+                  {
+                      TaskSnapshot{.node_id = WorkflowNodeId{"source"},
+                                   .state = TaskState::Succeeded},
+                      TaskSnapshot{.node_id = WorkflowNodeId{"consumer"},
+                                   .state = TaskState::Succeeded},
+                  },
+              .failure = parent_failure,
+          },
       .values = {{OutputRef{.node_id = WorkflowNodeId{"source"},
                             .port = WorkflowPortId{"result"}},
                   ArtifactRef{
@@ -7168,12 +7429,11 @@ TEST(WorkflowRuntimeTest, RepairInvalidatesMissingArtifactAndDependents) {
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
   const auto inputs = environment.executor->next_inputs();
   ASSERT_EQ(inputs.size(), 1U);
-  EXPECT_EQ(std::get<std::string>(*inputs.at("input")),
-            "restored-source");
+  EXPECT_EQ(std::get<std::string>(*inputs.at("input")), "restored-source");
   ASSERT_TRUE(environment.executor->complete_next(0, "consumed"));
-  ASSERT_TRUE(wait_for_state(runtime, core, repaired->run_id,
-                             RunState::Succeeded)
-                  .has_value());
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, repaired->run_id, RunState::Succeeded)
+          .has_value());
 
   core.stop();
 }
@@ -7210,8 +7470,7 @@ TEST(WorkflowRuntimeTest, RepairRejectsInvalidParentsAndConflictingKeys) {
                         RepairRequest{.reason = "missing parent"})
                 .error(),
             make_error_code(Error::NotFound));
-  EXPECT_EQ(runtime
-                .repair(*compiled, WorkflowRunId{"missing"}, RepairRequest{})
+  EXPECT_EQ(runtime.repair(*compiled, WorkflowRunId{"missing"}, RepairRequest{})
                 .error(),
             make_error_code(Error::InvalidState));
 
@@ -7221,22 +7480,24 @@ TEST(WorkflowRuntimeTest, RepairRejectsInvalidParentsAndConflictingKeys) {
     source.workflow_id = WorkflowId{workflow};
     auto checkpoint = WorkflowCheckpoint{
         .plan = std::move(source),
-        .trigger = TriggerEnvelope{
-            .trigger_id = WorkflowTriggerId{run_id + "-trigger"},
-            .workflow_id = WorkflowId{workflow},
-            .source = "test",
-            .event_type = "repair-parent",
-        },
-        .snapshot = RunSnapshot{
-            .run_id = WorkflowRunId{std::move(run_id)},
-            .workflow_id = WorkflowId{workflow},
-            .plan_id = plan_id.clone(),
-            .state = state,
-            .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"task"},
-                                   .state = state == RunState::Running
-                                                ? TaskState::Ready
-                                                : TaskState::Failed}},
-        },
+        .trigger =
+            TriggerEnvelope{
+                .trigger_id = WorkflowTriggerId{run_id + "-trigger"},
+                .workflow_id = WorkflowId{workflow},
+                .source = "test",
+                .event_type = "repair-parent",
+            },
+        .snapshot =
+            RunSnapshot{
+                .run_id = WorkflowRunId{std::move(run_id)},
+                .workflow_id = WorkflowId{workflow},
+                .plan_id = plan_id.clone(),
+                .state = state,
+                .tasks = {TaskSnapshot{.node_id = WorkflowNodeId{"task"},
+                                       .state = state == RunState::Running
+                                                    ? TaskState::Ready
+                                                    : TaskState::Failed}},
+            },
     };
     if (state == RunState::Failed) {
       const auto failure = make_execution_failure(
@@ -7247,7 +7508,8 @@ TEST(WorkflowRuntimeTest, RepairRejectsInvalidParentsAndConflictingKeys) {
     return checkpoint;
   };
 
-  auto active_parent = checkpoint_for("repair-active-parent", RunState::Running);
+  auto active_parent =
+      checkpoint_for("repair-active-parent", RunState::Running);
   ASSERT_TRUE(checkpoints->save(active_parent).has_value());
   EXPECT_EQ(runtime
                 .repair(*compiled, active_parent.snapshot.run_id,
@@ -7255,8 +7517,8 @@ TEST(WorkflowRuntimeTest, RepairRejectsInvalidParentsAndConflictingKeys) {
                 .error(),
             make_error_code(Error::InvalidState));
 
-  auto wrong_parent = checkpoint_for("repair-wrong-parent", RunState::Failed,
-                                     "other-workflow");
+  auto wrong_parent =
+      checkpoint_for("repair-wrong-parent", RunState::Failed, "other-workflow");
   ASSERT_TRUE(checkpoints->save(wrong_parent).has_value());
   EXPECT_EQ(runtime
                 .repair(*compiled, wrong_parent.snapshot.run_id,
@@ -7267,11 +7529,10 @@ TEST(WorkflowRuntimeTest, RepairRejectsInvalidParentsAndConflictingKeys) {
   auto parent = checkpoint_for("repair-valid-parent", RunState::Failed);
   ASSERT_TRUE(checkpoints->save(parent).has_value());
   auto ordinary = runtime.start(
-      *compiled,
-      TriggerEnvelope{.workflow_id = WorkflowId{"repair-validation"},
-                      .source = "test",
-                      .event_type = "ordinary",
-                      .idempotency_key = "shared-key"});
+      *compiled, TriggerEnvelope{.workflow_id = WorkflowId{"repair-validation"},
+                                 .source = "test",
+                                 .event_type = "ordinary",
+                                 .idempotency_key = "shared-key"});
   ASSERT_TRUE(ordinary.has_value()) << ordinary.error().message();
   EXPECT_EQ(runtime
                 .repair(*compiled, parent.snapshot.run_id,
@@ -7284,17 +7545,15 @@ TEST(WorkflowRuntimeTest, RepairRejectsInvalidParentsAndConflictingKeys) {
   ASSERT_TRUE(wait_for_state(runtime, core, *ordinary, RunState::Succeeded)
                   .has_value());
 
-  auto repair_started = runtime.repair(
-      *compiled, parent.snapshot.run_id,
-      RepairRequest{.reason = "first repair",
-                    .idempotency_key = "repair-request"});
-  ASSERT_TRUE(repair_started.has_value())
-      << repair_started.error().message();
+  auto repair_started =
+      runtime.repair(*compiled, parent.snapshot.run_id,
+                     RepairRequest{.reason = "first repair",
+                                   .idempotency_key = "repair-request"});
+  ASSERT_TRUE(repair_started.has_value()) << repair_started.error().message();
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
 
   auto revised_plan = plan;
-  revised_plan.nodes.front().config =
-      make_payload(JsonValue{{"revision", 2}});
+  revised_plan.nodes.front().config = make_payload(JsonValue{{"revision", 2}});
   auto revised = PlanCompiler{environment.registry}.compile(
       std::move(revised_plan), WorkflowPlanId{"repair-validation-plan-v2"});
   ASSERT_TRUE(revised.has_value()) << revised.error().message();
@@ -7305,9 +7564,9 @@ TEST(WorkflowRuntimeTest, RepairRejectsInvalidParentsAndConflictingKeys) {
                 .error(),
             make_error_code(Error::AlreadyExists));
   ASSERT_TRUE(environment.executor->complete_next(0, "repaired"));
-  ASSERT_TRUE(wait_for_state(runtime, core, repair_started->run_id,
-                             RunState::Succeeded)
-                  .has_value());
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, repair_started->run_id, RunState::Succeeded)
+          .has_value());
 
   std::filesystem::remove_all(directory, filesystem_error);
   ASSERT_FALSE(filesystem_error);
@@ -7315,9 +7574,9 @@ TEST(WorkflowRuntimeTest, RepairRejectsInvalidParentsAndConflictingKeys) {
     std::ofstream blocker(directory, std::ios::binary | std::ios::trunc);
     blocker << "not-a-directory";
   }
-  auto persistence_failure = runtime.repair(
-      *compiled, parent.snapshot.run_id,
-      RepairRequest{.reason = "cannot persist child"});
+  auto persistence_failure =
+      runtime.repair(*compiled, parent.snapshot.run_id,
+                     RepairRequest{.reason = "cannot persist child"});
   ASSERT_FALSE(persistence_failure.has_value());
 
   core.stop();
@@ -7352,11 +7611,10 @@ TEST(WorkflowRuntimeTest, ExternalizesLargeFailureDetailsForRepairClients) {
       make_execution_failure(Error::ProtocolError, "large_diagnostic",
                              "Large diagnostic payload",
                              make_payload(details))));
-  ASSERT_TRUE(wait_for_state(runtime, core, *started, RunState::Failed)
-                  .has_value());
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, *started, RunState::Failed).has_value());
 
-  auto report =
-      sync_wait_on_runtime(core, runtime.failure_report(*started));
+  auto report = sync_wait_on_runtime(core, runtime.failure_report(*started));
   ASSERT_TRUE(report.has_value()) << report.error().message();
   ASSERT_TRUE(report->failure.has_value());
   ASSERT_EQ(report->failure->artifacts.size(), 1U);
@@ -7365,11 +7623,11 @@ TEST(WorkflowRuntimeTest, ExternalizesLargeFailureDetailsForRepairClients) {
   ASSERT_TRUE(retained_details["externalized"].is_boolean());
   EXPECT_TRUE(retained_details["externalized"].get<bool>());
 
-  auto blob = artifacts->get(
-      report->failure->artifacts.front().artifact.artifact_id);
+  auto blob =
+      artifacts->get(report->failure->artifacts.front().artifact.artifact_id);
   ASSERT_TRUE(blob.has_value()) << blob.error().message();
-  const std::string encoded{
-      reinterpret_cast<const char *>(blob->data.data()), blob->data.size()};
+  const std::string encoded{reinterpret_cast<const char *>(blob->data.data()),
+                            blob->data.size()};
   auto decoded = glz::get_as_json<std::string, "/payload">(encoded);
   ASSERT_TRUE(decoded.has_value());
   EXPECT_EQ(decoded->size(), 70U * 1024U);
@@ -7406,8 +7664,8 @@ TEST(WorkflowRuntimeTest, BoundsFailureWhenArtifactRetentionFails) {
       make_execution_failure(Error::ProtocolError, "large_diagnostic",
                              "Large diagnostic payload",
                              make_payload(details))));
-  ASSERT_TRUE(wait_for_state(runtime, core, *started, RunState::Failed)
-                  .has_value());
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, *started, RunState::Failed).has_value());
 
   auto report = sync_wait_on_runtime(core, runtime.failure_report(*started));
   ASSERT_TRUE(report.has_value()) << report.error().message();
@@ -7527,12 +7785,11 @@ TEST(WorkflowRuntimeTest, EvidencePersistenceFailureStopsRun) {
       kStorageDefaults.max_evidence_records,
       kStorageDefaults.max_evidence_file_bytes,
       kStorageDefaults.max_evidence_record_bytes);
-  ASSERT_TRUE(opened_evidence.has_value())
-      << opened_evidence.error().message();
+  ASSERT_TRUE(opened_evidence.has_value()) << opened_evidence.error().message();
   auto evidence = std::move(*opened_evidence);
-  WorkflowRuntime runtime(
-      core, environment.registry, std::make_shared<InMemoryArtifactStore>(),
-      evidence, std::make_shared<CheckpointStore>());
+  WorkflowRuntime runtime(core, environment.registry,
+                          std::make_shared<InMemoryArtifactStore>(), evidence,
+                          std::make_shared<CheckpointStore>());
 
   auto plan = base_plan("evidence-persistence-failure");
   plan.nodes.push_back(NodePlan{
@@ -7543,12 +7800,11 @@ TEST(WorkflowRuntimeTest, EvidencePersistenceFailureStopsRun) {
   auto compiled = PlanCompiler{environment.registry}.compile(std::move(plan));
   ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
   auto started = runtime.start(
-      *compiled,
-      TriggerEnvelope{
-          .workflow_id = WorkflowId{"evidence-persistence-failure"},
-          .source = "test",
-          .event_type = "write-failure",
-      });
+      *compiled, TriggerEnvelope{
+                     .workflow_id = WorkflowId{"evidence-persistence-failure"},
+                     .source = "test",
+                     .event_type = "write-failure",
+                 });
   ASSERT_TRUE(started.has_value()) << started.error().message();
 
   auto failed = wait_for_state(runtime, core, *started, RunState::Failed);
@@ -7655,10 +7911,10 @@ TEST(WorkflowRuntimeTest, CompletedRunRetentionEvictsOldestRun) {
   Runtime core(1, false, 0);
   ASSERT_TRUE(core.start().has_value());
   TestExecutorEnvironment environment(core);
-  WorkflowRuntime runtime(
-      core, environment.registry, std::make_shared<InMemoryArtifactStore>(),
-      std::make_shared<EvidenceLedger>(),
-      std::make_shared<CheckpointStore>(), 1);
+  WorkflowRuntime runtime(core, environment.registry,
+                          std::make_shared<InMemoryArtifactStore>(),
+                          std::make_shared<EvidenceLedger>(),
+                          std::make_shared<CheckpointStore>(), 1);
 
   auto plan = base_plan("retention");
   plan.nodes.push_back(NodePlan{
@@ -7692,7 +7948,8 @@ TEST(WorkflowRuntimeTest, CompletedRunRetentionEvictsOldestRun) {
   auto expired = sync_wait_on_runtime(core, runtime.snapshot(*first));
   ASSERT_FALSE(expired.has_value());
   EXPECT_EQ(expired.error(), make_error_code(Error::NotFound));
-  EXPECT_TRUE(sync_wait_on_runtime(core, runtime.snapshot(*second)).has_value());
+  EXPECT_TRUE(
+      sync_wait_on_runtime(core, runtime.snapshot(*second)).has_value());
   core.stop();
 }
 
@@ -7706,9 +7963,9 @@ TEST(WorkflowRuntimeTest, RetentionKeepsRunWhenCheckpointDeletionFails) {
   TestExecutorEnvironment environment(core);
   auto checkpoints = std::make_shared<CheckpointStore>(
       directory, kStorageDefaults.max_checkpoint_bytes);
-  WorkflowRuntime runtime(
-      core, environment.registry, std::make_shared<InMemoryArtifactStore>(),
-      std::make_shared<EvidenceLedger>(), checkpoints, 1);
+  WorkflowRuntime runtime(core, environment.registry,
+                          std::make_shared<InMemoryArtifactStore>(),
+                          std::make_shared<EvidenceLedger>(), checkpoints, 1);
 
   auto plan = base_plan("retention-delete-failure");
   plan.nodes.push_back(NodePlan{
@@ -7720,23 +7977,21 @@ TEST(WorkflowRuntimeTest, RetentionKeepsRunWhenCheckpointDeletionFails) {
   ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
 
   auto first = runtime.start(
-      *compiled,
-      TriggerEnvelope{
-          .workflow_id = WorkflowId{"retention-delete-failure"},
-          .idempotency_key = "retained-key",
-      });
+      *compiled, TriggerEnvelope{
+                     .workflow_id = WorkflowId{"retention-delete-failure"},
+                     .idempotency_key = "retained-key",
+                 });
   ASSERT_TRUE(first.has_value()) << first.error().message();
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
   ASSERT_TRUE(environment.executor->complete_next(0, "first"));
-  ASSERT_TRUE(wait_for_state(runtime, core, *first, RunState::Succeeded)
-                  .has_value());
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, *first, RunState::Succeeded).has_value());
 
   auto second = runtime.start(
-      *compiled,
-      TriggerEnvelope{
-          .workflow_id = WorkflowId{"retention-delete-failure"},
-          .idempotency_key = "second-key",
-      });
+      *compiled, TriggerEnvelope{
+                     .workflow_id = WorkflowId{"retention-delete-failure"},
+                     .idempotency_key = "second-key",
+                 });
   ASSERT_TRUE(second.has_value()) << second.error().message();
   ASSERT_TRUE(environment.executor->wait_for_pending(1));
 
@@ -7748,17 +8003,17 @@ TEST(WorkflowRuntimeTest, RetentionKeepsRunWhenCheckpointDeletionFails) {
   }
 
   ASSERT_TRUE(environment.executor->complete_next(0, "second"));
-  ASSERT_TRUE(wait_for_state(runtime, core, *second, RunState::Failed)
-                  .has_value());
+  ASSERT_TRUE(
+      wait_for_state(runtime, core, *second, RunState::Failed).has_value());
   EXPECT_TRUE(sync_wait_on_runtime(core, runtime.snapshot(*first)).has_value());
-  EXPECT_TRUE(sync_wait_on_runtime(core, runtime.snapshot(*second)).has_value());
+  EXPECT_TRUE(
+      sync_wait_on_runtime(core, runtime.snapshot(*second)).has_value());
 
   auto duplicate = runtime.start(
-      *compiled,
-      TriggerEnvelope{
-          .workflow_id = WorkflowId{"retention-delete-failure"},
-          .idempotency_key = "retained-key",
-      });
+      *compiled, TriggerEnvelope{
+                     .workflow_id = WorkflowId{"retention-delete-failure"},
+                     .idempotency_key = "retained-key",
+                 });
   ASSERT_TRUE(duplicate.has_value()) << duplicate.error().message();
   EXPECT_EQ(*duplicate, *first);
 
@@ -7790,9 +8045,9 @@ TEST(WorkflowStorageTest, EvidenceLedgerHandlesInvalidAndMalformedRecords) {
     output << '\n' << "not-json" << '\n';
   }
 
-  auto malformed = EvidenceLedger::open(
-      file, 1, kStorageDefaults.max_evidence_file_bytes,
-      kStorageDefaults.max_evidence_record_bytes);
+  auto malformed =
+      EvidenceLedger::open(file, 1, kStorageDefaults.max_evidence_file_bytes,
+                           kStorageDefaults.max_evidence_record_bytes);
   ASSERT_FALSE(malformed.has_value());
   EXPECT_EQ(malformed.error(), make_error_code(Error::ParseError));
   std::filesystem::remove(file, error);
@@ -7807,9 +8062,9 @@ TEST(WorkflowStorageTest, EvidenceLedgerHandlesInvalidAndMalformedRecords) {
     std::ofstream output(file, std::ios::binary | std::ios::app);
     output << R"({"evidence_id":"truncated)";
   }
-  auto repaired = EvidenceLedger::open(
-      file, 1, kStorageDefaults.max_evidence_file_bytes,
-      kStorageDefaults.max_evidence_record_bytes);
+  auto repaired =
+      EvidenceLedger::open(file, 1, kStorageDefaults.max_evidence_file_bytes,
+                           kStorageDefaults.max_evidence_record_bytes);
   ASSERT_TRUE(repaired.has_value()) << repaired.error().message();
   EXPECT_EQ((*repaired)->size(), 1U);
   auto repaired_text = workflow::storage_detail::load_text_file(
@@ -7823,18 +8078,18 @@ TEST(WorkflowStorageTest, EvidenceLedgerHandlesInvalidAndMalformedRecords) {
   ASSERT_TRUE(workflow::storage_detail::store_text_file_atomic(
                   file, committed + "not-json\n" + committed)
                   .has_value());
-  auto interior_corruption = EvidenceLedger::open(
-      file, 10, kStorageDefaults.max_evidence_file_bytes,
-      kStorageDefaults.max_evidence_record_bytes);
+  auto interior_corruption =
+      EvidenceLedger::open(file, 10, kStorageDefaults.max_evidence_file_bytes,
+                           kStorageDefaults.max_evidence_record_bytes);
   ASSERT_FALSE(interior_corruption.has_value());
   EXPECT_EQ(interior_corruption.error(), make_error_code(Error::ParseError));
 
   ASSERT_TRUE(workflow::storage_detail::store_text_file_atomic(
                   file, committed + "not-json")
                   .has_value());
-  auto invalid_final_record = EvidenceLedger::open(
-      file, 10, kStorageDefaults.max_evidence_file_bytes,
-      kStorageDefaults.max_evidence_record_bytes);
+  auto invalid_final_record =
+      EvidenceLedger::open(file, 10, kStorageDefaults.max_evidence_file_bytes,
+                           kStorageDefaults.max_evidence_record_bytes);
   ASSERT_FALSE(invalid_final_record.has_value());
   EXPECT_EQ(invalid_final_record.error(), make_error_code(Error::ParseError));
 
@@ -7891,8 +8146,7 @@ TEST(WorkflowStorageTest, CheckpointStoreSupportsMemoryLifecycleAndCorruption) {
     ignored << "ignored";
   }
 
-  CheckpointStore disk_store(directory,
-                             kStorageDefaults.max_checkpoint_bytes);
+  CheckpointStore disk_store(directory, kStorageDefaults.max_checkpoint_bytes);
   EXPECT_EQ(disk_store.load(WorkflowRunId{"broken"}).error(),
             make_error_code(Error::ParseError));
   EXPECT_EQ(disk_store.list().error(), make_error_code(Error::ParseError));
@@ -7923,13 +8177,11 @@ TEST(WorkflowStorageTest, CheckpointStoreSupportsMemoryLifecycleAndCorruption) {
   EXPECT_EQ(disk_store.list().error(), make_error_code(Error::ParseError));
   std::filesystem::remove(directory / "aliased.json", error);
   ASSERT_FALSE(error);
-  CheckpointStore reloaded(directory,
-                           kStorageDefaults.max_checkpoint_bytes);
+  CheckpointStore reloaded(directory, kStorageDefaults.max_checkpoint_bytes);
   auto listed_disk = reloaded.list();
   ASSERT_TRUE(listed_disk.has_value()) << listed_disk.error().message();
   ASSERT_EQ(listed_disk->size(), 1U);
-  EXPECT_EQ(listed_disk->front().snapshot.run_id,
-            WorkflowRunId{"disk-run"});
+  EXPECT_EQ(listed_disk->front().snapshot.run_id, WorkflowRunId{"disk-run"});
   EXPECT_TRUE(reloaded.erase(WorkflowRunId{"disk-run"}).has_value());
   EXPECT_EQ(reloaded.erase(WorkflowRunId{"disk-run"}).error(),
             make_error_code(Error::NotFound));
@@ -7946,8 +8198,8 @@ TEST(WorkflowStorageTest, CheckpointCatalogOrderingIsDeterministic) {
     checkpoint.snapshot.workflow_id = WorkflowId{"ordered-checkpoints"};
     checkpoint.snapshot.plan_id = WorkflowPlanId{"ordered-plan"};
     checkpoint.snapshot.state = RunState::Succeeded;
-    checkpoint.created_at = std::chrono::system_clock::time_point{
-        std::chrono::milliseconds{100}};
+    checkpoint.created_at =
+        std::chrono::system_clock::time_point{std::chrono::milliseconds{100}};
     return checkpoint;
   };
   const auto assert_order = [](const auto &listed) {
@@ -8031,12 +8283,13 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
       make_payload(run_failure_details));
   checkpoint.snapshot.failure->artifacts.push_back(FailureArtifact{
       .name = "details",
-      .artifact = ArtifactRef{
-          .artifact_id = ArtifactId{"failure-artifact"},
-          .media_type = "application/json",
-          .size_bytes = 77,
-          .digest = "failure-digest",
-      },
+      .artifact =
+          ArtifactRef{
+              .artifact_id = ArtifactId{"failure-artifact"},
+              .media_type = "application/json",
+              .size_bytes = 77,
+              .digest = "failure-digest",
+          },
   });
   checkpoint.snapshot.created_at =
       std::chrono::system_clock::time_point{std::chrono::milliseconds{100}};
@@ -8048,8 +8301,8 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
   task.node_id = WorkflowNodeId{"task"};
   task.state = TaskState::Failed;
   task.attempt_count = 2;
-  task.failure = make_execution_failure(
-      Error::Unknown, "retries_exhausted", "Retries exhausted");
+  task.failure = make_execution_failure(Error::Unknown, "retries_exhausted",
+                                        "Retries exhausted");
   task.started_at =
       std::chrono::system_clock::time_point{std::chrono::milliseconds{210}};
   task.finished_at =
@@ -8059,27 +8312,27 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
       .number = 1,
       .state = AttemptState::TimedOut,
       .exit_code = 124,
-      .failure = make_execution_failure(
-          Error::Timeout, "deadline_exceeded", "Deadline exceeded"),
-      .created_at = std::chrono::system_clock::time_point{
-          std::chrono::milliseconds{220}},
-      .started_at = std::chrono::system_clock::time_point{
-          std::chrono::milliseconds{230}},
-      .finished_at = std::chrono::system_clock::time_point{
-          std::chrono::milliseconds{240}},
+      .failure = make_execution_failure(Error::Timeout, "deadline_exceeded",
+                                        "Deadline exceeded"),
+      .created_at =
+          std::chrono::system_clock::time_point{std::chrono::milliseconds{220}},
+      .started_at =
+          std::chrono::system_clock::time_point{std::chrono::milliseconds{230}},
+      .finished_at =
+          std::chrono::system_clock::time_point{std::chrono::milliseconds{240}},
   });
   task.attempts.push_back(AttemptSnapshot{
       .attempt_id = AttemptId{"attempt-2"},
       .number = 2,
       .state = AttemptState::Failed,
-      .failure = make_execution_failure(
-          Error::Unknown, "second_attempt_failed", "Second attempt failed"),
-      .created_at = std::chrono::system_clock::time_point{
-          std::chrono::milliseconds{250}},
-      .started_at = std::chrono::system_clock::time_point{
-          std::chrono::milliseconds{260}},
-      .finished_at = std::chrono::system_clock::time_point{
-          std::chrono::milliseconds{270}},
+      .failure = make_execution_failure(Error::Unknown, "second_attempt_failed",
+                                        "Second attempt failed"),
+      .created_at =
+          std::chrono::system_clock::time_point{std::chrono::milliseconds{250}},
+      .started_at =
+          std::chrono::system_clock::time_point{std::chrono::milliseconds{260}},
+      .finished_at =
+          std::chrono::system_clock::time_point{std::chrono::milliseconds{270}},
   });
   checkpoint.snapshot.tasks.push_back(std::move(task));
   checkpoint.snapshot.tasks.push_back(TaskSnapshot{
@@ -8147,8 +8400,7 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
   EXPECT_EQ(loaded->snapshot.tasks[1].reused_from_run_id,
             WorkflowRunId{"parent-run"});
   ASSERT_TRUE(loaded->snapshot.tasks.front().failure.has_value());
-  EXPECT_EQ(loaded->snapshot.tasks.front().failure->code,
-            "retries_exhausted");
+  EXPECT_EQ(loaded->snapshot.tasks.front().failure->code, "retries_exhausted");
   EXPECT_EQ(loaded->snapshot.tasks.front().attempts.front().state,
             AttemptState::TimedOut);
   EXPECT_FALSE(loaded->snapshot.tasks.front()
@@ -8165,8 +8417,7 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
   EXPECT_DOUBLE_EQ(std::get<double>(loaded->values[3].value), 3.25);
   EXPECT_EQ(std::get<std::string>(loaded->values[4].value), "text");
   EXPECT_TRUE(std::holds_alternative<JsonPayload>(loaded->values[5].value));
-  const auto &loaded_artifact =
-      std::get<ArtifactRef>(loaded->values[6].value);
+  const auto &loaded_artifact = std::get<ArtifactRef>(loaded->values[6].value);
   EXPECT_EQ(loaded_artifact.artifact_id, artifact.artifact_id);
   EXPECT_EQ(loaded_artifact.media_type, artifact.media_type);
   EXPECT_EQ(loaded_artifact.size_bytes, artifact.size_bytes);
@@ -8174,16 +8425,15 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
 
   const auto evidence_file = directory / "evidence.jsonl";
   auto ledger = open_test_evidence(evidence_file, 10);
-  auto metadata = JsonPayload::from(
-      glz::obj{"attempt", std::int64_t{1}});
+  auto metadata = JsonPayload::from(glz::obj{"attempt", std::int64_t{1}});
   ASSERT_TRUE(metadata.has_value()) << metadata.error().message();
   EvidenceRecord record{
       .evidence_id = EvidenceId{"evidence-rich"},
       .run_id = WorkflowRunId{"rich-run"},
       .node_id = WorkflowNodeId{"task"},
       .type = EvidenceType::AttemptCompleted,
-      .timestamp = std::chrono::system_clock::time_point{
-          std::chrono::milliseconds{600}},
+      .timestamp =
+          std::chrono::system_clock::time_point{std::chrono::milliseconds{600}},
       .actor = Principal{.subject = "tester", .roles = {"operator"}},
       .metadata = std::move(*metadata),
       .artifact = artifact,
@@ -8191,8 +8441,7 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
   };
   ASSERT_TRUE(ledger->append(std::move(record)).has_value());
   auto reloaded_ledger = open_test_evidence(evidence_file, 10);
-  const auto records =
-      reloaded_ledger->records(WorkflowRunId{"rich-run"});
+  const auto records = reloaded_ledger->records(WorkflowRunId{"rich-run"});
   ASSERT_EQ(records.size(), 1U);
   EXPECT_EQ(records.front().actor.subject, "tester");
   ASSERT_TRUE(records.front().artifact.has_value());
@@ -8202,11 +8451,10 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
   EXPECT_EQ(records.front().artifact->digest, artifact.digest);
   EXPECT_EQ(records.front().content_digest, "evidence-digest");
 
-  std::ifstream input(directory / "runs" / "rich-run.json",
-                      std::ios::binary);
+  std::ifstream input(directory / "runs" / "rich-run.json", std::ios::binary);
   std::string checkpoint_json(std::istreambuf_iterator<char>(input), {});
-  ASSERT_FALSE(glz::write_at<"/payload/snapshot/run_id">(
-      R"("invalid-failure")", checkpoint_json));
+  ASSERT_FALSE(glz::write_at<"/payload/snapshot/run_id">(R"("invalid-failure")",
+                                                         checkpoint_json));
   ASSERT_FALSE(glz::write_at<"/payload/snapshot/failure/kind">(
       R"("not_an_error")", checkpoint_json));
   {
@@ -8214,8 +8462,8 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
                          std::ios::binary | std::ios::trunc);
     output << checkpoint_json;
   }
-  CheckpointStore invalid_failure_store(
-      directory / "runs", kStorageDefaults.max_checkpoint_bytes);
+  CheckpointStore invalid_failure_store(directory / "runs",
+                                        kStorageDefaults.max_checkpoint_bytes);
   EXPECT_EQ(
       invalid_failure_store.load(WorkflowRunId{"invalid-failure"}).error(),
       make_error_code(Error::ParseError));
@@ -8248,9 +8496,8 @@ TEST(WorkflowStorageTest, PersistentCodecRoundTripsRichRuntimeStateAndValues) {
   missing_published_output.snapshot.failure.reset();
   missing_published_output.snapshot.tasks[0].state = TaskState::Skipped;
   missing_published_output.snapshot.tasks[0].failure.reset();
-  missing_published_output.plan.outputs = {
-      OutputRef{.node_id = WorkflowNodeId{"values"},
-                .port = WorkflowPortId{"string"}}};
+  missing_published_output.plan.outputs = {OutputRef{
+      .node_id = WorkflowNodeId{"values"}, .port = WorkflowPortId{"string"}}};
   std::erase_if(missing_published_output.values, [](const auto &entry) {
     return entry.output.node_id == WorkflowNodeId{"values"} &&
            entry.output.port == WorkflowPortId{"string"};
@@ -8273,11 +8520,11 @@ TEST(WorkflowControlPlaneTest, RestoresLooksUpAndSortsRegisteredPlans) {
             make_error_code(Error::NotFound));
 
   auto zeta = base_plan("zeta");
-  zeta.nodes.push_back(NodePlan{.node_id = WorkflowNodeId{"task"},
-                                .executor = "test"});
+  zeta.nodes.push_back(
+      NodePlan{.node_id = WorkflowNodeId{"task"}, .executor = "test"});
   auto alpha = base_plan("alpha");
-  alpha.nodes.push_back(NodePlan{.node_id = WorkflowNodeId{"task"},
-                                 .executor = "test"});
+  alpha.nodes.push_back(
+      NodePlan{.node_id = WorkflowNodeId{"task"}, .executor = "test"});
 
   auto restored =
       control.restore_plan(std::move(zeta), WorkflowPlanId{"restored-zeta"});
@@ -8298,9 +8545,9 @@ TEST(WorkflowControlPlaneTest, RestoresLooksUpAndSortsRegisteredPlans) {
   EXPECT_EQ(plans[1]->workflow_id, WorkflowId{"zeta"});
 
   auto denied = base_plan("denied");
-  denied.nodes.push_back(NodePlan{.node_id = WorkflowNodeId{"task"},
-                                  .executor = "unknown"});
-  EXPECT_EQ(control.restore_plan(std::move(denied), WorkflowPlanId{"denied"})
-                .error(),
-            make_error_code(Error::Unauthorized));
+  denied.nodes.push_back(
+      NodePlan{.node_id = WorkflowNodeId{"task"}, .executor = "unknown"});
+  EXPECT_EQ(
+      control.restore_plan(std::move(denied), WorkflowPlanId{"denied"}).error(),
+      make_error_code(Error::Unauthorized));
 }

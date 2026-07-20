@@ -60,3 +60,11 @@ _Avoid_: blob, attachment
 The product surface that accepts Workflow Plans and selects Execution Plans for
 Runs. Its supported external interfaces are HTTP JSON and the CLI.
 _Avoid_: C++ SDK, workflow manager
+
+**Plan Diagnostic**:
+A structured explanation of why a Workflow Plan was rejected before it became an Execution Plan, including the stable failure code and the location in the submitted Plan.
+_Avoid_: compiler log, validation string
+
+**Workflow Capability Document**:
+A versioned description of the Workflow Plan shape, server admission limits, and the executor protocols available to Plan authors.
+_Avoid_: runtime configuration dump, executor registry internals

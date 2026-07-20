@@ -11,10 +11,11 @@ DAGForge 是执行严格 JSON Workflow Plan 的单机工作流运行时。它负
 - `io/` 拥有 IoContext、Asio 错误归一化、取消、deadline 和 timing wheel；它可以依赖基础层，但不依赖 Workflow。
 - `config/` 只拥有服务端持久配置、环境覆盖和 executor policy DTO，不拥有 CLI parser state、单次 HTTP request state 或运行时解析结果。
 - `http/` 拥有通用 DNS/TCP/TLS/HTTP client、server、router 和 parser，不认识 Workflow Node、Run 状态或 Artifact 语义。
+- `jsonata/` 拥有 JSONata 2.2.2 表达式的编译、诊断、求值、资源预算和标准函数；它只能依赖 foundation JSON seam 与私有 PCRE2 adapter，不认识 Workflow、Executor、HTTP、sandbox 或 app。
 - `sandbox/` 只暴露 `CommandSpec` 与 `ICommandRunner` seam；Minijail policy、进程监督和平台细节留在 `src/`，不得依赖 Workflow。
-- `workflow/` 拥有 Workflow value、Plan、Compiler、Run/Task/Attempt 状态机、Runtime、Store、`ITaskExecutor` 和 Registry，不依赖具体 executor、HTTP transport 或 sandbox 实现。
-- `executors/<kind>/` 各自拥有节点协议、编译后配置和 Workflow 到底层能力的适配；不同 executor 的协议 invariant 不得塞进通用工具层。
-- `app/` 是 composition root，负责配置加载、组件构造、具体 executor 注册、CLI、HTTP 控制面和 shutdown 编排，不承载 executor 内部规则。
+- `workflow/` 拥有 Workflow value、Plan、Compiler、Plan Diagnostic、Workflow Capability Document、Run/Task/Attempt 状态机、Runtime、Store、`ITaskExecutor` 和 Registry，不依赖具体 executor、HTTP transport 或 sandbox 实现。
+- `executors/<kind>/` 各自拥有节点协议、相对 `config` 的编译诊断、能力描述、编译后配置和 Workflow 到底层能力的适配；不同 executor 的协议 invariant 不得塞进通用工具层。
+- `app/` 是 composition root，负责配置加载、组件构造、具体 executor 注册、CLI、HTTP 控制面、Plan Diagnostic 的 HTTP 状态投影和 shutdown 编排，不承载 executor 内部规则。
 
 ## 文件放置
 

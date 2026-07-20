@@ -169,7 +169,7 @@ def write_config(
         },
         "admission": {
             "allow_unlisted_executors": False,
-            "allowed_executors": ["command", "http"],
+            "allowed_executors": ["command", "http", "transform"],
             "max_nodes": 256,
             "max_parallel_nodes": 32,
             "max_total_output_bytes": 67108864,
@@ -1000,7 +1000,13 @@ def verify_http_plan_rejections(service: DagforgeService, target_port: int) -> N
     status, response = service.request_json(
         "POST", "/api/v1/workflows/plans", load_plan("http_unlisted_origin.json")
     )
-    require(status == 401, f"unlisted HTTP origin was not rejected: {response}")
+    require(status == 403, f"unlisted HTTP origin was not rejected: {response}")
+    error = response.get("error", {}) if isinstance(response, dict) else {}
+    require(
+        error.get("code") == "http_target_not_allowed"
+        and error.get("path") == "/nodes/0/config/url",
+        f"unlisted HTTP origin returned the wrong diagnostic: {response}",
+    )
     status, response = service.request_json(
         "POST",
         "/api/v1/workflows/plans",

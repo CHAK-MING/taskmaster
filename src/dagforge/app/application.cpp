@@ -4,6 +4,7 @@
 #include "dagforge/config/system_config_loader.hpp"
 #include "dagforge/executors/command/executor.hpp"
 #include "dagforge/executors/http/executor.hpp"
+#include "dagforge/executors/transform/executor.hpp"
 #include "dagforge/workflow/artifact_store.hpp"
 #include "dagforge/workflow/checkpoint_store.hpp"
 #include "dagforge/workflow/evidence_ledger.hpp"
@@ -45,15 +46,14 @@ struct WorkflowStores {
     }
     if (!reconciliation->clean()) {
       using State = workflow::ArtifactReconciliationState;
-      log::warn(
-          "Artifact reconciliation found cleanup debt: orphan_data={} "
-          "orphan_metadata={} malformed_metadata={} content_mismatch={} "
-          "invalid_entries={}",
-          reconciliation->count(State::OrphanData),
-          reconciliation->count(State::OrphanMetadata),
-          reconciliation->count(State::MalformedMetadata),
-          reconciliation->count(State::ContentMismatch),
-          reconciliation->count(State::InvalidEntry));
+      log::warn("Artifact reconciliation found cleanup debt: orphan_data={} "
+                "orphan_metadata={} malformed_metadata={} content_mismatch={} "
+                "invalid_entries={}",
+                reconciliation->count(State::OrphanData),
+                reconciliation->count(State::OrphanMetadata),
+                reconciliation->count(State::MalformedMetadata),
+                reconciliation->count(State::ContentMismatch),
+                reconciliation->count(State::InvalidEntry));
     }
     auto evidence = workflow::EvidenceLedger::open(
         root / "evidence.jsonl", config.storage.max_evidence_records,
@@ -90,10 +90,12 @@ auto restore_workflow_state(workflow::WorkflowControlPlane &control,
     return fail(stored_plans.error());
   }
   for (auto &stored : *stored_plans) {
-    auto restored = control.restore_plan(std::move(stored.plan), stored.plan_id,
-                                         stored.digest);
+    auto restored = control.restore_plan(
+        std::move(stored.source_plan), stored.plan_id, stored.execution_digest);
     if (!restored) {
-      return fail(restored.error());
+      log::error("Stored Workflow Plan {} was rejected: {} at {}",
+                 stored.plan_id, restored.error().code, restored.error().path);
+      return fail(restored.error().error_code());
     }
   }
 
@@ -102,26 +104,33 @@ auto restore_workflow_state(workflow::WorkflowControlPlane &control,
     return fail(stored_runs.error());
   }
   for (auto &checkpoint : *stored_runs) {
-    auto plan = control.get_plan(checkpoint.snapshot.plan_id);
-    if (!plan) {
-      plan = control.restore_plan(checkpoint.plan,
-                                  checkpoint.snapshot.plan_id);
-      if (plan) {
-        auto persisted = plans.save(**plan);
+    std::shared_ptr<const workflow::ExecutionPlan> plan;
+    auto registered = control.get_plan(checkpoint.snapshot.plan_id);
+    if (registered) {
+      plan = std::move(*registered);
+    } else {
+      auto restored =
+          control.restore_plan(checkpoint.plan, checkpoint.snapshot.plan_id);
+      if (!restored) {
+        log::error("Checkpoint Workflow Plan {} was rejected: {} at {}",
+                   checkpoint.snapshot.plan_id, restored.error().code,
+                   restored.error().path);
+        return fail(restored.error().error_code());
+      }
+      plan = std::move(*restored);
+      {
+        auto persisted = plans.save(*plan);
         if (!persisted) {
           return fail(persisted.error());
         }
         if (persisted->durability_deferred) {
-          log::warn(
-              "Restored Plan {} is visible but directory durability is deferred",
-              (*plan)->plan_id);
+          log::warn("Restored Plan {} is visible but directory durability is "
+                    "deferred",
+                    plan->plan_id);
         }
       }
     }
-    if (!plan) {
-      return fail(plan.error());
-    }
-    auto restored = runtime.restore(*plan, std::move(checkpoint));
+    auto restored = runtime.restore(plan, std::move(checkpoint));
     if (!restored) {
       return fail(restored.error());
     }
@@ -188,9 +197,8 @@ auto Application::rebuild_components() -> Result<void> {
       shard_count, config_.runtime.pin_shards_to_cores,
       static_cast<unsigned>(config_.runtime.cpu_affinity_offset));
   executor_registry_ = std::make_unique<workflow::ExecutorRegistry>();
-  auto command_executor =
-      executors::command::create_task_executor(
-          *runtime_, config_.executors.command);
+  auto command_executor = executors::command::create_task_executor(
+      *runtime_, config_.executors.command);
   if (!command_executor) {
     return fail(command_executor.error());
   }
@@ -198,6 +206,16 @@ auto Application::rebuild_components() -> Result<void> {
       executor_registry_->register_executor(std::move(*command_executor));
   if (!command_registered) {
     return fail(command_registered.error());
+  }
+  auto transform_executor =
+      executors::transform::create_task_executor(*runtime_);
+  if (!transform_executor) {
+    return fail(transform_executor.error());
+  }
+  auto transform_registered =
+      executor_registry_->register_executor(std::move(*transform_executor));
+  if (!transform_registered) {
+    return fail(transform_registered.error());
   }
   if (config_.executors.http.enabled) {
     auto http_executor = executors::http::create_task_executor(
@@ -228,16 +246,16 @@ auto Application::rebuild_components() -> Result<void> {
     }
 
     workflow_control_plane_ = std::make_unique<workflow::WorkflowControlPlane>(
-        *executor_registry_,
-        workflow::PlanValidator{config_.admission}, stores->plans);
+        *executor_registry_, workflow::PlanValidator{config_.admission},
+        stores->plans);
     workflow_runtime_ = std::make_unique<workflow::WorkflowRuntime>(
         *runtime_, *executor_registry_, std::move(stores->artifacts),
         std::move(stores->evidence), stores->checkpoints,
         config_.storage.max_completed_runs);
 
-    auto restored = restore_workflow_state(
-        *workflow_control_plane_, *workflow_runtime_, *stores->plans,
-        *stores->checkpoints);
+    auto restored =
+        restore_workflow_state(*workflow_control_plane_, *workflow_runtime_,
+                               *stores->plans, *stores->checkpoints);
     if (!restored) {
       return restored;
     }
@@ -326,9 +344,7 @@ auto Application::shutdown_components() noexcept -> void {
   storage_lock_.reset();
 }
 
-auto Application::stop() noexcept -> void {
-  shutdown_components();
-}
+auto Application::stop() noexcept -> void { shutdown_components(); }
 
 auto Application::is_running() const noexcept -> bool {
   return running_.load(std::memory_order_acquire);
@@ -371,8 +387,7 @@ auto Application::workflow_runtime() const
   return workflow_runtime_.get();
 }
 
-auto Application::workflow_control_plane()
-    -> workflow::WorkflowControlPlane * {
+auto Application::workflow_control_plane() -> workflow::WorkflowControlPlane * {
   return workflow_control_plane_.get();
 }
 

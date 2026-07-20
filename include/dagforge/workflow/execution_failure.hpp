@@ -1,7 +1,7 @@
 #pragma once
 
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#include "dagforge/core/error.hpp"
+#include "dagforge/util/error_json.hpp"
 #include "dagforge/util/json.hpp"
 #include "dagforge/workflow/workflow_value.hpp"
 
@@ -50,17 +50,6 @@ make_execution_failure(Error kind, std::string code, std::string message,
 } // namespace dagforge::workflow
 
 namespace glz {
-
-template <> struct meta<dagforge::Error> {
-  static constexpr auto keys = dagforge::kErrorNames;
-  static constexpr auto value = [] {
-    std::array<dagforge::Error, dagforge::kErrorNames.size()> values{};
-    for (std::size_t index = 0; index < values.size(); ++index) {
-      values[index] = static_cast<dagforge::Error>(index);
-    }
-    return values;
-  }();
-};
 
 template <> struct meta<dagforge::workflow::FailureArtifact> {
   using T = dagforge::workflow::FailureArtifact;

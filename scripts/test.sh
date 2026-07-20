@@ -27,11 +27,12 @@ fi
 
 usage() {
   cat <<'EOF'
-usage: scripts/test.sh [unit|component|quick|integration|e2e|all] [gtest arguments...]
+usage: scripts/test.sh [unit|component|quick|jsonata|integration|e2e|all] [gtest arguments...]
 
   unit        module smoke test and fast isolated GoogleTests
   component   in-process Runtime, Workflow, HTTP, storage, and API tests
   quick       unit + component; default local verification
+  jsonata     pinned JSONata 2.2.2 official conformance corpus
   integration real Minijail tests and CLI subprocess scenarios
   e2e         real service, executor, sandbox, HTTP, and TLS workflows
   all         quick + integration + e2e
@@ -57,6 +58,10 @@ quick)
   build_targets='bin/exe{modules-foundation-smoke} bin/exe{unit-tests} bin/exe{component-tests}'
   verify_targets=(unit-tests component-tests)
   ;;
+jsonata)
+  build_targets='bin/exe{jsonata-conformance}'
+  verify_targets=()
+  ;;
 integration)
   build_targets='bin/exe{integration-tests} bin/exe{dagforge}'
   verify_targets=(integration-tests)
@@ -66,7 +71,7 @@ e2e)
   verify_targets=()
   ;;
 all)
-  build_targets='bin/exe{modules-foundation-smoke} bin/exe{unit-tests} bin/exe{component-tests} bin/exe{integration-tests} bin/exe{dagforge}'
+  build_targets='bin/exe{modules-foundation-smoke} bin/exe{unit-tests} bin/exe{component-tests} bin/exe{jsonata-conformance} bin/exe{integration-tests} bin/exe{dagforge}'
   verify_targets=(unit-tests component-tests integration-tests)
   ;;
 -h|--help|help)
@@ -121,6 +126,14 @@ run_component() {
   run_binary component-tests "${gtest_args[@]}"
 }
 
+run_jsonata() {
+  local suite="${DAGFORGE_JSONATA_SUITE:-}"
+  if [[ -z "$suite" ]]; then
+    suite=$(bash "${repo_root}/scripts/fetch-jsonata-conformance.sh")
+  fi
+  run_binary jsonata-conformance "$suite"
+}
+
 run_integration() {
   run_binary integration-tests "${gtest_args[@]}"
   printf '\n==> CLI scenarios\n'
@@ -135,6 +148,12 @@ run_e2e() {
     --binary "${bin_dir}/dagforge" \
     --benchmark-runs 1
 }
+
+case "$mode" in
+jsonata|integration|all)
+  require_command git
+  ;;
+esac
 
 case "$mode" in
 integration|all)
@@ -203,6 +222,9 @@ quick)
   run_unit
   run_component
   ;;
+jsonata)
+  run_jsonata
+  ;;
 integration)
   run_integration
   ;;
@@ -212,6 +234,7 @@ e2e)
 all)
   run_unit
   run_component
+  run_jsonata
   run_integration
   run_e2e
   ;;

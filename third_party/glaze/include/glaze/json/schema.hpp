@@ -18,6 +18,7 @@
 #include "glaze/api/tuplet.hpp"
 #include "glaze/api/type_support.hpp"
 #include "glaze/core/custom_meta.hpp"
+#include "glaze/core/write_wrappers.hpp"
 #include "glaze/json/wrappers.hpp"
 #include "glaze/json/write.hpp"
 
@@ -377,6 +378,38 @@ namespace glz
 
    namespace detail
    {
+      // Resolve the JSON-facing type of transparent wrappers before generating
+      // object member schemas. In particular, custom_t names may contain
+      // compiler-specific source locations and their wrapper type does not
+      // describe the value written to JSON.
+      template <class T>
+      struct schema_value_type
+      {
+         using V = std::remove_cvref_t<T>;
+
+         static consteval auto resolve()
+         {
+            if constexpr (is_specialization_v<V, custom_t>) {
+               using getter_type = typename custom_getter_result<V>::type;
+               return std::type_identity<typename schema_value_type<getter_type>::type>{};
+            }
+            else if constexpr (custom_read_input_type<V>::has_custom) {
+               return std::type_identity<typename custom_read_input_type<V>::type>{};
+            }
+            else if constexpr (glaze_value_t<V> && !custom_write<V>) {
+               return std::type_identity<typename schema_value_type<remove_meta_wrapper_t<V>>::type>{};
+            }
+            else {
+               return std::type_identity<V>{};
+            }
+         }
+
+         using type = typename decltype(resolve())::type;
+      };
+
+      template <class T>
+      using schema_value_type_t = typename schema_value_type<T>::type;
+
       // Merge annotation/validation metadata from src into dst (non-null src fields overwrite dst).
       // Does NOT merge structural keywords (type, ref, properties, items, etc.).
       // Used for applying user json_schema metadata and for preserving sibling keywords during $ref inlining.
@@ -513,6 +546,17 @@ namespace glz
          }
       };
 
+      template <is_duration T>
+      struct to_json_schema<T>
+      {
+         template <auto Opts>
+         static void op(auto& s, auto& defs)
+         {
+            using rep = typename std::remove_cvref_t<T>::rep;
+            to_json_schema<rep>::template op<Opts>(s, defs);
+         }
+      };
+
       template <class T>
          requires str_t<T> || char_t<T>
       struct to_json_schema<T>
@@ -535,7 +579,7 @@ namespace glz
          }
       };
 
-      template <glaze_enum_t T>
+      template <is_named_enum T>
       struct to_json_schema<T>
       {
          template <auto Opts>
@@ -998,6 +1042,7 @@ namespace glz
             s.properties = std::map<sv, schema, std::less<>>();
             for_each<N>([&]<auto I>() {
                using val_t = std::decay_t<refl_t<T, I>>;
+               using schema_val_t = schema_value_type_t<val_t>;
 
                static constexpr sv key = reflect<T>::keys[I];
                if constexpr (requires_key<T, val_t, Opts>(key)) {
@@ -1044,14 +1089,14 @@ namespace glz
                }
 
                // Determine if this type can be inlined (bool, string, or nullable versions)
-               using inner_val_t = unwrap_nullable_t<val_t>;
+               using inner_val_t = unwrap_nullable_t<schema_val_t>;
                constexpr bool can_inline = std::same_as<inner_val_t, bool> || str_t<inner_val_t> || char_t<inner_val_t>;
 
                if constexpr (can_inline) {
                   if (!prop.ref) {
                      // Inline the type directly instead of using $defs/$ref
                      if constexpr (std::same_as<inner_val_t, bool>) {
-                        if constexpr (nullable_t<val_t>) {
+                        if constexpr (nullable_t<schema_val_t>) {
                            prop.type = std::vector<sv>{sv{"boolean"}, sv{"null"}};
                         }
                         else {
@@ -1059,7 +1104,7 @@ namespace glz
                         }
                      }
                      else {
-                        if constexpr (nullable_t<val_t>) {
+                        if constexpr (nullable_t<schema_val_t>) {
                            prop.type = std::vector<sv>{sv{"string"}, sv{"null"}};
                         }
                         else {
@@ -1069,13 +1114,13 @@ namespace glz
                   }
                   else {
                      // User explicitly set $ref via json_schema metadata, honor it
-                     auto& def = defs[name_v<val_t>];
+                     auto& def = defs[name_v<schema_val_t>];
                      if (!def.type) {
-                        to_json_schema<val_t>::template op<Opts>(def, defs);
+                        to_json_schema<schema_val_t>::template op<Opts>(def, defs);
                      }
                   }
                }
-               else if constexpr (nullable_t<val_t>) {
+               else if constexpr (nullable_t<schema_val_t>) {
                   // Canonicalize std::optional<T> (and other nullables) so the wrapper itself
                   // is never placed in $defs. Inner type T is referenced via anyOf + null.
                   validate_ref<name_v<inner_val_t>>();
@@ -1089,13 +1134,13 @@ namespace glz
                }
                else {
                   if (!prop.ref) {
-                     validate_ref<name_v<val_t>>();
-                     prop.ref = join_v<chars<"#/$defs/">, name_v<val_t>>;
+                     validate_ref<name_v<schema_val_t>>();
+                     prop.ref = join_v<chars<"#/$defs/">, name_v<schema_val_t>>;
                   }
 
-                  auto& def = defs[name_v<val_t>];
+                  auto& def = defs[name_v<schema_val_t>];
                   if (!def.type) {
-                     to_json_schema<val_t>::template op<Opts>(def, defs);
+                     to_json_schema<schema_val_t>::template op<Opts>(def, defs);
                   }
                }
 

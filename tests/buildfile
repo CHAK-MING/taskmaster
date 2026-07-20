@@ -1,10 +1,12 @@
 import foundation = ../src/lib{dagforge-foundation}
 import dagforge = ../src/lib{dagforge}
+import jsonata = ../src/lib{dagforge-jsonata}
 
 ./: ../bin/exe{modules-foundation-smoke} \
     ../bin/exe{unit-tests}               \
     ../bin/exe{component-tests}          \
     ../bin/exe{integration-tests}        \
+    ../bin/exe{jsonata-conformance}      \
     ../bin/exe{bench-core}
 
 exe{glaze-parser-fuzz}: cxx{glaze_parser_fuzz} $dagforge $foundation

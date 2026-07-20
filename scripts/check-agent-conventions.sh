@@ -80,19 +80,28 @@ report_matches \
   "exception-based integer parsing is forbidden; use util::parse_int<T>():" \
   'std::sto(i|l|ll|ul|ull|f|d|ld)[[:space:]]*\('
 
+# JSONata preserves standardized language diagnostics at its public seam, and
+# Workflow Plan admission preserves structured diagnostics for control-plane
+# clients. These exceptions must not spread beyond their owning headers.
 report_matches \
   "construct Result failures with fail(...), not std::unexpected:" \
   'std::unexpected' \
   --glob '!include/dagforge/core/error.hpp' \
   --glob '!include/dagforge/util/parse.hpp' \
-  --glob '!include/dagforge/util/json.hpp'
+  --glob '!include/dagforge/util/json.hpp' \
+  --glob '!include/dagforge/workflow/plan_diagnostic.hpp' \
+  --glob '!include/dagforge/jsonata/**' \
+  --glob '!src/dagforge/jsonata/**' \
+  --glob '!tests/jsonata_test.cpp'
 
 report_matches \
   "construct Result values with ok(...)/fail(...), not std::expected directly:" \
   'std::expected[[:space:]]*[<{]' \
   --glob '!include/dagforge/core/error.hpp' \
   --glob '!include/dagforge/workflow/task_executor.hpp' \
-  --glob '!include/dagforge/util/parse.hpp'
+  --glob '!include/dagforge/workflow/plan_diagnostic.hpp' \
+  --glob '!include/dagforge/util/parse.hpp' \
+  --glob '!include/dagforge/jsonata/**'
 
 report_matches \
   "Glaze read/write calls must stay behind DAGForge JSON wrappers:" \

@@ -15,6 +15,7 @@
 - Module graph：`bash scripts/check-module-graph.sh`
 - 测试布局：`python3 scripts/check-test-layout.py`
 - 快速验证：`bash scripts/test.sh quick`
+- JSONata 2.2.2 官方兼容语料：`bash scripts/test.sh jsonata`
 - 完整功能验证：`bash scripts/test.sh all`
 - Sanitizer 审计：`bash scripts/test-runtime-audit.sh`
 - Coverage：`bash scripts/test-coverage.sh`
@@ -23,6 +24,7 @@
 ## 风险匹配
 
 - 纯函数或 parser 修改必须有 focused unit test。
+- JSONata tokenizer、parser、evaluator、built-in 或 picture 语义修改必须运行固定 commit 的完整官方 conformance corpus。
 - 公共头、module、Result、JSON、ID、时间和错误域修改必须运行 foundation gate、module smoke 和相关 unit tests。
 - Runtime、shard、协程、取消和 shutdown 修改必须运行 component tests，并根据风险运行 ASAN、TSAN 或 UBSAN。
 - 持久化格式、恢复、Artifact、Evidence 或 Plan 修改必须覆盖损坏输入、版本、大小上限、原子提交和重启恢复。

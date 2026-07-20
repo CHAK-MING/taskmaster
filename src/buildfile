@@ -1,6 +1,6 @@
 import foundation = lib{dagforge-foundation}
 
-./: lib{dagforge}
+./: lib{dagforge} lib{dagforge-jsonata}
 
 intf_libs = -lboost_url
 
@@ -25,6 +25,24 @@ mxx{modules/*}:
   install.subdirs = true
 }
 
+lib{dagforge-jsonata}:                                           \
+  cxx{dagforge/jsonata/detail/model                              \
+      dagforge/jsonata/detail/json_adapter                       \
+      dagforge/jsonata/detail/signature                          \
+      dagforge/jsonata/detail/unicode                            \
+      dagforge/jsonata/detail/regex_adapter                      \
+      dagforge/jsonata/detail/datetime                           \
+      dagforge/jsonata/detail/lexer                              \
+      dagforge/jsonata/detail/parser                             \
+      dagforge/jsonata/detail/path_ast                           \
+      dagforge/jsonata/detail/evaluator                          \
+      dagforge/jsonata/detail/builtins                           \
+      dagforge/jsonata/program}                                  \
+  $foundation
+{
+  cxx.libs = -lpcre2-8
+}
+
 lib{dagforge}:                                                   \
   cxx{dagforge/core/shard                                         \
       dagforge/core/runtime                                       \
@@ -44,6 +62,7 @@ lib{dagforge}:                                                   \
       dagforge/workflow/runtime/execution_failure                 \
       dagforge/workflow/runtime/executor_registry                 \
       dagforge/workflow/planning/plan_compiler                    \
+      dagforge/workflow/planning/workflow_capability_catalog      \
       dagforge/workflow/storage/plan_store                        \
       dagforge/workflow/planning/plan_validator                   \
       dagforge/workflow/runtime/run_value_store                   \
@@ -60,6 +79,8 @@ lib{dagforge}:                                                   \
       dagforge/executors/command/executor                         \
       dagforge/executors/http/egress_policy                       \
       dagforge/executors/http/executor                            \
+      dagforge/executors/transform/detail/evaluation              \
+      dagforge/executors/transform/executor                       \
       dagforge/app/application                                    \
       dagforge/app/api/api_server                                 \
       dagforge/app/api/detail/http_metrics_registry               \
@@ -74,6 +95,7 @@ lib{dagforge}:                                                   \
       dagforge/util/daemon                                        \
       dagforge/util/log}                                          \
   $foundation                                                     \
+  lib{dagforge-jsonata}                                           \
   ../third_party/prometheus-cpp-core/cxx{check_names             \
       counter                                                     \
       detail_builder                                              \

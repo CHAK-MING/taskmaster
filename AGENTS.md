@@ -12,7 +12,7 @@
 
 ## 不可违反的规则
 
-- DAGForge 的产品兼容面是 CLI/JSON 和 HTTP API/JSON；`include/dagforge/**` 是仓库内部稳定接口，不构成外部 ABI 或通用 C++ SDK 承诺。
+- DAGForge 的对外接口集中在 CLI/JSON 和 HTTP API/JSON；是否进入已发布兼容面必须由用户或 ADR 明确标记。`include/dagforge/**` 是仓库内部接口，不构成外部 ABI 或通用 C++ SDK 承诺。
 - 项目最低标准是 C++23。优先使用标准库能力，第三方实现细节必须封装在项目拥有的 seam 后面，不得把 Abseil、Boost、Glaze 或实验性标准库类型泄漏到无关公共接口。
 - 普通失败使用 `Result<T>`、`ok(...)` 和 `fail(...)`；异步接口通常返回 `task<Result<T>>`。不得用异常表达预期失败，不得吞掉错误或把失败伪装成有效值。
 - JSON 统一经过 `dagforge/util/json.hpp`；稳定 wire model 使用 typed serde。解析负责输入形状，领域 invariant 由拥有该概念的 Validator、Compiler、Store 或 Runtime 检查。
@@ -21,7 +21,8 @@
 - shutdown 必须先停止接收新工作并 quiesce，再等待外部操作、持久化和回调收敛，最后 teardown Runtime 与底层资源。
 - 新公共头必须自包含、带 `#pragma once` 和 module-interface include guard，并通过严格独立编译与 module smoke。
 - 日志使用 `dagforge::log`，不得直接向 stdout/stderr 写第一方运行日志；敏感值、凭据、完整请求体和未筛选外部错误不得进入日志。
-- 持久化代码必须明确逻辑提交、物理清理和目录 durability 的区别；磁盘格式变化必须有版本、兼容策略和恢复测试。
+- 项目仍处于开发阶段。除非用户或 ADR 明确把某个格式、接口或行为标记为已发布兼容面，否则修改旧设计时必须直接替换并删除旧分支、fallback、迁移 DTO、双写和兼容测试；同步更新 fixtures、配置和文档，不为本地开发数据保留兼容技术债。
+- 持久化代码必须明确逻辑提交、物理清理和目录 durability 的区别；格式必须有明确版本、身份校验和恢复测试。开发阶段的不兼容变更直接更新当前格式并拒绝旧数据，不增加自动迁移层。
 - 不新增 `common`、`misc`、`helpers` 等杂物目录。只有能够集中真实知识、减少调用方复杂度并通过 deletion test 的 seam 才值得建立。
 - Markdown 自然段和列表项不按列宽手动换行。C++ 只由仓库根目录 `.clang-format` 格式化，不手工制造与格式器冲突的布局。
 

@@ -111,8 +111,8 @@ struct ApiEndpoint {
   return workflow::WorkflowPlanLoader::from_json(*text);
 }
 
-[[nodiscard]] auto offline_validation_config(
-    const workflow::WorkflowPlan &plan) -> config::SystemConfig {
+[[nodiscard]] auto offline_validation_config(const workflow::WorkflowPlan &plan)
+    -> config::SystemConfig {
   config::SystemConfig system_config;
   system_config.api.enabled = false;
   system_config.admission.allow_unlisted_executors = true;
@@ -192,9 +192,8 @@ struct ApiEndpoint {
     const auto port_text = endpoint.port();
     if (!port_text.empty()) {
       unsigned parsed_port = 0;
-      const auto [end, error] =
-          std::from_chars(port_text.data(), port_text.data() + port_text.size(),
-                          parsed_port);
+      const auto [end, error] = std::from_chars(
+          port_text.data(), port_text.data() + port_text.size(), parsed_port);
       if (error != std::errc{} || end != port_text.data() + port_text.size() ||
           parsed_port == 0 || parsed_port > 65535) {
         return fail(Error::InvalidArgument);
@@ -268,17 +267,18 @@ auto trim_ascii(std::string_view &value) -> void {
   }
   if (!request.body.empty() && !request.headers.contains("Content-Type")) {
     const auto body_view = request.body_as_string();
-    request.headers.set(
-        "Content-Type",
-        !options.content_type.empty()
-            ? options.content_type
-            : (is_valid_json(body_view) ? "application/json"
-                                        : "application/octet-stream"));
+    request.headers.set("Content-Type",
+                        !options.content_type.empty()
+                            ? options.content_type
+                            : (is_valid_json(body_view)
+                                   ? "application/json"
+                                   : "application/octet-stream"));
   }
   return ok(std::move(request));
 }
 
-auto send_api_request(ApiEndpoint endpoint, http::HttpClientConfig client_config,
+auto send_api_request(ApiEndpoint endpoint,
+                      http::HttpClientConfig client_config,
                       http::HttpRequest request)
     -> task<Result<http::HttpResponse>> {
   auto connected = endpoint.tls
@@ -312,8 +312,8 @@ auto send_api_request(ApiEndpoint endpoint, http::HttpClientConfig client_config
     return ok();
   }
   if (!response.body.empty()) {
-    const auto written = std::fwrite(response.body.data(), 1,
-                                     response.body.size(), stdout);
+    const auto written =
+        std::fwrite(response.body.data(), 1, response.body.size(), stdout);
     if (written != response.body.size()) {
       return fail(Error::FileOpenFailed);
     }
@@ -360,9 +360,8 @@ auto execute(const ValidateOptions &options) -> int {
     return 1;
   }
 
-  Application app{options.config_path.empty()
-                      ? offline_validation_config(*plan)
-                      : config::SystemConfig{}};
+  Application app{options.config_path.empty() ? offline_validation_config(*plan)
+                                              : config::SystemConfig{}};
   if (!options.config_path.empty()) {
     auto loaded = app.load_config(options.config_path);
     if (!loaded) {
@@ -380,7 +379,14 @@ auto execute(const ValidateOptions &options) -> int {
   }
   auto compiled = app.workflow_control_plane()->register_plan(std::move(*plan));
   if (!compiled) {
-    std::println(stderr, "Workflow rejected: {}", compiled.error().message());
+    auto diagnostic = serialize_json(compiled.error());
+    if (diagnostic) {
+      std::println(stderr, "{}", *diagnostic);
+    } else {
+      std::println(stderr, "Workflow rejected: code={} path={} message={}",
+                   compiled.error().code, compiled.error().path,
+                   compiled.error().message());
+    }
     return 1;
   }
   std::println("workflow_id={}", (*compiled)->workflow_id);
@@ -420,29 +426,28 @@ auto execute(const RunOptions &options) -> int {
     app.stop();
     return 1;
   }
-  auto registered = app.workflow_control_plane()->register_plan(std::move(*plan));
+  auto registered =
+      app.workflow_control_plane()->register_plan(std::move(*plan));
   if (!registered) {
-    std::println(stderr, "Workflow rejected: {}",
-                 registered.error().message());
+    std::println(stderr, "Workflow rejected: {}", registered.error().message());
     app.stop();
     return 1;
   }
   if (registered->durability_deferred) {
-    std::println(stderr,
-                 "Workflow Plan was registered but storage durability is deferred");
+    std::println(
+        stderr,
+        "Workflow Plan was registered but storage durability is deferred");
   }
 
   auto run = app.workflow_runtime()->start(
-      *registered,
-      workflow::TriggerEnvelope{
-          .workflow_id = (*registered)->workflow_id.clone(),
-          .source = "cli",
-          .event_type = "request",
-          .principal = workflow::Principal{.subject = "cli"},
-      });
+      *registered, workflow::TriggerEnvelope{
+                       .workflow_id = (*registered)->workflow_id.clone(),
+                       .source = "cli",
+                       .event_type = "request",
+                       .principal = workflow::Principal{.subject = "cli"},
+                   });
   if (!run) {
-    std::println(stderr, "Failed to start Workflow: {}",
-                 run.error().message());
+    std::println(stderr, "Failed to start Workflow: {}", run.error().message());
     app.stop();
     return 1;
   }

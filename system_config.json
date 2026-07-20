@@ -75,7 +75,7 @@
   },
   "admission": {
     "allow_unlisted_executors": false,
-    "allowed_executors": ["command"],
+    "allowed_executors": ["command", "transform"],
     "max_nodes": 256,
     "max_parallel_nodes": 32,
     "max_total_output_bytes": 67108864,

@@ -65,6 +65,40 @@ for tool in b bdep bpkg; do
   fi
 done
 
+if ! command -v pkg-config >/dev/null 2>&1; then
+  echo "missing required tool: pkg-config (needed for PCRE2)" >&2
+  exit 1
+fi
+if ! pkg-config --atleast-version=10.40 libpcre2-8; then
+  actual_pcre2=$(pkg-config --modversion libpcre2-8 2>/dev/null || printf 'unavailable')
+  echo "PCRE2 10.40 or newer is required; found: ${actual_pcre2}" >&2
+  exit 1
+fi
+pcre2_cflags=$(pkg-config --cflags libpcre2-8)
+pcre2_link_options=$(pkg-config --libs-only-L --libs-only-other libpcre2-8)
+if [[ -n "$pcre2_cflags" ]]; then
+  cxx_poptions="${cxx_poptions:+${cxx_poptions} }${pcre2_cflags}"
+fi
+if [[ -n "$pcre2_link_options" ]]; then
+  cc_loptions="${cc_loptions:+${cc_loptions} }${pcre2_link_options}"
+fi
+if ! printf '%s\n' \
+    '#define PCRE2_CODE_UNIT_WIDTH 8' \
+    '#include <pcre2.h>' \
+    'int main() {' \
+    '  auto *context = pcre2_match_context_create(nullptr);' \
+    '  if (context == nullptr) return 1;' \
+    '  pcre2_set_match_limit(context, 1);' \
+    '  pcre2_set_depth_limit(context, 1);' \
+    '  pcre2_set_heap_limit(context, 1);' \
+    '  pcre2_match_context_free(context);' \
+    '}' \
+    | "$compiler" -std=c++23 -x c++ -o /dev/null - \
+        $(pkg-config --cflags --libs libpcre2-8); then
+  echo "PCRE2 development headers or required limit APIs are unavailable" >&2
+  exit 1
+fi
+
 mkdir -p "$cfg_root"
 
 remove_generated_config_dir() {
@@ -158,6 +192,14 @@ else
   fi
   if [[ -n "$cc_coptions" ]]; then
     if ! set_output=$(bdep config set "$config_alias" "config.cc.coptions=${cc_coptions}" 2>&1 >/dev/null); then
+      if [[ "$set_output" != *"nothing to set"* ]]; then
+        printf '%s\n' "$set_output" >&2
+        exit 1
+      fi
+    fi
+  fi
+  if [[ -n "$cxx_poptions" ]]; then
+    if ! set_output=$(bdep config set "$config_alias" "config.cxx.poptions=${cxx_poptions}" 2>&1 >/dev/null); then
       if [[ "$set_output" != *"nothing to set"* ]]; then
         printf '%s\n' "$set_output" >&2
         exit 1

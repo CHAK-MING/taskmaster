@@ -11,13 +11,9 @@
 
 namespace dagforge::test {
 
-namespace {
-
 struct ParseFixture {
   int value{};
 };
-
-} // namespace
 
 TEST(ParseTest, ParsesIntegersWithoutLosingFailureClass) {
   auto parsed = util::parse_integer<int>("2a", 16);

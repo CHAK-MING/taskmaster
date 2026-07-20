@@ -16,19 +16,14 @@
     },
     {
       "id": "transform",
-      "executor": "command",
+      "executor": "transform",
       "inputs": [
         {"input": "message", "node": "produce", "port": "result"}
       ],
       "outputs": ["result"],
       "timeout_sec": 30,
       "config": {
-        "program": "/bin/sh",
-        "arguments": ["-c", "printf 'received:%s' \"$DAGFORGE_INPUT\""],
-        "env": [],
-        "input_env": [
-          {"input": "message", "environment": "DAGFORGE_INPUT"}
-        ]
+        "expression": "\"received:\" & $message"
       }
     },
     {

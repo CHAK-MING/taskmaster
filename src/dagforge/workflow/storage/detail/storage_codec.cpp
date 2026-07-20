@@ -151,21 +151,22 @@ auto decode_checkpoint(std::string_view json) -> Result<WorkflowCheckpoint> {
 auto validate_checkpoint(const WorkflowCheckpoint &checkpoint) -> Result<void> {
   auto validated_plan = PlanValidator{}.validate_model(checkpoint.plan);
   if (!validated_plan) {
-    return validated_plan;
+    return fail(validated_plan.error().error_code());
   }
   return detail::validate_checkpoint_model(checkpoint);
 }
 
 auto encode_stored_plan(const StoredPlan &plan) -> Result<std::string> {
-  if (plan.plan_id.empty() || plan.digest.empty()) {
+  if (plan.plan_id.empty() || plan.execution_digest.empty() ||
+      plan.source_digest.empty()) {
     return fail(Error::InvalidArgument);
   }
-  auto validated = PlanValidator{}.validate(plan.plan);
+  auto validated = PlanValidator{}.validate(plan.source_plan);
   if (!validated) {
-    return fail(validated.error());
+    return fail(validated.error().error_code());
   }
-  auto digest = PlanCompiler::digest(plan.plan);
-  if (!digest || *digest != plan.digest) {
+  auto source_digest = PlanCompiler::digest(plan.source_plan);
+  if (!source_digest || *source_digest != plan.source_digest) {
     return fail(Error::InvalidArgument);
   }
   return encode_envelope(kStoredPlanFormat, plan);
@@ -176,15 +177,16 @@ auto decode_stored_plan(std::string_view json) -> Result<StoredPlan> {
   if (!stored) {
     return fail(stored.error());
   }
-  if (stored->plan_id.empty() || stored->digest.empty()) {
+  if (stored->plan_id.empty() || stored->execution_digest.empty() ||
+      stored->source_digest.empty()) {
     return fail(Error::ParseError);
   }
-  auto validated = PlanValidator{}.validate(stored->plan);
+  auto validated = PlanValidator{}.validate(stored->source_plan);
   if (!validated) {
-    return fail(validated.error());
+    return fail(validated.error().error_code());
   }
-  auto digest = PlanCompiler::digest(stored->plan);
-  if (!digest || *digest != stored->digest) {
+  auto source_digest = PlanCompiler::digest(stored->source_plan);
+  if (!source_digest || *source_digest != stored->source_digest) {
     return fail(Error::ParseError);
   }
   return stored;

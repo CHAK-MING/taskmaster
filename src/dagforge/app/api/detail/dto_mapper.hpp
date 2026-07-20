@@ -5,6 +5,7 @@
 #include "dagforge/util/json.hpp"
 #include "dagforge/util/log.hpp"
 #include "dagforge/workflow/execution_failure.hpp"
+#include "dagforge/workflow/plan_diagnostic.hpp"
 
 #include <string>
 #include <string_view>
@@ -72,8 +73,8 @@ inline auto error_response(int code, std::string_view message)
     -> http::HttpResponse;
 
 template <typename T>
-inline auto typed_json_response(
-    const T &value, http::HttpStatus status = http::HttpStatus::Ok)
+inline auto typed_json_response(const T &value,
+                                http::HttpStatus status = http::HttpStatus::Ok)
     -> http::HttpResponse {
   auto serialized = serialize_json(value);
   if (!serialized) {
@@ -128,18 +129,51 @@ inline auto error_response(int code, std::string_view message)
   default:
     break;
   }
-  auto failure = workflow::make_execution_failure(
-      kind, std::move(stable_code), std::string{message});
+  auto failure = workflow::make_execution_failure(kind, std::move(stable_code),
+                                                  std::string{message});
   return typed_json_response(glz::obj{"error", failure},
                              static_cast<http::HttpStatus>(code));
 }
 
 inline auto result_error_response(const std::error_code &error)
     -> http::HttpResponse {
-  auto failure = workflow::make_execution_failure(
-      error, {}, error.message());
+  auto failure = workflow::make_execution_failure(error, {}, error.message());
   return typed_json_response(glz::obj{"error", failure},
                              status_from_error(error));
+}
+
+inline auto
+admission_status_from_diagnostic(const workflow::PlanDiagnostic &diagnostic)
+    -> http::HttpStatus {
+  if (diagnostic.code == "plan_persist_failed" ||
+      diagnostic.code == "plan_digest_failed" ||
+      diagnostic.code == "plan_digest_mismatch" ||
+      diagnostic.code == "executor_compiled_config_invalid" ||
+      diagnostic.code.ends_with("_encode_failed")) {
+    return http::HttpStatus::InternalServerError;
+  }
+  switch (diagnostic.kind) {
+  case Error::Unauthorized:
+  case Error::ReadOnly:
+    return http::HttpStatus::Forbidden;
+  case Error::InvalidArgument:
+  case Error::ParseError:
+  case Error::InvalidUrl:
+  case Error::NotFound:
+  case Error::AlreadyExists:
+  case Error::CycleDetected:
+  case Error::ResourceExhausted:
+  case Error::Unsupported:
+    return http::HttpStatus::BadRequest;
+  default:
+    return http::HttpStatus::InternalServerError;
+  }
+}
+
+inline auto plan_error_response(const workflow::PlanDiagnostic &diagnostic)
+    -> http::HttpResponse {
+  return typed_json_response(glz::obj{"error", diagnostic},
+                             admission_status_from_diagnostic(diagnostic));
 }
 
 } // namespace dagforge::api_detail

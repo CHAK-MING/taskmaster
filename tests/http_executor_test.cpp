@@ -54,10 +54,11 @@ auto compile_context(std::span<const workflow::InputBinding> inputs,
   return {.inputs = inputs, .outputs = outputs};
 }
 
-[[nodiscard]] auto execute_on_shard(
-    Runtime &runtime, const std::shared_ptr<workflow::ITaskExecutor> &executor,
-    workflow::TaskExecutionRequest request,
-    std::chrono::milliseconds timeout = std::chrono::seconds(3))
+[[nodiscard]] auto
+execute_on_shard(Runtime &runtime,
+                 const std::shared_ptr<workflow::ITaskExecutor> &executor,
+                 workflow::TaskExecutionRequest request,
+                 std::chrono::milliseconds timeout = std::chrono::seconds(3))
     -> workflow::TaskExecutionResult {
   auto completion =
       std::make_shared<std::promise<workflow::TaskExecutionResult>>();
@@ -73,8 +74,8 @@ auto compile_context(std::span<const workflow::InputBinding> inputs,
         };
         auto started = executor->start(std::move(request), std::move(sink));
         if (!started) {
-          completion->set_value(workflow::task_failed(
-              workflow::make_execution_failure(
+          completion->set_value(
+              workflow::task_failed(workflow::make_execution_failure(
                   started.error(), "executor_start_failed",
                   "HTTP executor rejected the start request")));
         }
@@ -90,9 +91,8 @@ auto compile_context(std::span<const workflow::InputBinding> inputs,
 [[nodiscard]] auto output_value(const workflow::ExecutorOutputs &outputs,
                                 std::string_view port)
     -> const workflow::WorkflowValue * {
-  const auto found = std::ranges::find_if(outputs, [&](const auto &entry) {
-    return entry.first == port;
-  });
+  const auto found = std::ranges::find_if(
+      outputs, [&](const auto &entry) { return entry.first == port; });
   return found == outputs.end() ? nullptr : &found->second;
 }
 
@@ -100,7 +100,8 @@ auto compile_context(std::span<const workflow::InputBinding> inputs,
 
 TEST(HttpEgressPolicyTest, CanonicalizesAndAuthorizesExactOrigins) {
   auto config = base_config();
-  config.allowed_origins = {"HTTPS://Example.COM", "https://[2001:db8::1]:8443"};
+  config.allowed_origins = {"HTTPS://Example.COM",
+                            "https://[2001:db8::1]:8443"};
   auto policy = detail::HttpEgressPolicy::create(std::move(config));
   ASSERT_TRUE(policy.has_value()) << policy.error().message();
 
@@ -134,7 +135,8 @@ TEST(HttpEgressPolicyTest, RejectsUnsafeOrAmbiguousOrigins) {
        }) {
     auto config = base_config();
     config.allowed_origins = {std::string{origin}};
-    EXPECT_FALSE(detail::HttpEgressPolicy::create(std::move(config)).has_value())
+    EXPECT_FALSE(
+        detail::HttpEgressPolicy::create(std::move(config)).has_value())
         << origin;
   }
 
@@ -203,13 +205,11 @@ TEST(HttpEgressPolicyTest, AppliesSpecialAddressDenialAndExplicitExceptions) {
   EXPECT_TRUE(policy->address_allowed(make_address("2606:4700:4700::1111")));
 
   for (std::string_view address : {
-           "0.0.0.0",       "10.0.0.1",      "100.64.0.1",
-           "169.254.1.1",   "172.16.0.1",    "192.0.2.1",
-           "192.168.1.1",   "198.18.0.1",    "198.51.100.1",
-           "203.0.113.1",   "224.0.0.1",     "240.0.0.1",
-           "::",            "::1",           "fe80::1",
-           "fec0::1",       "2001:db8::1",   "ff02::1",
-           "::ffff:10.0.0.1",
+           "0.0.0.0",      "10.0.0.1",    "100.64.0.1",      "169.254.1.1",
+           "172.16.0.1",   "192.0.2.1",   "192.168.1.1",     "198.18.0.1",
+           "198.51.100.1", "203.0.113.1", "224.0.0.1",       "240.0.0.1",
+           "::",           "::1",         "fe80::1",         "fec0::1",
+           "2001:db8::1",  "ff02::1",     "::ffff:10.0.0.1",
        }) {
     EXPECT_FALSE(policy->address_allowed(make_address(address))) << address;
   }
@@ -258,33 +258,34 @@ TEST(HttpTaskExecutorTest, CompilesSupportedMethodsAndCanonicalizesStatusList) {
   const std::array inputs{
       workflow::InputBinding{
           .input = WorkflowPortId{"payload"},
-          .source = workflow::OutputRef{
-              .node_id = WorkflowNodeId{"upstream"},
-              .port = WorkflowPortId{"result"},
-          },
+          .source =
+              workflow::OutputRef{
+                  .node_id = WorkflowNodeId{"upstream"},
+                  .port = WorkflowPortId{"result"},
+              },
       },
       workflow::InputBinding{
           .input = WorkflowPortId{"trace"},
-          .source = workflow::OutputRef{
-              .node_id = WorkflowNodeId{"upstream"},
-              .port = WorkflowPortId{"trace"},
-          },
+          .source =
+              workflow::OutputRef{
+                  .node_id = WorkflowNodeId{"upstream"},
+                  .port = WorkflowPortId{"trace"},
+              },
       },
   };
-  const std::array outputs{
-      WorkflowPortId{"status"}, WorkflowPortId{"body"},
-      WorkflowPortId{"headers"}, WorkflowPortId{"result"}};
+  const std::array outputs{WorkflowPortId{"status"}, WorkflowPortId{"body"},
+                           WorkflowPortId{"headers"}, WorkflowPortId{"result"}};
 
-  for (std::string_view method : {"GET", "POST", "PUT", "PATCH", "DELETE",
-                                  "OPTIONS", "HEAD"}) {
+  for (std::string_view method :
+       {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"}) {
     auto config = materialize(parse_payload(std::format(
         R"({{"method":"{}","url":"http://127.0.0.1:8080/path?x=1","headers":[{{"name":"X-Static","value":"value"}}],"input_headers":[{{"input":"trace","header":"X-Trace"}}],"accepted_statuses":[204,200]}})",
         method)));
     if (method != "GET" && method != "HEAD") {
       config["body_input"] = "payload";
     }
-    auto compiled = (*executor)->compile(
-        make_payload(config), compile_context(inputs, outputs));
+    auto compiled = (*executor)->compile(make_payload(config),
+                                         compile_context(inputs, outputs));
     ASSERT_TRUE(compiled.has_value())
         << method << ": " << compiled.error().message();
     const auto compiled_json = materialize(compiled->encoded());
@@ -307,14 +308,24 @@ TEST(HttpTaskExecutorTest, RejectsInvalidNodeContractsAndResourceOverruns) {
   const std::array inputs{
       workflow::InputBinding{
           .input = WorkflowPortId{"payload"},
-          .source = workflow::OutputRef{
-              .node_id = WorkflowNodeId{"upstream"},
-              .port = WorkflowPortId{"result"},
-          },
+          .source =
+              workflow::OutputRef{
+                  .node_id = WorkflowNodeId{"upstream"},
+                  .port = WorkflowPortId{"result"},
+              },
       },
   };
   const std::array valid_outputs{WorkflowPortId{"result"}};
   const auto context = compile_context(inputs, valid_outputs);
+
+  auto invalid_method = (*executor)->compile(
+      parse_payload(
+          R"({"method":"TRACE","url":"http://127.0.0.1:8080/","headers":[],"input_headers":[],"accepted_statuses":[]})"),
+      context);
+  ASSERT_FALSE(invalid_method.has_value());
+  EXPECT_EQ(invalid_method.error().kind, Error::InvalidArgument);
+  EXPECT_EQ(invalid_method.error().code, "http_method_invalid");
+  EXPECT_EQ(invalid_method.error().path, "/method");
 
   const auto expect_error = [&](std::string_view text, Error expected,
                                 workflow::ExecutorCompileContext ctx) {
@@ -326,9 +337,6 @@ TEST(HttpTaskExecutorTest, RejectsInvalidNodeContractsAndResourceOverruns) {
     expect_error(text, expected, context);
   };
 
-  expect_default_error(
-      R"({"method":"TRACE","url":"http://127.0.0.1:8080/","headers":[],"input_headers":[],"accepted_statuses":[]})",
-      Error::InvalidArgument);
   expect_default_error(
       R"({"method":"POST","url":"http://127.0.0.1:8080/","headers":[],"input_headers":[],"body":"x","body_input":"payload","accepted_statuses":[]})",
       Error::InvalidArgument);
@@ -357,15 +365,16 @@ TEST(HttpTaskExecutorTest, RejectsInvalidNodeContractsAndResourceOverruns) {
             R"({{"method":"POST","url":"http://127.0.0.1:8080/","headers":{},"input_headers":[],"accepted_statuses":[]}})",
             headers),
         headers.contains("Long-Header") ? Error::ResourceExhausted
-                                         : Error::InvalidArgument);
+                                        : Error::InvalidArgument);
   }
 
-  for (std::string_view bindings : {
-           R"([{"input":"","header":"X-Test"}])",
-           R"([{"input":"missing","header":"X-Test"}])",
-           R"([{"input":"payload","header":"Host"}])",
-           R"([{"input":"payload","header":"X-Test"},{"input":"payload","header":"x-test"}])",
-       }) {
+  for (
+      std::string_view bindings : {
+          R"([{"input":"","header":"X-Test"}])",
+          R"([{"input":"missing","header":"X-Test"}])",
+          R"([{"input":"payload","header":"Host"}])",
+          R"([{"input":"payload","header":"X-Test"},{"input":"payload","header":"x-test"}])",
+      }) {
     expect_default_error(
         std::format(
             R"({{"method":"POST","url":"http://127.0.0.1:8080/","headers":[],"input_headers":{},"accepted_statuses":[]}})",
@@ -440,16 +449,16 @@ TEST(HttpTaskExecutorTest, ExecutesLocalRequestsMapsOutputsAndReusesClients) {
   std::string observed_trace;
   std::string first_content_type;
   server.router().post(
-      "/echo", [&](::dagforge::http::HttpRequest request)
-                    -> task<::dagforge::http::HttpResponse> {
+      "/echo",
+      [&](::dagforge::http::HttpRequest request)
+          -> task<::dagforge::http::HttpResponse> {
         const auto request_index =
             request_count.fetch_add(1, std::memory_order_relaxed);
         {
           std::lock_guard lock(observation_mutex);
           observed_trace = request.header("X-Trace").value_or("");
           if (request_index == 0) {
-            first_content_type =
-                request.header("Content-Type").value_or("");
+            first_content_type = request.header("Content-Type").value_or("");
           }
         }
         ::dagforge::http::HttpResponse response;
@@ -471,9 +480,8 @@ TEST(HttpTaskExecutorTest, ExecutesLocalRequestsMapsOutputsAndReusesClients) {
       workflow::InputBinding{.input = WorkflowPortId{"payload"}},
       workflow::InputBinding{.input = WorkflowPortId{"trace"}},
   };
-  const std::array outputs{
-      WorkflowPortId{"status"}, WorkflowPortId{"body"},
-      WorkflowPortId{"headers"}, WorkflowPortId{"result"}};
+  const std::array outputs{WorkflowPortId{"status"}, WorkflowPortId{"body"},
+                           WorkflowPortId{"headers"}, WorkflowPortId{"result"}};
   auto compiled = (*executor)->compile(
       parse_payload(std::format(
           R"({{"method":"POST","url":"http://127.0.0.1:{}/echo","headers":[],"input_headers":[{{"input":"trace","header":"X-Trace"}}],"body_input":"payload","accepted_statuses":[201]}})",
@@ -490,8 +498,7 @@ TEST(HttpTaskExecutorTest, ExecutesLocalRequestsMapsOutputsAndReusesClients) {
                                  make_payload(object))},
                  {"trace", std::make_shared<const workflow::WorkflowValue>(
                                std::int64_t{42})}},
-      .outputs =
-          std::vector<WorkflowPortId>{outputs.begin(), outputs.end()},
+      .outputs = std::vector<WorkflowPortId>{outputs.begin(), outputs.end()},
       .timeout = std::chrono::seconds(2),
   };
   auto first_result = execute_on_shard(runtime, *executor, std::move(first));
@@ -514,10 +521,9 @@ TEST(HttpTaskExecutorTest, ExecutesLocalRequestsMapsOutputsAndReusesClients) {
       .config = *compiled,
       .inputs = {{"payload", std::make_shared<const workflow::WorkflowValue>(
                                  std::string{"plain"})},
-                 {"trace", std::make_shared<const workflow::WorkflowValue>(
-                               true)}},
-      .outputs =
-          std::vector<WorkflowPortId>{outputs.begin(), outputs.end()},
+                 {"trace",
+                  std::make_shared<const workflow::WorkflowValue>(true)}},
+      .outputs = std::vector<WorkflowPortId>{outputs.begin(), outputs.end()},
       .timeout = std::chrono::seconds(2),
   };
   auto second_result = execute_on_shard(runtime, *executor, std::move(second));
@@ -545,18 +551,19 @@ TEST(HttpTaskExecutorTest, MapsHttpStatusAndProtocolFailures) {
   ::dagforge::http::HttpServer server(runtime);
   const auto add_status_route = [&](std::string path,
                                     ::dagforge::http::HttpStatus status) {
-    server.router().get(
-      std::move(path), [status](::dagforge::http::HttpRequest)
-                             -> task<::dagforge::http::HttpResponse> {
-          ::dagforge::http::HttpResponse response;
-          response.status = status;
-          if (status == ::dagforge::http::HttpStatus::Unauthorized) {
-            response.set_header("Set-Cookie", "session=secret");
-            response.set_header("X-Trace", "trace-value");
-          }
-          response.set_body("status");
-          co_return response;
-        });
+    server.router().get(std::move(path),
+                        [status](::dagforge::http::HttpRequest)
+                            -> task<::dagforge::http::HttpResponse> {
+                          ::dagforge::http::HttpResponse response;
+                          response.status = status;
+                          if (status ==
+                              ::dagforge::http::HttpStatus::Unauthorized) {
+                            response.set_header("Set-Cookie", "session=secret");
+                            response.set_header("X-Trace", "trace-value");
+                          }
+                          response.set_body("status");
+                          co_return response;
+                        });
   };
   add_status_route("/unauthorized", ::dagforge::http::HttpStatus::Unauthorized);
   add_status_route("/forbidden", ::dagforge::http::HttpStatus::Forbidden);
@@ -564,13 +571,13 @@ TEST(HttpTaskExecutorTest, MapsHttpStatusAndProtocolFailures) {
   add_status_route("/rate", ::dagforge::http::HttpStatus::TooManyRequests);
   add_status_route("/server", ::dagforge::http::HttpStatus::ServiceUnavailable);
   add_status_route("/bad", ::dagforge::http::HttpStatus::BadRequest);
-  server.router().get(
-      "/invalid-utf8", [](::dagforge::http::HttpRequest)
-                           -> task<::dagforge::http::HttpResponse> {
-        ::dagforge::http::HttpResponse response;
-        response.body = {0xff, 0xfe};
-        co_return response;
-      });
+  server.router().get("/invalid-utf8",
+                      [](::dagforge::http::HttpRequest)
+                          -> task<::dagforge::http::HttpResponse> {
+                        ::dagforge::http::HttpResponse response;
+                        response.body = {0xff, 0xfe};
+                        co_return response;
+                      });
   ASSERT_TRUE(server.start("127.0.0.1", port, false).has_value());
 
   auto limits = executor_config();
@@ -588,8 +595,7 @@ TEST(HttpTaskExecutorTest, MapsHttpStatusAndProtocolFailures) {
     }
     JsonValue config = JsonValue::object_t{};
     config["method"] = "GET";
-    config["url"] =
-        std::format("http://127.0.0.1:{}{}", port, path);
+    config["url"] = std::format("http://127.0.0.1:{}{}", port, path);
     config["headers"] = JsonValue::array_t{};
     config["input_headers"] = JsonValue::array_t{};
     config["accepted_statuses"] = std::move(statuses);
@@ -598,16 +604,16 @@ TEST(HttpTaskExecutorTest, MapsHttpStatusAndProtocolFailures) {
     EXPECT_TRUE(compiled.has_value())
         << (compiled ? "" : compiled.error().message());
     if (!compiled) {
-      return workflow::TaskExecutionResult{workflow::task_failed(
-          workflow::make_execution_failure(
-              compiled.error(), "http_compile_failed",
+      return workflow::TaskExecutionResult{
+          workflow::task_failed(workflow::make_execution_failure(
+              compiled.error().error_code(), "http_compile_failed",
               "HTTP node configuration did not compile"))};
     }
     return execute_on_shard(
         runtime, *executor,
         workflow::TaskExecutionRequest{
-            .instance_id = InstanceId{std::string{"status"} +
-                                      std::string{path}},
+            .instance_id =
+                InstanceId{std::string{"status"} + std::string{path}},
             .config = std::move(*compiled),
             .outputs = {WorkflowPortId{"result"}},
             .timeout = std::chrono::seconds(2),
@@ -663,8 +669,7 @@ TEST(HttpTaskExecutorTest, MapsHttpStatusAndProtocolFailures) {
   ASSERT_TRUE(invalid_utf8_details["body_valid_utf8"].is_boolean());
   EXPECT_FALSE(invalid_utf8_details["body_valid_utf8"].get<bool>());
   auto accepted_missing = execute_path("/missing", {404});
-  ASSERT_TRUE(accepted_missing.has_value())
-      << accepted_missing.error().message;
+  ASSERT_TRUE(accepted_missing.has_value()) << accepted_missing.error().message;
   EXPECT_EQ(std::get<std::string>(*output_value(*accepted_missing, "result")),
             "status");
 
@@ -681,8 +686,9 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
   ASSERT_TRUE(runtime.start().has_value());
   ::dagforge::http::HttpServer server(runtime);
   server.router().get(
-      "/slow", [](::dagforge::http::HttpRequest)
-                    -> task<::dagforge::http::HttpResponse> {
+      "/slow",
+      [](::dagforge::http::HttpRequest)
+          -> task<::dagforge::http::HttpResponse> {
         auto sleep = co_await async_sleep(std::chrono::milliseconds(500));
         if (!sleep) {
           co_return ::dagforge::http::HttpResponse{
@@ -691,8 +697,9 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
         co_return ::dagforge::http::HttpResponse::ok().set_body("slow");
       });
   server.router().post(
-      "/body", [](::dagforge::http::HttpRequest request)
-                    -> task<::dagforge::http::HttpResponse> {
+      "/body",
+      [](::dagforge::http::HttpRequest request)
+          -> task<::dagforge::http::HttpResponse> {
         co_return ::dagforge::http::HttpResponse::ok().set_body(
             std::string{request.body_as_string()});
       });
@@ -758,10 +765,10 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
             .timeout = std::chrono::seconds(2),
         },
         {});
-    starts->set_value(Starts{.first = std::move(first),
-                             .duplicate = std::move(duplicate),
-                             .over_global_limit =
-                                 std::move(over_global_limit)});
+    starts->set_value(
+        Starts{.first = std::move(first),
+               .duplicate = std::move(duplicate),
+               .over_global_limit = std::move(over_global_limit)});
   });
   ASSERT_EQ(starts_future.wait_for(std::chrono::seconds(2)),
             std::future_status::ready);
@@ -794,58 +801,54 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
 
   const auto execute_inputs = [&](workflow::ExecutorInputs inputs,
                                   std::string instance) {
-    return execute_on_shard(
-        runtime, *executor,
-        workflow::TaskExecutionRequest{
-            .instance_id = InstanceId{std::move(instance)},
-            .config = *body_config,
-            .inputs = std::move(inputs),
-            .outputs = {WorkflowPortId{"result"}},
-            .timeout = std::chrono::seconds(2),
-        });
+    return execute_on_shard(runtime, *executor,
+                            workflow::TaskExecutionRequest{
+                                .instance_id = InstanceId{std::move(instance)},
+                                .config = *body_config,
+                                .inputs = std::move(inputs),
+                                .outputs = {WorkflowPortId{"result"}},
+                                .timeout = std::chrono::seconds(2),
+                            });
   };
   EXPECT_EQ(execute_inputs({}, "missing-inputs").error().kind,
+            Error::InvalidArgument);
+  EXPECT_EQ(execute_inputs(
+                {{"payload", std::make_shared<const workflow::WorkflowValue>(
+                                 workflow::ArtifactRef{
+                                     .artifact_id = ArtifactId{"artifact"}})},
+                 {"trace", std::make_shared<const workflow::WorkflowValue>(
+                               std::string{"safe"})}},
+                "artifact-body")
+                .error()
+                .kind,
+            Error::Unsupported);
+  EXPECT_EQ(execute_inputs(
+                {{"payload", std::make_shared<const workflow::WorkflowValue>(
+                                 std::string{"body"})},
+                 {"trace", std::make_shared<const workflow::WorkflowValue>(
+                               std::string{"bad\r\nheader"})}},
+                "unsafe-header")
+                .error()
+                .kind,
             Error::InvalidArgument);
   EXPECT_EQ(
       execute_inputs(
           {{"payload", std::make_shared<const workflow::WorkflowValue>(
-                           workflow::ArtifactRef{
-                               .artifact_id = ArtifactId{"artifact"}})},
-           {"trace", std::make_shared<const workflow::WorkflowValue>(
-                         std::string{"safe"})}},
-          "artifact-body")
-          .error()
-          .kind,
-      Error::Unsupported);
-  EXPECT_EQ(
-      execute_inputs(
-          {{"payload", std::make_shared<const workflow::WorkflowValue>(
-                           std::string{"body"})},
-           {"trace", std::make_shared<const workflow::WorkflowValue>(
-                         std::string{"bad\r\nheader"})}},
-          "unsafe-header")
-          .error()
-          .kind,
-      Error::InvalidArgument);
-  EXPECT_EQ(
-      execute_inputs(
-          {{"payload", std::make_shared<const workflow::WorkflowValue>(
                            std::string{"too-large"})},
-           {"trace", std::make_shared<const workflow::WorkflowValue>(
-                         1.5)}},
+           {"trace", std::make_shared<const workflow::WorkflowValue>(1.5)}},
           "oversized-body")
           .error()
           .kind,
       Error::ResourceExhausted);
 
-  auto timeout_result = execute_on_shard(
-      runtime, *executor,
-      workflow::TaskExecutionRequest{
-          .instance_id = InstanceId{"immediate-timeout"},
-          .config = *slow_config,
-          .outputs = {WorkflowPortId{"result"}},
-          .timeout = std::chrono::seconds(0),
-      });
+  auto timeout_result =
+      execute_on_shard(runtime, *executor,
+                       workflow::TaskExecutionRequest{
+                           .instance_id = InstanceId{"immediate-timeout"},
+                           .config = *slow_config,
+                           .outputs = {WorkflowPortId{"result"}},
+                           .timeout = std::chrono::seconds(0),
+                       });
   ASSERT_FALSE(timeout_result.has_value());
   EXPECT_EQ(timeout_result.error().kind, Error::Timeout);
   EXPECT_EQ(timeout_result.error().code, "http_timed_out");
@@ -855,26 +858,24 @@ TEST(HttpTaskExecutorTest, EnforcesActiveLimitsCancellationAndInputSafety) {
   auto quiesce_future = quiesce_completion->get_future();
   auto started_for_quiesce = std::make_shared<std::promise<Result<void>>>();
   auto started_future = started_for_quiesce->get_future();
-  runtime.post_to(
-      0, [executor = *executor, config = *slow_config, quiesce_completion,
-          started_for_quiesce]() mutable {
-        workflow::TaskExecutionSink sink{
-            .on_complete =
-                [quiesce_completion](
-                    const InstanceId &,
-                    workflow::TaskExecutionResult result) mutable {
-                  quiesce_completion->set_value(std::move(result));
-                },
-        };
-        started_for_quiesce->set_value(executor->start(
-            workflow::TaskExecutionRequest{
-                .instance_id = InstanceId{"quiesce-active"},
-                .config = std::move(config),
-                .outputs = {WorkflowPortId{"result"}},
-                .timeout = std::chrono::seconds(2),
+  runtime.post_to(0, [executor = *executor, config = *slow_config,
+                      quiesce_completion, started_for_quiesce]() mutable {
+    workflow::TaskExecutionSink sink{
+        .on_complete =
+            [quiesce_completion](const InstanceId &,
+                                 workflow::TaskExecutionResult result) mutable {
+              quiesce_completion->set_value(std::move(result));
             },
-            std::move(sink)));
-      });
+    };
+    started_for_quiesce->set_value(executor->start(
+        workflow::TaskExecutionRequest{
+            .instance_id = InstanceId{"quiesce-active"},
+            .config = std::move(config),
+            .outputs = {WorkflowPortId{"result"}},
+            .timeout = std::chrono::seconds(2),
+        },
+        std::move(sink)));
+  });
   ASSERT_EQ(started_future.wait_for(std::chrono::seconds(2)),
             std::future_status::ready);
   ASSERT_TRUE(started_future.get().has_value());
@@ -900,34 +901,38 @@ TEST(HttpTaskExecutorTest, MapsAllSupportedInputValueTypesAtStart) {
   const std::array inputs{
       workflow::InputBinding{
           .input = WorkflowPortId{"payload"},
-          .source = workflow::OutputRef{
-              .node_id = WorkflowNodeId{"upstream"},
-              .port = WorkflowPortId{"result"},
-          },
+          .source =
+              workflow::OutputRef{
+                  .node_id = WorkflowNodeId{"upstream"},
+                  .port = WorkflowPortId{"result"},
+              },
       },
   };
   const std::array outputs{WorkflowPortId{"result"}};
   auto compiled = (*executor)->compile(
-      parse_payload(R"({"method":"POST","url":"http://127.0.0.1:8080/","headers":[],"input_headers":[],"body_input":"payload","accepted_statuses":[]})"),
+      parse_payload(
+          R"({"method":"POST","url":"http://127.0.0.1:8080/","headers":[],"input_headers":[],"body_input":"payload","accepted_statuses":[]})"),
       compile_context(inputs, outputs));
   ASSERT_TRUE(compiled.has_value()) << compiled.error().message();
 
-  const auto start_value = [&](std::string_view id, workflow::WorkflowValue value) {
+  const auto start_value = [&](std::string_view id,
+                               workflow::WorkflowValue value) {
     auto result = std::make_shared<std::promise<Result<void>>>();
     auto future = result->get_future();
-    runtime.post_to(
-        0, [executor = *executor, config = *compiled,
-            id = std::string{id}, value = std::move(value), result]() mutable {
-          workflow::TaskExecutionRequest request{
-              .instance_id = InstanceId{id},
-              .config = std::move(config),
-              .inputs = {{"payload", std::make_shared<const workflow::WorkflowValue>(
-                                         std::move(value))}},
-              .outputs = {WorkflowPortId{"result"}},
-              .timeout = std::chrono::seconds(1),
-          };
-          result->set_value(executor->start(std::move(request), {}));
-        });
+    runtime.post_to(0, [executor = *executor, config = *compiled,
+                        id = std::string{id}, value = std::move(value),
+                        result]() mutable {
+      workflow::TaskExecutionRequest request{
+          .instance_id = InstanceId{id},
+          .config = std::move(config),
+          .inputs = {{"payload",
+                      std::make_shared<const workflow::WorkflowValue>(
+                          std::move(value))}},
+          .outputs = {WorkflowPortId{"result"}},
+          .timeout = std::chrono::seconds(1),
+      };
+      result->set_value(executor->start(std::move(request), {}));
+    });
     EXPECT_EQ(future.wait_for(std::chrono::seconds(2)),
               std::future_status::ready);
     return future.get();
@@ -943,8 +948,7 @@ TEST(HttpTaskExecutorTest, MapsAllSupportedInputValueTypesAtStart) {
   EXPECT_TRUE(start_value("json", make_payload(object)).has_value());
 
   auto artifact = start_value(
-      "artifact",
-      workflow::ArtifactRef{.artifact_id = ArtifactId{"artifact"}});
+      "artifact", workflow::ArtifactRef{.artifact_id = ArtifactId{"artifact"}});
   ASSERT_FALSE(artifact.has_value());
   EXPECT_EQ(artifact.error(), make_error_code(Error::Unsupported));
 

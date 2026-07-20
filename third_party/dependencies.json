@@ -1,6 +1,30 @@
 {
   "schema_version": 1,
-  "as_of": "2026-07-13",
+  "as_of": "2026-07-20",
+  "system_dependencies": [
+    {
+      "name": "PCRE2 8-bit library",
+      "minimum_version": "10.40",
+      "pkg_config": "libpcre2-8",
+      "purpose": "Private regular-expression engine for libdagforge-jsonata",
+      "license": "BSD-3-Clause-Cambridge",
+      "license_path": "third_party/pcre2/LICENSE"
+    }
+  ],
+  "reference_dependencies": [
+    {
+      "name": "JSONata reference implementation and conformance suite",
+      "version": "2.2.2",
+      "upstream_tag": "v2.2.2",
+      "upstream_commit": "6c7e95fdbf4405a1e741852a7cd8cd985b4305bb",
+      "source_url": "https://github.com/jsonata-js/jsonata/tree/v2.2.2",
+      "purpose": "Normative behavior oracle and language-neutral conformance fixtures for libdagforge-jsonata",
+      "vendored_content": "license and attribution only; fixtures are fetched at the pinned commit",
+      "license": "MIT",
+      "license_path": "third_party/jsonata/LICENSE",
+      "fetch_script": "scripts/fetch-jsonata-conformance.sh"
+    }
+  ],
   "vendored_dependencies": [
     {
       "name": "glaze",
@@ -10,9 +34,12 @@
       "source_url": "https://github.com/stephenberry/glaze/releases/tag/v7.8.4",
       "vendored_path": "third_party/glaze",
       "vendored_content": "include tree and license",
-      "tree_sha256": "24bf87d23fa1f7d9da1b8a5eec477331bce84742ab5c2da866ee4ba1e53cef6a",
+      "tree_sha256": "dc723668a1eff74072e2f747fcf071f37c9f9964214e2ad542f05b5c48384b36",
       "license": "MIT",
       "license_path": "third_party/glaze/LICENSE",
+      "local_patches": [
+        "Generate JSON Schema from the JSON-facing type of custom and mimic wrappers, recognize named enums, and represent chrono durations as their numeric count type."
+      ],
       "update_policy": "Track the latest compatible 7.x patch release; parser safety fixes are highest priority."
     },
     {

@@ -131,11 +131,11 @@ TEST(ApiTest, ApplicationRestoresPersistentCheckpointOnStart) {
   ASSERT_TRUE(restored.has_value()) << restored.error().message();
   EXPECT_EQ((*restored)->state, workflow::RunState::Succeeded);
   auto value = sync_wait_on_runtime(
-      app.runtime(), app.workflow_runtime()->output(
-                         WorkflowRunId{"persisted-run"},
-                         workflow::OutputRef{
-                             .node_id = WorkflowNodeId{"command"},
-                             .port = WorkflowPortId{"result"}}));
+      app.runtime(),
+      app.workflow_runtime()->output(
+          WorkflowRunId{"persisted-run"},
+          workflow::OutputRef{.node_id = WorkflowNodeId{"command"},
+                              .port = WorkflowPortId{"result"}}));
   ASSERT_TRUE(value.has_value()) << value.error().message();
   EXPECT_EQ(std::get<std::string>(**value), "restored-value");
   app.stop();
@@ -154,7 +154,9 @@ TEST(ApiTest, ApplicationRestoresPlanCatalogWithoutRunCheckpoint) {
     config.storage.enabled = true;
     config.storage.directory = root.string();
     config.admission.allowed_executors = {"command"};
-    config.executors.command.policy.allowed_programs = {"/bin/true"};
+    config.executors.command.policy.allow_unlisted_programs = false;
+    config.executors.command.policy.programs = {
+        {.name = "true-tool", .path = "/bin/true"}};
     return config;
   };
 
@@ -165,7 +167,7 @@ TEST(ApiTest, ApplicationRestoresPlanCatalogWithoutRunCheckpoint) {
     auto plan = workflow::WorkflowPlanLoader::from_json(R"({
       "workflow_id":"catalog-flow","schema_version":1,
       "nodes":[{"id":"command","executor":"command",
-        "config":{"program":"/bin/true","arguments":[],"env":[],"input_env":[]},
+        "config":{"program":"true-tool","arguments":[],"env":[],"input_env":[]},
         "outputs":["result"]}]
     })");
     ASSERT_TRUE(plan.has_value()) << plan.error().message();
@@ -176,8 +178,8 @@ TEST(ApiTest, ApplicationRestoresPlanCatalogWithoutRunCheckpoint) {
     app.stop();
   }
 
-  EXPECT_TRUE(std::filesystem::exists(root / "plans" /
-                                      (plan_id.str() + ".json")));
+  EXPECT_TRUE(
+      std::filesystem::exists(root / "plans" / (plan_id.str() + ".json")));
   EXPECT_FALSE(std::filesystem::exists(root / "runs"));
 
   Application restored(make_config());
@@ -185,8 +187,17 @@ TEST(ApiTest, ApplicationRestoresPlanCatalogWithoutRunCheckpoint) {
   auto by_id = restored.workflow_control_plane()->get_plan(plan_id);
   ASSERT_TRUE(by_id.has_value()) << by_id.error().message();
   EXPECT_EQ((*by_id)->workflow_id, WorkflowId{"catalog-flow"});
-  auto latest = restored.workflow_control_plane()->get_latest(
-      WorkflowId{"catalog-flow"});
+  EXPECT_EQ(dagforge::test::materialize(
+                workflow::source_plan(**by_id).nodes.front().config)["program"]
+                .as<std::string>(),
+            "true-tool");
+  EXPECT_EQ(
+      dagforge::test::materialize(
+          workflow::compiled_plan(**by_id).nodes.front().config)["program"]
+          .as<std::string>(),
+      std::filesystem::canonical("/bin/true").string());
+  auto latest =
+      restored.workflow_control_plane()->get_latest(WorkflowId{"catalog-flow"});
   ASSERT_TRUE(latest.has_value()) << latest.error().message();
   EXPECT_EQ((*latest)->plan_id, plan_id);
   restored.stop();
@@ -261,9 +272,9 @@ TEST(ApiTest, ApplicationRejectsCorruptOrOversizedStorageAtStartup) {
 }
 
 TEST(ApiTest, ApplicationReconcilesArtifactDebtAndRejectsInvalidRoot) {
-  const auto root = std::filesystem::temp_directory_path() /
-                    std::format("dagforge-app-artifact-reconcile-{}",
-                                ::getpid());
+  const auto root =
+      std::filesystem::temp_directory_path() /
+      std::format("dagforge-app-artifact-reconcile-{}", ::getpid());
   std::error_code error;
   std::filesystem::remove_all(root, error);
   std::filesystem::create_directories(root / "artifacts", error);
@@ -351,11 +362,10 @@ TEST(ApiTest, PersistentStorageRejectsUntrustedRootAndLockPermissions) {
 
   std::filesystem::create_directories(root, error);
   ASSERT_FALSE(error);
-  std::filesystem::permissions(
-      root,
-      std::filesystem::perms::owner_all |
-          std::filesystem::perms::group_write,
-      std::filesystem::perm_options::replace, error);
+  std::filesystem::permissions(root,
+                               std::filesystem::perms::owner_all |
+                                   std::filesystem::perms::group_write,
+                               std::filesystem::perm_options::replace, error);
   ASSERT_FALSE(error);
   Application unsafe_root(make_config());
   auto root_result = unsafe_root.init();
@@ -370,12 +380,11 @@ TEST(ApiTest, PersistentStorageRejectsUntrustedRootAndLockPermissions) {
     std::ofstream lock(lock_path);
     lock << "stale\n";
   }
-  std::filesystem::permissions(
-      lock_path,
-      std::filesystem::perms::owner_read |
-          std::filesystem::perms::owner_write |
-          std::filesystem::perms::group_write,
-      std::filesystem::perm_options::replace, error);
+  std::filesystem::permissions(lock_path,
+                               std::filesystem::perms::owner_read |
+                                   std::filesystem::perms::owner_write |
+                                   std::filesystem::perms::group_write,
+                               std::filesystem::perm_options::replace, error);
   ASSERT_FALSE(error);
   Application unsafe_lock(make_config());
   auto lock_result = unsafe_lock.init();
@@ -567,8 +576,7 @@ TEST(ApiTest, AccessPolicyAuthenticatesAndLimitsRequests) {
   SystemConfig config;
   config.api.enabled = false;
   config.admission.allowed_executors = {"command"};
-  config.executors.command.policy.allowed_programs = {"/bin/true",
-                                                       "/bin/echo"};
+  config.executors.command.policy.allowed_programs = {"/bin/true", "/bin/echo"};
   Application app(std::move(config));
   ASSERT_TRUE(app.start().has_value());
 
@@ -589,8 +597,8 @@ TEST(ApiTest, AccessPolicyAuthenticatesAndLimitsRequests) {
       [](http::HttpRequest) -> task<http::HttpResponse> {
         co_return http::HttpResponse::ok();
       });
-  const auto invoke = [&](http::HttpRequest request)
-      -> task<Result<http::HttpResponse>> {
+  const auto invoke =
+      [&](http::HttpRequest request) -> task<Result<http::HttpResponse>> {
     co_return ok(co_await handler(std::move(request)));
   };
 
@@ -645,8 +653,7 @@ TEST(ApiTest, MissingConfiguredBearerTokenPreventsStart) {
 }
 
 TEST(ApiTest, ApplicationRollsBackRestoredWorkflowWhenApiStartFails) {
-  constexpr auto *kTokenEnvironment =
-      "DAGFORGE_TEST_PARTIAL_START_TOKEN";
+  constexpr auto *kTokenEnvironment = "DAGFORGE_TEST_PARTIAL_START_TOKEN";
   ::unsetenv(kTokenEnvironment);
   const auto root = std::filesystem::temp_directory_path() /
                     std::format("dagforge-partial-start-{}", ::getpid());
@@ -767,12 +774,12 @@ TEST(ApiTest, SystemRoutesReportHealthStatusAndMetrics) {
   EXPECT_EQ(status_body->get_object().at("runtime").as<std::string>(),
             "running");
   EXPECT_TRUE(status_body->get_object().at("workflow_enabled").get<bool>());
-  EXPECT_EQ(status_body->get_object()
-                .at("active_workflow_runs")
-                .as<std::int64_t>(),
-            0);
+  EXPECT_EQ(
+      status_body->get_object().at("active_workflow_runs").as<std::int64_t>(),
+      0);
   EXPECT_GT(status_body->get_object().at("shards").as<std::int64_t>(), 0);
-  EXPECT_FALSE(status_body->get_object().at("timestamp").as<std::string>().empty());
+  EXPECT_FALSE(
+      status_body->get_object().at("timestamp").as<std::string>().empty());
 
   auto prometheus = invoke("/metrics");
   ASSERT_TRUE(prometheus.has_value());
@@ -787,8 +794,7 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
   SystemConfig config;
   config.api.enabled = false;
   config.admission.allowed_executors = {"command"};
-  config.executors.command.policy.allowed_programs = {"/bin/true",
-                                                       "/bin/echo"};
+  config.executors.command.policy.allowed_programs = {"/bin/true", "/bin/echo"};
   Application app(std::move(config));
   ASSERT_TRUE(app.start().has_value());
 
@@ -802,13 +808,13 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
       .http_metrics = metrics,
   };
   api_detail::register_workflow_routes(context);
-  const auto invoke = [&](http::HttpRequest request)
-      -> task<Result<http::HttpResponse>> {
+  const auto invoke =
+      [&](http::HttpRequest request) -> task<Result<http::HttpResponse>> {
     co_return ok(co_await server.router().route(std::move(request)));
   };
-  const auto register_plan = [&](std::string_view workflow,
-                                 std::string_view program)
-      -> Result<std::string> {
+  const auto register_plan =
+      [&](std::string_view workflow,
+          std::string_view program) -> Result<std::string> {
     http::HttpRequest request;
     request.method = http::HttpMethod::POST;
     request.path = "/api/v1/workflows/plans";
@@ -819,14 +825,17 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
     auto response =
         sync_wait_on_runtime(app.runtime(), invoke(std::move(request)));
     if (!response || response->status != http::HttpStatus::Created) {
+      if (response) {
+        ADD_FAILURE() << "Plan registration failed: "
+                      << response_text(*response);
+      }
       return fail(Error::Unknown);
     }
     auto parsed = parse_json(response_text(*response));
     if (!parsed || !parsed->is_object()) {
       return fail(Error::ParseError);
     }
-    const auto durability =
-        parsed->get_object().find("durability_deferred");
+    const auto durability = parsed->get_object().find("durability_deferred");
     if (durability == parsed->get_object().end() ||
         !durability->second.is_boolean() || durability->second.get<bool>()) {
       return fail(Error::ParseError);
@@ -838,6 +847,59 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
     return ok(it->second.as<std::string>());
   };
 
+  http::HttpRequest capability_request;
+  capability_request.method = http::HttpMethod::GET;
+  capability_request.path = "/api/v1/capabilities";
+  auto capability_response = sync_wait_on_runtime(
+      app.runtime(), invoke(std::move(capability_request)));
+  ASSERT_TRUE(capability_response.has_value());
+  ASSERT_EQ(capability_response->status, http::HttpStatus::Ok);
+  const auto capability_json = response_text(*capability_response);
+  EXPECT_EQ(capability_json.find("/bin/"), std::string::npos);
+  EXPECT_EQ(capability_json.find("tls_client_key_file"), std::string::npos);
+  EXPECT_EQ(capability_json.find("allowed_ip_cidrs"), std::string::npos);
+  auto capability_body = parse_json(capability_json);
+  ASSERT_TRUE(capability_body.has_value());
+  const auto &capability_object = capability_body->get_object();
+  EXPECT_EQ(
+      capability_object.at("capability_schema_version").as<std::int64_t>(), 1);
+  EXPECT_EQ(capability_object.at("workflow_schema_version").as<std::int64_t>(),
+            1);
+  EXPECT_TRUE(capability_object.at("workflow_plan_schema").is_object());
+  const auto &executor_capabilities =
+      capability_object.at("executors").get_array();
+  ASSERT_EQ(executor_capabilities.size(), 2U);
+  const auto &enabled_executors =
+      capability_object.at("enabled_executors").get_array();
+  ASSERT_EQ(enabled_executors.size(), 2U);
+  EXPECT_EQ(enabled_executors[0].as<std::string>(), "command");
+  EXPECT_EQ(enabled_executors[1].as<std::string>(), "transform");
+  const auto &allowed_executors =
+      capability_object.at("allowed_executors").get_array();
+  ASSERT_EQ(allowed_executors.size(), 1U);
+  EXPECT_EQ(allowed_executors[0].as<std::string>(), "command");
+  const auto command_capability =
+      std::ranges::find_if(executor_capabilities, [](const JsonValue &value) {
+        return value.get_object().at("type").as<std::string>() == "command";
+      });
+  ASSERT_NE(command_capability, executor_capabilities.end());
+  auto command_schema =
+      serialize_json(command_capability->get_object().at("config_schema"));
+  ASSERT_TRUE(command_schema.has_value()) << command_schema.error().message();
+  EXPECT_NE(command_schema->find("program"), std::string::npos);
+  EXPECT_NE(command_schema->find("arguments"), std::string::npos);
+  EXPECT_NE(command_schema->find("input_env"), std::string::npos);
+  const auto transform_capability =
+      std::ranges::find_if(executor_capabilities, [](const JsonValue &value) {
+        return value.get_object().at("type").as<std::string>() == "transform";
+      });
+  ASSERT_NE(transform_capability, executor_capabilities.end());
+  auto transform_schema =
+      serialize_json(transform_capability->get_object().at("config_schema"));
+  ASSERT_TRUE(transform_schema.has_value())
+      << transform_schema.error().message();
+  EXPECT_NE(transform_schema->find("expression"), std::string::npos);
+
   auto first_plan = register_plan("api-flow", "/bin/true");
   auto second_plan = register_plan("api-flow", "/bin/echo");
   ASSERT_TRUE(first_plan.has_value());
@@ -845,8 +907,7 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
 
   http::HttpRequest get_plan;
   get_plan.method = http::HttpMethod::GET;
-  get_plan.path =
-      std::format("/api/v1/workflows/plans/{}", first_plan.value());
+  get_plan.path = std::format("/api/v1/workflows/plans/{}", first_plan.value());
   auto fetched_plan =
       sync_wait_on_runtime(app.runtime(), invoke(std::move(get_plan)));
   ASSERT_TRUE(fetched_plan.has_value());
@@ -859,6 +920,20 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
                 .at("workflow_id")
                 .as<std::string>(),
             "api-flow");
+  EXPECT_EQ(fetched_plan_body->get_object()
+                .at("plan")
+                .get_object()
+                .at("nodes")
+                .get_array()
+                .front()
+                .get_object()
+                .at("config")
+                .get_object()
+                .at("program")
+                .as<std::string>(),
+            "/bin/true");
+  EXPECT_EQ(response_text(*fetched_plan).find("/usr/bin/true"),
+            std::string::npos);
 
   http::HttpRequest list;
   list.method = http::HttpMethod::GET;
@@ -891,15 +966,14 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
   upload.path = "/api/v1/artifacts";
   upload.headers.set("Content-Type", "text/plain");
   upload.body = {'a', 'b', 'c'};
-  auto uploaded = sync_wait_on_runtime(app.runtime(), invoke(std::move(upload)));
+  auto uploaded =
+      sync_wait_on_runtime(app.runtime(), invoke(std::move(upload)));
   ASSERT_TRUE(uploaded.has_value());
   ASSERT_EQ(uploaded->status, http::HttpStatus::Created);
   auto upload_body = parse_json(response_text(*uploaded));
   ASSERT_TRUE(upload_body.has_value());
-  ASSERT_TRUE(
-      upload_body->get_object().at("durability_deferred").is_boolean());
-  EXPECT_FALSE(
-      upload_body->get_object().at("durability_deferred").get<bool>());
+  ASSERT_TRUE(upload_body->get_object().at("durability_deferred").is_boolean());
+  EXPECT_FALSE(upload_body->get_object().at("durability_deferred").get<bool>());
   const auto artifact_id =
       upload_body->get_object().at("artifact_id").as<std::string>();
 
@@ -922,8 +996,50 @@ TEST(ApiTest, WorkflowRoutesSupportPaginationPlanSelectionAndArtifacts) {
   ASSERT_TRUE(erase_body.has_value());
   EXPECT_TRUE(erase_body->get_object().at("logical_deleted").get<bool>());
   EXPECT_FALSE(erase_body->get_object().at("cleanup_deferred").get<bool>());
-  EXPECT_FALSE(
-      erase_body->get_object().at("durability_deferred").get<bool>());
+  EXPECT_FALSE(erase_body->get_object().at("durability_deferred").get<bool>());
+  app.stop();
+}
+
+TEST(ApiTest, UnregisteredExecutorAdmissionFailureIsClientError) {
+  SystemConfig config;
+  config.api.enabled = false;
+  config.admission.allow_unlisted_executors = true;
+  Application app(std::move(config));
+  ASSERT_TRUE(app.start().has_value());
+
+  http::HttpServer server(app.runtime());
+  std::atomic<std::uint64_t> active{0};
+  api_detail::HttpMetricsRegistry metrics;
+  api_detail::ApiContext context{
+      .app = app,
+      .server = server,
+      .http_active_requests = active,
+      .http_metrics = metrics,
+  };
+  api_detail::register_workflow_routes(context);
+  const auto invoke =
+      [&](http::HttpRequest value) -> task<Result<http::HttpResponse>> {
+    co_return ok(co_await server.router().route(std::move(value)));
+  };
+
+  http::HttpRequest request;
+  request.method = http::HttpMethod::POST;
+  request.path = "/api/v1/workflows/plans";
+  constexpr std::string_view body =
+      R"({"workflow_id":"unknown-executor","schema_version":1,"nodes":[{"id":"task","executor":"unknown","outputs":["result"]}]})";
+  request.body.assign(body.begin(), body.end());
+  auto response =
+      sync_wait_on_runtime(app.runtime(), invoke(std::move(request)));
+  ASSERT_TRUE(response.has_value());
+  EXPECT_EQ(response->status, http::HttpStatus::BadRequest);
+  auto response_body = parse_json(response_text(*response));
+  ASSERT_TRUE(response_body.has_value());
+  const auto &error = response_body->get_object().at("error").get_object();
+  EXPECT_EQ(error.at("kind").as<std::string>(), "unsupported");
+  EXPECT_EQ(error.at("code").as<std::string>(), "executor_not_registered");
+  EXPECT_EQ(error.at("path").as<std::string>(), "/nodes/0/executor");
+  EXPECT_EQ(error.at("node_id").as<std::string>(), "task");
+  EXPECT_EQ(error.at("executor").as<std::string>(), "unknown");
   app.stop();
 }
 
@@ -946,8 +1062,8 @@ TEST(ApiTest, WorkflowRoutesReturnUnavailableWhenWorkflowSubsystemIsDisabled) {
       .http_metrics = metrics,
   };
   api_detail::register_workflow_routes(context);
-  const auto invoke = [&](http::HttpMethod method, std::string path)
-      -> http::HttpResponse {
+  const auto invoke = [&](http::HttpMethod method,
+                          std::string path) -> http::HttpResponse {
     http::HttpRequest request;
     request.method = method;
     request.path = std::move(path);
@@ -956,37 +1072,31 @@ TEST(ApiTest, WorkflowRoutesReturnUnavailableWhenWorkflowSubsystemIsDisabled) {
           co_return ok(co_await server.router().route(std::move(request)));
         }());
     EXPECT_TRUE(response.has_value());
-    return response ? std::move(*response) : http::HttpResponse::internal_error();
+    return response ? std::move(*response)
+                    : http::HttpResponse::internal_error();
   };
 
   for (const auto &[method, path] :
        std::vector<std::pair<http::HttpMethod, std::string>>{
+           {http::HttpMethod::GET, "/api/v1/capabilities"},
            {http::HttpMethod::POST, "/api/v1/workflows/plans"},
            {http::HttpMethod::GET, "/api/v1/workflows/plans"},
-           {http::HttpMethod::GET,
-            "/api/v1/workflows/plans/missing-plan"},
+           {http::HttpMethod::GET, "/api/v1/workflows/plans/missing-plan"},
            {http::HttpMethod::POST, "/api/v1/workflows/flow/runs"},
            {http::HttpMethod::GET, "/api/v1/workflow-runs/run"},
            {http::HttpMethod::GET,
             "/api/v1/workflow-runs/run/outputs/node/port"},
-           {http::HttpMethod::GET,
-            "/api/v1/workflow-runs/run/evidence"},
-           {http::HttpMethod::GET,
-            "/api/v1/workflow-runs/run/failures"},
-           {http::HttpMethod::POST,
-            "/api/v1/workflow-runs/run/repairs"},
+           {http::HttpMethod::GET, "/api/v1/workflow-runs/run/evidence"},
+           {http::HttpMethod::GET, "/api/v1/workflow-runs/run/failures"},
+           {http::HttpMethod::POST, "/api/v1/workflow-runs/run/repairs"},
            {http::HttpMethod::POST, "/api/v1/artifacts"},
            {http::HttpMethod::GET, "/api/v1/artifacts/artifact"},
            {http::HttpMethod::DELETE, "/api/v1/artifacts/artifact"},
-           {http::HttpMethod::POST,
-            "/api/v1/workflow-runs/run/pause"},
-           {http::HttpMethod::POST,
-            "/api/v1/workflow-runs/run/resume"},
-           {http::HttpMethod::POST,
-            "/api/v1/workflow-runs/run/cancel"},
+           {http::HttpMethod::POST, "/api/v1/workflow-runs/run/pause"},
+           {http::HttpMethod::POST, "/api/v1/workflow-runs/run/resume"},
+           {http::HttpMethod::POST, "/api/v1/workflow-runs/run/cancel"},
        }) {
-    EXPECT_EQ(invoke(method, path).status,
-              http::HttpStatus::ServiceUnavailable)
+    EXPECT_EQ(invoke(method, path).status, http::HttpStatus::ServiceUnavailable)
         << path;
   }
   app.stop();
@@ -995,9 +1105,9 @@ TEST(ApiTest, WorkflowRoutesReturnUnavailableWhenWorkflowSubsystemIsDisabled) {
 TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
   SystemConfig config;
   config.api.enabled = false;
-  config.admission.allowed_executors = {"command"};
-  config.executors.command.policy.allowed_programs = {
-      "/bin/true", "/bin/echo", "/bin/sh"};
+  config.admission.allowed_executors = {"command", "transform"};
+  config.executors.command.policy.allowed_programs = {"/bin/true", "/bin/echo",
+                                                      "/bin/sh"};
   Application app(std::move(config));
   ASSERT_TRUE(app.start().has_value());
 
@@ -1018,7 +1128,8 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
           co_return ok(co_await server.router().route(std::move(request)));
         }());
     EXPECT_TRUE(response.has_value());
-    return response ? std::move(*response) : http::HttpResponse::internal_error();
+    return response ? std::move(*response)
+                    : http::HttpResponse::internal_error();
   };
   const auto request = [](http::HttpMethod method, std::string path,
                           std::string body = {}, std::string query = {}) {
@@ -1031,8 +1142,7 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
   };
   const auto register_plan = [&](std::string body) -> JsonValue {
     auto response = invoke(request(http::HttpMethod::POST,
-                                   "/api/v1/workflows/plans",
-                                   std::move(body)));
+                                   "/api/v1/workflows/plans", std::move(body)));
     EXPECT_EQ(response.status, http::HttpStatus::Created)
         << response_text(response);
     auto parsed = parse_json(response_text(response));
@@ -1056,45 +1166,97 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
                : std::string{};
   };
   const auto snapshot = [&](std::string_view run_id) {
-    return invoke(request(
-        http::HttpMethod::GET,
-        std::format("/api/v1/workflow-runs/{}", run_id)));
+    return invoke(request(http::HttpMethod::GET,
+                          std::format("/api/v1/workflow-runs/{}", run_id)));
   };
-  const auto wait_for_state = [&](std::string_view run_id,
-                                  std::string_view expected,
-                                  std::chrono::seconds timeout =
-                                      std::chrono::seconds(3)) {
-    const auto deadline = std::chrono::steady_clock::now() + timeout;
-    http::HttpResponse latest;
-    while (std::chrono::steady_clock::now() < deadline) {
-      latest = snapshot(run_id);
-      if (latest.status == http::HttpStatus::Ok) {
-        auto body = parse_json(response_text(latest));
-        if (body && body->get_object().at("state").as<std::string>() ==
-                        expected) {
-          return latest;
+  const auto wait_for_state =
+      [&](std::string_view run_id, std::string_view expected,
+          std::chrono::seconds timeout = std::chrono::seconds(3)) {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        http::HttpResponse latest;
+        while (std::chrono::steady_clock::now() < deadline) {
+          latest = snapshot(run_id);
+          if (latest.status == http::HttpStatus::Ok) {
+            auto body = parse_json(response_text(latest));
+            if (body &&
+                body->get_object().at("state").as<std::string>() == expected) {
+              return latest;
+            }
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    return latest;
-  };
+        return latest;
+      };
 
-  auto malformed = invoke(request(http::HttpMethod::POST,
-                                  "/api/v1/workflows/plans", "not-json"));
+  auto malformed = invoke(
+      request(http::HttpMethod::POST, "/api/v1/workflows/plans", "not-json"));
   EXPECT_EQ(malformed.status, http::HttpStatus::BadRequest);
   auto malformed_body = parse_json(response_text(malformed));
   ASSERT_TRUE(malformed_body.has_value());
   const auto &malformed_error =
       malformed_body->get_object().at("error").get_object();
-  EXPECT_EQ(malformed_error.at("kind").as<std::string>(),
-            "invalid_argument");
-  EXPECT_EQ(malformed_error.at("code").as<std::string>(),
-            "invalid_request");
+  EXPECT_EQ(malformed_error.at("kind").as<std::string>(), "invalid_argument");
+  EXPECT_EQ(malformed_error.at("code").as<std::string>(), "invalid_request");
   auto invalid_plan = invoke(request(
       http::HttpMethod::POST, "/api/v1/workflows/plans",
       R"({"workflow_id":"invalid","schema_version":1,"nodes":[{"id":"task","executor":"unknown","outputs":["result"]}]})"));
-  EXPECT_NE(invalid_plan.status, http::HttpStatus::Created);
+  EXPECT_EQ(invalid_plan.status, http::HttpStatus::Forbidden);
+  auto invalid_plan_body = parse_json(response_text(invalid_plan));
+  ASSERT_TRUE(invalid_plan_body.has_value());
+  const auto &invalid_plan_error =
+      invalid_plan_body->get_object().at("error").get_object();
+  EXPECT_EQ(invalid_plan_error.at("kind").as<std::string>(), "unauthorized");
+  EXPECT_EQ(invalid_plan_error.at("code").as<std::string>(),
+            "admission_executor_not_allowed");
+  EXPECT_EQ(invalid_plan_error.at("path").as<std::string>(),
+            "/nodes/0/executor");
+  EXPECT_EQ(invalid_plan_error.at("node_id").as<std::string>(), "task");
+  EXPECT_EQ(invalid_plan_error.at("executor").as<std::string>(), "unknown");
+
+  auto invalid_transform = invoke(request(
+      http::HttpMethod::POST, "/api/v1/workflows/plans",
+      R"({"workflow_id":"invalid-transform","schema_version":1,"nodes":[{"id":"transform","executor":"transform","config":{"expression":"value +"},"outputs":["result"]}]})"));
+  EXPECT_EQ(invalid_transform.status, http::HttpStatus::BadRequest);
+  auto invalid_transform_body = parse_json(response_text(invalid_transform));
+  ASSERT_TRUE(invalid_transform_body.has_value());
+  const auto &invalid_transform_error =
+      invalid_transform_body->get_object().at("error").get_object();
+  EXPECT_EQ(invalid_transform_error.at("code").as<std::string>(),
+            "transform_expression_invalid");
+  EXPECT_EQ(invalid_transform_error.at("path").as<std::string>(),
+            "/nodes/0/config/expression");
+  EXPECT_EQ(invalid_transform_error.at("node_id").as<std::string>(),
+            "transform");
+  EXPECT_EQ(invalid_transform_error.at("executor").as<std::string>(),
+            "transform");
+  EXPECT_EQ(invalid_transform_error.at("details")
+                .get_object()
+                .at("jsonata_code")
+                .as<std::string>(),
+            "S0207");
+
+  auto cyclic_plan = invoke(request(
+      http::HttpMethod::POST, "/api/v1/workflows/plans",
+      R"({"workflow_id":"cyclic","schema_version":1,"nodes":[{"id":"a","executor":"transform","config":{"expression":"$value"},"inputs":[{"input":"value","node":"b","port":"result"}],"outputs":["result"]},{"id":"b","executor":"transform","config":{"expression":"$value"},"inputs":[{"input":"value","node":"a","port":"result"}],"outputs":["result"]}]})"));
+  EXPECT_EQ(cyclic_plan.status, http::HttpStatus::BadRequest);
+  auto cyclic_body = parse_json(response_text(cyclic_plan));
+  ASSERT_TRUE(cyclic_body.has_value());
+  const auto &cyclic_error = cyclic_body->get_object().at("error").get_object();
+  EXPECT_EQ(cyclic_error.at("code").as<std::string>(), "plan_cycle_detected");
+  EXPECT_EQ(cyclic_error.at("path").as<std::string>(), "/nodes");
+
+  auto excessive_budget = invoke(request(
+      http::HttpMethod::POST, "/api/v1/workflows/plans",
+      R"({"workflow_id":"excessive-budget","schema_version":1,"nodes":[{"id":"transform","executor":"transform","config":{"expression":"1"},"outputs":["result"]}],"policy":{"budget":{"max_nodes":256,"max_parallel_nodes":33,"max_total_output_bytes":67108864,"max_run_duration_sec":3600}}})"));
+  EXPECT_EQ(excessive_budget.status, http::HttpStatus::BadRequest);
+  auto excessive_budget_body = parse_json(response_text(excessive_budget));
+  ASSERT_TRUE(excessive_budget_body.has_value());
+  const auto &excessive_budget_error =
+      excessive_budget_body->get_object().at("error").get_object();
+  EXPECT_EQ(excessive_budget_error.at("code").as<std::string>(),
+            "admission_parallelism_exceeded");
+  EXPECT_EQ(excessive_budget_error.at("path").as<std::string>(),
+            "/policy/budget/max_parallel_nodes");
 
   const auto echo_plan = register_plan(R"({
     "workflow_id":"route-echo","schema_version":1,
@@ -1114,19 +1276,17 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
   const auto true_plan_id =
       true_plan.get_object().at("plan_id").as<std::string>();
 
-  auto invalid_page = invoke(request(http::HttpMethod::GET,
-                                     "/api/v1/workflows/plans", {},
-                                     "offset=bad&limit=0"));
+  auto invalid_page =
+      invoke(request(http::HttpMethod::GET, "/api/v1/workflows/plans", {},
+                     "offset=bad&limit=0"));
   ASSERT_EQ(invalid_page.status, http::HttpStatus::Ok);
   auto invalid_page_body = parse_json(response_text(invalid_page));
   ASSERT_TRUE(invalid_page_body.has_value());
-  EXPECT_EQ(invalid_page_body->get_object().at("offset").as<std::int64_t>(),
-            0);
-  EXPECT_EQ(invalid_page_body->get_object().at("limit").as<std::int64_t>(),
-            1);
-  auto beyond_page = invoke(request(http::HttpMethod::GET,
-                                    "/api/v1/workflows/plans", {},
-                                    "offset=9999&limit=5000"));
+  EXPECT_EQ(invalid_page_body->get_object().at("offset").as<std::int64_t>(), 0);
+  EXPECT_EQ(invalid_page_body->get_object().at("limit").as<std::int64_t>(), 1);
+  auto beyond_page =
+      invoke(request(http::HttpMethod::GET, "/api/v1/workflows/plans", {},
+                     "offset=9999&limit=5000"));
   ASSERT_EQ(beyond_page.status, http::HttpStatus::Ok);
   auto beyond_body = parse_json(response_text(beyond_page));
   ASSERT_TRUE(beyond_body.has_value());
@@ -1141,22 +1301,19 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
                            "/api/v1/workflows/route-echo/runs", "[]"))
                 .status,
             http::HttpStatus::BadRequest);
-  EXPECT_EQ(invoke(request(http::HttpMethod::POST,
-                           "/api/v1/workflows/missing/runs"))
-                .status,
-            http::HttpStatus::NotFound);
   EXPECT_EQ(
-      invoke(request(
-                 http::HttpMethod::POST,
-                 "/api/v1/workflows/route-echo/runs",
-                 std::format(R"({{"plan_id":"{}"}})", true_plan_id)))
+      invoke(request(http::HttpMethod::POST, "/api/v1/workflows/missing/runs"))
           .status,
-      http::HttpStatus::BadRequest);
+      http::HttpStatus::NotFound);
+  EXPECT_EQ(invoke(request(http::HttpMethod::POST,
+                           "/api/v1/workflows/route-echo/runs",
+                           std::format(R"({{"plan_id":"{}"}})", true_plan_id)))
+                .status,
+            http::HttpStatus::BadRequest);
   EXPECT_EQ(
-      invoke(request(
-                 http::HttpMethod::POST,
-                 "/api/v1/workflows/route-echo/runs",
-                 R"({"principal":{"subject":"tester","roles":["admin",7]}})"))
+      invoke(
+          request(http::HttpMethod::POST, "/api/v1/workflows/route-echo/runs",
+                  R"({"principal":{"subject":"tester","roles":["admin",7]}})"))
           .status,
       http::HttpStatus::BadRequest);
 
@@ -1169,14 +1326,13 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
       << response_text(started);
   auto started_body = parse_json(response_text(started));
   ASSERT_TRUE(started_body.has_value());
-  const auto run_id =
-      started_body->get_object().at("run_id").as<std::string>();
+  const auto run_id = started_body->get_object().at("run_id").as<std::string>();
   EXPECT_EQ(started_body->get_object().at("plan_id").as<std::string>(),
             echo_plan_id);
 
-  auto duplicate = invoke(request(
-      http::HttpMethod::POST, "/api/v1/workflows/route-echo/runs",
-      R"({"idempotency_key":"route-key"})"));
+  auto duplicate = invoke(request(http::HttpMethod::POST,
+                                  "/api/v1/workflows/route-echo/runs",
+                                  R"({"idempotency_key":"route-key"})"));
   ASSERT_EQ(duplicate.status, http::HttpStatus::Accepted);
   auto duplicate_body = parse_json(response_text(duplicate));
   ASSERT_TRUE(duplicate_body.has_value());
@@ -1192,11 +1348,10 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
   const auto revised_echo_plan_id =
       revised_echo_plan.get_object().at("plan_id").as<std::string>();
 
-  auto idempotency_conflict = invoke(request(
-      http::HttpMethod::POST, "/api/v1/workflows/route-echo/runs",
-      std::format(
-          R"({{"plan_id":"{}","idempotency_key":"route-key"}})",
-          revised_echo_plan_id)));
+  auto idempotency_conflict = invoke(
+      request(http::HttpMethod::POST, "/api/v1/workflows/route-echo/runs",
+              std::format(R"({{"plan_id":"{}","idempotency_key":"route-key"}})",
+                          revised_echo_plan_id)));
   ASSERT_EQ(idempotency_conflict.status, http::HttpStatus::Conflict)
       << response_text(idempotency_conflict);
   auto conflict_body = parse_json(response_text(idempotency_conflict));
@@ -1207,8 +1362,7 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
   EXPECT_EQ(conflict_error.at("code").as<std::string>(), "already_exists");
 
   auto completed = wait_for_state(run_id, "succeeded");
-  ASSERT_EQ(completed.status, http::HttpStatus::Ok)
-      << response_text(completed);
+  ASSERT_EQ(completed.status, http::HttpStatus::Ok) << response_text(completed);
   auto completed_body = parse_json(response_text(completed));
   ASSERT_TRUE(completed_body.has_value());
   ASSERT_EQ(completed_body->get_object().at("tasks").get_array().size(), 1U);
@@ -1224,41 +1378,41 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
   for (const auto &[port, expected] :
        std::vector<std::pair<std::string, std::string>>{
            {"result", "api-output\n"}, {"stdout", "api-output\n"}}) {
-    auto output = invoke(request(
-        http::HttpMethod::GET,
-        std::format("/api/v1/workflow-runs/{}/outputs/command/{}", run_id,
-                    port)));
+    auto output = invoke(
+        request(http::HttpMethod::GET,
+                std::format("/api/v1/workflow-runs/{}/outputs/command/{}",
+                            run_id, port)));
     ASSERT_EQ(output.status, http::HttpStatus::Ok) << response_text(output);
     auto body = parse_json(response_text(output));
     ASSERT_TRUE(body.has_value());
     EXPECT_EQ(body->get_object().at("value").as<std::string>(), expected);
   }
-  auto exit_code = invoke(request(
-      http::HttpMethod::GET,
-      std::format("/api/v1/workflow-runs/{}/outputs/command/exit_code",
-                  run_id)));
+  auto exit_code = invoke(
+      request(http::HttpMethod::GET,
+              std::format("/api/v1/workflow-runs/{}/outputs/command/exit_code",
+                          run_id)));
   ASSERT_EQ(exit_code.status, http::HttpStatus::Ok);
   auto exit_body = parse_json(response_text(exit_code));
   ASSERT_TRUE(exit_body.has_value());
   EXPECT_EQ(exit_body->get_object().at("value").as<std::int64_t>(), 0);
-  EXPECT_EQ(invoke(request(
-                           http::HttpMethod::GET,
-                           std::format("/api/v1/workflow-runs/{}/outputs/command/missing",
-                                       run_id)))
-                .status,
-            http::HttpStatus::NotFound);
+  EXPECT_EQ(
+      invoke(request(
+                 http::HttpMethod::GET,
+                 std::format("/api/v1/workflow-runs/{}/outputs/command/missing",
+                             run_id)))
+          .status,
+      http::HttpStatus::NotFound);
 
-  auto evidence = invoke(request(
-      http::HttpMethod::GET,
-      std::format("/api/v1/workflow-runs/{}/evidence", run_id), {},
-      "offset=0&limit=2"));
+  auto evidence =
+      invoke(request(http::HttpMethod::GET,
+                     std::format("/api/v1/workflow-runs/{}/evidence", run_id),
+                     {}, "offset=0&limit=2"));
   ASSERT_EQ(evidence.status, http::HttpStatus::Ok);
   auto evidence_body = parse_json(response_text(evidence));
   ASSERT_TRUE(evidence_body.has_value());
   EXPECT_GT(evidence_body->get_object().at("total").as<std::int64_t>(), 0);
   EXPECT_LE(evidence_body->get_object().at("evidence").get_array().size(), 2U);
-  ASSERT_FALSE(
-      evidence_body->get_object().at("evidence").get_array().empty());
+  ASSERT_FALSE(evidence_body->get_object().at("evidence").get_array().empty());
   EXPECT_TRUE(evidence_body->get_object()
                   .at("evidence")
                   .get_array()
@@ -1294,8 +1448,7 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
   EXPECT_FALSE(failed_object.contains("error"));
   const auto &run_failure = failed_object.at("failure").get_object();
   EXPECT_EQ(run_failure.at("kind").as<std::string>(), "unknown");
-  EXPECT_EQ(run_failure.at("code").as<std::string>(),
-            "command_exit_nonzero");
+  EXPECT_EQ(run_failure.at("code").as<std::string>(), "command_exit_nonzero");
   const auto &failed_task =
       failed_object.at("tasks").get_array().front().get_object();
   ASSERT_TRUE(failed_task.contains("failure"));
@@ -1311,9 +1464,9 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
   EXPECT_EQ(failure_details.at("stdout").as<std::string>(), "partial");
   EXPECT_EQ(failure_details.at("stderr").as<std::string>(), "diagnostic");
 
-  auto failure_report = invoke(request(
-      http::HttpMethod::GET,
-      std::format("/api/v1/workflow-runs/{}/failures", failed_run)));
+  auto failure_report = invoke(
+      request(http::HttpMethod::GET,
+              std::format("/api/v1/workflow-runs/{}/failures", failed_run)));
   ASSERT_EQ(failure_report.status, http::HttpStatus::Ok)
       << response_text(failure_report);
   auto failure_report_body = parse_json(response_text(failure_report));
@@ -1327,10 +1480,10 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
   ASSERT_EQ(failure_report_body->get_object().at("tasks").get_array().size(),
             1U);
 
-  auto repair_response = invoke(request(
-      http::HttpMethod::POST,
-      std::format("/api/v1/workflow-runs/{}/repairs", failed_run),
-      R"({
+  auto repair_response = invoke(
+      request(http::HttpMethod::POST,
+              std::format("/api/v1/workflow-runs/{}/repairs", failed_run),
+              R"({
         "reason":"replace failing command",
         "idempotency_key":"route-repair-once",
         "plan":{
@@ -1346,9 +1499,7 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
   ASSERT_TRUE(repair_body.has_value());
   const auto repaired_run =
       repair_body->get_object().at("run_id").as<std::string>();
-  EXPECT_EQ(repair_body->get_object()
-                .at("parent_run_id")
-                .as<std::string>(),
+  EXPECT_EQ(repair_body->get_object().at("parent_run_id").as<std::string>(),
             failed_run);
   ASSERT_EQ(repair_body->get_object().at("nodes").get_array().size(), 1U);
   EXPECT_FALSE(repair_body->get_object()
@@ -1363,26 +1514,22 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
       << response_text(repaired_response);
   auto repaired_body = parse_json(response_text(repaired_response));
   ASSERT_TRUE(repaired_body.has_value());
-  EXPECT_EQ(repaired_body->get_object()
-                .at("parent_run_id")
-                .as<std::string>(),
+  EXPECT_EQ(repaired_body->get_object().at("parent_run_id").as<std::string>(),
             failed_run);
-  EXPECT_EQ(repaired_body->get_object()
-                .at("repair_revision")
-                .as<std::int64_t>(),
-            1);
+  EXPECT_EQ(
+      repaired_body->get_object().at("repair_revision").as<std::int64_t>(), 1);
 
-  auto failure_evidence = invoke(request(
-      http::HttpMethod::GET,
-      std::format("/api/v1/workflow-runs/{}/evidence", failed_run), {},
-      "offset=0&limit=100"));
+  auto failure_evidence = invoke(
+      request(http::HttpMethod::GET,
+              std::format("/api/v1/workflow-runs/{}/evidence", failed_run), {},
+              "offset=0&limit=100"));
   ASSERT_EQ(failure_evidence.status, http::HttpStatus::Ok);
   auto failure_evidence_body = parse_json(response_text(failure_evidence));
   ASSERT_TRUE(failure_evidence_body.has_value());
   const auto &failure_records =
       failure_evidence_body->get_object().at("evidence").get_array();
-  const auto task_failed = std::ranges::find_if(
-      failure_records, [](const JsonValue &record) {
+  const auto task_failed =
+      std::ranges::find_if(failure_records, [](const JsonValue &record) {
         const auto &object = record.get_object();
         return object.at("type").as<std::string>() == "task_failed";
       });
@@ -1394,8 +1541,7 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
 
   EXPECT_EQ(snapshot("missing-run").status, http::HttpStatus::NotFound);
   for (std::string_view operation : {"pause", "resume", "cancel"}) {
-    EXPECT_EQ(invoke(request(
-                             http::HttpMethod::POST,
+    EXPECT_EQ(invoke(request(http::HttpMethod::POST,
                              std::format("/api/v1/workflow-runs/missing-run/{}",
                                          operation)))
                   .status,
@@ -1423,15 +1569,15 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
     "edges":[{"source_node":"first","source_port":"result","target":"second","condition":{"kind":"always"}}]
   })");
   const auto paused_run = start_run("route-pause");
-  auto pause = invoke(request(
-      http::HttpMethod::POST,
-      std::format("/api/v1/workflow-runs/{}/pause", paused_run)));
+  auto pause = invoke(
+      request(http::HttpMethod::POST,
+              std::format("/api/v1/workflow-runs/{}/pause", paused_run)));
   ASSERT_EQ(pause.status, http::HttpStatus::Accepted) << response_text(pause);
   auto paused = wait_for_state(paused_run, "paused", std::chrono::seconds(4));
   ASSERT_EQ(paused.status, http::HttpStatus::Ok) << response_text(paused);
-  auto resume = invoke(request(
-      http::HttpMethod::POST,
-      std::format("/api/v1/workflow-runs/{}/resume", paused_run)));
+  auto resume = invoke(
+      request(http::HttpMethod::POST,
+              std::format("/api/v1/workflow-runs/{}/resume", paused_run)));
   ASSERT_EQ(resume.status, http::HttpStatus::Accepted) << response_text(resume);
   auto resumed =
       wait_for_state(paused_run, "succeeded", std::chrono::seconds(4));
@@ -1444,9 +1590,9 @@ TEST(ApiTest, WorkflowRoutesCoverValidationLifecycleEvidenceAndOutputs) {
       "outputs":["result"]}]
   })");
   const auto cancelled_run = start_run("route-cancel");
-  auto cancel = invoke(request(
-      http::HttpMethod::POST,
-      std::format("/api/v1/workflow-runs/{}/cancel", cancelled_run)));
+  auto cancel = invoke(
+      request(http::HttpMethod::POST,
+              std::format("/api/v1/workflow-runs/{}/cancel", cancelled_run)));
   ASSERT_EQ(cancel.status, http::HttpStatus::Accepted) << response_text(cancel);
   auto cancelled =
       wait_for_state(cancelled_run, "cancelled", std::chrono::seconds(3));

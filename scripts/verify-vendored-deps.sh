@@ -42,6 +42,40 @@ verify_file "$repo_root/third_party/glaze/LICENSE"
 verify_file "$repo_root/third_party/CLI11/LICENSE"
 verify_file "$repo_root/third_party/unordered_dense/LICENSE"
 verify_file "$repo_root/third_party/prometheus-cpp-core/licenses/LICENSE"
+verify_file "$repo_root/third_party/jsonata/LICENSE"
+verify_file "$repo_root/third_party/jsonata/NOTICE.md"
+verify_file "$repo_root/third_party/pcre2/LICENSE"
+verify_file "$repo_root/third_party/pcre2/NOTICE.md"
+
+python3 - "$repo_root" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+manifest = json.loads((root / "third_party/dependencies.json").read_text())
+references = {
+    item["name"]: item for item in manifest.get("reference_dependencies", [])
+}
+name = "JSONata reference implementation and conformance suite"
+entry = references.get(name)
+if entry is None:
+    raise SystemExit(f"missing reference dependency entry: {name}")
+
+expected_commit = "6c7e95fdbf4405a1e741852a7cd8cd985b4305bb"
+if entry.get("version") != "2.2.2" or entry.get("upstream_commit") != expected_commit:
+    raise SystemExit("JSONata reference dependency pin is inconsistent")
+
+fetch_script = (root / entry["fetch_script"]).read_text()
+match = re.search(r'readonly upstream_commit="([0-9a-f]{40})"', fetch_script)
+if match is None or match.group(1) != expected_commit:
+    raise SystemExit("JSONata fetch script pin does not match dependency manifest")
+
+adr = (root / "docs/adr/0003-jsonata-language-module.md").read_text()
+if expected_commit not in adr or "JSONata 2.2.2" not in adr:
+    raise SystemExit("JSONata ADR pin does not match dependency manifest")
+PY
 
 grep -Eq 'major = 7;' "$repo_root/third_party/glaze/include/glaze/version.hpp"
 grep -Eq 'minor = 8;' "$repo_root/third_party/glaze/include/glaze/version.hpp"
@@ -55,7 +89,7 @@ grep -Eq 'ANKERL_UNORDERED_DENSE_VERSION_MINOR 8' \
 grep -Eq 'ANKERL_UNORDERED_DENSE_VERSION_PATCH 1' \
   "$repo_root/third_party/unordered_dense/include/ankerl/unordered_dense.h"
 verify_tree glaze "$repo_root/third_party/glaze" \
-  24bf87d23fa1f7d9da1b8a5eec477331bce84742ab5c2da866ee4ba1e53cef6a
+  dc723668a1eff74072e2f747fcf071f37c9f9964214e2ad542f05b5c48384b36
 verify_tree CLI11 "$repo_root/third_party/CLI11" \
   dc122b60764f00552f1d08ca3cc213f0fd3046752f187eb46fe27df476d63dfd
 verify_tree unordered_dense "$repo_root/third_party/unordered_dense" \

@@ -3,6 +3,7 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/config/admission_config.hpp"
 #include "dagforge/core/error.hpp"
+#include "dagforge/workflow/plan_diagnostic.hpp"
 #include "dagforge/workflow/workflow_plan.hpp"
 
 #include <optional>
@@ -20,8 +21,14 @@ public:
   // Validates invariants intrinsic to the model, independent of whether the
   // plan is currently admissible or executable by a particular registry.
   [[nodiscard]] auto validate_model(const WorkflowPlan &plan) const
-      -> Result<void>;
-  [[nodiscard]] auto validate(const WorkflowPlan &plan) const -> Result<void>;
+      -> PlanResult<void>;
+  [[nodiscard]] auto validate(const WorkflowPlan &plan) const
+      -> PlanResult<void>;
+
+  [[nodiscard]] auto admission() const noexcept
+      -> const std::optional<config::AdmissionConfig> & {
+    return admission_;
+  }
 
 private:
   std::optional<config::AdmissionConfig> admission_;

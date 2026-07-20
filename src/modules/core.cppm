@@ -28,6 +28,5 @@ export {
 #include "dagforge/core/memory.hpp"
 #include "dagforge/core/metrics.hpp"
 #include "dagforge/core/constants.hpp"
-#include "dagforge/core/arena.hpp"
 }
 #undef DAGFORGE_BUILDING_MODULE_INTERFACE

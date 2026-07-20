@@ -1,5 +1,7 @@
 #include "dagforge/workflow/plan_store.hpp"
 
+#include "dagforge/workflow/plan_compiler.hpp"
+
 #include "detail/durable_file.hpp"
 #include "detail/json_file_catalog.hpp"
 #include "detail/storage_codec.hpp"
@@ -14,8 +16,7 @@ namespace dagforge::workflow {
 namespace {
 
 auto sort_plans(std::vector<StoredPlan> &plans) -> void {
-  std::ranges::sort(plans, [](const StoredPlan &left,
-                              const StoredPlan &right) {
+  std::ranges::sort(plans, [](const StoredPlan &left, const StoredPlan &right) {
     if (left.created_at != right.created_at) {
       return left.created_at < right.created_at;
     }
@@ -39,16 +40,23 @@ auto PlanStore::save(const ExecutionPlan &plan) -> Result<PlanSaveResult> {
       !storage_detail::valid_storage_key(plan.plan_id.str())) {
     return fail(Error::InvalidArgument);
   }
+  auto source = source_plan(plan);
+  auto source_digest = PlanCompiler::digest(source);
+  if (!source_digest) {
+    return fail(source_digest.error());
+  }
   StoredPlan stored{
       .plan_id = plan.plan_id.clone(),
-      .digest = plan.digest,
-      .plan = source_plan(plan),
+      .execution_digest = plan.digest,
+      .source_digest = std::move(*source_digest),
+      .source_plan = std::move(source),
   };
   std::lock_guard lock(mutex_);
   if (directory_.empty()) {
     if (const auto existing = plans_.find(stored.plan_id.str());
         existing != plans_.end()) {
-      return existing->second.digest == stored.digest
+      return existing->second.execution_digest == stored.execution_digest &&
+                     existing->second.source_digest == stored.source_digest
                  ? ok(PlanSaveResult{
                        .durability_deferred =
                            durability_deferred_[stored.plan_id.str()],
@@ -70,7 +78,8 @@ auto PlanStore::save(const ExecutionPlan &plan) -> Result<PlanSaveResult> {
       if (!existing || existing->plan_id != stored.plan_id) {
         return fail(existing ? Error::ParseError : existing.error());
       }
-      if (existing->digest != stored.digest) {
+      if (existing->execution_digest != stored.execution_digest ||
+          existing->source_digest != stored.source_digest) {
         return fail(Error::AlreadyExists);
       }
       plans_.emplace(stored.plan_id.str(), std::move(*existing));
@@ -88,8 +97,7 @@ auto PlanStore::save(const ExecutionPlan &plan) -> Result<PlanSaveResult> {
     if (encoded->size() > max_plan_bytes_) {
       return fail(Error::ResourceExhausted);
     }
-    auto written = storage_detail::store_text_file_atomic(
-        path, *encoded);
+    auto written = storage_detail::store_text_file_atomic(path, *encoded);
     if (!written) {
       return fail(written.error());
     }
@@ -122,8 +130,8 @@ auto PlanStore::load(const WorkflowPlanId &plan_id) const
     }
     return fail(Error::NotFound);
   }
-  auto text = storage_detail::load_text_file(file_path(plan_id),
-                                             max_plan_bytes_);
+  auto text =
+      storage_detail::load_text_file(file_path(plan_id), max_plan_bytes_);
   if (!text) {
     return fail(text.error());
   }

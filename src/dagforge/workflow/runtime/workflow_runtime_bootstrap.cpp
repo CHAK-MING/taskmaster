@@ -50,8 +50,7 @@ namespace {
     std::optional<WorkflowPlanId> parent_plan_id = std::nullopt,
     std::uint32_t repair_revision = 0, std::string repair_reason = {},
     const std::unordered_set<std::string> &reused_nodes = {},
-    std::vector<OutputValue> values = {})
-    -> WorkflowCheckpoint {
+    std::vector<OutputValue> values = {}) -> WorkflowCheckpoint {
   const auto now = std::chrono::system_clock::now();
   RunSnapshot snapshot;
   snapshot.run_id = run_id.clone();
@@ -95,8 +94,7 @@ auto WorkflowRuntime::bootstrap_run(RunBootstrapRequest request)
 
   const auto idempotency_key = request.trigger.idempotency_key;
   std::lock_guard lifecycle_lock(lifecycle_mutex_);
-  if (!runtime_.is_running() ||
-      quiescing_.load(std::memory_order_acquire)) {
+  if (!runtime_.is_running() || quiescing_.load(std::memory_order_acquire)) {
     return fail(Error::SystemNotRunning);
   }
 
@@ -130,20 +128,19 @@ auto WorkflowRuntime::bootstrap_run(RunBootstrapRequest request)
     return fail(persisted.error());
   }
   if (persisted->durability_deferred) {
-    log::warn(
-        "Initial workflow checkpoint {} is visible but directory durability is deferred",
-        run_id);
+    log::warn("Initial workflow checkpoint {} is visible but directory "
+              "durability is deferred",
+              run_id);
   }
 
   if (!idempotency_key.empty()) {
     const auto [_, inserted] = idempotency_runs_.emplace(
-        idempotency_key,
-        IdempotencyBinding{
-            .run_id = run_id.clone(),
-            .workflow_id = request.plan->workflow_id.clone(),
-            .plan_id = request.plan->plan_id.clone(),
-            .parent_run_id = checkpoint.snapshot.parent_run_id,
-        });
+        idempotency_key, IdempotencyBinding{
+                             .run_id = run_id.clone(),
+                             .workflow_id = request.plan->workflow_id.clone(),
+                             .plan_id = request.plan->plan_id.clone(),
+                             .parent_run_id = checkpoint.snapshot.parent_run_id,
+                         });
     assert(inserted);
   }
 
@@ -163,28 +160,28 @@ auto WorkflowRuntime::schedule_activation(RunActivation activation) -> void {
   const auto owner = owner_shard(activation.checkpoint.snapshot.run_id);
   const auto tracker = initialization_tracker_;
   tracker->pending.fetch_add(1, std::memory_order_release);
-  runtime_.post_to(
-      owner,
-      [this, weak_lifetime = std::weak_ptr<int>(lifetime_token_),
-       tracker, activation = std::move(activation)]() mutable {
-        auto lifetime = weak_lifetime.lock();
-        const bool runtime_alive = static_cast<bool>(lifetime);
-        const auto initialization_finished = dagforge::scope_exit(
-            [this, tracker, lifetime = std::move(lifetime)] {
-              tracker->pending.fetch_sub(1, std::memory_order_acq_rel);
-              tracker->changed.notify_all();
-              if (lifetime) {
-                notify_lifecycle_changed();
-              }
-            });
-        if (!runtime_alive) {
-          return;
-        }
-        initialize_checkpoint_run(
-            std::move(activation.plan), std::move(activation.checkpoint),
-            std::move(activation.callbacks), activation.kind,
-            std::move(activation.repair_decisions));
-      });
+  runtime_.post_to(owner, [this,
+                           weak_lifetime = std::weak_ptr<int>(lifetime_token_),
+                           tracker,
+                           activation = std::move(activation)]() mutable {
+    auto lifetime = weak_lifetime.lock();
+    const bool runtime_alive = static_cast<bool>(lifetime);
+    const auto initialization_finished =
+        dagforge::scope_exit([this, tracker, lifetime = std::move(lifetime)] {
+          tracker->pending.fetch_sub(1, std::memory_order_acq_rel);
+          tracker->changed.notify_all();
+          if (lifetime) {
+            notify_lifecycle_changed();
+          }
+        });
+    if (!runtime_alive) {
+      return;
+    }
+    initialize_checkpoint_run(std::move(activation.plan),
+                              std::move(activation.checkpoint),
+                              std::move(activation.callbacks), activation.kind,
+                              std::move(activation.repair_decisions));
+  });
 }
 
 auto WorkflowRuntime::start(std::shared_ptr<const ExecutionPlan> plan,
@@ -225,7 +222,12 @@ auto WorkflowRuntime::restore(std::shared_ptr<const ExecutionPlan> plan,
   if (!checkpoint_digest) {
     return fail(checkpoint_digest.error());
   }
-  if (*checkpoint_digest != plan->digest) {
+  auto submitted_plan = source_plan(*plan);
+  auto submitted_digest = PlanCompiler::digest(submitted_plan);
+  if (!submitted_digest) {
+    return fail(submitted_digest.error());
+  }
+  if (*checkpoint_digest != *submitted_digest) {
     return fail(Error::InvalidState);
   }
   for (const auto &entry : checkpoint.values) {
@@ -271,17 +273,15 @@ auto WorkflowRuntime::restore(std::shared_ptr<const ExecutionPlan> plan,
     }
   }
   if (!is_terminal(snapshot.state)) {
-    restored_runs_.push_back(
-        RestoredRun{.plan = std::move(plan),
-                    .checkpoint = std::move(checkpoint)});
+    restored_runs_.push_back(RestoredRun{.plan = std::move(plan),
+                                         .checkpoint = std::move(checkpoint)});
     return ok();
   }
 
   auto stored = std::make_shared<const RunSnapshot>(snapshot);
   auto &state = shard_states_[owner];
   state.completed_runs[snapshot.run_id.str()] = stored;
-  state.completed_values[snapshot.run_id.str()] =
-      std::move(checkpoint.values);
+  state.completed_values[snapshot.run_id.str()] = std::move(checkpoint.values);
   state.completed_order.push_back(snapshot.run_id.str());
   enforce_completed_retention(state);
   return ok();
@@ -314,12 +314,10 @@ auto WorkflowRuntime::activate_restored() -> Result<void> {
 
 auto WorkflowRuntime::repair(std::shared_ptr<const ExecutionPlan> plan,
                              const WorkflowRunId &parent_run_id,
-                             RepairRequest request,
-                             WorkflowCallbacks callbacks)
+                             RepairRequest request, WorkflowCallbacks callbacks)
     -> Result<RepairStartResult> {
   if (!plan || parent_run_id.empty() || request.reason.empty() ||
-      !runtime_.is_running() ||
-      quiescing_.load(std::memory_order_acquire)) {
+      !runtime_.is_running() || quiescing_.load(std::memory_order_acquire)) {
     return fail(Error::InvalidState);
   }
   auto parent = checkpoint_store_->load(parent_run_id);

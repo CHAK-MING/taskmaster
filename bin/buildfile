@@ -1,11 +1,13 @@
 import foundation = ../src/lib{dagforge-foundation}
 import dagforge = ../src/lib{dagforge}
+import jsonata = ../src/lib{dagforge-jsonata}
 
 ./: exe{dagforge}                  \
     exe{modules-foundation-smoke} \
     exe{unit-tests}               \
     exe{component-tests}          \
     exe{integration-tests}        \
+    exe{jsonata-conformance}      \
     exe{bench-core}
 
 exe{dagforge}: ../src/cxx{main                              \
@@ -22,16 +24,16 @@ exe{modules-foundation-smoke}: ../tests/cxx{modules-foundation-smoke} $foundatio
 unit_test_sources = ../tests/cxx{test_main coroutine_test shard_test config_test \
     router_test io_bridge_test error_domain_test foundation_contract_test      \
     parse_test enum_test id_test time_test metrics_registry_test                \
-    glaze_security_test}
+    glaze_security_test jsonata_test plan_diagnostic_test}
 
 component_test_sources = ../tests/cxx{test_main runtime_test workflow_test \
     shard_affinity_test timing_wheel_test http_client_test http_executor_test \
-    http_server_test process_management_test metrics_exporter_test daemon_test \
-    log_test api_test}
+    transform_executor_test http_server_test process_management_test          \
+    metrics_exporter_test daemon_test log_test api_test}
 
 integration_test_sources = ../tests/cxx{test_main command_runner_test}
 
-exe{unit-tests}: $unit_test_sources $dagforge $foundation
+exe{unit-tests}: $unit_test_sources $dagforge $jsonata $foundation
 {
   test = true
   cxx.libs += -lgtest -pthread
@@ -48,6 +50,8 @@ exe{integration-tests}: $integration_test_sources $dagforge $foundation
   test = true
   cxx.libs += -lgtest -pthread
 }
+
+exe{jsonata-conformance}: ../tests/cxx{jsonata_conformance} $jsonata $foundation
 
 exe{bench-core}: ../tests/cxx{bench_workflow bench_runtime bench_http \
                              bench_storage} \

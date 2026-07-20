@@ -3,7 +3,9 @@
 #ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/util/json.hpp"
+#include "dagforge/workflow/executor_description.hpp"
 #include "dagforge/workflow/execution_failure.hpp"
+#include "dagforge/workflow/plan_diagnostic.hpp"
 #include "dagforge/workflow/workflow_plan.hpp"
 
 #include <chrono>
@@ -51,6 +53,8 @@ struct TaskExecutionRequest {
 };
 
 struct TaskExecutionSink {
+  // Runtime-owned executor callbacks are internal lifecycle hooks and must not
+  // throw. Executors may treat an exception as a process-level contract breach.
   std::move_only_function<void(const InstanceId &, std::string_view)> on_state;
   std::move_only_function<void(const InstanceId &, TaskExecutionResult)>
       on_complete;
@@ -61,12 +65,16 @@ public:
   virtual ~ITaskExecutor() = default;
 
   [[nodiscard]] virtual auto type() const noexcept -> std::string_view = 0;
+  [[nodiscard]] virtual auto describe() const
+      -> Result<ExecutorDescription> = 0;
   [[nodiscard]] virtual auto compile(JsonPayload config,
                                      ExecutorCompileContext context) const
-      -> Result<CompiledExecutorConfig> = 0;
+      -> ExecutorCompileResult<CompiledExecutorConfig> = 0;
   virtual auto start(TaskExecutionRequest request, TaskExecutionSink sink)
       -> Result<void> = 0;
   virtual auto cancel(const InstanceId &instance_id) -> void = 0;
+  // Quiesce is a terminal lifecycle transition. Once invoked, the executor
+  // rejects new starts even when waiting for accepted work returns Timeout.
   virtual auto quiesce(std::chrono::milliseconds timeout) -> Result<void> = 0;
 };
 

@@ -8,6 +8,7 @@
 #include "dagforge/util/parse.hpp"
 
 #include <glaze/json.hpp>
+#include <glaze/json/schema.hpp>
 
 #include <cstdint>
 #include <string>
@@ -46,6 +47,7 @@ template <typename Tag> struct meta<dagforge::TypedId<Tag>> {
 namespace dagforge {
 
 using JsonValue = glz::generic_json<glz::num_mode::i64>;
+class JsonPayload;
 
 enum class JsonInputState : std::uint8_t {
   Valid,
@@ -175,6 +177,9 @@ template <typename T>
 }
 
 template <typename T>
+[[nodiscard]] inline auto json_schema_payload() -> Result<JsonPayload>;
+
+template <typename T>
 [[nodiscard]] inline auto parse_json_as_detailed(std::string_view input)
     -> util::ParseResult<T> {
   return detail::parse_json_as_with_options_detailed<T,
@@ -288,6 +293,15 @@ private:
 
   friend struct glz::meta<JsonPayload>;
 };
+
+template <typename T>
+[[nodiscard]] inline auto json_schema_payload() -> Result<JsonPayload> {
+  auto schema = glz::write_json_schema<T>();
+  if (!schema) {
+    return fail(Error::ProtocolError);
+  }
+  return JsonPayload::from_serialized(std::move(*schema));
+}
 
 } // namespace dagforge
 
