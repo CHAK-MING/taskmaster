@@ -21,7 +21,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Build and run full test suite
         uses: docker/build-push-action@v6
         with:
@@ -37,7 +37,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Run sanitizer, coverage, and fuzz audits
         uses: docker/build-push-action@v6
         with:
@@ -53,7 +53,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Build verified release runtime
         uses: docker/build-push-action@v6
         with:
