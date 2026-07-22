@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/config/admission_config.hpp"
 #include "dagforge/core/error.hpp"
 #include "dagforge/workflow/plan_diagnostic.hpp"
@@ -8,7 +7,6 @@
 
 #include <optional>
 #include <utility>
-#endif
 
 namespace dagforge::workflow {
 

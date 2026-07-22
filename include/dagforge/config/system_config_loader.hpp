@@ -1,11 +1,9 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/config/system_config.hpp"
 #include "dagforge/core/error.hpp"
 
 #include <string_view>
-#endif
 
 namespace dagforge::config {
 

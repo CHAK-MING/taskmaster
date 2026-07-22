@@ -1,13 +1,11 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <algorithm>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <source_location>
 #include <string_view>
-#endif
 
 namespace dagforge {
 

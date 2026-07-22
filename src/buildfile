@@ -1,4 +1,4 @@
-import foundation = lib{dagforge-foundation}
+foundation = lib{dagforge-foundation}
 
 ./: lib{dagforge} lib{dagforge-jsonata}
 
@@ -14,8 +14,7 @@ intf_libs = -lboost_url
 lib{dagforge-foundation}:
 {
   cxx.export.poptions = "-I$src_root/include" \
-                        "-I$src_root/third_party/unordered_dense/include" \
-                        "-DDAGFORGE_USE_STDLIB_MODULES=0"
+                        "-I$src_root/third_party/unordered_dense/include"
   cxx.export.libs = $intf_libs
 }
 

@@ -1,11 +1,9 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <ankerl/unordered_dense.h>
 
 #include <cstddef>
 #include <string_view>
-#endif
 
 namespace dagforge::util {
 

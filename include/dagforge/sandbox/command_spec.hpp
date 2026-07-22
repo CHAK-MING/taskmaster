@@ -1,10 +1,8 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <flat_map>
 #include <string>
 #include <vector>
-#endif
 
 namespace dagforge::sandbox {
 

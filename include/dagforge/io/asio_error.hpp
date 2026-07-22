@@ -1,11 +1,9 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/io/result.hpp"
 
 #include <boost/asio/error.hpp>
 #include <boost/system/error_code.hpp>
-#endif
 
 namespace dagforge::io {
 

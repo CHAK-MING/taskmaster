@@ -38,7 +38,7 @@ namespace {
 }
 
 [[nodiscard]] auto unavailable() -> http::HttpResponse {
-  return error_response(503, "AI workflow runtime is disabled");
+  return error_response(503, "Workflow runtime is disabled");
 }
 
 } // namespace

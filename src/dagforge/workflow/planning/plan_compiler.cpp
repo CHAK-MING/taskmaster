@@ -111,6 +111,25 @@ PlanCompiler::PlanCompiler(const ExecutorRegistry &executors,
 
 auto PlanCompiler::compile(WorkflowPlan plan) const
     -> PlanResult<std::shared_ptr<const ExecutionPlan>> {
+  return compile_with_id(std::move(plan), generate_workflow_plan_id());
+}
+
+auto PlanCompiler::validate(WorkflowPlan plan) const
+    -> PlanResult<PlanValidation> {
+  auto compiled = compile_with_id(std::move(plan), WorkflowPlanId{});
+  if (!compiled) {
+    return plan_fail(std::move(compiled.error()));
+  }
+  return plan_ok(PlanValidation{
+      .workflow_id = (*compiled)->workflow_id.clone(),
+      .digest = (*compiled)->digest,
+      .nodes = (*compiled)->nodes.size(),
+  });
+}
+
+auto PlanCompiler::compile_with_id(WorkflowPlan plan,
+                                   WorkflowPlanId plan_id) const
+    -> PlanResult<std::shared_ptr<const ExecutionPlan>> {
   auto validated = validator_.validate(plan);
   if (!validated) {
     return plan_fail(std::move(validated.error()));
@@ -283,7 +302,7 @@ auto PlanCompiler::compile(WorkflowPlan plan) const
   }
 
   auto execution_plan = std::make_shared<ExecutionPlan>();
-  execution_plan->plan_id = generate_workflow_plan_id();
+  execution_plan->plan_id = std::move(plan_id);
   execution_plan->workflow_id = plan.workflow_id;
   execution_plan->schema_version = plan.schema_version;
   execution_plan->digest = std::move(*plan_digest);
@@ -304,13 +323,11 @@ auto PlanCompiler::compile(WorkflowPlan plan,
                                  "Restored Workflow Plan requires a plan_id",
                                  "/plan_id"));
   }
-  auto compiled = compile(std::move(plan));
+  auto compiled = compile_with_id(std::move(plan), plan_id.clone());
   if (!compiled) {
     return plan_fail(std::move(compiled.error()));
   }
-  auto restored = std::make_shared<ExecutionPlan>(**compiled);
-  restored->plan_id = plan_id.clone();
-  return plan_ok(std::shared_ptr<const ExecutionPlan>{std::move(restored)});
+  return compiled;
 }
 
 auto PlanCompiler::digest(const WorkflowPlan &plan) -> Result<std::string> {

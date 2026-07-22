@@ -513,27 +513,44 @@ auto mark_output_limit_exceeded(
   }
 }
 
-[[nodiscard]] auto
-wait_process_with_timeout(bp::process &process, std::chrono::seconds timeout,
-                          boost::asio::cancellation_signal &cancel_signal)
-    -> task<Result<ProcessWaitResult>> {
-  using namespace boost::asio::experimental::awaitable_operators;
-  auto outcome =
-      co_await (reap_process(process) || async_sleep_on_timing_wheel(timeout));
-  if (outcome.index() == 0) {
-    co_return std::move(std::get<0>(outcome));
-  }
-  auto sleep_result = std::move(std::get<1>(outcome));
-  if (!sleep_result) {
-    co_return fail(sleep_result.error());
-  }
+[[nodiscard]] auto wait_process_with_timeout(
+    bp::process &process, std::chrono::seconds timeout,
+    std::shared_ptr<boost::asio::cancellation_signal> cancel_signal,
+    Runtime &runtime) -> task<Result<ProcessWaitResult>> {
+  struct DeadlineState {
+    std::atomic_bool completed{false};
+    std::atomic_bool timed_out{false};
+  };
 
-  cancel_signal.emit(boost::asio::cancellation_type::total);
-  auto result = co_await terminate_and_reap_process(process, true);
+  auto state = std::make_shared<DeadlineState>();
+  const auto shard = runtime.current_shard();
+  const auto pid = process.id();
+  const auto deadline = runtime.schedule_after_on(
+      shard, timeout, [state, cancel_signal = std::move(cancel_signal), pid] {
+        bool expected = false;
+        if (!state->completed.compare_exchange_strong(
+                expected, true, std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+          return;
+        }
+        state->timed_out.store(true, std::memory_order_release);
+        kill_process_group_or_process(pid);
+        cancel_signal->emit(boost::asio::cancellation_type::total);
+      });
+  const auto cancel_deadline =
+      dagforge::scope_exit([&runtime, shard, deadline] {
+        runtime.cancel_after_on(shard, deadline);
+      });
+
+  auto result = co_await reap_process(process);
+  state->completed.store(true, std::memory_order_release);
   if (!result) {
     co_return fail(result.error());
   }
-  result->exit_code = kTimeoutExitCode;
+  if (state->timed_out.load(std::memory_order_acquire)) {
+    result->timed_out = true;
+    result->exit_code = kTimeoutExitCode;
+  }
   co_return result;
 }
 
@@ -613,21 +630,21 @@ auto execute_command(fs::path minijail, std::vector<std::string> arguments,
   log::debug("sandboxed command started pid={} instance_id={}", process->id(),
              instance_id);
 
-  boost::asio::cancellation_signal cancel_signal;
+  auto cancel_signal = std::make_shared<boost::asio::cancellation_signal>();
   bool stdout_streamed = false;
   bool stderr_streamed = false;
   OutputLimitState output_limit;
   using namespace boost::asio::experimental::awaitable_operators;
-  auto wait_result =
-      co_await (read_pipe_all(stdout_pipe, result.stdout_output, cancel_signal,
-                              instance_id, sink, "stdout", stdout_streamed,
-                              process->id(), sandbox.max_stdout_bytes,
-                              sandbox.max_stream_line_bytes, output_limit) &&
-                read_pipe_all(stderr_pipe, result.stderr_output, cancel_signal,
-                              instance_id, sink, "stderr", stderr_streamed,
-                              process->id(), sandbox.max_stderr_bytes,
-                              sandbox.max_stream_line_bytes, output_limit) &&
-                wait_process_with_timeout(*process, timeout, cancel_signal));
+  auto wait_result = co_await (
+      read_pipe_all(stdout_pipe, result.stdout_output, *cancel_signal,
+                    instance_id, sink, "stdout", stdout_streamed, process->id(),
+                    sandbox.max_stdout_bytes, sandbox.max_stream_line_bytes,
+                    output_limit) &&
+      read_pipe_all(stderr_pipe, result.stderr_output, *cancel_signal,
+                    instance_id, sink, "stderr", stderr_streamed, process->id(),
+                    sandbox.max_stderr_bytes, sandbox.max_stream_line_bytes,
+                    output_limit) &&
+      wait_process_with_timeout(*process, timeout, cancel_signal, runtime));
 
   result.stdout_streamed = stdout_streamed;
   result.stderr_streamed = stderr_streamed;

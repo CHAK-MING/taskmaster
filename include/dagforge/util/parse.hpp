@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <algorithm>
 #include <charconv>
 #include <concepts>
@@ -9,7 +8,6 @@
 #include <expected>
 #include <string_view>
 #include <system_error>
-#endif
 
 namespace dagforge::util {
 

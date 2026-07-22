@@ -1,11 +1,9 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/enum.hpp"
 #include <glaze/core/common.hpp>
 #include <cstdint>
 #include <string_view>
-#endif
 
 namespace dagforge::workflow {
 

@@ -1,11 +1,9 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
-#endif
 
 namespace dagforge::config {
 

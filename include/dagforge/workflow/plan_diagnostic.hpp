@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/error_json.hpp"
 #include "dagforge/util/id.hpp"
 #include "dagforge/util/json.hpp"
@@ -12,7 +11,6 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
-#endif
 
 namespace dagforge::workflow {
 

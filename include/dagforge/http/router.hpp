@@ -1,11 +1,9 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/coroutine.hpp"
 #include "dagforge/http/http_types.hpp"
 
 #include <functional>
-#endif
 
 namespace dagforge::http {
 

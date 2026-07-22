@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/coroutine.hpp"
 #include "dagforge/io/context.hpp"
 
@@ -14,7 +13,6 @@
 #include <list>
 #include <unordered_map>
 #include <vector>
-#endif
 
 namespace dagforge {
 

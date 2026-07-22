@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #if !defined(DAGFORGE_CONSUME_NAMED_MODULES) || !DAGFORGE_CONSUME_NAMED_MODULES
 #include "dagforge/core/error.hpp"
 #endif
@@ -14,7 +13,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#endif
 
 namespace glz {
 

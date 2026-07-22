@@ -1,12 +1,10 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/workflow/workflow_plan.hpp"
 
 #include <string>
 #include <string_view>
-#endif
 
 namespace dagforge::workflow {
 

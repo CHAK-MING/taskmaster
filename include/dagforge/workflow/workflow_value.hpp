@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/id.hpp"
 #include "dagforge/util/json.hpp"
 
@@ -14,7 +13,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-#endif
 
 namespace dagforge::workflow {
 

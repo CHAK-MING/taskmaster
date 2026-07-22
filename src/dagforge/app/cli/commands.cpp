@@ -377,23 +377,22 @@ auto execute(const ValidateOptions &options) -> int {
                              : initialized.error().message());
     return 1;
   }
-  auto compiled = app.workflow_control_plane()->register_plan(std::move(*plan));
-  if (!compiled) {
-    auto diagnostic = serialize_json(compiled.error());
+  auto validated =
+      app.workflow_control_plane()->validate_plan(std::move(*plan));
+  if (!validated) {
+    auto diagnostic = serialize_json(validated.error());
     if (diagnostic) {
       std::println(stderr, "{}", *diagnostic);
     } else {
       std::println(stderr, "Workflow rejected: code={} path={} message={}",
-                   compiled.error().code, compiled.error().path,
-                   compiled.error().message());
+                   validated.error().code, validated.error().path,
+                   validated.error().message());
     }
     return 1;
   }
-  std::println("workflow_id={}", (*compiled)->workflow_id);
-  std::println("plan_id={}", (*compiled)->plan_id);
-  std::println("digest={}", (*compiled)->digest);
-  std::println("nodes={}", (*compiled)->nodes.size());
-  std::println("durability_deferred={}", compiled->durability_deferred);
+  std::println("workflow_id={}", validated->workflow_id);
+  std::println("digest={}", validated->digest);
+  std::println("nodes={}", validated->nodes);
   return 0;
 }
 

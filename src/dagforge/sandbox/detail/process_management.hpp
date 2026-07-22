@@ -1,9 +1,7 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/core/coroutine.hpp"
-#endif
 
 #include <boost/process/v2/process.hpp>
 
@@ -40,9 +38,14 @@ inline auto kill_process_group_or_process(pid_t pid) noexcept -> void {
 
 inline auto terminate_process_group_or_process(bp::process &proc) noexcept
     -> void {
-  boost::system::error_code ignored;
-  proc.terminate(ignored);
+  // Kill the process group while its leader identity is still authoritative.
+  // Terminating only the leader first creates a race in which descendants can
+  // outlive the process object and escape the subsequent reap.
   kill_process_group_or_process(proc.id());
+  boost::system::error_code ignored;
+  if (proc.running(ignored)) {
+    proc.terminate(ignored);
+  }
 }
 
 [[nodiscard]] inline auto reap_process(bp::process &proc)

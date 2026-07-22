@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <compare>
 #include <concepts>
 #include <cstddef>
@@ -12,7 +11,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#endif
 
 namespace dagforge {
 

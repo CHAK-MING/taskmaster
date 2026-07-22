@@ -1,10 +1,8 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <cstddef>
 #include <cstdint>
 #include <string>
-#endif
 
 namespace dagforge::config {
 

@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/core/runtime.hpp"
 #include "dagforge/sandbox/command_spec.hpp"
@@ -15,7 +14,6 @@
 #include <vector>
 
 #include <boost/asio/async_result.hpp>
-#endif
 
 namespace dagforge::sandbox {
 

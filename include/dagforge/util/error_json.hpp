@@ -1,13 +1,11 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 
 #include <glaze/json.hpp>
 
 #include <array>
 #include <cstddef>
-#endif
 
 namespace glz {
 

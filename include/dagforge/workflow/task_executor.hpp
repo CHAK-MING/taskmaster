@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/util/json.hpp"
 #include "dagforge/workflow/executor_description.hpp"
@@ -18,7 +17,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#endif
 
 namespace dagforge::workflow {
 

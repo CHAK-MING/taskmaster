@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/ascii.hpp"
 
 #include <array>
@@ -12,7 +11,6 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
-#endif
 
 namespace dagforge {
 

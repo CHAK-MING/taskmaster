@@ -1,18 +1,15 @@
 module;
 
-#include <array>
-#include <cstdint>
-#include <string>
-#include <system_error>
-#include <type_traits>
-#include <utility>
+#include "dagforge/io/result.hpp"
 
 export module dagforge.io;
 
 export import dagforge.base;
 
-#define DAGFORGE_BUILDING_MODULE_INTERFACE 1
-export {
-#include "dagforge/io/result.hpp"
-}
-#undef DAGFORGE_BUILDING_MODULE_INTERFACE
+export namespace dagforge::io {
+using ::dagforge::io::io_error_category;
+using ::dagforge::io::IoError;
+using ::dagforge::io::IoErrorCategory;
+using ::dagforge::io::is_cancelled;
+using ::dagforge::io::make_error_code;
+} // namespace dagforge::io

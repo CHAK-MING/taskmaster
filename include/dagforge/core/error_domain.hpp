@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <array>
 #include <concepts>
 #include <cstddef>
@@ -10,7 +9,6 @@
 #include <system_error>
 #include <type_traits>
 #include <utility>
-#endif
 
 namespace dagforge {
 

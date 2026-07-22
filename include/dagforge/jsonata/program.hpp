@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/json.hpp"
 
 #include <chrono>
@@ -14,7 +13,6 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
-#endif
 
 namespace dagforge::jsonata {
 

@@ -40,32 +40,59 @@ auto register_workflow_routes(ApiContext &ctx) -> void {
                    co_return typed_json_response(*capabilities);
                  }));
 
-  router.post("/api/v1/workflows/plans",
-              ctx.make_instrumented_route(
-                  http::HttpMethod::POST, "/api/v1/workflows/plans",
-                  [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
-                    WorkflowHttpRequest request{ctx.app, req};
-                    auto *control = request.require_control_plane();
-                    if (request.failed()) {
-                      co_return request.take_failure();
-                    }
-                    auto plan = workflow::WorkflowPlanLoader::from_json(
-                        req.body_as_string());
-                    if (!plan) {
-                      co_return error_response(400, plan.error().message());
-                    }
-                    auto compiled = control->register_plan(std::move(*plan));
-                    if (!compiled) {
-                      co_return plan_error_response(compiled.error());
-                    }
-                    const auto summary = plan_summary(**compiled);
-                    co_return typed_json_response(
-                        glz::obj{"workflow_id", summary.workflow_id, "plan_id",
-                                 summary.plan_id, "digest", summary.digest,
-                                 "nodes", summary.nodes, "durability_deferred",
-                                 compiled->durability_deferred},
-                        http::HttpStatus::Created);
-                  }));
+  router.post(
+      "/api/v1/workflows/plans",
+      ctx.make_instrumented_route(
+          http::HttpMethod::POST, "/api/v1/workflows/plans",
+          [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
+            WorkflowHttpRequest request{ctx.app, req};
+            auto *control = request.require_control_plane();
+            if (request.failed()) {
+              co_return request.take_failure();
+            }
+            auto plan =
+                workflow::WorkflowPlanLoader::from_json(req.body_as_string());
+            if (!plan) {
+              co_return plan_error_response(workflow::make_plan_diagnostic(
+                  plan.error(), "plan_json_invalid",
+                  "Workflow Plan JSON could not be decoded"));
+            }
+            auto compiled = control->register_plan(std::move(*plan));
+            if (!compiled) {
+              co_return plan_error_response(compiled.error());
+            }
+            const auto summary = plan_summary(**compiled);
+            co_return typed_json_response(
+                glz::obj{"workflow_id", summary.workflow_id, "plan_id",
+                         summary.plan_id, "digest", summary.digest, "nodes",
+                         summary.nodes, "durability_deferred",
+                         compiled->durability_deferred},
+                http::HttpStatus::Created);
+          }));
+
+  router.post(
+      "/api/v1/workflows/plans/validate",
+      ctx.make_instrumented_route(
+          http::HttpMethod::POST, "/api/v1/workflows/plans/validate",
+          [&ctx](http::HttpRequest req) -> task<http::HttpResponse> {
+            WorkflowHttpRequest request{ctx.app, req};
+            auto *control = request.require_control_plane();
+            if (request.failed()) {
+              co_return request.take_failure();
+            }
+            auto plan =
+                workflow::WorkflowPlanLoader::from_json(req.body_as_string());
+            if (!plan) {
+              co_return plan_error_response(workflow::make_plan_diagnostic(
+                  plan.error(), "plan_json_invalid",
+                  "Workflow Plan JSON could not be decoded"));
+            }
+            auto validated = control->validate_plan(std::move(*plan));
+            if (!validated) {
+              co_return plan_error_response(validated.error());
+            }
+            co_return typed_json_response(*validated);
+          }));
 
   router.get("/api/v1/workflows/plans",
              ctx.make_instrumented_route(

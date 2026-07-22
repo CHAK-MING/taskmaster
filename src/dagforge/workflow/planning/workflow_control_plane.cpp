@@ -59,6 +59,11 @@ auto WorkflowControlPlane::register_plan(WorkflowPlan plan)
   });
 }
 
+auto WorkflowControlPlane::validate_plan(WorkflowPlan plan) const
+    -> PlanResult<PlanValidation> {
+  return compiler_.validate(std::move(plan));
+}
+
 auto WorkflowControlPlane::restore_plan(WorkflowPlan plan,
                                         const WorkflowPlanId &plan_id,
                                         std::string_view expected_digest)

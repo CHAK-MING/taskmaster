@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/asio_awaitable.hpp"
 #include "dagforge/core/coroutine.hpp"
 #include "dagforge/core/error.hpp"
@@ -27,6 +26,5 @@
 #include <span>
 #include <thread>
 #include <vector>
-#endif
 
 #include "dagforge/core/detail/runtime.inc"

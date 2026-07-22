@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/core/metrics.hpp"
 
@@ -8,7 +7,6 @@
 #include <string>
 #include <tuple>
 #include <vector>
-#endif
 
 namespace dagforge {
 

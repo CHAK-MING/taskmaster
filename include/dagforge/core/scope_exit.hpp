@@ -1,11 +1,9 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #if __has_include(<scope>)
 #include <scope>
 #else
 #include <experimental/scope>
-#endif
 #endif
 
 namespace dagforge {

@@ -1,7 +1,5 @@
 #pragma once
 
-
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/io/asio_error.hpp"
 #include <boost/asio/as_tuple.hpp>
@@ -15,4 +13,3 @@
 #include <tuple>
 
 #include "dagforge/core/detail/asio_awaitable.inc"
-#endif

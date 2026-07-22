@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/error_json.hpp"
 #include "dagforge/util/json.hpp"
 #include "dagforge/workflow/workflow_value.hpp"
@@ -12,7 +11,6 @@
 #include <system_error>
 #include <utility>
 #include <vector>
-#endif
 
 namespace dagforge::workflow {
 

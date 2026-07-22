@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/util/string_hash.hpp"
 
@@ -17,7 +16,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#endif
 
 namespace dagforge::http {
 

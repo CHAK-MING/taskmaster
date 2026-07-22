@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/workflow/plan_compiler.hpp"
 #include "dagforge/workflow/plan_store.hpp"
@@ -14,7 +13,6 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-#endif
 
 namespace dagforge::workflow {
 
@@ -43,6 +41,8 @@ public:
 
   [[nodiscard]] auto register_plan(WorkflowPlan plan)
       -> PlanResult<PlanRegistration>;
+  [[nodiscard]] auto validate_plan(WorkflowPlan plan) const
+      -> PlanResult<PlanValidation>;
   [[nodiscard]] auto restore_plan(WorkflowPlan plan,
                                   const WorkflowPlanId &plan_id,
                                   std::string_view expected_digest = {})

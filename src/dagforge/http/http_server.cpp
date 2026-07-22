@@ -53,12 +53,45 @@ struct HttpServer::Impl {
   std::vector<ShardState> shard_states;
   std::atomic<bool> running{false};
   std::atomic<std::size_t> active_connections{0};
+  std::mutex acceptors_mutex;
+  std::condition_variable acceptors_changed;
+  std::size_t acceptors_closing{0};
   std::mutex connections_mutex;
   std::condition_variable connections_changed;
   std::uint64_t next_connection_id{1};
   std::unordered_map<std::uint64_t, std::function<void()>> connections;
 
   explicit Impl(Runtime &rt) : runtime(rt), shard_states(rt.shard_count()) {}
+
+  auto begin_acceptor_close() -> void {
+    std::lock_guard lock(acceptors_mutex);
+    ++acceptors_closing;
+  }
+
+  auto finish_acceptor_close() -> void {
+    {
+      std::lock_guard lock(acceptors_mutex);
+      if (acceptors_closing > 0) {
+        --acceptors_closing;
+      }
+    }
+    acceptors_changed.notify_all();
+  }
+
+  [[nodiscard]] auto has_acceptors_closing() -> bool {
+    std::lock_guard lock(acceptors_mutex);
+    return acceptors_closing != 0;
+  }
+
+  auto wait_for_acceptors() noexcept -> void {
+    std::unique_lock lock(acceptors_mutex);
+    if (!acceptors_changed.wait_for(lock, std::chrono::seconds(5), [this] {
+          return acceptors_closing == 0;
+        })) {
+      log::error("Timed out while closing {} HTTP acceptors",
+                 acceptors_closing);
+    }
+  }
 
   [[nodiscard]] auto try_acquire_connection() noexcept -> bool {
     auto current = active_connections.load(std::memory_order_relaxed);
@@ -271,9 +304,7 @@ struct HttpServer::Impl {
       if (!accept_res) {
         const auto &accept_ec = accept_res.error();
         if (self->running.load(std::memory_order_acquire) &&
-            accept_ec != std::error_code(
-                             boost::asio::error::make_error_code(
-                                 boost::asio::error::operation_aborted))) {
+            !io::is_cancelled(accept_ec)) {
           log::error("Accept failed: {}", accept_ec.message());
         }
         break;
@@ -396,6 +427,10 @@ auto HttpServer::start(std::string_view host, uint16_t port) -> Result<void> {
 auto HttpServer::start(std::string_view host, uint16_t port, bool reuse_port)
     -> Result<void> {
   auto impl = impl_;
+  if (impl->running.load(std::memory_order_acquire) ||
+      impl->has_acceptors_closing()) {
+    return fail(Error::InvalidState);
+  }
 
   auto cleanup = [&](std::error_code ec) -> Result<void> {
     impl->running = false;
@@ -507,17 +542,38 @@ auto HttpServer::stop() -> void {
 
   log::debug("Stopping HTTP server...");
 
+  const bool on_runtime_shard = impl_->runtime.is_current_shard();
+  const auto current_shard =
+      on_runtime_shard ? impl_->runtime.current_shard() : kInvalidShard;
   for (unsigned i = 0; i < impl_->runtime.shard_count(); ++i) {
-    impl_->runtime.post_to(i, [impl = impl_, i]() {
-      if (auto acc = impl->shard_states[i].acceptor) {
-        boost::system::error_code close_ec;
-        acc->cancel(close_ec);
-        acc->close(close_ec);
-      }
-    });
+    auto acceptor = std::exchange(impl_->shard_states[i].acceptor, nullptr);
+    if (!acceptor) {
+      continue;
+    }
+    auto close_acceptor = [acceptor = std::move(acceptor)] {
+      boost::system::error_code close_ec;
+      acceptor->cancel(close_ec);
+      acceptor->close(close_ec);
+    };
+    if (on_runtime_shard && current_shard == i) {
+      close_acceptor();
+    } else {
+      impl_->begin_acceptor_close();
+      impl_->runtime.post_to(i, [impl = impl_, close_acceptor = std::move(
+                                                   close_acceptor)]() mutable {
+        const auto finished =
+            dagforge::scope_exit([impl] { impl->finish_acceptor_close(); });
+        close_acceptor();
+      });
+    }
   }
 
   impl_->close_connections();
+  if (on_runtime_shard) {
+    log::debug("HTTP server connection drain deferred to Runtime shards");
+    return;
+  }
+  impl_->wait_for_acceptors();
   impl_->wait_for_connections();
 
   log::debug("HTTP server stopped");

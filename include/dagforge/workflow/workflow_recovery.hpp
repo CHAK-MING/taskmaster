@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/workflow/execution_failure.hpp"
 #include "dagforge/workflow/workflow_runtime_types.hpp"
 
@@ -8,7 +7,6 @@
 #include <optional>
 #include <string>
 #include <vector>
-#endif
 
 namespace dagforge::workflow {
 

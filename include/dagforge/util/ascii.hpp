@@ -1,9 +1,7 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include <string>
 #include <string_view>
-#endif
 
 namespace dagforge::util {
 

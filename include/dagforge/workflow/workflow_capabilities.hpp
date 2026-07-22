@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/config/admission_config.hpp"
 #include "dagforge/util/json.hpp"
 #include "dagforge/workflow/executor_description.hpp"
@@ -8,7 +7,6 @@
 #include <cstdint>
 #include <string>
 #include <vector>
-#endif
 
 namespace dagforge::workflow {
 

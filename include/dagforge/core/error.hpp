@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error_domain.hpp"
 
 #include <array>
@@ -13,7 +12,6 @@
 #include <system_error>
 #include <type_traits>
 #include <utility>
-#endif
 
 namespace dagforge {
 

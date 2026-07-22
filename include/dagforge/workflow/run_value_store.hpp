@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/core/shard.hpp"
 #include "dagforge/workflow/artifact_store.hpp"
@@ -12,7 +11,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#endif
 
 namespace dagforge {
 class Runtime;

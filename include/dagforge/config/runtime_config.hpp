@@ -1,8 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
-#endif
-
 namespace dagforge::config {
 
 struct RuntimeConfig {

@@ -1,12 +1,10 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/hash.hpp"
 
 #include <functional>
 #include <string>
 #include <string_view>
-#endif
 
 namespace dagforge {
 

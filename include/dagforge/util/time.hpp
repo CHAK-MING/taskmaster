@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/parse.hpp"
 
 #include <algorithm>
@@ -14,7 +13,6 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#endif
 
 namespace dagforge::util {
 

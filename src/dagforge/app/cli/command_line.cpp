@@ -181,7 +181,9 @@ auto configure_app(CLI::App &app) -> void {
   app.get_formatter()->right_column_width(72);
   app.get_formatter()->label("REQUIRED", "required");
   app.footer(
-      "Core objects are positional. Local configuration defaults to "
+      "This utility is for engine development, operations, and advanced "
+      "integration; human-facing products should manage the daemon for their "
+      "users.\nCore objects are positional. Local configuration defaults to "
       "system_config.json. Remote commands default to http://127.0.0.1:8888.\n"
       "Use DAGFORGE_CONFIG, DAGFORGE_ENDPOINT, and DAGFORGE_API_TOKEN to avoid "
       "repeating connection options.");
@@ -190,7 +192,7 @@ auto configure_app(CLI::App &app) -> void {
 auto configure_serve(CLI::App &root, ServeOptions &options,
                      CommandSelection &selection) -> void {
   auto *command =
-      root.add_subcommand("serve", "Run the long-lived Workflow HTTP service");
+      root.add_subcommand("serve", "Run the long-lived Workflow daemon");
   configure_leaf(*command, "[CONFIG]");
   command
       ->add_option("config", options.config_path, "System configuration JSON")
@@ -388,6 +390,20 @@ auto configure_api_plan(CLI::App &api, ApiOptions &options,
                        "@" + add_args->value, "application/json");
   });
 
+  auto validate_args = std::make_shared<IdentifierArgs>();
+  auto *validate = plan->add_subcommand(
+      "validate", "Validate a Workflow Plan without registering it");
+  configure_api_leaf(*validate, options, "PLAN");
+  validate->add_option("plan", validate_args->value, "Workflow Plan JSON")
+      ->required()
+      ->check(CLI::ExistingFile)
+      ->type_name("PLAN");
+  validate->callback([&, validate_args] {
+    select_api_command(options, selection, "POST",
+                       "/api/v1/workflows/plans/validate",
+                       "@" + validate_args->value, "application/json");
+  });
+
   auto list_args = std::make_shared<PageArgs>();
   auto *list = plan->add_subcommand("list", "List registered Workflow Plans");
   list->alias("ls");
@@ -582,7 +598,7 @@ auto configure_api_request(CLI::App &api, ApiOptions &options,
 auto configure_api(CLI::App &root, ApiOptions &options,
                    CommandSelection &selection) -> void {
   auto *api = root.add_subcommand(
-      "api", "Control a running DAGForge service over its HTTP API");
+      "api", "Administer a running DAGForge daemon over HTTP");
   require_subcommand(*api);
   configure_api_system(*api, options, selection);
   configure_api_plan(*api, options, selection);
@@ -593,6 +609,7 @@ auto configure_api(CLI::App &root, ApiOptions &options,
               "  dagforge api health\n"
               "  dagforge api ready\n"
               "  dagforge api capabilities\n"
+              "  dagforge api plan validate workflow.json\n"
               "  dagforge api plan add workflow.json\n"
               "  dagforge api run start hello-world @start-run.json\n"
               "  dagforge api run cancel RUN_ID\n"
@@ -602,7 +619,7 @@ auto configure_api(CLI::App &root, ApiOptions &options,
 } // namespace
 
 auto run_command_line(int argc, char **argv) -> int {
-  CLI::App app{"DAGForge 0.4 AI workflow runtime"};
+  CLI::App app{"DAGForge 0.4 execution-kernel control utility"};
   configure_app(app);
 
   ServeOptions serve_options;

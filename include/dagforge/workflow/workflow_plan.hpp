@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/enum.hpp"
 #include "dagforge/workflow/workflow_value.hpp"
 
@@ -15,7 +14,6 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
-#endif
 
 namespace dagforge::workflow {
 

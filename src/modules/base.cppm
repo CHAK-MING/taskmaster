@@ -1,40 +1,25 @@
 module;
 
-#include <algorithm>
-#include <cerrno>
-#include <climits>
-#include <cstdio>
-#include <cstdlib>
-
-#include <array>
-#include <concepts>
-#include <cstddef>
-#include <cstdint>
-#include <expected>
-#include <source_location>
-#include <string>
-#include <string_view>
-#include <system_error>
-#include <type_traits>
-#include <utility>
-
-#if __has_include(<scope>)
-#include <scope>
-#else
-#include <experimental/scope>
-#endif
+#include "dagforge/core/contract.hpp"
+#include "dagforge/core/error.hpp"
+#include "dagforge/core/error_domain.hpp"
+#include "dagforge/core/scope_exit.hpp"
 
 export module dagforge.base;
 
-#define DAGFORGE_BUILDING_MODULE_INTERFACE 1
-export {
-#include "dagforge/core/contract.hpp"
-// error.hpp expects the error-domain declarations to already be in the module
-// purview because module-interface builds suppress textual dependency includes.
-// clang-format off
-#include "dagforge/core/error_domain.hpp"
-#include "dagforge/core/error.hpp"
-// clang-format on
-#include "dagforge/core/scope_exit.hpp"
-}
-#undef DAGFORGE_BUILDING_MODULE_INTERFACE
+export namespace dagforge {
+using ::dagforge::contract_violation;
+using ::dagforge::Error;
+using ::dagforge::error_category;
+using ::dagforge::ErrorCategory;
+using ::dagforge::ErrorDomainEntry;
+using ::dagforge::fail;
+using ::dagforge::make_error_code;
+using ::dagforge::ok;
+using ::dagforge::Result;
+using ::dagforge::ResultValue;
+using ::dagforge::scope_exit;
+using ::dagforge::StaticErrorCategory;
+using ::dagforge::sys_check;
+using ::dagforge::to_string_view;
+} // namespace dagforge

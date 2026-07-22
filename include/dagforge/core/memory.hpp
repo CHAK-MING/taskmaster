@@ -1,12 +1,10 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/contract.hpp"
 
 #include <cstddef>
 #include <memory_resource>
 #include <thread>
-#endif
 
 namespace dagforge {
 

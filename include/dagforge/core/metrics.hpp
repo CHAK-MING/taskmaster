@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/contract.hpp"
 
 #include <algorithm>
@@ -12,7 +11,6 @@
 #include <span>
 #include <utility>
 #include <vector>
-#endif
 
 namespace dagforge::metrics {
 

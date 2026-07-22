@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/config/admission_config.hpp"
 #include "dagforge/config/api_config.hpp"
 #include "dagforge/config/command_executor_config.hpp"
@@ -8,7 +7,6 @@
 #include "dagforge/config/runtime_config.hpp"
 #include "dagforge/config/storage_config.hpp"
 #include "dagforge/config/workflow_config.hpp"
-#endif
 
 namespace dagforge::config {
 

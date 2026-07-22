@@ -1,32 +1,34 @@
 module;
 
-#include <algorithm>
-#include <array>
-#include <atomic>
-#include <chrono>
-#include <concepts>
-#include <cstddef>
-#include <cstdint>
-#include <functional>
-#include <initializer_list>
-#include <limits>
-#include <memory_resource>
-#include <span>
-#include <string>
-#include <string_view>
-#include <thread>
-#include <unordered_map>
-#include <utility>
-#include <vector>
+#include "dagforge/core/constants.hpp"
+#include "dagforge/core/memory.hpp"
+#include "dagforge/core/metrics.hpp"
 
 export module dagforge.core;
 
 export import dagforge.base;
 
-#define DAGFORGE_BUILDING_MODULE_INTERFACE 1
-export {
-#include "dagforge/core/memory.hpp"
-#include "dagforge/core/metrics.hpp"
-#include "dagforge/core/constants.hpp"
-}
-#undef DAGFORGE_BUILDING_MODULE_INTERFACE
+export namespace dagforge {
+namespace pmr = std::pmr;
+
+using ::dagforge::Allocator;
+using ::dagforge::ThreadMemoryResourceOverride;
+} // namespace dagforge
+
+export namespace dagforge::io {
+using ::dagforge::io::kEventBufferSize;
+using ::dagforge::io::kInitialOutputReserve;
+using ::dagforge::io::kReadBufferSize;
+} // namespace dagforge::io
+
+export namespace dagforge::metrics {
+using ::dagforge::metrics::Counter;
+using ::dagforge::metrics::Histogram;
+} // namespace dagforge::metrics
+
+export namespace dagforge::timing {
+using ::dagforge::timing::kConfigWatchInterval;
+using ::dagforge::timing::kDaemonPollInterval;
+using ::dagforge::timing::kRuntimeYieldInterval;
+using ::dagforge::timing::kShutdownPollInterval;
+} // namespace dagforge::timing

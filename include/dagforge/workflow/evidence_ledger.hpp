@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/workflow/evidence_types.hpp"
 #include "dagforge/workflow/workflow_value.hpp"
@@ -16,7 +15,6 @@
 #include <string_view>
 #include <utility>
 #include <vector>
-#endif
 
 namespace dagforge::workflow {
 

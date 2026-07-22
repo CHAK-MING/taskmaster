@@ -1,6 +1,5 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/core/error.hpp"
 #include "dagforge/util/time.hpp"
 
@@ -20,7 +19,6 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
-#endif
 
 namespace dagforge::log {
 

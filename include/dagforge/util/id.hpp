@@ -1,10 +1,8 @@
 #pragma once
 
-#ifndef DAGFORGE_BUILDING_MODULE_INTERFACE
 #include "dagforge/util/typed_id.hpp"
 
 #include <string_view>
-#endif
 
 namespace dagforge {
 
